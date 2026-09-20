@@ -85,6 +85,8 @@ namespace AzureCli.DataSource
                     : -1,
                 totalThreads = element.TotalThreadCount ?? -1,
                 myActiveThreads = element.MyActiveThreadCount ?? -1,
+                mentionThreads = element.MentionThreadCount ?? -1,
+                mentionTotal = element.MentionTotalCount ?? -1,
                 description = element.Description ?? string.Empty,
                 buildStatus = element.BuildStatus ?? "none",
                 queuePosition = element.QueuePosition ?? -1,
