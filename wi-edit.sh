@@ -24,6 +24,21 @@
 #         description -> System.Description
 #       Prints {"id":..,"field":..,"value":..} on success.
 #
+#   wi-edit.sh comment <id> <text>
+#       Add a discussion comment to work item <id>
+#       (POST .../workItems/{id}/comments). Prints {"id":..} (the new
+#       comment's id) on success.
+#
+#   wi-edit.sh link-pr <wiId> <orgUrl> <project> <repoName> <prId>
+#       Link pull request <prId> (in <repoName> under <orgUrl>/<project>) to
+#       work item <wiId> as an ArtifactLink relation. Resolves the project
+#       and repository GUIDs with one call to the git repositories endpoint,
+#       then adds the relation. Prints {"linked":<prId>} on success.
+#
+#   wi-edit.sh unlink-pr <wiId> <prId>
+#       Remove the ArtifactLink relation for pull request <prId> from work
+#       item <wiId>. Prints {"unlinked":<prId>} on success.
+#
 # Config via environment (same defaults as wi-list.sh):
 #   ADO_PAT            always resolved from azure-cli.yml (see resolve-pat.sh)
 #                       for the account matching WIDASH_COLLECTION/WIDASH_PROJECT;
@@ -53,8 +68,9 @@ WIE_A2="${2:-}"
 WIE_A3="${3:-}"
 WIE_A4="${4:-}"
 WIE_A5="${5:-}"
+WIE_A6="${6:-}"
 
-export COLLECTION PROJECT TEAM ASSIGNEE WIE_CMD WIE_A2 WIE_A3 WIE_A4 WIE_A5
+export COLLECTION PROJECT TEAM ASSIGNEE WIE_CMD WIE_A2 WIE_A3 WIE_A4 WIE_A5 WIE_A6
 
 PY="python"; command -v python >/dev/null 2>&1 || PY="python3"
 
@@ -71,6 +87,7 @@ a2         = os.environ.get("WIE_A2", "")
 a3         = os.environ.get("WIE_A3", "")
 a4         = os.environ.get("WIE_A4", "")
 a5         = os.environ.get("WIE_A5", "")
+a6         = os.environ.get("WIE_A6", "")
 api        = "7.1"
 
 
@@ -178,8 +195,81 @@ elif cmd == "set":
     print(json.dumps({"id": d.get("id"), "field": field,
                       "value": fields.get(ado_field, cast_value)}, ensure_ascii=False))
 
+elif cmd == "comment":
+    wid, text = a2, a3
+    if not wid or not text:
+        print("ERROR: comment needs <id> <text>", file=sys.stderr)
+        sys.exit(1)
+    url = f"{collection}/{project}/_apis/wit/workItems/{wid}/comments?api-version=7.1-preview.4"
+    d = request(url, method="POST", data={"text": text}, content_type="application/json")
+    cid = d.get("id")
+    if cid is None:
+        print("ERROR: unexpected response: " + json.dumps(d)[:400], file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps({"id": cid}, ensure_ascii=False))
+
+elif cmd == "link-pr":
+    wid, org_url, link_project, repo_name, pr_id = a2, a3, a4, a5, a6
+    if not (wid and org_url and link_project and repo_name and pr_id):
+        print("ERROR: link-pr needs <wiId> <orgUrl> <project> <repoName> <prId>", file=sys.stderr)
+        sys.exit(1)
+    repo_url = (f"{org_url}/{link_project}/_apis/git/repositories/"
+                f"{urllib.parse.quote(repo_name)}?api-version=7.1")
+    repo = request(repo_url)
+    repo_guid = repo.get("id")
+    project_guid = (repo.get("project") or {}).get("id")
+    if not repo_guid or not project_guid:
+        print("ERROR: could not resolve repository/project id for '" + repo_name + "'", file=sys.stderr)
+        sys.exit(2)
+    artifact_url = f"vstfs:///Git/PullRequestId/{project_guid}%2F{repo_guid}%2F{pr_id}"
+    patch = [{
+        "op": "add",
+        "path": "/relations/-",
+        "value": {
+            "rel": "ArtifactLink",
+            "url": artifact_url,
+            "attributes": {"name": "Pull Request"},
+        },
+    }]
+    url = f"{collection}/_apis/wit/workitems/{wid}?api-version={api}"
+    d = request(url, method="PATCH", data=patch, content_type="application/json-patch+json")
+    if not isinstance(d.get("fields"), dict):
+        print("ERROR: unexpected response: " + json.dumps(d)[:400], file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps({"linked": int(pr_id) if pr_id.isdigit() else pr_id}, ensure_ascii=False))
+
+elif cmd == "unlink-pr":
+    wid, pr_id = a2, a3
+    if not wid or not pr_id:
+        print("ERROR: unlink-pr needs <wiId> <prId>", file=sys.stderr)
+        sys.exit(1)
+    url = f"{collection}/_apis/wit/workitems/{wid}?$expand=relations&api-version={api}"
+    d = request(url)
+    relations = d.get("relations") or []
+    idx = None
+    suffix_enc = "%2F" + str(pr_id)
+    suffix_plain = "/" + str(pr_id)
+    for i, rel in enumerate(relations):
+        if rel.get("rel") == "ArtifactLink":
+            rel_url = rel.get("url", "")
+            if rel_url.lower().endswith(suffix_enc.lower()) or rel_url.endswith(suffix_plain):
+                idx = i
+                break
+    if idx is None:
+        print(f"ERROR: no linked pull request {pr_id} found on #{wid}", file=sys.stderr)
+        sys.exit(1)
+    patch = [{"op": "remove", "path": f"/relations/{idx}"}]
+    url2 = f"{collection}/_apis/wit/workitems/{wid}?api-version={api}"
+    d2 = request(url2, method="PATCH", data=patch, content_type="application/json-patch+json")
+    if not isinstance(d2.get("fields"), dict):
+        print("ERROR: unexpected response: " + json.dumps(d2)[:400], file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps({"unlinked": int(pr_id) if pr_id.isdigit() else pr_id}, ensure_ascii=False))
+
 else:
     print("usage: wi-edit.sh create <type> <title> [parentId] [iterationPath] | "
-          "set <id> <field> <value>", file=sys.stderr)
+          "set <id> <field> <value> | comment <id> <text> | "
+          "link-pr <wiId> <orgUrl> <project> <repoName> <prId> | "
+          "unlink-pr <wiId> <prId>", file=sys.stderr)
     sys.exit(1)
 PYEOF

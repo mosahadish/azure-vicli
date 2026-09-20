@@ -14,6 +14,7 @@
 --   gp     set the item's priority
 --   ge     edit the item's title
 --   gi     move the item to another sprint of the quarter
+--   gl     link a pull request to the item under the cursor
 --   [ ]    jump to the previous / next sprint in the quarter (also <S-Tab>/<Tab>)
 --   {n}gt  jump to sprint n (1-based, like vim's tab gt); gt with no count = next
 --   click  click a tab in the tab bar to jump straight to that sprint
@@ -46,6 +47,10 @@ local BASH   = env.PRDASH_BASH or "bash"
 -- Same default assignee as wi-list.sh: used to preset ga and as the
 -- assignee of a newly created item (n).
 local ASSIGNEE = env.WIDASH_ASSIGNEE or "Hadish, Mosa"
+-- Same collection/project defaults as wi-edit.sh: the fallback org/project
+-- for gl (link a PR) when the PR isn't in the cached PR list.
+local COLLECTION = env.WIDASH_COLLECTION or "https://tfs.zeiss.org/tfs/SMT_SMS"
+local PROJECT = env.WIDASH_PROJECT or "BarLev-RnD"
 local WI_VIEW_LUA = (DIR .. "/wi-view.lua"):gsub("\\", "/")
 local PR_DASH_LUA = (DIR .. "/azure-cli.lua"):gsub("\\", "/")
 -- PR list provider (headless exe), warmed in the background so the first P swap is instant.
@@ -996,6 +1001,63 @@ local function move_sprint_item()
   end, function() nudge_detail(it.id) end)
 end
 
+-- Link a pull request to the item under the cursor. Resolves the PR's
+-- org/project/repo from the cached PR list (_G.PR_LIST_CACHE.prs, populated
+-- by this file's own background prefetch) when its id is there; otherwise
+-- prompts for the repository name and falls back to this account's own
+-- collection/project. Same flow as wi-view.lua's own gl.
+local function link_pr_item()
+  local it = current_item()
+  if not it then return end
+  local id = tostring(it.id)
+  local pr_id = vim.fn.input("Link PR id to #" .. id .. ": ")
+  pr_id = (pr_id or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub("^!", "")
+  if pr_id == "" then
+    notify("Cancelled.")
+    return
+  end
+  if not pr_id:match("^%d+$") then
+    notify("PR id must be numeric.", vim.log.levels.WARN)
+    return
+  end
+  local org, project, repo
+  local cache = _G.PR_LIST_CACHE and _G.PR_LIST_CACHE.prs
+  if cache then
+    for _, pr in ipairs(cache) do
+      if tostring(pr.id) == pr_id then
+        org, project, repo = pr.org, pr.project, pr.repo
+        break
+      end
+    end
+  end
+  if not repo then
+    repo = vim.fn.input("Repository name: ")
+    if repo == "" then
+      notify("Cancelled.")
+      return
+    end
+    org = org or COLLECTION
+    project = project or PROJECT
+  end
+  notify("Linking PR !" .. pr_id .. " to #" .. id .. " \u{2026}")
+  local err = {}
+  vim.fn.jobstart({ BASH, EDIT, "link-pr", id, org, project, repo, pr_id }, {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        notify("Linked PR !" .. pr_id .. " to #" .. id .. ".")
+        nudge_detail(id)
+      else
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify("Link PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
 local NEW_TYPES = { "User Story", "Bug" }
 
 -- Create a new work item in the active sprint. Prompts for type, then title,
@@ -1164,6 +1226,7 @@ local function show_help()
     "  gp           set the item's priority",
     "  ge           edit the item's title",
     "  gi           move the item to another sprint of the quarter",
+    "  gl           link a pull request to the item under the cursor",
     "  [ / ]        previous / next sprint (also <S-Tab> / <Tab>)",
     "  {n}gt        jump to sprint n",
     "  click        click a tab in the tab bar to jump straight to that sprint",
@@ -1183,7 +1246,7 @@ vim.bo[buf].filetype = "widash"
 vim.api.nvim_set_current_buf(buf)
 win = vim.api.nvim_get_current_win()
 pcall(function()
-  vim.wo[win].winbar = "work items   (<CR>: open  gs: state  n: new  ga: assign  gp: priority  ge: title  gi: move sprint  o: browser  gy: copy link  [ ]/{n}gt/click: sprint nav  gO: config  r: refresh  P: PR dashboard  q: quit  ?: help)"
+  vim.wo[win].winbar = "work items   (<CR>: open  gs: state  n: new  ga: assign  gp: priority  ge: title  gi: move sprint  gl: link PR  o: browser  gy: copy link  [ ]/{n}gt/click: sprint nav  gO: config  r: refresh  P: PR dashboard  q: quit  ?: help)"
 end)
 
 local opts = { buffer = buf, silent = true, nowait = true }
@@ -1194,6 +1257,7 @@ vim.keymap.set("n", "ga", assign_item, opts)
 vim.keymap.set("n", "gp", set_priority, opts)
 vim.keymap.set("n", "ge", edit_title, opts)
 vim.keymap.set("n", "gi", move_sprint_item, opts)
+vim.keymap.set("n", "gl", link_pr_item, opts)
 vim.keymap.set("n", "o", open_browser, opts)
 vim.keymap.set("n", "r", function() load(false, true) end, opts)
 vim.keymap.set("n", "]", function() goto_sprint(1) end, opts)

@@ -246,6 +246,7 @@ sprints of the quarter.
 | `gp` | Set the item's priority (1-4) |
 | `ge` | Edit the item's title |
 | `gi` | Move the item to another sprint of the quarter |
+| `gl` | Link a pull request to the item under the cursor |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
@@ -261,7 +262,15 @@ sprint's list instead.
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
 detail on success), `o` opens the browser, `<BS>` returns to the list, and
-`?` shows its keys.
+`?` shows its keys. It also shows the item's discussion and any linked pull
+requests: `gc` posts a comment (shown at once, tagged "(sending…)" until the
+server confirms), `gl` links a pull request by id - resolving its org,
+project and repository from the PR dashboard's cache when it's known there,
+otherwise prompting for the repository name - and `gL` unlinks one, picked
+from the item's current links. `gl` is also available on the dashboard, for
+the item under the cursor. The discussion list comes from a REST endpoint
+some older on-prem TFS instances don't expose; there the item still loads
+normally, with the discussion showing as empty instead of failing the fetch.
 
 The collection, project, team, assignee and item types default to values in
 `wi-list.sh` and can be overridden with the `WIDASH_*` variables listed below.
@@ -319,8 +328,8 @@ azure-cli.exe (C#)        headless data provider + launcher
 | `review-pr.sh` | REST helpers for PR actions, plus the branch prefetch modes. |
 | `resolve-pat.sh` | PAT lookup from the exported table with `--print-pat` fallback. |
 | `wi-dash.lua`, `wi-view.lua` | Work-item dashboard and detail view. |
-| `wi-list.sh`, `wi-detail.sh`, `wi-state.sh` | Work-item data providers. |
-| `wi-edit.sh` | Work-item create/edit: title, assignee, priority, iteration, tags, description. |
+| `wi-list.sh`, `wi-detail.sh`, `wi-state.sh` | Work-item data providers. `wi-detail.sh` also fetches an item's discussion comments and its linked pull requests. |
+| `wi-edit.sh` | Work-item create/edit: title, assignee, priority, iteration, tags, description, discussion comments, and linking/unlinking pull requests. |
 | `install.sh` | One-shot setup. |
 
 State that survives restarts lives in Neovim's data directory: the per-PR
