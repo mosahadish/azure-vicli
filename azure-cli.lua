@@ -14,6 +14,10 @@
 --   gr          re-queue build validation for the PR under the cursor
 --   r           refresh the list
 --   q           quit
+--
+-- Row badges (left of the id): \u{25CF} unread comment activity, \u{21BB} branches or
+-- content being fetched in the background right now, \u{2713} fully prefetched
+-- (opens instantly).
 
 vim.o.compatible = false
 vim.o.number = false
@@ -287,6 +291,8 @@ local function define_hl()
   hl("PrdashConflict", { fg = "#f38ba8", bold = true })
   hl("PrdashAutoComplete", { fg = "#a6e3a1", bold = true })
   hl("PrdashUnread", { fg = "#f38ba8", bold = true })
+  hl("PrdashSyncing", { fg = "#89b4fa" })
+  hl("PrdashReady", { fg = "#6c7086" })
   hl("PrdashBorder", { fg = "#585b70" })
 end
 define_hl()
@@ -375,6 +381,12 @@ local function box_and_center(lines, spans, win)
   return final, shifted, row_offset, col_offset
 end
 
+-- Sync-state glyph for a row: "\u{21BB}" while this PR's branches or content
+-- are being fetched in the background, "\u{2713}" once everything the
+-- reviewer needs is cached (opening it is instant), blank otherwise.
+-- Assigned once the warm/prefetch bookkeeping it reads exists (below).
+local pr_sync_state
+
 local function render()
   -- Remember which PR the cursor is on (by id, not raw row number) before we
   -- rebuild everything below, since the box's vertical centring means row
@@ -431,6 +443,10 @@ local function render()
 
         seg("  ")
         seg(fit(pr_is_unread(pr) and "\u{25CF}" or "", 1), "PrdashUnread")
+        seg(" ")
+        local sync = pr_sync_state and pr_sync_state(pr)
+        seg(fit(sync == "syncing" and "\u{21BB}" or (sync == "ready" and "\u{2713}" or ""), 1),
+          sync == "syncing" and "PrdashSyncing" or "PrdashReady")
         seg(" ")
         seg(fit("#" .. tostring(pr.id), 7), "PrdashId")
         seg(" ")
@@ -616,6 +632,34 @@ local warming = {}   -- id -> true while a branch fetch is in flight
 local warm_cbs = {}  -- id -> pending callbacks to run once the fetch completes
 local cloning = {}   -- id -> true while an auto-clone is in flight
 local clone_cbs = {} -- id -> pending callbacks waiting on the clone to finish
+local syncing_clone = {}  -- clone path -> true while warm_all's repo-wide fetch runs
+
+pr_sync_state = function(pr)
+  local id = tostring(pr.id or "")
+  local key = CACHE.key(pr.id, pr.updatedIso)
+  if warming[id] or cloning[id] or CACHE.is_syncing(key)
+      or syncing_clone[clone_for(pr)] then
+    return "syncing"
+  end
+  if warmed[id] == pr.updatedIso and CACHE.is_complete(key) then
+    return "ready"
+  end
+  return nil
+end
+
+-- Redraw the list shortly after a sync-state change (start/finish of a
+-- fetch or prefetch), coalescing bursts into one render. render() is
+-- change-aware and keeps the cursor on its PR, so this never flickers.
+local render_timer
+local function schedule_render()
+  if render_timer then vim.fn.timer_stop(render_timer) end
+  render_timer = vim.fn.timer_start(50, function()
+    render_timer = nil
+    if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
+      render()
+    end
+  end)
+end
 
 local function ensure_warm(pr, cb, allow_clone)
   if not pr then return end
@@ -633,11 +677,13 @@ local function ensure_warm(pr, cb, allow_clone)
     end
     if warming[id] then return end
     warming[id] = true
+    schedule_render()
     vim.fn.jobstart({ BASH, SCRIPT }, {
       env = vim.tbl_extend("force", pr_env(pr), { PRDASH_PREFETCH = "1" }),
       on_exit = function(_, code)
         warming[id] = nil
         if code == 0 then warmed[id] = pr.updatedIso end  -- only cache a successful fetch
+        schedule_render()
         local cbs = warm_cbs[id] or {}
         warm_cbs[id] = nil
         for _, f in ipairs(cbs) do vim.schedule(function() f(code == 0) end) end
@@ -664,8 +710,10 @@ local function ensure_warm(pr, cb, allow_clone)
   end
   if cloning[id] then return end
   cloning[id] = true
+  schedule_render()
   ensure_cloned(pr, path, function(ok)
     cloning[id] = nil
+    schedule_render()
     local cbs = clone_cbs[id] or {}
     clone_cbs[id] = nil
     if not ok then
@@ -701,7 +749,11 @@ local function prefetch_content(pr, cb)
     source = pr.source, target = pr.target, repo = path,
     totalThreads = pr.totalThreads,
     bash = BASH, script = SCRIPT, env = pr_env(pr),
-  }, cb)
+  }, function()
+    schedule_render()
+    if cb then cb() end
+  end)
+  schedule_render()
 end
 
 -- Warm every open PR after a list load, so even the first open after
@@ -764,9 +816,13 @@ local function warm_all(list)
       prefetch_each(1)
       return
     end
+    syncing_clone[path] = true
+    schedule_render()
     vim.fn.jobstart({ BASH, SCRIPT }, {
       env = vim.tbl_extend("force", pr_env(prs[1]), { PRDASH_PREFETCH = "all", PRDASH_REPO_PATH = path }),
       on_exit = function(_, code)
+        syncing_clone[path] = nil
+        schedule_render()
         if code ~= 0 then
           -- Fetch failed: leave this clone's PRs cold rather than caching
           -- diffs against refs that may be missing or behind.

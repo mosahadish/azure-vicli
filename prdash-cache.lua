@@ -244,6 +244,11 @@ function M.prefetch(spec, cb)
   end
 end
 
+-- True while a prefetch for this PR version is in flight.
+function M.is_syncing(key)
+  return inflight[key] ~= nil
+end
+
 -- True once files and every file's diff are cached for this PR version.
 function M.is_complete(key)
   local files = M.files(key)
