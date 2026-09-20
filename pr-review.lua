@@ -35,8 +35,10 @@
 --   gd / gr   :  go to the definition of / find references to the word under
 --                the cursor, across the whole repo at the PR's revision (no
 --                checkout or LSP needed: git grep + a definition heuristic).
---                Results open read-only at that revision; keep pressing
---                gd/gr there to follow further, <BS> walks back one jump.
+--                Results show in a peek view - hits on the left, the file at
+--                that revision previewed on the right as you move - and open
+--                read-only at that revision on <CR>; keep pressing gd/gr
+--                there to follow further, <BS> walks back one jump.
 --   gf        :  open the current file at the PR's revision (read-only, on
 --                the same line) to read around the change
 
@@ -1964,26 +1966,21 @@ end
 
 local setup_nav_keymaps  -- below (needs the nav functions)
 
--- Open `path` as it is at `ref`, read-only, on line `lnum` (when given).
-local function open_revision(ref, path, lnum)
+-- Load (or reuse) the read-only buffer holding `path` as it is at `ref`,
+-- without showing it. Contents arrive asynchronously; see when_loaded.
+local function ensure_revision_buf(ref, path)
   local key = ref .. "\t" .. path
   local buf = nav_bufs[key]
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    nav_show(buf, lnum)
-    set_nav_winbar(buf)
-    return
-  end
+  if buf and vim.api.nvim_buf_is_valid(buf) then return buf end
   buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].filetype = ft_for_path(path) or "text"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "(loading " .. path .. " @ " .. ref .. "\u{2026})" })
   vim.bo[buf].modifiable = false
   pcall(vim.api.nvim_buf_set_name, buf, "[" .. ref .. "] " .. path)
-  nav_meta[buf] = { ref = ref, path = path }
+  nav_meta[buf] = { ref = ref, path = path, loaded = false, waiters = {} }
   nav_bufs[key] = buf
   setup_nav_keymaps(buf)
-  nav_show(buf, nil)
-  set_nav_winbar(buf)
 
   local out = {}
   vim.fn.jobstart(git_args("show", ref .. ":" .. path), {
@@ -2001,14 +1998,37 @@ local function open_revision(ref, path, lnum)
           vim.api.nvim_buf_set_lines(buf, 0, -1, false, out)
         end
         vim.bo[buf].modifiable = false
-        if code == 0 and lnum and diff_win and vim.api.nvim_win_is_valid(diff_win)
-            and vim.api.nvim_win_get_buf(diff_win) == buf then
-          pcall(vim.api.nvim_win_set_cursor, diff_win, { math.max(1, math.min(lnum, #out)), 0 })
-          vim.cmd("normal! zz")
-        end
+        local meta = nav_meta[buf]
+        meta.loaded = true
+        local waiters = meta.waiters
+        meta.waiters = {}
+        for _, f in ipairs(waiters) do f(buf) end
       end)
     end,
   })
+  return buf
+end
+
+-- cb(buf) once the revision buffer's contents are in (at once if they are).
+local function when_loaded(buf, cb)
+  local meta = nav_meta[buf]
+  if not meta or meta.loaded then cb(buf) return end
+  table.insert(meta.waiters, cb)
+end
+
+-- Open `path` as it is at `ref` in the diff window, read-only, on line
+-- `lnum` (when given).
+local function open_revision(ref, path, lnum)
+  local buf = ensure_revision_buf(ref, path)
+  nav_show(buf, nil)
+  set_nav_winbar(buf)
+  if not lnum then return end
+  when_loaded(buf, function(b)
+    if diff_win and vim.api.nvim_win_is_valid(diff_win) and vim.api.nvim_win_get_buf(diff_win) == b then
+      pcall(vim.api.nvim_win_set_cursor, diff_win, { math.max(1, math.min(lnum, vim.api.nvim_buf_line_count(b))), 0 })
+      vim.api.nvim_win_call(diff_win, function() vim.cmd("normal! zz") end)
+    end
+  end)
 end
 
 -- `git grep` for the whole word `word` at `ref`: cb(hits, truncated) with
@@ -2087,9 +2107,25 @@ local function def_score(word, text)
   return score
 end
 
--- Results picker: a big float listing hits (same file first, then same
--- extension, then by path); <CR> opens the hit at its revision.
-local function show_hits(title, hits, ref, current_path, truncated)
+-- Peek picker, like an IDE's "peek references": the hits on the left, and
+-- on the right the file at that revision centred on the hit under the
+-- cursor, with the line and every whole-word occurrence highlighted. Moving
+-- through the list re-previews (debounced); <CR> opens the hit in the diff
+-- window, q/<Esc> (or leaving the list) closes both panes. Hits are ordered
+-- same file first, then same extension, then by path.
+pcall(vim.api.nvim_set_hl, 0, "AzureCliPeekLine", { bg = "#45475a" })
+pcall(vim.api.nvim_set_hl, 0, "AzureCliPeekWord", { bg = "#f9e2af", fg = "#1e1e2e", bold = true })
+local peek_ns = vim.api.nvim_create_namespace("prdash_peek")
+
+-- nvim_open_win with a border title where supported (0.9+), plain otherwise.
+local function open_peek_win(buf, focus, cfg, title)
+  local with_title = vim.tbl_extend("force", cfg, { title = " " .. title .. " ", title_pos = "left" })
+  local ok, win = pcall(vim.api.nvim_open_win, buf, focus, with_title)
+  if ok then return win end
+  return vim.api.nvim_open_win(buf, focus, cfg)
+end
+
+local function show_hits(title, hits, ref, current_path, truncated, word)
   local ext = (current_path or ""):match("%.([%w_]+)$")
   local function rank(h)
     if h.path == current_path then return 0 end
@@ -2102,22 +2138,115 @@ local function show_hits(title, hits, ref, current_path, truncated)
     if a.path ~= b.path then return a.path < b.path end
     return a.lnum < b.lnum
   end)
-  local lines = { title .. (truncated and ("  (first " .. #hits .. ")") or "") }
+
+  -- Geometry: one wide box, list taking ~40% (capped), preview the rest.
+  local total_w = math.min(vim.o.columns - 4, math.max(80, math.floor(vim.o.columns * 0.92)))
+  local height = math.min(vim.o.lines - 6, math.max(16, math.floor(vim.o.lines * 0.72)))
+  local list_w = math.min(64, math.floor(total_w * 0.4))
+  local prev_w = math.max(20, total_w - list_w - 2)
+  local row = math.max(1, math.floor((vim.o.lines - height) / 2) - 1)
+  local col = math.max(0, math.floor((vim.o.columns - total_w) / 2))
+
+  local lines = {}
   for _, h in ipairs(hits) do
     lines[#lines + 1] = string.format("%s:%d  %s", h.path, h.lnum, vim.trim(h.text))
   end
-  local win = open_float(lines, true, { big = true })
-  if not win then return end
-  vim.wo[win].wrap = false
-  vim.wo[win].cursorline = true
-  pcall(vim.api.nvim_win_set_cursor, win, { math.min(2, #lines), 0 })
-  local fbuf = vim.api.nvim_win_get_buf(win)
+  local lbuf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(lbuf, 0, -1, false, lines)
+  vim.bo[lbuf].modifiable = false
+  vim.bo[lbuf].buftype = "nofile"
+  local lwin = open_peek_win(lbuf, true, {
+    relative = "editor", row = row, col = col, width = list_w, height = height,
+    style = "minimal", border = "rounded",
+  }, title .. (truncated and ("  (first " .. #hits .. ")") or ""))
+  vim.wo[lwin].cursorline = true
+  vim.wo[lwin].wrap = false
+
+  local pwin = open_peek_win(vim.api.nvim_create_buf(false, true), false, {
+    relative = "editor", row = row, col = col + list_w + 2, width = prev_w, height = height,
+    style = "minimal", border = "rounded", focusable = false,
+  }, "preview")
+  vim.wo[pwin].number = true
+  vim.wo[pwin].wrap = false
+  vim.wo[pwin].cursorline = false
+
+  local function clear_marks()
+    for _, b in pairs(nav_bufs) do
+      if vim.api.nvim_buf_is_valid(b) then vim.api.nvim_buf_clear_namespace(b, peek_ns, 0, -1) end
+    end
+  end
+
+  local function highlight(buf, h)
+    clear_marks()
+    local line = vim.api.nvim_buf_get_lines(buf, h.lnum - 1, h.lnum, false)[1]
+    if not line then return end
+    pcall(vim.api.nvim_buf_set_extmark, buf, peek_ns, h.lnum - 1, 0, { line_hl_group = "AzureCliPeekLine" })
+    if not word then return end
+    local from = 1
+    while true do
+      local s, e = line:find(word, from, true)
+      if not s then break end
+      if not line:sub(s - 1, s - 1):match("[%w_]") and not line:sub(e + 1, e + 1):match("[%w_]") then
+        pcall(vim.api.nvim_buf_set_extmark, buf, peek_ns, h.lnum - 1, s - 1,
+          { end_col = e, hl_group = "AzureCliPeekWord", priority = 200 })
+      end
+      from = e + 1
+    end
+  end
+
+  local closed = false
+  local function close()
+    if closed then return end
+    closed = true
+    clear_marks()
+    if vim.api.nvim_win_is_valid(pwin) then pcall(vim.api.nvim_win_close, pwin, true) end
+    if vim.api.nvim_win_is_valid(lwin) then pcall(vim.api.nvim_win_close, lwin, true) end
+  end
+
+  local function selected()
+    if not vim.api.nvim_win_is_valid(lwin) then return nil end
+    return hits[vim.api.nvim_win_get_cursor(lwin)[1]]
+  end
+
+  local function preview()
+    local h = selected()
+    if not h or not vim.api.nvim_win_is_valid(pwin) then return end
+    local buf = ensure_revision_buf(ref, h.path)
+    if vim.api.nvim_win_get_buf(pwin) ~= buf then vim.api.nvim_win_set_buf(pwin, buf) end
+    pcall(vim.api.nvim_win_set_config, pwin, { title = " " .. h.path .. ":" .. h.lnum .. " ", title_pos = "left" })
+    when_loaded(buf, function(b)
+      if closed or selected() ~= h or not vim.api.nvim_win_is_valid(pwin)
+          or vim.api.nvim_win_get_buf(pwin) ~= b then
+        return
+      end
+      pcall(vim.api.nvim_win_set_cursor, pwin, { math.max(1, math.min(h.lnum, vim.api.nvim_buf_line_count(b))), 0 })
+      vim.api.nvim_win_call(pwin, function() vim.cmd("normal! zz") end)
+      highlight(b, h)
+    end)
+  end
+
+  local preview_timer
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    buffer = lbuf,
+    callback = function()
+      if preview_timer then vim.fn.timer_stop(preview_timer) end
+      preview_timer = vim.fn.timer_start(40, function() preview() end)
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, { buffer = lbuf, once = true, callback = close })
+  vim.api.nvim_create_autocmd("WinClosed", { pattern = tostring(lwin), once = true, callback = close })
+
+  local kopts = { buffer = lbuf, silent = true, nowait = true }
   vim.keymap.set("n", "<CR>", function()
-    local h = hits[vim.api.nvim_win_get_cursor(win)[1] - 1]
+    local h = selected()
     if not h then return end
-    vim.api.nvim_win_close(win, true)
+    close()
     open_revision(ref, h.path, h.lnum)
-  end, { buffer = fbuf, silent = true, nowait = true })
+  end, kopts)
+  vim.keymap.set("n", "q", close, kopts)
+  vim.keymap.set("n", "<Esc>", close, kopts)
+
+  preview()
 end
 
 local function nav_word()
@@ -2140,7 +2269,7 @@ nav_find_references = function()
       notify("No references to '" .. word .. "' at " .. ref .. ".")
       return
     end
-    show_hits("References to '" .. word .. "' @ " .. ref .. " (" .. #hits .. ")", hits, ref, path, truncated)
+    show_hits("References to '" .. word .. "' @ " .. ref .. " (" .. #hits .. ")", hits, ref, path, truncated, word)
   end)
 end
 
@@ -2169,10 +2298,10 @@ nav_goto_definition = function()
       open_revision(ref, candidates[1].path, candidates[1].lnum)
     elseif #candidates > 1 then
       show_hits("Definition candidates for '" .. word .. "' @ " .. ref .. " (" .. #candidates .. ")",
-        candidates, ref, path, false)
+        candidates, ref, path, false, word)
     else
       notify("No definition-looking line for '" .. word .. "'; showing all " .. #hits .. " references.")
-      show_hits("References to '" .. word .. "' @ " .. ref .. " (" .. #hits .. ")", hits, ref, path, truncated)
+      show_hits("References to '" .. word .. "' @ " .. ref .. " (" .. #hits .. ")", hits, ref, path, truncated, word)
     end
   end)
 end
