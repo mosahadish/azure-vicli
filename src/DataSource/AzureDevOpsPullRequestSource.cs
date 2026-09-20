@@ -227,7 +227,8 @@ namespace AzureCli.DataSource
         {
             Task<(string Status, int? QueuePosition, string BuildUrl, List<PolicyInfo> Policies, List<string> MissingReviewers)> buildTask =
                 GetBuildStatus(policyClient, buildClient, pr, account);
-            (int active, int total, int myActive) = await CountThreads(threadsTask, userId).ConfigureAwait(false);
+            (int active, int total, int myActive, int mentionThreads, int mentionTotal) =
+                await CountThreads(threadsTask, userId).ConfigureAwait(false);
             (string buildStatus, int? queuePosition, string buildUrl, List<PolicyInfo> policies, List<string> missingReviewers) =
                 await buildTask.ConfigureAwait(false);
 
@@ -240,6 +241,8 @@ namespace AzureCli.DataSource
                 ActiveThreadCount = active,
                 TotalThreadCount = total,
                 MyActiveThreadCount = myActive,
+                MentionThreadCount = mentionThreads,
+                MentionTotalCount = mentionTotal,
                 BuildStatus = buildStatus,
                 QueuePosition = queuePosition,
                 BuildUrl = buildUrl,
@@ -757,7 +760,9 @@ namespace AzureCli.DataSource
         /// everything else (fixed/won't fix/closed - i.e. "not active"), plus how
         /// many of the active ones the given user has participated in (used to
         /// notify on replies to "my" comments regardless of who owns the pull
-        /// request). Returns (-1, -1, -1) when the lookup fails.
+        /// request), and how many @-mention the current user (see
+        /// <see cref="CountMentions"/>). Returns (-1, -1, -1, -1, -1) when the
+        /// lookup fails.
         /// </summary>
         /// <remarks>
         /// Azure DevOps also returns "system" comment threads for PR lifecycle
@@ -768,7 +773,7 @@ namespace AzureCli.DataSource
         /// threads that have nothing left to read once their real replies are
         /// deleted.
         /// </remarks>
-        private static async Task<(int Active, int Total, int MyActive)> CountThreads(Task<List<GitPullRequestCommentThread>> threadsTask, Guid userId)
+        private static async Task<(int Active, int Total, int MyActive, int MentionThreads, int MentionTotal)> CountThreads(Task<List<GitPullRequestCommentThread>> threadsTask, Guid userId)
         {
             try
             {
@@ -778,12 +783,69 @@ namespace AzureCli.DataSource
                     .ToList();
                 int active = real.Count(t => t.Status == CommentThreadStatus.Active);
                 int myActive = real.Count(t => t.Status == CommentThreadStatus.Active && t.InvolvesUser(userId));
-                return (active, real.Count, myActive);
+                (int mentionThreads, int mentionTotal) = CountMentions(threads, userId);
+                return (active, real.Count, myActive, mentionThreads, mentionTotal);
             }
             catch (Exception)
             {
-                return (-1, -1, -1);
+                return (-1, -1, -1, -1, -1);
             }
+        }
+
+        /// <summary>
+        /// Counts @-mentions of <paramref name="userId"/> across a pull request's
+        /// comment threads, over the same thread list <see cref="CountThreads"/>
+        /// already fetched (no extra API calls). Azure DevOps stores a mention in
+        /// a comment's content as the literal token "@&lt;GUID&gt;" (the mentioned
+        /// user's id), matched here case-insensitively since ADO doesn't normalize
+        /// the casing of the GUID it renders. Only non-deleted <see cref="CommentType.Text"/>
+        /// comments count, matching <see cref="CountThreads"/>'s own filtering.
+        /// </summary>
+        /// <returns>
+        /// <c>MentionThreads</c>: the number of <see cref="CommentThreadStatus.Active"/>
+        /// threads containing at least one mention - this is what the dashboard
+        /// uses to decide whether to surface the pull request under "Mentions".
+        /// <c>MentionTotal</c>: the total number of matching comments across every
+        /// thread regardless of status - a count that only ever grows, so the
+        /// dashboard can diff it between polls to detect a new mention even after
+        /// the thread it landed in was resolved.
+        /// </returns>
+        private static (int MentionThreads, int MentionTotal) CountMentions(List<GitPullRequestCommentThread> threads, Guid userId)
+        {
+            string mentionToken = "@<" + userId.ToString() + ">";
+            int mentionThreads = 0;
+            int mentionTotal = 0;
+
+            foreach (GitPullRequestCommentThread thread in threads)
+            {
+                if (thread.Comments == null)
+                {
+                    continue;
+                }
+
+                bool threadHasMention = false;
+                foreach (Comment comment in thread.Comments)
+                {
+                    if (comment == null || comment.IsDeleted || comment.CommentType != CommentType.Text
+                        || string.IsNullOrEmpty(comment.Content))
+                    {
+                        continue;
+                    }
+
+                    if (comment.Content.Contains(mentionToken, StringComparison.OrdinalIgnoreCase))
+                    {
+                        mentionTotal++;
+                        threadHasMention = true;
+                    }
+                }
+
+                if (threadHasMention && thread.Status == CommentThreadStatus.Active)
+                {
+                    mentionThreads++;
+                }
+            }
+
+            return (mentionThreads, mentionTotal);
         }
 
         /// <summary>

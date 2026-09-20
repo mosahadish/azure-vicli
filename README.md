@@ -100,6 +100,14 @@ PRs are grouped into sections: Actionable, Waiting for author, Signed off,
 Drafts, and Created by me. Within a section the most recently updated PR is
 first. The list refreshes every minute.
 
+A "Mentions" section at the top of the list collects every PR (from any of
+the sections below) that has an active comment thread @-mentioning you; the
+PR still appears in its normal section too, so nothing is hidden, just
+surfaced twice. This only ever covers PRs already in the list - assigned to
+you or created by you - since Azure DevOps has no API to search for PRs where
+you're mentioned; a mention on a PR you're not a reviewer or author of won't
+show up here.
+
 | Key | Action |
 |---|---|
 | `j` / `k` | Move |
@@ -124,9 +132,10 @@ Each row carries badges to the left of the id:
 
 | Badge | Meaning |
 |---|---|
-| `●` | Unread comment activity since you last opened the PR |
+| `●` | Unread comment or mention activity since you last opened the PR |
 | `⇣` | Branches or content being fetched in the background right now |
 | `◆` | Fully prefetched; opens instantly |
+| `@` | An active thread mentions you; the PR also appears under Mentions |
 
 The build column to the right of the id shows `✓` succeeded, `✗` failed,
 `↻` expired, and `●` running with the queue position when known. `⚠` marks a

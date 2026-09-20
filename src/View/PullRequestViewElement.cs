@@ -77,6 +77,23 @@ namespace AzureCli.View
         public int? MyActiveThreadCount { get; set; }
 
         /// <summary>
+        /// The number of active (unresolved) comment threads containing at least
+        /// one @-mention of the current user, or null/-1 when unknown. Drives the
+        /// dashboard's "Mentions" section and "@" row badge.
+        /// </summary>
+        public int? MentionThreadCount { get; set; }
+
+        /// <summary>
+        /// The total number of comments (across every thread, any status) that
+        /// @-mention the current user, or null/-1 when unknown. Monotonically
+        /// grows as new mentions are left, which is what the dashboard diffs
+        /// between polls to detect a new mention (a thread can be resolved and
+        /// drop out of <see cref="MentionThreadCount"/> without the mention itself
+        /// going away).
+        /// </summary>
+        public int? MentionTotalCount { get; set; }
+
+        /// <summary>
         /// The aggregated build-validation policy result:
         /// "succeeded", "failed", "running", "none", or "unknown".
         /// </summary>

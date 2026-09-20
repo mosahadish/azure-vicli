@@ -18,8 +18,14 @@
 --
 -- Row badges (left of the id): \u{25CF} unread comment activity, \u{21E3} branches or
 -- content being fetched in the background right now, \u{25C6} fully prefetched
--- (opens instantly). The build column to the right of the id keeps its own
--- \u{2713} ok / \u{2717} failed / \u{21BB} expired / \u{25CF} running glyphs.
+-- (opens instantly), @ an active thread mentions me. The build column to the
+-- right of the id keeps its own \u{2713} ok / \u{2717} failed / \u{21BB} expired /
+-- \u{25CF} running glyphs.
+--
+-- A "Mentions" section at the top of the list lists every PR with an active
+-- thread mentioning me, in addition to its normal state section - ADO has no
+-- "mentioned" search, so this only ever covers PRs already in the list
+-- (assigned to me or created by me).
 
 vim.o.compatible = false
 vim.o.number = false
@@ -57,7 +63,9 @@ local WI_LIST = env.WIDASH_LIST or (DIR .. "/wi-list.sh")
 -- threads), filled here in the background and read by the reviewer on open.
 local CACHE = dofile((DIR .. "/prdash-cache.lua"):gsub("\\", "/"))
 
--- Section order and friendly titles.
+-- Section order and friendly titles. "Mentions" isn't one of these - it's a
+-- virtual section built in render() from every PR with mentionThreads > 0,
+-- rendered in addition to (not instead of) that PR's normal state section.
 local SECTIONS = {
   { key = "Actionable", title = "Actionable" },
   { key = "Waiting",    title = "Waiting for author" },
@@ -89,10 +97,12 @@ local function notify(msg, level)
 end
 
 -- Persistent "seen" snapshot per PR (nvim's per-user data dir, so it survives
--- restarts): { totalThreads, myActiveThreads } as of the last time the PR was
--- opened. Drives the "●" unread badge next to a PR's row in the list, and
--- is only advanced when the PR is actually opened (open_pr below) - not on
--- every poll - so the badge persists until you've actually gone and looked.
+-- restarts): { totalThreads, myActiveThreads, mentionTotal } as of the last
+-- time the PR was opened. Drives the "●" unread badge next to a PR's row
+-- in the list, and is only advanced when the PR is actually opened (open_pr
+-- below) - not on every poll - so the badge persists until you've actually
+-- gone and looked. mentionTotal is nil-safe throughout: a record saved before
+-- this field existed just treats it as -1 (never unread from mentions alone).
 local SEEN_FILE = vim.fn.stdpath("data") .. "/pr-dash-seen.json"
 local function load_seen()
   if vim.fn.filereadable(SEEN_FILE) ~= 1 then return { prs = {} } end
@@ -107,24 +117,40 @@ local function save_seen()
   pcall(vim.fn.writefile, { vim.json.encode(seen) }, SEEN_FILE)
 end
 
--- Records pr's current thread counts as "seen" (called when the PR is opened).
+-- Snapshot of pr's counts as of "now", in the shape stored in seen.prs.
+local function pr_snapshot(pr)
+  return {
+    totalThreads = pr.totalThreads or -1,
+    myActiveThreads = pr.myActiveThreads or -1,
+    mentionTotal = pr.mentionTotal or -1,
+  }
+end
+
+-- Records pr's current thread/mention counts as "seen" (called when the PR is opened).
 local function mark_pr_seen(pr)
-  seen.prs[tostring(pr.id)] = { totalThreads = pr.totalThreads or -1, myActiveThreads = pr.myActiveThreads or -1 }
+  seen.prs[tostring(pr.id)] = pr_snapshot(pr)
   save_seen()
 end
 
--- True when pr has comment activity beyond what was recorded the last time it
--- was opened: for a PR I authored, growth in its total comment count; for any
--- other PR, growth in myActiveThreads (threads I've participated in) so a
--- reply to one of my comments on someone else's PR still lights up. A PR with
--- no seen record yet (never opened, and not seeded below) is never unread.
+-- True when pr has comment or mention activity beyond what was recorded the
+-- last time it was opened: for a PR I authored, growth in its total comment
+-- count; for any other PR, growth in myActiveThreads (threads I've
+-- participated in) so a reply to one of my comments on someone else's PR
+-- still lights up; either way, growth in mentionTotal (someone @-mentioned me
+-- since I last opened it) also counts, since that can happen on a PR I've
+-- neither authored nor replied on. A PR with no seen record yet (never
+-- opened, and not seeded below) is never unread.
 local function pr_is_unread(pr)
   local rec = seen.prs[tostring(pr.id)]
   if not rec then return false end
+  local threads_grew
   if pr.state == "Created" then
-    return (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
+    threads_grew = (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
+  else
+    threads_grew = (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (rec.myActiveThreads or 0)
   end
-  return (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (rec.myActiveThreads or 0)
+  local mentions_grew = (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (rec.mentionTotal or 0)
+  return threads_grew or mentions_grew
 end
 
 -- Seeds a "seen" record at current counts for any PR that doesn't have one
@@ -135,7 +161,7 @@ local function seed_unseen(fresh_prs)
   local dirty = false
   for _, pr in ipairs(fresh_prs) do
     if not seen.prs[tostring(pr.id)] then
-      seen.prs[tostring(pr.id)] = { totalThreads = pr.totalThreads or -1, myActiveThreads = pr.myActiveThreads or -1 }
+      seen.prs[tostring(pr.id)] = pr_snapshot(pr)
       dirty = true
     end
   end
@@ -296,6 +322,7 @@ local function define_hl()
   hl("PrdashConflict", { fg = "#f38ba8", bold = true })
   hl("PrdashAutoComplete", { fg = "#a6e3a1", bold = true })
   hl("PrdashUnread", { fg = "#f38ba8", bold = true })
+  hl("PrdashMention", { fg = "#f5c2e7", bold = true })
   hl("PrdashSyncing", { fg = "#89b4fa" })
   hl("PrdashReady", { fg = "#6c7086" })
   hl("PrdashBorder", { fg = "#585b70" })
@@ -393,6 +420,89 @@ end
 -- Assigned once the warm/prefetch bookkeeping it reads exists (below).
 local pr_sync_state
 
+-- Appends one PR's row to `lines`/`spans`/`row_pr`. Used for both a PR's
+-- normal state section and the Mentions section below - the same record can
+-- end up on two rows, which is fine since row_pr just maps line->record and
+-- every consumer (current_pr, cursor-restore, mark_pr_seen) keys off the
+-- record/its id rather than the row.
+local function add_pr_row(lines, spans, row_pr, pr, now)
+  local parts, col = {}, 0
+  local lnum = #lines  -- 0-based index this row will occupy once appended
+  local function seg(text, group)
+    local start = col
+    parts[#parts + 1] = text
+    col = col + #text
+    if group and text:gsub("%s", "") ~= "" then
+      spans[#spans + 1] = { line = lnum, s = start, e = col, hl = group }
+    end
+  end
+
+  seg("  ")
+  seg(fit(pr_is_unread(pr) and "\u{25CF}" or "", 1), "PrdashUnread")
+  seg(" ")
+  local sync = pr_sync_state and pr_sync_state(pr)
+  seg(fit(sync == "syncing" and "\u{21E3}" or (sync == "ready" and "\u{25C6}" or ""), 1),
+    sync == "syncing" and "PrdashSyncing" or "PrdashReady")
+  seg(" ")
+  seg(fit((pr.mentionThreads or 0) > 0 and "@" or "", 1), "PrdashMention")
+  seg(" ")
+  seg(fit("#" .. tostring(pr.id), 7), "PrdashId")
+  seg(" ")
+  local bg, bgrp = build_label(pr)
+  seg(fit(bg, 3), bgrp)
+  seg(" ")
+  seg(fit(pr.mergeConflict and "\u{26A0}" or "", 1), "PrdashConflict")
+  seg(" ")
+  seg(fit(pr.autoComplete and "A" or "", 1), "PrdashAutoComplete")
+  seg(" ")
+  seg(fit(pr.title, 36))
+  seg(" ")
+  seg(fit(pr.repo or "", 14), "PrdashRepo")
+  seg(" ")
+  seg(fit(surname(pr.author), 10), "PrdashAuthor")
+  seg(" ")
+  seg(fit(pr.voteRatio or "", 6), "PrdashVote")
+  seg(" ")
+  local thr, tgrp = "", "PrdashThread"
+  if type(pr.totalThreads) == "number" and pr.totalThreads > 0 then
+    local total = pr.totalThreads
+    local active = (type(pr.activeThreads) == "number" and pr.activeThreads >= 0) and pr.activeThreads or 0
+    local closed = (type(pr.closedThreads) == "number" and pr.closedThreads >= 0)
+      and pr.closedThreads or math.max(0, total - active)
+    thr = closed .. "/" .. total
+    tgrp = (closed >= total) and "PrdashThreadDone" or "PrdashThread"
+  end
+  seg(fit(thr, 6), tgrp)
+  seg(" ")
+  seg(fit(pr.reviewerSummary or "", 20))
+  seg("  ")
+  local aged = (now - iso_epoch(pr.updatedIso)) > 14 * 86400
+  seg(pr.updatedHuman or "", aged and "PrdashAged" or "PrdashUpdated")
+
+  lines[#lines + 1] = table.concat(parts)
+  row_pr[#lines] = pr
+end
+
+-- Appends a section header ("── title (n) ──") plus one row per item, most
+-- recently updated first. Shared by the Mentions virtual section and the
+-- normal per-state sections in render().
+local function add_section(lines, spans, row_pr, title, items, now)
+  table.sort(items, function(a, b) return iso_epoch(a.updatedIso) > iso_epoch(b.updatedIso) end)
+
+  if #lines > 0 then
+    lines[#lines + 1] = ""
+    row_pr[#lines] = nil
+  end
+  local hstr = "── " .. title .. " (" .. #items .. ") ──"
+  lines[#lines + 1] = hstr
+  row_pr[#lines] = nil
+  spans[#spans + 1] = { line = #lines - 1, s = 0, e = #hstr, hl = "PrdashHeader" }
+
+  for _, pr in ipairs(items) do
+    add_pr_row(lines, spans, row_pr, pr, now)
+  end
+end
+
 local function render()
   -- Remember which PR the cursor is on (by id, not raw row number) before we
   -- rebuild everything below, since the box's vertical centring means row
@@ -420,76 +530,25 @@ local function render()
   end
 
   local now = os.time()
+
+  -- Mentions: a virtual section, not one of the SECTIONS/by_state groups -
+  -- every PR (after the text filter) with an active thread mentioning me,
+  -- most recently updated first, in addition to its normal state section
+  -- below (add_pr_row/row_pr tolerate the same record rendering twice).
+  local mention_items = {}
+  for _, pr in ipairs(prs) do
+    if (flc == "" or pr_matches(pr, flc)) and (pr.mentionThreads or 0) > 0 then
+      mention_items[#mention_items + 1] = pr
+    end
+  end
+  if #mention_items > 0 then
+    add_section(lines, spans, row_pr, "Mentions", mention_items, now)
+  end
+
   for _, sec in ipairs(SECTIONS) do
     local items = by_state[sec.key]
     if items and #items > 0 then
-      -- Most recently updated first.
-      table.sort(items, function(a, b) return iso_epoch(a.updatedIso) > iso_epoch(b.updatedIso) end)
-
-      if #lines > 0 then
-        lines[#lines + 1] = ""
-        row_pr[#lines] = nil
-      end
-      local hstr = "── " .. sec.title .. " (" .. #items .. ") ──"
-      lines[#lines + 1] = hstr
-      row_pr[#lines] = nil
-      spans[#spans + 1] = { line = #lines - 1, s = 0, e = #hstr, hl = "PrdashHeader" }
-
-      for _, pr in ipairs(items) do
-        local parts, col = {}, 0
-        local lnum = #lines  -- 0-based index this row will occupy once appended
-        local function seg(text, group)
-          local start = col
-          parts[#parts + 1] = text
-          col = col + #text
-          if group and text:gsub("%s", "") ~= "" then
-            spans[#spans + 1] = { line = lnum, s = start, e = col, hl = group }
-          end
-        end
-
-        seg("  ")
-        seg(fit(pr_is_unread(pr) and "\u{25CF}" or "", 1), "PrdashUnread")
-        seg(" ")
-        local sync = pr_sync_state and pr_sync_state(pr)
-        seg(fit(sync == "syncing" and "\u{21E3}" or (sync == "ready" and "\u{25C6}" or ""), 1),
-          sync == "syncing" and "PrdashSyncing" or "PrdashReady")
-        seg(" ")
-        seg(fit("#" .. tostring(pr.id), 7), "PrdashId")
-        seg(" ")
-        local bg, bgrp = build_label(pr)
-        seg(fit(bg, 3), bgrp)
-        seg(" ")
-        seg(fit(pr.mergeConflict and "\u{26A0}" or "", 1), "PrdashConflict")
-        seg(" ")
-        seg(fit(pr.autoComplete and "A" or "", 1), "PrdashAutoComplete")
-        seg(" ")
-        seg(fit(pr.title, 36))
-        seg(" ")
-        seg(fit(pr.repo or "", 14), "PrdashRepo")
-        seg(" ")
-        seg(fit(surname(pr.author), 10), "PrdashAuthor")
-        seg(" ")
-        seg(fit(pr.voteRatio or "", 6), "PrdashVote")
-        seg(" ")
-        local thr, tgrp = "", "PrdashThread"
-        if type(pr.totalThreads) == "number" and pr.totalThreads > 0 then
-          local total = pr.totalThreads
-          local active = (type(pr.activeThreads) == "number" and pr.activeThreads >= 0) and pr.activeThreads or 0
-          local closed = (type(pr.closedThreads) == "number" and pr.closedThreads >= 0)
-            and pr.closedThreads or math.max(0, total - active)
-          thr = closed .. "/" .. total
-          tgrp = (closed >= total) and "PrdashThreadDone" or "PrdashThread"
-        end
-        seg(fit(thr, 6), tgrp)
-        seg(" ")
-        seg(fit(pr.reviewerSummary or "", 20))
-        seg("  ")
-        local aged = (now - iso_epoch(pr.updatedIso)) > 14 * 86400
-        seg(pr.updatedHuman or "", aged and "PrdashAged" or "PrdashUpdated")
-
-        lines[#lines + 1] = table.concat(parts)
-        row_pr[#lines] = pr
-      end
+      add_section(lines, spans, row_pr, sec.title, items, now)
     end
   end
 
@@ -526,7 +585,10 @@ local function render()
   -- whenever the window is resized or the row count changes (blank-padding
   -- rows above/below shift everything). Re-find the same PR (by id) the
   -- cursor was on before this render and land there again; fall back to the
-  -- first PR row, or just inside the box if the list is empty.
+  -- first PR row, or just inside the box if the list is empty. A PR with an
+  -- active mention can now occupy two rows (its Mentions row and its normal
+  -- state row); either match is a fine place to land, so the first one found
+  -- wins.
   if win and vim.api.nvim_win_is_valid(win) then
     local target
     if prev_pr_id then
@@ -684,6 +746,12 @@ local function show_help()
     "  \u{25CF}           unread comment activity since you last opened the PR",
     "  \u{21E3}           branches or content being fetched in the background right now",
     "  \u{25C6}           fully prefetched, opens instantly",
+    "  @           an active thread mentions me; the PR also appears in Mentions",
+    "",
+    "Sections:",
+    "  Mentions    every PR (from any section below) with an active thread",
+    "              mentioning me. Only covers PRs already in the list (assigned",
+    "              to me or created by me) - ADO has no \"mentioned\" search.",
     "",
     "Build column (right of the id):",
     "  \u{2713}           succeeded     \u{2717}  failed",
@@ -954,17 +1022,19 @@ local function warm_all(list)
 end
 
 -- Diffs a freshly fetched PR list against the previous one (by id), looking
--- for growth in thread counts that means "someone commented since last time":
--- for a PR I authored, any growth in its total comment count; for any other
--- PR, growth in myActiveThreads (active threads I've participated in) so a
--- reply to one of my own comments on someone else's PR still notifies. Only
--- called when a previous snapshot exists, so the very first load of the
--- session never spams a notification for every pre-existing comment.
+-- for growth in thread/mention counts that means "something happened since
+-- last time": for a PR I authored, any growth in its total comment count; for
+-- any other PR, growth in myActiveThreads (active threads I've participated
+-- in) so a reply to one of my own comments on someone else's PR still
+-- notifies; on any PR, growth in mentionTotal notifies about a new @-mention
+-- regardless of whether I've participated. Only called when a previous
+-- snapshot exists, so the very first load of the session never spams a
+-- notification for every pre-existing comment or mention.
 local function notify_new_pr_comments(prev_prs, fresh_prs)
   local prev_by_id = {}
   for _, p in ipairs(prev_prs) do prev_by_id[p.id] = p end
 
-  local mine_events, thread_events = {}, {}
+  local mine_events, thread_events, mention_events = {}, {}, {}
   for _, pr in ipairs(fresh_prs) do
     local old = prev_by_id[pr.id]
     if old then
@@ -978,6 +1048,9 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
           thread_events[#thread_events + 1] = pr
         end
       end
+      if (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (old.mentionTotal or -1) then
+        mention_events[#mention_events + 1] = pr
+      end
     end
   end
 
@@ -986,6 +1059,9 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   end
   for _, pr in ipairs(thread_events) do
     notify("New reply on your thread in PR #" .. pr.id .. ": " .. (pr.title or ""))
+  end
+  for _, pr in ipairs(mention_events) do
+    notify("New mention in PR #" .. pr.id .. ": " .. (pr.title or ""))
   end
 end
 
