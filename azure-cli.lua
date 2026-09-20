@@ -759,84 +759,86 @@ local function prefetch_content(pr, cb)
 end
 
 -- Warm every open PR after a list load, so even the first open after
--- start-up is instant, not just PRs the cursor has rested on. Per clone:
--- one repository-wide `git fetch` (review-pr.sh's "all" prefetch mode),
--- skipped when nothing in that clone has activity we haven't fetched yet,
--- then the content pipeline for each of its PRs one at a time - Actionable
--- first, then my own, then Waiting; signed-off and draft PRs are left to
--- the hover prefetch. Runs one clone at a time at the lowest priority so it
--- never competes with an interactive open for git; if a list load lands
--- while a pass is still going, the next load picks up where it left off.
-local WARM_RANK = { Actionable = 1, Created = 2, Waiting = 3 }
+-- start-up is instant, not just PRs the cursor has rested on. PRs are
+-- processed one at a time in priority order across all clones - Actionable,
+-- then created by me, then Drafts, then Signed off, then Waiting - so the
+-- PRs most likely to be opened next are always ready first, regardless of
+-- which repo they live in. A clone's repository-wide `git fetch`
+-- (review-pr.sh's "all" prefetch mode) runs lazily the first time one of
+-- its PRs comes up, and is skipped when nothing in that clone has activity
+-- we haven't fetched yet. Runs at the lowest priority so it never competes
+-- with an interactive open for git; if a list load lands while a pass is
+-- still going, the next load picks up where it left off.
+local WARM_RANK = { Actionable = 1, Created = 2, Drafts = 3, SignedOff = 4, Waiting = 5 }
 local warm_all_running = false
 local function warm_all(list)
   if warm_all_running then return end
-  local by_clone, clones = {}, {}
+  local queue = {}
   for _, pr in ipairs(list) do
-    if WARM_RANK[pr.state] and pr.source and pr.source ~= "" and pr.target and pr.target ~= "" then
-      local path = clone_for(pr)
-      if is_cloned(path) then
-        if not by_clone[path] then
-          by_clone[path] = {}
-          clones[#clones + 1] = path
-        end
-        table.insert(by_clone[path], pr)
-      end
+    if WARM_RANK[pr.state] and pr.source and pr.source ~= "" and pr.target and pr.target ~= ""
+        and is_cloned(clone_for(pr)) then
+      queue[#queue + 1] = pr
     end
   end
-  if #clones == 0 then return end
+  if #queue == 0 then return end
+  table.sort(queue, function(a, b)
+    if WARM_RANK[a.state] ~= WARM_RANK[b.state] then return WARM_RANK[a.state] < WARM_RANK[b.state] end
+    return iso_epoch(a.updatedIso) > iso_epoch(b.updatedIso)  -- most recent first within a section
+  end)
   warm_all_running = true
 
-  local ci = 0
-  local function next_clone()
-    ci = ci + 1
-    local path = clones[ci]
-    if not path then
-      warm_all_running = false
-      return
+  -- Per clone within this pass: "ok" once its fetch succeeded (or wasn't
+  -- needed), "failed" to leave its PRs cold rather than cache diffs against
+  -- refs that may be missing or behind.
+  local clone_state = {}
+  local function clone_needs_fetch(path)
+    for _, pr in ipairs(queue) do
+      if clone_for(pr) == path and warmed[tostring(pr.id)] ~= pr.updatedIso then return true end
     end
-    local prs = by_clone[path]
-    table.sort(prs, function(a, b)
-      if WARM_RANK[a.state] ~= WARM_RANK[b.state] then return WARM_RANK[a.state] < WARM_RANK[b.state] end
-      return tostring(a.id) < tostring(b.id)
-    end)
-    local function prefetch_each(i)
-      local pr = prs[i]
-      if not pr then next_clone() return end
-      if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
-        prefetch_each(i + 1)
-        return
-      end
-      prefetch_content(pr, function() prefetch_each(i + 1) end)
-    end
-
-    local stale = false
-    for _, pr in ipairs(prs) do
-      if warmed[tostring(pr.id)] ~= pr.updatedIso then stale = true break end
-    end
-    if not stale then
-      prefetch_each(1)
+    return false
+  end
+  local function ensure_clone_fetched(pr, path, cb)
+    if clone_state[path] then cb(clone_state[path] == "ok") return end
+    if not clone_needs_fetch(path) then
+      clone_state[path] = "ok"
+      cb(true)
       return
     end
     syncing_clone[path] = true
     schedule_render()
     vim.fn.jobstart({ BASH, SCRIPT }, {
-      env = vim.tbl_extend("force", pr_env(prs[1]), { PRDASH_PREFETCH = "all", PRDASH_REPO_PATH = path }),
+      env = vim.tbl_extend("force", pr_env(pr), { PRDASH_PREFETCH = "all", PRDASH_REPO_PATH = path }),
       on_exit = function(_, code)
         syncing_clone[path] = nil
         schedule_render()
-        if code ~= 0 then
-          -- Fetch failed: leave this clone's PRs cold rather than caching
-          -- diffs against refs that may be missing or behind.
-          next_clone()
-          return
+        clone_state[path] = code == 0 and "ok" or "failed"
+        if code == 0 then
+          for _, q in ipairs(queue) do
+            if clone_for(q) == path then warmed[tostring(q.id)] = q.updatedIso end
+          end
         end
-        for _, pr in ipairs(prs) do warmed[tostring(pr.id)] = pr.updatedIso end
-        prefetch_each(1)
+        cb(code == 0)
       end,
     })
   end
-  next_clone()
+
+  local function step(i)
+    local pr = queue[i]
+    if not pr then
+      warm_all_running = false
+      return
+    end
+    if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
+      step(i + 1)
+      return
+    end
+    local path = clone_for(pr)
+    ensure_clone_fetched(pr, path, function(ok)
+      if not ok then step(i + 1) return end
+      prefetch_content(pr, function() step(i + 1) end)
+    end)
+  end
+  step(1)
 end
 
 -- Diffs a freshly fetched PR list against the previous one (by id), looking
