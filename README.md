@@ -226,11 +226,15 @@ branch (the target branch when the cursor is on a deleted line), and
 | `gd` | Go to the definition of the identifier under the cursor |
 | `gr` | Find references |
 | `gf` | Open the current file at the PR's revision, on the same line |
+| `g/` | Search text across the PR's changed files |
 
 `gr` and `gd` open a peek view: hits on the left, and on the right the file
 at that revision centred on the selected hit with the line and every
 occurrence highlighted. Moving through the list re-previews. `<CR>` opens the
-hit, `q` closes the peek.
+hit, `q` closes the peek. `g/` uses the same peek view for plain text you
+type, searched only across the PR's changed files at the source branch,
+case-insensitive unless the text has an uppercase letter and prefilled with
+your last search.
 
 Opened files and previews show the PR's changes: added lines in green, and
 the lines the PR removed in red as virtual lines where they used to be. In a

@@ -43,6 +43,10 @@
 --                there to follow further, <BS> walks back one jump.
 --   gf        :  open the current file at the PR's revision (read-only, on
 --                the same line) to read around the change
+--   g/        :  search text across the PR's changed files at the source
+--                branch (git grep, case-insensitive unless the text has an
+--                uppercase letter); hits show in the same peek view as
+--                gd/gr, prefilled with the last search this session.
 --   ?         :  show the keys for whichever buffer you're in (file list,
 --                diff pane, Overview, or a revision buffer)
 
@@ -283,7 +287,7 @@ local function filtered(list)
 end
 
 local list_win, diff_win
-local nav_goto_definition, nav_find_references, nav_open_file  -- code navigation (gd/gr/gf); assigned once the nav block exists.
+local nav_goto_definition, nav_find_references, nav_open_file, nav_search_files  -- code navigation (gd/gr/gf/g-slash); assigned once the nav block exists.
 local fit_list_width   -- defined once the list window exists; re-fits its width.
 local refresh_threads  -- re-fetches PR threads and re-decorates; assigned below.
 local redraw_after_write  -- redraws every thread surface after an optimistic write; assigned below.
@@ -1799,7 +1803,7 @@ end
 local function set_overview_winbar()
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
   vim.wo[diff_win].winbar = "Overview: PR #" .. ID .. "  " .. SOURCE .. " -> " .. TARGET
-    .. "   (c: new PR comment  R: reply  s: status  gv: vote  gm: complete  gA: active-only  gF: hide text  gw: whitespace  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
+    .. "   (c: new PR comment  R: reply  s: status  g/: search  gv: vote  gm: complete  gA: active-only  gF: hide text  gw: whitespace  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
 end
 
 -- Overview keys, shown by `?` there.
@@ -1812,6 +1816,7 @@ local function show_overview_help()
     "  R          reply to the thread under the cursor",
     "  s          set the thread's status",
     "  ]C / [C    next / previous thread",
+    "  g/         search text across the PR's changed files",
     "  gv / gm    vote / complete",
     "  gA         toggle active (unresolved) comments only",
     "  gF         manage text filters that hide matching threads",
@@ -1833,6 +1838,7 @@ local function setup_overview_keymaps(buf)
   vim.keymap.set("n", "s", set_status_overview_here, opts)
   vim.keymap.set("n", "]C", function() jump_comment(1) end, opts)
   vim.keymap.set("n", "[C", function() jump_comment(-1) end, opts)
+  vim.keymap.set("n", "g/", function() nav_search_files() end, opts)
   vim.keymap.set("n", "gv", cast_vote, opts)
   vim.keymap.set("n", "gm", complete_pr, opts)
   vim.keymap.set("n", "gA", toggle_active_filter, opts)
@@ -1887,6 +1893,7 @@ local function show_diff_help()
     "  s          set the thread's status",
     "  ]C / [C    next / previous thread",
     "  gd / gr / gf   code navigation, see below",
+    "  g/         search text across the PR's changed files",
     "  gv / gm    vote / complete",
     "  gA         toggle active (unresolved) comments only",
     "  gF         manage text filters that hide matching threads",
@@ -1923,6 +1930,7 @@ local function setup_diff_keymaps(buf)
   vim.keymap.set("n", "gd", function() nav_goto_definition() end, opts)
   vim.keymap.set("n", "gr", function() nav_find_references() end, opts)
   vim.keymap.set("n", "gf", function() nav_open_file() end, opts)
+  vim.keymap.set("n", "g/", function() nav_search_files() end, opts)
   vim.keymap.set("n", "<", function() resize_list(-5) end, opts)
   vim.keymap.set("n", ">", function() resize_list(5) end, opts)
   vim.keymap.set("n", "<BS>", function()
@@ -1942,7 +1950,7 @@ local function set_diff_winbar(path)
     .. (active_only and "  [active-only]" or "")
     .. (ignore_ws and "  [ignore-ws]" or "")
     .. ignore_texts_tag()
-    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  gv: vote  gm: complete  gA: active-only  gF: hide text  gw: whitespace  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
+    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  g/: search  gv: vote  gm: complete  gA: active-only  gF: hide text  gw: whitespace  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
 end
 
 -- Show a file's diff in the right window. focus=true moves the cursor into
@@ -2014,7 +2022,7 @@ local function set_nav_winbar(buf)
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
   local meta = nav_meta[buf]
   vim.wo[diff_win].winbar = "[" .. meta.ref .. "] " .. meta.path
-    .. "   (gd: definition  gr: references  <BS>: back  q: back to diff  ?: help)"
+    .. "   (gd: definition  gr: references  g/: search  <BS>: back  q: back to diff  ?: help)"
 end
 
 -- Winbar + file-list highlight for whatever buffer the diff window shows now.
@@ -2240,12 +2248,39 @@ local function open_revision(ref, path, lnum)
   end)
 end
 
--- `git grep` for the whole word `word` at `ref`: cb(hits, truncated) with
--- hits = { {path, lnum, text}, ... }. Fixed-string so identifiers with
--- regex characters are safe; -I skips binaries.
-local function git_grep(word, ref, cb)
+-- `git grep` for `text` at `ref`: cb(hits, truncated) with
+-- hits = { {path, lnum, text}, ... }. Fixed-string throughout (-F) so
+-- identifiers/search text with regex characters are safe; -I skips
+-- binaries. `opts` (all optional):
+--   whole_word  false for a plain substring search (the g/ command);
+--               defaults to true (-w), matching whole identifiers only.
+--   extra       extra flags spliced in before `-e`, e.g. {"-i"} for a
+--               case-insensitive search.
+--   pathspecs   file list appended after `--`, restricting the search to
+--               those files; when omitted greps the whole tree at `ref`.
+local function git_grep(text, ref, cb, opts)
+  opts = opts or {}
+  -- Built inline (rather than through git_args, which only takes varargs)
+  -- since the flag/pathspec count varies per caller.
+  local argv = { "git" }
+  if REPO_PATH ~= "" then
+    argv[#argv + 1] = "-C"
+    argv[#argv + 1] = REPO_PATH
+  end
+  argv[#argv + 1] = "grep"
+  argv[#argv + 1] = "-n"
+  argv[#argv + 1] = "-I"
+  argv[#argv + 1] = "-F"
+  argv[#argv + 1] = "--no-color"
+  if opts.whole_word ~= false then argv[#argv + 1] = "-w" end
+  for _, flag in ipairs(opts.extra or {}) do argv[#argv + 1] = flag end
+  argv[#argv + 1] = "-e"
+  argv[#argv + 1] = text
+  argv[#argv + 1] = ref
+  argv[#argv + 1] = "--"
+  for _, p in ipairs(opts.pathspecs or {}) do argv[#argv + 1] = p end
   local out = {}
-  vim.fn.jobstart(git_args("grep", "-n", "-w", "-I", "-F", "--no-color", "-e", word, ref, "--"), {
+  vim.fn.jobstart(argv, {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function()
@@ -2254,10 +2289,10 @@ local function git_grep(word, ref, cb)
         local prefix = ref .. ":"
         for _, l in ipairs(out) do
           if l:sub(1, #prefix) == prefix then
-            local path, lnum, text = l:sub(#prefix + 1):match("^(.-):(%d+):(.*)$")
+            local path, lnum, line_text = l:sub(#prefix + 1):match("^(.-):(%d+):(.*)$")
             if path then
               if #hits >= NAV_MAX_HITS then truncated = true break end
-              hits[#hits + 1] = { path = path, lnum = tonumber(lnum), text = text }
+              hits[#hits + 1] = { path = path, lnum = tonumber(lnum), text = line_text }
             end
           end
         end
@@ -2318,10 +2353,11 @@ end
 
 -- Peek picker, like an IDE's "peek references": the hits on the left, and
 -- on the right the file at that revision centred on the hit under the
--- cursor, with the line and every whole-word occurrence highlighted. Moving
--- through the list re-previews (debounced); <CR> opens the hit in the diff
--- window, q/<Esc> (or leaving the list) closes both panes. Hits are ordered
--- same file first, then same extension, then by path.
+-- cursor, with the line and every occurrence highlighted - whole-word for
+-- gd/gr, any substring (case-insensitively when smart case says so) for the
+-- g/ search. Moving through the list re-previews (debounced); <CR> opens the
+-- hit in the diff window, q/<Esc> (or leaving the list) closes both panes.
+-- Hits are ordered same file first, then same extension, then by path.
 pcall(vim.api.nvim_set_hl, 0, "AzureCliPeekLine", { bg = "#45475a" })
 pcall(vim.api.nvim_set_hl, 0, "AzureCliPeekWord", { bg = "#f9e2af", fg = "#1e1e2e", bold = true })
 local peek_ns = vim.api.nvim_create_namespace("prdash_peek")
@@ -2334,7 +2370,7 @@ local function open_peek_win(buf, focus, cfg, title)
   return vim.api.nvim_open_win(buf, focus, cfg)
 end
 
-local function show_hits(title, hits, ref, current_path, truncated, word)
+local function show_hits(title, hits, ref, current_path, truncated, word, search_opts)
   local ext = (current_path or ""):match("%.([%w_]+)$")
   local function rank(h)
     if h.path == current_path then return 0 end
@@ -2391,6 +2427,21 @@ local function show_hits(title, hits, ref, current_path, truncated, word)
     if not line then return end
     pcall(vim.api.nvim_buf_set_extmark, buf, peek_ns, h.lnum - 1, 0, { line_hl_group = "AzureCliPeekLine", priority = 300 })
     if not word then return end
+    if search_opts and search_opts.plain then
+      -- g/: highlight every substring occurrence (not just whole words),
+      -- case-insensitively when the search itself was (smart case).
+      local hay = search_opts.case_insensitive and line:lower() or line
+      local needle = search_opts.case_insensitive and word:lower() or word
+      local from = 1
+      while true do
+        local s, e = hay:find(needle, from, true)
+        if not s then break end
+        pcall(vim.api.nvim_buf_set_extmark, buf, peek_ns, h.lnum - 1, s - 1,
+          { end_col = e, hl_group = "AzureCliPeekWord", priority = 200 })
+        from = e + 1
+      end
+      return
+    end
     local from = 1
     while true do
       local s, e = line:find(word, from, true)
@@ -2533,6 +2584,7 @@ local function show_nav_help()
     "",
     "  j / k      move",
     "  gd / gr    definition / references from here",
+    "  g/         search text across the PR's changed files",
     "  <BS>       walk back one jump",
     "  q          back to the diff",
     "  gO         open the config file",
@@ -2547,6 +2599,7 @@ setup_nav_keymaps = function(buf)
   local opts = { buffer = buf, silent = true, nowait = true }
   vim.keymap.set("n", "gd", function() nav_goto_definition() end, opts)
   vim.keymap.set("n", "gr", function() nav_find_references() end, opts)
+  vim.keymap.set("n", "g/", function() nav_search_files() end, opts)
   vim.keymap.set("n", "<BS>", nav_back, opts)
   vim.keymap.set("n", "q", nav_back_to_diff, opts)
   vim.keymap.set("n", "gO", open_config_file, opts)
@@ -2572,6 +2625,34 @@ local current_file_ns = vim.api.nvim_create_namespace("prdash_current_file")
 -- files_loaded tells the placeholder row apart from a genuinely empty PR.
 local files = {}
 local files_loaded = false
+
+-- g/: search plain text across the PR's changed files at the source branch
+-- (unlike gd/gr, which search the whole repo for a single identifier). The
+-- last search is kept in _G, like the ignore-whitespace toggle, rather than
+-- a local, so it prefills the prompt across PRs opened in the same nvim
+-- session without adding another top-level local (this file's already near
+-- LuaJIT's 200-local-per-function ceiling for its main chunk).
+nav_search_files = function()
+  if not files_loaded or #files == 0 then
+    notify("No changed files to search yet.", vim.log.levels.WARN)
+    return
+  end
+  local text = vim.fn.input("Search PR files: ", _G.PRDASH_LAST_SEARCH or "")
+  if text == "" then return end
+  _G.PRDASH_LAST_SEARCH = text
+  -- Smart case: an uppercase letter in the query makes the search
+  -- case-sensitive; otherwise it's case-insensitive.
+  local case_insensitive = not text:find("%u")
+  notify("Searching \"" .. text .. "\" in " .. #files .. " changed files\u{2026}")
+  git_grep(text, NAV_REF.R, function(hits, truncated)
+    if #hits == 0 then
+      notify("No hits for \"" .. text .. "\" in the changed files.")
+      return
+    end
+    show_hits('Search "' .. text .. '" in ' .. #files .. ' changed files (' .. #hits .. ")",
+      hits, NAV_REF.R, nil, truncated, text, { plain = true, case_insensitive = case_insensitive })
+  end, { whole_word = false, pathspecs = files, extra = case_insensitive and { "-i" } or nil })
+end
 
 -- Warm content_cache for every file still missing, with a single git run
 -- over the whole range (see prdash-cache.lua), so switching between files
@@ -2732,7 +2813,7 @@ local function set_list_winbar_impl()
       .. (active_only and "  [active-only]" or "")
       .. (ignore_ws and "  [ignore-ws]" or "")
       .. ignore_texts_tag()
-      .. "   (<CR>: open  cf: file comment  gC: new PR comment  gA: active-only  gF: hide text  gw: whitespace  gO: config  gv: vote  gm: complete  ]C/[C: file w/comments  </>: resize  <BS>: back to PR list  q: quit  ?: help)"
+      .. "   (<CR>: open  cf: file comment  gC: new PR comment  g/: search  gA: active-only  gF: hide text  gw: whitespace  gO: config  gv: vote  gm: complete  ]C/[C: file w/comments  </>: resize  <BS>: back to PR list  q: quit  ?: help)"
   end)
 end
 set_list_winbar = set_list_winbar_impl
@@ -3003,6 +3084,7 @@ local function show_file_list_help()
     "  <CR>       open and focus the file",
     "  cf         comment on the whole file",
     "  gC         new PR-level comment",
+    "  g/         search text across the PR's changed files",
     "  ]C / [C    next / previous file with comments",
     "  gA         toggle active (unresolved) comments only",
     "  gF         manage text filters that hide matching threads",
@@ -3034,6 +3116,7 @@ end, lopts)
 vim.keymap.set("n", "<BS>", leave, lopts)
 vim.keymap.set("n", "q", leave, lopts)
 vim.keymap.set("n", "gC", comment_on_pr, lopts)
+vim.keymap.set("n", "g/", function() nav_search_files() end, lopts)
 vim.keymap.set("n", "gA", toggle_active_filter, lopts)
 vim.keymap.set("n", "gF", manage_ignore_texts, lopts)
 vim.keymap.set("n", "gw", toggle_ignore_ws, lopts)
