@@ -61,6 +61,25 @@ local bad = { id = 7, updatedIso = "x", source = "nope", target = "tgt", repo = 
 local fin = false
 M.prefetch(bad, function() fin = true end); drain()
 assert(fin and not M.files(M.key(7, "x")), "bad range completes without caching")
+-- ignore_ws = true builds the ":iws" bucket (M.diffs(key, true)) instead of
+-- the plain one, from a `git diff --ignore-all-space` run. ws.txt (see
+-- build_scratch_repo: tgt has "same content\n", src only adds trailing
+-- whitespace) has a real, non-empty diff under the plain variant but none
+-- under ignore-all-space, so it should collapse to parse_diff's "no textual
+-- diff" placeholder there while the plain bucket still shows the change.
+local ws_done = false
+M.prefetch({ id = 42, updatedIso = "t1", source = "src", target = "tgt", repo = repo, ignore_ws = true },
+  function() ws_done = true end)
+drain()
+assert(ws_done, "ignore_ws prefetch completed")
+local iws_bucket = M.diffs(key, true)
+assert(iws_bucket["ws.txt"], "iws bucket filled for ws.txt")
+assert(iws_bucket["ws.txt"].lines[1] == "(no textual diff for this file)",
+  "whitespace-only file collapses to the placeholder under ignore_ws, got: "
+    .. tostring(iws_bucket["ws.txt"] and iws_bucket["ws.txt"].lines[1]))
+local plain_bucket = M.diffs(key, false)
+assert(plain_bucket["ws.txt"] and plain_bucket["ws.txt"].lines[1] ~= "(no textual diff for this file)",
+  "plain bucket still shows ws.txt's real (whitespace) diff")
 -- Eviction keeps at most MAX_PRS keys.
 for i = 1, M.MAX_PRS + 5 do M.diffs(M.key(1000 + i, "v")) end
 assert(#_G.PR_CACHE_ORDER == M.MAX_PRS and not _G.PR_DIFF_CACHE[key], "evicted oldest")

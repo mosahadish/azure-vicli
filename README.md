@@ -192,6 +192,11 @@ Diff pane:
 
 Press `?` in the diff pane or the Overview page for a popup with its keys.
 
+Where a run of removed lines is immediately followed by a run of added lines,
+the part of each line pair that actually changed is highlighted more
+strongly than the rest, so a one-word edit on a long line stands out instead
+of the whole line reading as uniformly changed.
+
 Comments, replies and status changes appear the instant you submit them,
 tagged "(sending…)" until the server confirms. If the call fails the entry is
 removed and the prompt reopens with your text, so nothing is lost. Threads
@@ -374,14 +379,15 @@ syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
 need dotnet): a `luajit -bl` syntax check and a global-name scan (catches a
 `local` read before its declaration - easy to do by accident in these long,
 forward-referencing files) over every Lua UI file, `bash -n` over every
-shell script, and four Lua unit tests under `tests/`:
+shell script, and five Lua unit tests under `tests/`:
 
 | Test | Covers |
 |---|---|
 | `test-split.lua` | `prdash-cache.lua`'s `split_diff`/`parse_diff` against per-file `git diff` output, over a real multi-file range of this repo's own history |
-| `test-prefetch.lua` | The prefetch pipeline end to end (caching, coalescing concurrent calls, refetch on thread-count change, the failure path, eviction), with a shimmed `vim.fn.jobstart` against a scratch git repo and a stub `review-pr.sh --threads` |
+| `test-prefetch.lua` | The prefetch pipeline end to end (caching, coalescing concurrent calls, refetch on thread-count change, the failure path, eviction, the ignore_ws `":iws"` bucket and its whitespace-only-file placeholder), with a shimmed `vim.fn.jobstart` against a scratch git repo and a stub `review-pr.sh --threads` |
 | `test-nav.lua` | `pr-review.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
 | `test-decorate.lua` | The revision-buffer decoration line walk (extracted verbatim by pattern) against a real diff, both sides |
+| `test-worddiff.lua` | `prdash-cache.lua`'s `word_diff` pairing and token-diff (single-token change, unequal block sizes, a whole-line rewrite, a whitespace-only change, the byte-size cap) |
 
 The prefetch/split/decorate tests run against a small scratch git repo the
 runner builds in a temp dir (two branches, `tgt` and `src`, exposed as

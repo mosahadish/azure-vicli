@@ -115,6 +115,105 @@ function M.parse_diff(raw)
   return lines, map
 end
 
+-- Tokenizes a line into words and non-word runs: [%w_]+, whitespace runs,
+-- and single punctuation characters. Concatenating the tokens reproduces
+-- the line exactly, so byte offsets can be recovered by summing token
+-- lengths - that's what word_pair_marks below does.
+local function tokenize(s)
+  local toks = {}
+  local i, n = 1, #s
+  while i <= n do
+    local ws = s:match("^%s+", i)
+    if ws then
+      toks[#toks + 1] = ws
+      i = i + #ws
+    else
+      local w = s:match("^[%w_]+", i)
+      if w then
+        toks[#toks + 1] = w
+        i = i + #w
+      else
+        toks[#toks + 1] = s:sub(i, i)
+        i = i + 1
+      end
+    end
+  end
+  return toks
+end
+
+-- Compares a deleted/added line pair token-by-token: the longest common
+-- prefix and suffix (in token units, so a partial word never gets split)
+-- bracket the middle that actually changed. Returns the {s, e} byte range
+-- of that middle for each side (0-based, exclusive end, ready for an
+-- extmark's col/end_col), or nil for a side with nothing left to mark.
+-- When neither a prefix nor a suffix is shared the whole line differs, so
+-- both are nil - the line-level highlight already says it all.
+local function word_pair_marks(a, b)
+  local ta, tb = tokenize(a), tokenize(b)
+  local common = math.min(#ta, #tb)
+  local p = 0
+  while p < common and ta[p + 1] == tb[p + 1] do p = p + 1 end
+  local s = 0
+  while s < (common - p) and ta[#ta - s] == tb[#tb - s] do s = s + 1 end
+  if p == 0 and s == 0 then return nil, nil end
+  local function range(toks)
+    local total, sbytes, ebytes = 0, 0, 0
+    for i, t in ipairs(toks) do
+      total = total + #t
+      if i <= p then sbytes = sbytes + #t end
+      if i > #toks - s then ebytes = ebytes + #t end
+    end
+    return sbytes, total - ebytes
+  end
+  local as_, ae = range(ta)
+  local bs_, be = range(tb)
+  local am = as_ < ae and { s = as_, e = ae } or nil
+  local bm = bs_ < be and { s = bs_, e = be } or nil
+  return am, bm
+end
+
+-- Word-level highlights for "modified" blocks: a run of deleted lines
+-- immediately followed by a run of added lines. Pairs the i-th deleted line
+-- with the i-th added line of such a block (an unequal count leaves the
+-- longer run's extra lines with only the plain line-level highlight - see
+-- decorate_diff/decorate_revision in pr-review.lua) and, per pair, finds
+-- the byte range that actually changed via word_pair_marks. Skips a pair if
+-- either line is over 1000 bytes (tokenizing and comparing long generated
+-- lines line-by-line isn't worth the cost, and the line highlight is enough
+-- there anyway). Pure and side-effect free so it's testable without nvim.
+--
+-- Returns a list of { line = <1-based index into lines/map>, s = <0-based
+-- byte column>, e = <exclusive byte column>, kind = "add"|"del" }.
+function M.word_diff(lines, map)
+  local marks = {}
+  local i, n = 1, #map
+  while i <= n do
+    if map[i].kind ~= "del" then
+      i = i + 1
+    else
+      local del_start = i
+      while i <= n and map[i].kind == "del" do i = i + 1 end
+      local del_end = i - 1
+      if i <= n and map[i].kind == "add" then
+        local add_start = i
+        while i <= n and map[i].kind == "add" do i = i + 1 end
+        local add_end = i - 1
+        local pair_n = math.min(del_end - del_start + 1, add_end - add_start + 1)
+        for k = 0, pair_n - 1 do
+          local dl, al = del_start + k, add_start + k
+          local dtext, atext = lines[dl], lines[al]
+          if #dtext <= 1000 and #atext <= 1000 then
+            local dm, am = word_pair_marks(dtext, atext)
+            if dm then marks[#marks + 1] = { line = dl, s = dm.s, e = dm.e, kind = "del" } end
+            if am then marks[#marks + 1] = { line = al, s = am.s, e = am.e, kind = "add" } end
+          end
+        end
+      end
+    end
+  end
+  return marks
+end
+
 -- Splits a multi-file `git diff` into { [path] = raw lines }, one entry per
 -- "diff --git" section. The path comes from the "+++ b/<path>" line (or
 -- "--- a/<path>" for a deletion), which is exactly what --name-only prints
