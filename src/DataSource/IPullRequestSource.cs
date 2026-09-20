@@ -43,20 +43,9 @@ namespace AzureCli.DataSource
         event EventHandler<StatisticsUpdateEventArgs> StatisticsUpdate;
 
         /// <summary>
-        /// Retrieves pull requests from the configured data source matching the given filter.
-        /// </summary>
-        /// <returns>A stream of <see cref="GitPullRequest"/></returns>
-        IAsyncEnumerable<PullRequestViewElement> FetchAssignedPullRequests(PrState state);
-
-        /// <summary>
-        /// Retrieves all active pull requests this user has created.
-        /// </summary>
-        /// <returns>A stream of <see cref="GitPullRequest"/></returns>
-        IAsyncEnumerable<PullRequestViewElement> FetchCreatedPullRequests();
-
-        /// <summary>
-        /// Retrieves all assigned pull requests in a single pass, each tagged
-        /// with its computed <see cref="PrState"/> so the view can group them.
+        /// Retrieves all assigned pull requests, each tagged with its computed
+        /// <see cref="PrState"/> so the view can group them, followed by the
+        /// pull requests this user created (tagged <see cref="PrState.Created"/>).
         /// </summary>
         /// <returns>A stream of <see cref="PullRequestViewElement"/></returns>
         IAsyncEnumerable<PullRequestViewElement> FetchGroupedPullRequests();

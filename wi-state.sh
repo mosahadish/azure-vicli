@@ -33,29 +33,28 @@ set -euo pipefail
 COLLECTION="${WIDASH_COLLECTION:-https://tfs.zeiss.org/tfs/SMT_SMS}"
 PROJECT="${WIDASH_PROJECT:-BarLev-RnD}"
 
-if [[ -z "${PRDASH_EXE:-}" ]]; then
-  echo "ERROR: PRDASH_EXE not set - can't resolve the PAT from azure-cli.yml." >&2
-  exit 1
-fi
-ADO_PAT="$("$PRDASH_EXE" --print-pat --org "$COLLECTION" --project "$PROJECT" 2>/dev/null)" || true
-: "${ADO_PAT:?ERROR: no PAT available - add 'pat:' to this account in azure-cli.yml}" >&2
-AUTH="$(printf ":%s" "$ADO_PAT" | base64 | tr -d '\r\n')"
+# Shared PAT lookup (pure-bash scan of PRDASH_PATS when launched through
+# azure-cli.exe, else one --print-pat call) - see resolve-pat.sh.
+if [[ "${BASH_SOURCE[0]}" == */* ]]; then . "${BASH_SOURCE[0]%/*}/resolve-pat.sh"; else . "./resolve-pat.sh"; fi
+resolve_pat_into ADO_PAT "$COLLECTION" "$PROJECT" \
+  || { echo "ERROR: no PAT available - add 'pat:' to this account in azure-cli.yml" >&2; exit 1; }
+export ADO_PAT
 
 WIS_CMD="${1:-}"
 WIS_A2="${2:-}"
 WIS_A3="${3:-}"
 WIS_A4="${4:-}"
 
-export COLLECTION PROJECT AUTH WIS_CMD WIS_A2 WIS_A3 WIS_A4
+export COLLECTION PROJECT WIS_CMD WIS_A2 WIS_A3 WIS_A4
 
 PY="python"; command -v python >/dev/null 2>&1 || PY="python3"
 
 "$PY" - <<'PYEOF'
-import os, sys, json, urllib.parse, urllib.request, urllib.error
+import os, sys, json, base64, urllib.parse, urllib.request, urllib.error
 
 collection = os.environ["COLLECTION"]
 project    = os.environ["PROJECT"]
-auth       = os.environ["AUTH"]
+auth       = base64.b64encode((":" + os.environ["ADO_PAT"]).encode()).decode()
 cmd        = os.environ.get("WIS_CMD", "")
 a2         = os.environ.get("WIS_A2", "")
 a3         = os.environ.get("WIS_A3", "")

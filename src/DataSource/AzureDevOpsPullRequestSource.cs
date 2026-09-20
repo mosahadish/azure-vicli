@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.DirectoryServices.AccountManagement;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.TeamFoundation.Build.WebApi;
 using Microsoft.TeamFoundation.Policy.WebApi;
@@ -36,9 +38,24 @@ namespace AzureCli.DataSource
         /// Cache of existing branch ref names ("refs/heads/...") per repository,
         /// populated once per refresh so PRs whose source branch has been deleted
         /// can be filtered out without an API call per pull request. A <c>null</c>
-        /// value means the lookup failed and filtering is skipped for that repo.
+        /// result means the lookup failed and filtering is skipped for that repo.
+        /// Entries are lazy tasks so that concurrent PRs of the same repo share a
+        /// single refs request instead of each firing their own.
         /// </summary>
-        private readonly Dictionary<Guid, HashSet<string>?> m_repoBranches = new Dictionary<Guid, HashSet<string>?>();
+        private readonly ConcurrentDictionary<Guid, Lazy<Task<HashSet<string>?>>> m_repoBranches =
+            new ConcurrentDictionary<Guid, Lazy<Task<HashSet<string>?>>>();
+
+        /// <summary>
+        /// Bounds how many pull requests have their per-request details (comment
+        /// threads, build policy status) in flight at once, so a long list is
+        /// processed in parallel without flooding the server.
+        /// </summary>
+        private readonly SemaphoreSlim m_gate = new SemaphoreSlim(MaxConcurrentPullRequests);
+
+        /// <summary>
+        /// The upper bound on concurrently processed pull requests.
+        /// </summary>
+        private const int MaxConcurrentPullRequests = 8;
 
         /// <summary>
         /// Constructs a new request source.
@@ -55,124 +72,17 @@ namespace AzureCli.DataSource
         public event EventHandler<StatisticsUpdateEventArgs>? StatisticsUpdate;
 
         /// <summary>
-        /// Retrieves pull requests from the configured data source.
+        /// Retrieves every relevant pull request (assigned to me, tagged with its
+        /// computed state, plus the ones I created) in a single pass.
         /// </summary>
-        /// <returns>An async stream of <see cref="PullRequestViewElement"/></returns>
-        public IAsyncEnumerable<PullRequestViewElement> FetchAssignedPullRequests(PrState state)
-        {
-            m_statistics.Reset();
-            m_repoBranches.Clear();
-
-            return FetchPullRequstsInternal(state);
-        }
-
-        /// <summary>
-        /// Retrieves all active pull requests this user has created.
-        /// </summary>
-        /// <returns>An async stream of <see cref="PullRequestViewElement"/></returns>
-        public async IAsyncEnumerable<PullRequestViewElement> FetchCreatedPullRequests()
-        {
-            foreach (var accountGroup in m_config.AccountsByUri)
-            {
-                Uri organizationUri = accountGroup.Key;
-
-                using VssConnection connection = await GetConnectionAsync(organizationUri, accountGroup.Value);
-                using GitHttpClient client = await connection.GetClientAsync<GitHttpClient>();
-                using PolicyHttpClient policyClient = await connection.GetClientAsync<PolicyHttpClient>();
-                using BuildHttpClient buildClient = await connection.GetClientAsync<BuildHttpClient>();
-                {
-                    // Capture the currentUserId so it can be used to filter PR's later.
-                    //
-                    Guid userId = connection.AuthorizedIdentity.Id;
-
-                    // Only fetch pull requests which are active, and assigned to this user.
-                    //
-                    GitPullRequestSearchCriteria criteria = new GitPullRequestSearchCriteria
-                    {
-                        CreatorId = userId,
-                        Status = PullRequestStatus.Active,
-                        IncludeLinks = false,
-                    };
-
-                    foreach (AccountConfig account in accountGroup.Value)
-                    {
-                        List<GitPullRequest> requests = await client.GetPullRequestsByProjectAsync(account.Project, criteria);
-                        foreach (var request in requests)
-                        {
-                            (int active, int total, int myActive) = await CountThreads(client, request, userId).ConfigureAwait(false);
-                            (string buildStatus, int? queuePosition) = await GetBuildStatus(policyClient, buildClient, request, account.Project).ConfigureAwait(false);
-                            yield return new PullRequestViewElement(request) { State = PrState.Created, OrganizationUrl = account.OrganizationUrl?.ToString(), Project = account.Project, ClonesDirectory = account.ClonesDirectory, ActiveThreadCount = active, TotalThreadCount = total, MyActiveThreadCount = myActive, BuildStatus = buildStatus, QueuePosition = queuePosition };
-                        }
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Helper function to make async code line up, since interface methods cannot be marked
-        /// as async.
-        /// </summary>
-        /// <returns>An async stream of <see cref="PullRequestViewElement"/></returns>
-        private async IAsyncEnumerable<PullRequestViewElement> FetchPullRequstsInternal(PrState state)
-        {
-            foreach (var accountGroup in m_config.AccountsByUri)
-            {
-                Uri organizationUri = accountGroup.Key;
-
-                // Create a shared connection to the AzureDevOps Git API for all accounts sharing the same organization uri.
-                //
-                using VssConnection connection = await GetConnectionAsync(organizationUri, accountGroup.Value);
-                using GitHttpClient client = await connection.GetClientAsync<GitHttpClient>();
-
-                // Capture the currentUserId so it can be used to filter PR's later.
-                //
-                Guid userId = connection.AuthorizedIdentity.Id;
-
-                foreach (AccountConfig account in accountGroup.Value)
-                {
-                    await foreach (var pr in FetchPullRequests(client, userId, account, state))
-                    {
-                        // We only want to fetch the commit data if the config is enabled.
-                        //
-                        if (m_config.SortByRecentCommit)
-                        {
-                            var commits = await client.GetPullRequestCommitsAsync(pr.Repository.Id, pr.PullRequestId);
-                            pr.Commits = commits.ToArray();
-                        }
-
-                        yield return new PullRequestViewElement(pr) { OrganizationUrl = account.OrganizationUrl?.ToString(), Project = account.Project, ClonesDirectory = account.ClonesDirectory };
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Retrieves all active & actionable pull requests to the configured data source.
-        /// </summary>
-        /// <param name="accountConfig">The account to retrieve the pull requests for.</param>
-        /// <returns>A stream of <see cref="GitPullRequest"/></returns>
-        private async IAsyncEnumerable<GitPullRequest> FetchPullRequests(GitHttpClient client, Guid userId, AccountConfig accountConfig, PrState state)
-        {
-            await foreach (var pr in FetchAccountActivePullRequsts(client, userId, accountConfig))
-            {
-                PrState? processedState = await ComputeState(client, pr, userId, accountConfig);
-
-                m_statistics.Accumulate(processedState);
-                if (state == processedState)
-                {
-                    yield return pr;
-                }
-            }
-
-            // Post event on stats update.
-            //
-            OnStatisticsUpdate();
-        }
-
-        /// <summary>
-        /// Retrieves every assigned pull request in a single pass, each tagged
-        /// with its computed state so the view can render grouped sections.
-        /// </summary>
+        /// <remarks>
+        /// Per organization there is exactly one connection, and per account the
+        /// "assigned to me" and "created by me" listings are requested together.
+        /// Each pull request's follow-up lookups (comment threads, build policy
+        /// status) then run concurrently, bounded by <see cref="m_gate"/>, and
+        /// the results are consumed in listing order so the output is stable from
+        /// one refresh to the next regardless of which request finishes first.
+        /// </remarks>
         /// <returns>An async stream of <see cref="PullRequestViewElement"/></returns>
         public async IAsyncEnumerable<PullRequestViewElement> FetchGroupedPullRequests()
         {
@@ -183,31 +93,60 @@ namespace AzureCli.DataSource
             {
                 Uri organizationUri = accountGroup.Key;
 
-                using VssConnection connection = await GetConnectionAsync(organizationUri, accountGroup.Value);
-                using GitHttpClient client = await connection.GetClientAsync<GitHttpClient>();
-                using PolicyHttpClient policyClient = await connection.GetClientAsync<PolicyHttpClient>();
-                using BuildHttpClient buildClient = await connection.GetClientAsync<BuildHttpClient>();
+                using VssConnection connection = await GetConnectionAsync(organizationUri, accountGroup.Value).ConfigureAwait(false);
+                using GitHttpClient client = await connection.GetClientAsync<GitHttpClient>().ConfigureAwait(false);
+                using PolicyHttpClient policyClient = await connection.GetClientAsync<PolicyHttpClient>().ConfigureAwait(false);
+                using BuildHttpClient buildClient = await connection.GetClientAsync<BuildHttpClient>().ConfigureAwait(false);
 
                 Guid userId = connection.AuthorizedIdentity.Id;
+                string userName = connection.AuthorizedIdentity.DisplayName ?? string.Empty;
 
                 foreach (AccountConfig account in accountGroup.Value)
                 {
-                    await foreach (var pr in FetchAccountActivePullRequsts(client, userId, account))
+                    // The two listings are independent: issue both at once.
+                    //
+                    Task<List<GitPullRequest>> assignedTask = ListActivePullRequests(client, account, new GitPullRequestSearchCriteria
                     {
-                        PrState? processedState = await ComputeState(client, pr, userId, account);
-                        m_statistics.Accumulate(processedState);
+                        ReviewerId = userId,
+                        Status = PullRequestStatus.Active,
+                        IncludeLinks = false,
+                    });
+                    Task<List<GitPullRequest>> createdTask = ListActivePullRequests(client, account, new GitPullRequestSearchCriteria
+                    {
+                        CreatorId = userId,
+                        Status = PullRequestStatus.Active,
+                        IncludeLinks = false,
+                    });
+                    await Task.WhenAll(assignedTask, createdTask).ConfigureAwait(false);
 
-                        if (processedState.HasValue)
+                    // Start every PR's detail work now (the gate throttles it),
+                    // then drain in listing order: assigned first, created last,
+                    // matching the order the dashboard has always received.
+                    //
+                    var work = new List<Task<(PrState? State, PullRequestViewElement? Element)>>();
+                    foreach (GitPullRequest pr in assignedTask.Result)
+                    {
+                        work.Add(ProcessAssignedPullRequest(client, policyClient, buildClient, pr, userId, userName, account));
+                    }
+
+                    foreach (GitPullRequest pr in createdTask.Result)
+                    {
+                        work.Add(ProcessCreatedPullRequest(client, policyClient, buildClient, pr, userId, userName, account));
+                    }
+
+                    foreach (var task in work)
+                    {
+                        (PrState? state, PullRequestViewElement? element) = await task.ConfigureAwait(false);
+                        if (state != PrState.Created)
                         {
-                            if (m_config.SortByRecentCommit)
-                            {
-                                var commits = await client.GetPullRequestCommitsAsync(pr.Repository.Id, pr.PullRequestId);
-                                pr.Commits = commits.ToArray();
-                            }
+                            // Statistics only ever tracked the assigned buckets.
+                            //
+                            m_statistics.Accumulate(state);
+                        }
 
-                            (int active, int total, int myActive) = await CountThreads(client, pr, userId).ConfigureAwait(false);
-                            (string buildStatus, int? queuePosition) = await GetBuildStatus(policyClient, buildClient, pr, account.Project).ConfigureAwait(false);
-                            yield return new PullRequestViewElement(pr) { State = processedState.Value, OrganizationUrl = account.OrganizationUrl?.ToString(), Project = account.Project, ClonesDirectory = account.ClonesDirectory, ActiveThreadCount = active, TotalThreadCount = total, MyActiveThreadCount = myActive, BuildStatus = buildStatus, QueuePosition = queuePosition };
+                        if (element != null)
+                        {
+                            yield return element;
                         }
                     }
                 }
@@ -217,10 +156,105 @@ namespace AzureCli.DataSource
         }
 
         /// <summary>
+        /// Lists the active pull requests of a project matching the given criteria.
+        /// </summary>
+        private static Task<List<GitPullRequest>> ListActivePullRequests(GitHttpClient client, AccountConfig account, GitPullRequestSearchCriteria criteria)
+        {
+            return client.GetPullRequestsByProjectAsync(account.Project, criteria);
+        }
+
+        /// <summary>
+        /// Classifies one pull request I'm a reviewer on and, when it is to be
+        /// shown, gathers its thread counts and build status - the latter two
+        /// concurrently, with the thread list fetched at most once and shared
+        /// between classification and counting.
+        /// </summary>
+        /// <returns>The state and element, or (null, null) when the PR is hidden.</returns>
+        private async Task<(PrState? State, PullRequestViewElement? Element)> ProcessAssignedPullRequest(
+            GitHttpClient client, PolicyHttpClient policyClient, BuildHttpClient buildClient,
+            GitPullRequest pr, Guid userId, string userName, AccountConfig account)
+        {
+            await m_gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                Task<List<GitPullRequestCommentThread>>? threadsTask = null;
+                Task<List<GitPullRequestCommentThread>> LoadThreads()
+                {
+                    return threadsTask ??= client.GetThreadsAsync(pr.Repository.Id, pr.PullRequestId);
+                }
+
+                PrState? state = await ComputeState(client, pr, userId, account, LoadThreads).ConfigureAwait(false);
+                if (!state.HasValue)
+                {
+                    return (null, null);
+                }
+
+                return (state, await BuildElement(policyClient, buildClient, pr, userId, userName, account, state.Value, LoadThreads()).ConfigureAwait(false));
+            }
+            finally
+            {
+                m_gate.Release();
+            }
+        }
+
+        /// <summary>
+        /// Gathers the thread counts and build status of a pull request I created.
+        /// </summary>
+        private async Task<(PrState? State, PullRequestViewElement? Element)> ProcessCreatedPullRequest(
+            GitHttpClient client, PolicyHttpClient policyClient, BuildHttpClient buildClient,
+            GitPullRequest pr, Guid userId, string userName, AccountConfig account)
+        {
+            await m_gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                Task<List<GitPullRequestCommentThread>> threads = client.GetThreadsAsync(pr.Repository.Id, pr.PullRequestId);
+                return (PrState.Created, await BuildElement(policyClient, buildClient, pr, userId, userName, account, PrState.Created, threads).ConfigureAwait(false));
+            }
+            finally
+            {
+                m_gate.Release();
+            }
+        }
+
+        /// <summary>
+        /// Builds the view element for a pull request, awaiting its (already
+        /// in-flight) thread list while the build policy status is fetched.
+        /// </summary>
+        private static async Task<PullRequestViewElement> BuildElement(
+            PolicyHttpClient policyClient, BuildHttpClient buildClient, GitPullRequest pr,
+            Guid userId, string userName, AccountConfig account, PrState state,
+            Task<List<GitPullRequestCommentThread>> threadsTask)
+        {
+            Task<(string Status, int? QueuePosition)> buildTask = GetBuildStatus(policyClient, buildClient, pr, account.Project);
+            (int active, int total, int myActive) = await CountThreads(threadsTask, userId).ConfigureAwait(false);
+            (string buildStatus, int? queuePosition) = await buildTask.ConfigureAwait(false);
+
+            return new PullRequestViewElement(pr)
+            {
+                State = state,
+                OrganizationUrl = account.OrganizationUrl?.ToString(),
+                Project = account.Project,
+                ClonesDirectory = account.ClonesDirectory,
+                ActiveThreadCount = active,
+                TotalThreadCount = total,
+                MyActiveThreadCount = myActive,
+                BuildStatus = buildStatus,
+                QueuePosition = queuePosition,
+                CurrentUserId = userId,
+                CurrentUserName = userName,
+            };
+        }
+
+        /// <summary>
         /// Computes the "processed" state of a pull request, or <c>null</c> if it
         /// should not be shown to this user.
         /// </summary>
-        private async Task<PrState?> ComputeState(GitHttpClient client, GitPullRequest pr, Guid userId, AccountConfig accountConfig)
+        /// <param name="loadThreads">
+        /// Lazily fetches the PR's comment threads; only invoked when the state
+        /// actually depends on them (a "waiting for author" vote), and shared with
+        /// the caller so the same request also serves the thread counts.
+        /// </param>
+        private async Task<PrState?> ComputeState(GitHttpClient client, GitPullRequest pr, Guid userId, AccountConfig accountConfig, Func<Task<List<GitPullRequestCommentThread>>> loadThreads)
         {
             DateTime oneMonthAgo = DateTime.UtcNow - TimeSpan.FromDays(30);
 
@@ -282,7 +316,7 @@ namespace AzureCli.DataSource
                 // If we have left a comment in a thread that is still active, the PR is not actionable to us.
                 // If we there are no active threads where we have participated, the PR is actionable to us.
                 //
-                List<GitPullRequestCommentThread> threads = await client.GetThreadsAsync(pr.Repository.Id, pr.PullRequestId).ConfigureAwait(false);
+                List<GitPullRequestCommentThread> threads = await loadThreads().ConfigureAwait(false);
                 return threads.Any(t => t.Status == CommentThreadStatus.Active && t.InvolvesUser(userId)) ? PrState.Waiting : PrState.Actionable;
             }
 
@@ -598,11 +632,11 @@ namespace AzureCli.DataSource
         /// threads that have nothing left to read once their real replies are
         /// deleted.
         /// </remarks>
-        private static async Task<(int Active, int Total, int MyActive)> CountThreads(GitHttpClient client, GitPullRequest pr, Guid userId)
+        private static async Task<(int Active, int Total, int MyActive)> CountThreads(Task<List<GitPullRequestCommentThread>> threadsTask, Guid userId)
         {
             try
             {
-                List<GitPullRequestCommentThread> threads = await client.GetThreadsAsync(pr.Repository.Id, pr.PullRequestId).ConfigureAwait(false);
+                List<GitPullRequestCommentThread> threads = await threadsTask.ConfigureAwait(false);
                 List<GitPullRequestCommentThread> real = threads
                     .Where(t => t.Comments != null && t.Comments.Any(c => !c.IsDeleted && c.CommentType == CommentType.Text))
                     .ToList();
@@ -625,11 +659,10 @@ namespace AzureCli.DataSource
         private async Task<bool> SourceBranchExists(GitHttpClient client, GitPullRequest pr)
         {
             Guid repoId = pr.Repository.Id;
-            if (!m_repoBranches.TryGetValue(repoId, out HashSet<string>? branches))
-            {
-                branches = await LoadRepoBranches(client, repoId).ConfigureAwait(false);
-                m_repoBranches[repoId] = branches;
-            }
+            Lazy<Task<HashSet<string>?>> lazyBranches = m_repoBranches.GetOrAdd(
+                repoId,
+                id => new Lazy<Task<HashSet<string>?>>(() => LoadRepoBranches(client, id)));
+            HashSet<string>? branches = await lazyBranches.Value.ConfigureAwait(false);
 
             // Null means the branch lookup failed; don't hide PRs on uncertainty.
             //
@@ -664,29 +697,6 @@ namespace AzureCli.DataSource
             catch (Exception)
             {
                 return null;
-            }
-        }
-
-        /// <summary>
-        /// Retrieves all active & actionable pull requests for a specific account.
-        /// </summary>
-        /// <param name="accountConfig">The account to get the pull requests for.</param>
-        /// <returns>A stream of <see cref="GitPullRequest"/></returns>
-        private static async IAsyncEnumerable<GitPullRequest> FetchAccountActivePullRequsts(GitHttpClient client, Guid userId, AccountConfig accountConfig)
-        {
-            // Only fetch pull requests which are active, and assigned to this user.
-            //
-            GitPullRequestSearchCriteria criteria = new GitPullRequestSearchCriteria
-            {
-                ReviewerId = userId,
-                Status = PullRequestStatus.Active,
-                IncludeLinks = false,
-            };
-
-            List<GitPullRequest> requests = await client.GetPullRequestsByProjectAsync(accountConfig.Project, criteria);
-            foreach (var request in requests)
-            {
-                yield return request;
             }
         }
 

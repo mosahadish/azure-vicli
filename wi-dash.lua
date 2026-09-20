@@ -123,22 +123,25 @@ local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO)
 end
 
--- Resolve pr-dash.yml's path (matches Config.ConfigPath in the C# source):
--- %APPDATA%\pr-dash.yml on Windows, ~/.pr-dash.yml elsewhere.
+-- Resolve azure-cli.yml's path (matches Config.ConfigPath in the C# source):
+-- %APPDATA%\azure-cli.yml on Windows, $XDG_CONFIG_HOME/azure-cli.yml (default
+-- ~/.config) elsewhere - the same place .NET's ApplicationData resolves to.
 local function config_path()
   if vim.fn.has("win32") == 1 then
-    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\pr-dash.yml"
+    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\azure-cli.yml"
   end
-  return vim.fn.expand("~/.pr-dash.yml")
+  local xdg = vim.env.XDG_CONFIG_HOME
+  if not xdg or xdg == "" then xdg = vim.fn.expand("~/.config") end
+  return xdg .. "/azure-cli.yml"
 end
 
--- Open pr-dash.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
+-- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
 local function open_config_file()
   local path = config_path()
   vim.cmd("tabnew " .. vim.fn.fnameescape(path))
   vim.bo.filetype = "yaml"
   if vim.fn.filereadable(path) == 0 then
-    notify("pr-dash.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
+    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
   end
 end
 
@@ -903,7 +906,7 @@ vim.api.nvim_create_autocmd("CursorMoved", {
   buffer = buf,
   callback = function()
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
-    prefetch_timer = vim.fn.timer_start(200, function()
+    prefetch_timer = vim.fn.timer_start(400, function()
       local it = current_item()
       if it then prefetch(it.id) end
     end)

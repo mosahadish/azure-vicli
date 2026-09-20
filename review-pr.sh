@@ -11,10 +11,10 @@
 #
 # All ADO calls below go straight to the REST API with a PAT. The PAT is
 # always resolved from azure-cli.yml (never from an ambient AZURE_DEVOPS_EXT_PAT/
-# ADO_PAT env var) via `azure-cli.exe --print-pat`, using PRDASH_EXE (exported
-# by azure-cli.exe/azure-cli.lua) to find the exe. This is intentional: config is
-# the single source of truth, so a stray exported PAT elsewhere in your shell
-# never silently gets used instead.
+# ADO_PAT env var): see resolve-pat.sh next to this script. It is resolved
+# lazily (ensure_pat), only on the paths that actually talk to the REST API,
+# so the background branch prefetch - the hottest path, fired as the cursor
+# moves over the PR list - is git-only and never pays for the lookup.
 #
 # This script only ever runs the full PR review inside Neovim (pr-review.lua,
 # next to this script) - there is no standalone fallback UI.
@@ -30,20 +30,6 @@ SOURCE="${PRDASH_SOURCE:-}"
 TARGET="${PRDASH_TARGET:-}"
 REPO_PATH="${PRDASH_REPO_PATH:-$PWD}"
 
-# The REST calls below need a PAT. Always resolve it from azure-cli.yml for
-# this PR's org/project via a headless azure-cli.exe call - config is the only
-# source, regardless of what may already be exported in this shell.
-if [[ -z "${PRDASH_EXE:-}" ]]; then
-  echo "PRDASH_EXE not set: can't resolve the PAT from azure-cli.yml." >&2
-  AZURE_DEVOPS_EXT_PAT=""
-else
-  AZURE_DEVOPS_EXT_PAT="$("$PRDASH_EXE" --print-pat --org "$ORG" --project "$PROJECT" 2>/dev/null)"
-fi
-export AZURE_DEVOPS_EXT_PAT
-if [[ -z "${AZURE_DEVOPS_EXT_PAT:-}" ]]; then
-  echo "No PAT available: add 'pat:' to this account in azure-cli.yml." >&2
-fi
-
 have() { command -v "$1" >/dev/null 2>&1; }
 
 RANGE="origin/${TARGET}...origin/${SOURCE}"
@@ -53,6 +39,20 @@ RANGE="origin/${TARGET}...origin/${SOURCE}"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 # Dir via parameter expansion (no dirname fork); reused for every sibling path.
 SCRIPT_DIR="${SCRIPT_PATH%/*}"
+
+# Resolve the PAT for this PR's org/project into AZURE_DEVOPS_EXT_PAT (from
+# azure-cli.yml only - whatever this shell already had exported is ignored).
+# Called right before anything that hits the REST API; a pure-bash scan of
+# PRDASH_PATS when launched via azure-cli.exe, else one --print-pat call.
+. "$SCRIPT_DIR/resolve-pat.sh"
+ensure_pat() {
+  resolve_pat_into AZURE_DEVOPS_EXT_PAT "$ORG" "$PROJECT" || true
+  export AZURE_DEVOPS_EXT_PAT
+  if [[ -z "$AZURE_DEVOPS_EXT_PAT" ]]; then
+    echo "No PAT available: add 'pat:' to this account in azure-cli.yml." >&2
+    return 1
+  fi
+}
 
 # JSON-encode stdin safely with python (jq is not available here).
 json_encode() { python -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
@@ -448,6 +448,10 @@ set_auto_complete() {
 }
 
 # Subcommand mode: invoked from the nvim UI to run a single action and exit.
+# Every subcommand talks to the REST API, so this is where the PAT is needed.
+case "${1:-}" in
+  --*) ensure_pat || exit 1 ;;
+esac
 case "${1:-}" in
   --file-comment)
     # 3-arg form (path text) is non-interactive, for the nvim UI.
@@ -528,7 +532,9 @@ if [[ -n "${PRDASH_PREFETCH:-}" ]]; then
     else
       tlog "prefetch(all) git fetch FAILED (rc=$pf_rc) after $(( _n - t_pf0 )) ms: $(printf '%s' "$pf_err" | tr '\n' ' ' | tail -c 300)"
     fi
-    exit 0
+    # Report the fetch's own result: the dashboard only marks branches warm
+    # (and only prefetches content against them) on success.
+    exit $pf_rc
   fi
 
   # Per-PR warm: fetch just this PR's two branches.
@@ -550,8 +556,12 @@ if [[ -n "${PRDASH_PREFETCH:-}" ]]; then
   else
     tlog "prefetch git fetch FAILED (rc=$pf_rc) after $(( _n - t_pf0 )) ms: $(printf '%s' "$pf_err" | tr '\n' ' ' | tail -c 300)"
   fi
-  exit 0
+  exit $pf_rc
 fi
+
+# Interactive open: the reviewer's own REST calls (via this script's
+# subcommands) need the PAT exported into nvim's environment.
+ensure_pat || true
 
 echo "==================================================================="
 echo " PR #$ID   $SOURCE -> $TARGET"

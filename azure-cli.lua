@@ -14,6 +14,11 @@
 --   gr          re-queue build validation for the PR under the cursor
 --   r           refresh the list
 --   q           quit
+--
+-- Row badges (left of the id): \u{25CF} unread comment activity, \u{21E3} branches or
+-- content being fetched in the background right now, \u{25C6} fully prefetched
+-- (opens instantly). The build column to the right of the id keeps its own
+-- \u{2713} ok / \u{2717} failed / \u{21BB} expired / \u{25CF} running glyphs.
 
 vim.o.compatible = false
 vim.o.number = false
@@ -47,6 +52,9 @@ local REVIEW_LUA = (DIR .. "/pr-review.lua"):gsub("\\", "/")
 local WI_DASH_LUA = (DIR .. "/wi-dash.lua"):gsub("\\", "/")
 -- Work-items list provider, warmed in the background so the first W swap is instant.
 local WI_LIST = env.WIDASH_LIST or (DIR .. "/wi-list.sh")
+-- Shared per-PR content caches + prefetch pipeline (files, diffs, commits,
+-- threads), filled here in the background and read by the reviewer on open.
+local CACHE = dofile((DIR .. "/prdash-cache.lua"):gsub("\\", "/"))
 
 -- Section order and friendly titles.
 local SECTIONS = {
@@ -133,16 +141,19 @@ local function seed_unseen(fresh_prs)
   if dirty then save_seen() end
 end
 
--- Resolve pr-dash.yml's path (matches Config.ConfigPath in the C# source):
--- %APPDATA%\pr-dash.yml on Windows, ~/.pr-dash.yml elsewhere.
+-- Resolve azure-cli.yml's path (matches Config.ConfigPath in the C# source):
+-- %APPDATA%\azure-cli.yml on Windows, $XDG_CONFIG_HOME/azure-cli.yml (default
+-- ~/.config) elsewhere - the same place .NET's ApplicationData resolves to.
 local function config_path()
   if vim.fn.has("win32") == 1 then
-    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\pr-dash.yml"
+    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\azure-cli.yml"
   end
-  return vim.fn.expand("~/.pr-dash.yml")
+  local xdg = vim.env.XDG_CONFIG_HOME
+  if not xdg or xdg == "" then xdg = vim.fn.expand("~/.config") end
+  return xdg .. "/azure-cli.yml"
 end
 
--- Open pr-dash.yml (accounts/PAT/clones_dir config) in a new tab for quick
+-- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick
 -- editing, so you don't have to go dig it up manually to add an account or
 -- tweak hide_ancient/clones_dir.
 local function open_config_file()
@@ -150,7 +161,7 @@ local function open_config_file()
   vim.cmd("tabnew " .. vim.fn.fnameescape(path))
   vim.bo.filetype = "yaml"
   if vim.fn.filereadable(path) == 0 then
-    notify("pr-dash.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
+    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
   end
 end
 
@@ -177,7 +188,7 @@ local function is_cloned(path)
 end
 
 -- Resolve the local clone path for a PR. Prefers the account's configured
--- clones_dir (pr.clonesDir, from pr-dash.yml) — <clones_dir>/<repo> — which
+-- clones_dir (pr.clonesDir, from azure-cli.yml) — <clones_dir>/<repo> — which
 -- works even when that repo hasn't been cloned yet (ensure_cloned below will
 -- offer to clone it there). Falls back to inferring a sibling directory next
 -- to the configured PRDASH_REPO_PATH when clones_dir isn't set, for backward
@@ -203,7 +214,7 @@ local function clone_for(pr)
 end
 
 -- Clone `pr`'s repo to `path` if it isn't already there (requires clones_dir
--- to be configured in pr-dash.yml so we know where to put it, and cloneUrl
+-- to be configured in azure-cli.yml so we know where to put it, and cloneUrl
 -- from the PR record). Calls cb(true) once `path` is a usable clone, or
 -- cb(false) if cloning wasn't possible/failed (caller should fall back to
 -- notifying the user rather than trying to open a nonexistent repo).
@@ -213,9 +224,9 @@ local function ensure_cloned(pr, path, cb)
     return
   end
   if to_win_path(pr.clonesDir) == "" then
-    notify("PR #" .. tostring(pr.id) .. "'s repo isn't cloned, and no clones_dir is set in pr-dash.yml "
+    notify("PR #" .. tostring(pr.id) .. "'s repo isn't cloned, and no clones_dir is set in azure-cli.yml "
       .. "to auto-clone it. Add e.g. `clones_dir: C:\\Users\\you\\source\\repos` to your account in "
-      .. "%APPDATA%\\pr-dash.yml, or clone " .. (pr.repo or "the repo") .. " manually.", vim.log.levels.ERROR)
+      .. "%APPDATA%\\azure-cli.yml, or clone " .. (pr.repo or "the repo") .. " manually.", vim.log.levels.ERROR)
     cb(false)
     return
   end
@@ -284,6 +295,8 @@ local function define_hl()
   hl("PrdashConflict", { fg = "#f38ba8", bold = true })
   hl("PrdashAutoComplete", { fg = "#a6e3a1", bold = true })
   hl("PrdashUnread", { fg = "#f38ba8", bold = true })
+  hl("PrdashSyncing", { fg = "#89b4fa" })
+  hl("PrdashReady", { fg = "#6c7086" })
   hl("PrdashBorder", { fg = "#585b70" })
 end
 define_hl()
@@ -372,6 +385,13 @@ local function box_and_center(lines, spans, win)
   return final, shifted, row_offset, col_offset
 end
 
+-- Sync-state glyph for a row: "\u{21E3}" while this PR's branches or content
+-- are being fetched in the background, "\u{25C6}" once everything the
+-- reviewer needs is cached (opening it is instant), blank otherwise. Chosen
+-- to stay clear of the build column's own \u{2713}/\u{2717}/\u{21BB}/\u{25CF}.
+-- Assigned once the warm/prefetch bookkeeping it reads exists (below).
+local pr_sync_state
+
 local function render()
   -- Remember which PR the cursor is on (by id, not raw row number) before we
   -- rebuild everything below, since the box's vertical centring means row
@@ -428,6 +448,10 @@ local function render()
 
         seg("  ")
         seg(fit(pr_is_unread(pr) and "\u{25CF}" or "", 1), "PrdashUnread")
+        seg(" ")
+        local sync = pr_sync_state and pr_sync_state(pr)
+        seg(fit(sync == "syncing" and "\u{21E3}" or (sync == "ready" and "\u{25C6}" or ""), 1),
+          sync == "syncing" and "PrdashSyncing" or "PrdashReady")
         seg(" ")
         seg(fit("#" .. tostring(pr.id), 7), "PrdashId")
         seg(" ")
@@ -613,6 +637,34 @@ local warming = {}   -- id -> true while a branch fetch is in flight
 local warm_cbs = {}  -- id -> pending callbacks to run once the fetch completes
 local cloning = {}   -- id -> true while an auto-clone is in flight
 local clone_cbs = {} -- id -> pending callbacks waiting on the clone to finish
+local syncing_clone = {}  -- clone path -> true while warm_all's repo-wide fetch runs
+
+pr_sync_state = function(pr)
+  local id = tostring(pr.id or "")
+  local key = CACHE.key(pr.id, pr.updatedIso)
+  if warming[id] or cloning[id] or CACHE.is_syncing(key)
+      or syncing_clone[clone_for(pr)] then
+    return "syncing"
+  end
+  if warmed[id] == pr.updatedIso and CACHE.is_complete(key) then
+    return "ready"
+  end
+  return nil
+end
+
+-- Redraw the list shortly after a sync-state change (start/finish of a
+-- fetch or prefetch), coalescing bursts into one render. render() is
+-- change-aware and keeps the cursor on its PR, so this never flickers.
+local render_timer
+local function schedule_render()
+  if render_timer then vim.fn.timer_stop(render_timer) end
+  render_timer = vim.fn.timer_start(50, function()
+    render_timer = nil
+    if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
+      render()
+    end
+  end)
+end
 
 local function ensure_warm(pr, cb, allow_clone)
   if not pr then return end
@@ -630,11 +682,13 @@ local function ensure_warm(pr, cb, allow_clone)
     end
     if warming[id] then return end
     warming[id] = true
+    schedule_render()
     vim.fn.jobstart({ BASH, SCRIPT }, {
       env = vim.tbl_extend("force", pr_env(pr), { PRDASH_PREFETCH = "1" }),
       on_exit = function(_, code)
         warming[id] = nil
         if code == 0 then warmed[id] = pr.updatedIso end  -- only cache a successful fetch
+        schedule_render()
         local cbs = warm_cbs[id] or {}
         warm_cbs[id] = nil
         for _, f in ipairs(cbs) do vim.schedule(function() f(code == 0) end) end
@@ -661,8 +715,10 @@ local function ensure_warm(pr, cb, allow_clone)
   end
   if cloning[id] then return end
   cloning[id] = true
+  schedule_render()
   ensure_cloned(pr, path, function(ok)
     cloning[id] = nil
+    schedule_render()
     local cbs = clone_cbs[id] or {}
     clone_cbs[id] = nil
     if not ok then
@@ -680,6 +736,136 @@ local function ensure_warm(pr, cb, allow_clone)
     end
     continue_warm()
   end)
+end
+
+-- Fill the shared content cache for `pr` (file list, every file's diff, the
+-- commit list, the comment threads) so opening it has nothing left to fetch.
+-- Requires the branches to be warm already (see ensure_warm); no-op for a
+-- PR whose repo isn't cloned. cb (optional) runs once the pipeline is done.
+local function prefetch_content(pr, cb)
+  local path = clone_for(pr)
+  if not pr or not is_cloned(path) or not pr.source or pr.source == ""
+      or not pr.target or pr.target == "" then
+    if cb then cb() end
+    return
+  end
+  CACHE.prefetch({
+    id = pr.id, updatedIso = pr.updatedIso,
+    source = pr.source, target = pr.target, repo = path,
+    totalThreads = pr.totalThreads,
+    bash = BASH, script = SCRIPT, env = pr_env(pr),
+  }, function()
+    schedule_render()
+    if cb then cb() end
+  end)
+  schedule_render()
+end
+
+-- Warm every open PR after a list load, so even the first open after
+-- start-up is instant, not just PRs the cursor has rested on. PRs are
+-- processed one at a time in priority order across all clones - Actionable,
+-- then created by me, then Drafts, then Signed off, then Waiting - so the
+-- PRs most likely to be opened next are always ready first, regardless of
+-- which repo they live in. A clone's repository-wide `git fetch`
+-- (review-pr.sh's "all" prefetch mode) runs lazily the first time one of
+-- its PRs comes up, and is skipped when nothing in that clone has activity
+-- we haven't fetched yet. WARM_CONCURRENCY PRs are in flight at once (their
+-- git work touches different files and the thread fetches are independent
+-- network calls), still in queue order; if a list load lands while a pass
+-- is still going, the next load picks up where it left off.
+local WARM_RANK = { Actionable = 1, Created = 2, Drafts = 3, SignedOff = 4, Waiting = 5 }
+local WARM_CONCURRENCY = 4
+local warm_all_running = false
+local function warm_all(list)
+  if warm_all_running then return end
+  local queue = {}
+  for _, pr in ipairs(list) do
+    if WARM_RANK[pr.state] and pr.source and pr.source ~= "" and pr.target and pr.target ~= ""
+        and is_cloned(clone_for(pr)) then
+      queue[#queue + 1] = pr
+    end
+  end
+  if #queue == 0 then return end
+  table.sort(queue, function(a, b)
+    if WARM_RANK[a.state] ~= WARM_RANK[b.state] then return WARM_RANK[a.state] < WARM_RANK[b.state] end
+    return iso_epoch(a.updatedIso) > iso_epoch(b.updatedIso)  -- most recent first within a section
+  end)
+  warm_all_running = true
+
+  -- Per clone within this pass: "ok" once its fetch succeeded (or wasn't
+  -- needed), "failed" to leave its PRs cold rather than cache diffs against
+  -- refs that may be missing or behind, or a list of callbacks while the
+  -- fetch is in flight so concurrent workers on the same clone wait for the
+  -- one fetch instead of starting a second (two fetches in one clone fight
+  -- over ref locks).
+  local clone_state = {}
+  local function clone_needs_fetch(path)
+    for _, pr in ipairs(queue) do
+      if clone_for(pr) == path and warmed[tostring(pr.id)] ~= pr.updatedIso then return true end
+    end
+    return false
+  end
+  local function ensure_clone_fetched(pr, path, cb)
+    local st = clone_state[path]
+    if type(st) == "table" then
+      st[#st + 1] = cb
+      return
+    end
+    if st then
+      cb(st == "ok")
+      return
+    end
+    if not clone_needs_fetch(path) then
+      clone_state[path] = "ok"
+      cb(true)
+      return
+    end
+    clone_state[path] = { cb }
+    syncing_clone[path] = true
+    schedule_render()
+    vim.fn.jobstart({ BASH, SCRIPT }, {
+      env = vim.tbl_extend("force", pr_env(pr), { PRDASH_PREFETCH = "all", PRDASH_REPO_PATH = path }),
+      on_exit = function(_, code)
+        syncing_clone[path] = nil
+        schedule_render()
+        local waiting = clone_state[path]
+        clone_state[path] = code == 0 and "ok" or "failed"
+        if code == 0 then
+          for _, q in ipairs(queue) do
+            if clone_for(q) == path then warmed[tostring(q.id)] = q.updatedIso end
+          end
+        end
+        for _, f in ipairs(waiting) do f(code == 0) end
+      end,
+    })
+  end
+
+  -- WARM_CONCURRENCY workers each pull the next PR off the shared queue
+  -- (so the front of the queue is always what's being worked on) and the
+  -- pass ends once every worker has run out of PRs.
+  local next_index, active = 0, 0
+  local function worker()
+    next_index = next_index + 1
+    local pr = queue[next_index]
+    if not pr then
+      active = active - 1
+      if active == 0 then warm_all_running = false end
+      return
+    end
+    if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
+      worker()
+      return
+    end
+    local path = clone_for(pr)
+    ensure_clone_fetched(pr, path, function(ok)
+      if not ok then worker() return end
+      prefetch_content(pr, worker)
+    end)
+  end
+  for _ = 1, math.min(WARM_CONCURRENCY, #queue) do
+    active = active + 1
+    worker()
+  end
 end
 
 -- Diffs a freshly fetched PR list against the previous one (by id), looking
@@ -720,7 +906,11 @@ end
 
 -- Fetch the PR list from the headless provider and render it. Renders the
 -- cached list instantly (making swaps instant) and only refetches when the
--- cache is stale or a refresh is forced.
+-- cache is stale or a refresh is forced. Only one --list run is ever in
+-- flight: a poll (or an r press) that lands while the previous fetch is
+-- still going is skipped rather than stacked on top of it, so a slow server
+-- can't pile up concurrent sweeps that fight each other for the connection.
+local list_inflight = false
 local function load(silent, force)
   local cache = _G.PR_LIST_CACHE
   local prev_prs = cache and cache.prs
@@ -738,6 +928,12 @@ local function load(silent, force)
     return
   end
 
+  if list_inflight then
+    if not silent then notify("Refresh already in progress…") end
+    return
+  end
+  list_inflight = true
+
   local fresh = {}
   local out = {}
   local err = {}
@@ -747,6 +943,7 @@ local function load(silent, force)
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
+      list_inflight = false
       if code ~= 0 then
         local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
         vim.bo[buf].modifiable = true
@@ -770,6 +967,7 @@ local function load(silent, force)
       prs = fresh
       _G.PR_LIST_CACHE = { prs = fresh, ts = os.time() }
       render()
+      warm_all(fresh)
     end,
   })
 end
@@ -822,12 +1020,19 @@ local function open_pr()
   end, true)
 end
 
--- Run a quick review-pr.sh subcommand (vote/complete) for the PR under cursor.
-local function run_action(args, describe)  local pr = current_pr()
+-- Run a quick review-pr.sh subcommand (vote/complete/auto-complete) for the
+-- PR under the cursor. Optimistic: `apply(pr)` (optional) changes the row's
+-- record right away and returns a function that undoes it; on failure that
+-- undo runs and the error is shown, on success the list is reloaded so the
+-- server's view wins either way.
+local function run_action(args, describe, apply)
+  local pr = current_pr()
   if not pr then
     return
   end
   notify(describe .. " PR #" .. pr.id .. " …")
+  local undo = apply and apply(pr)
+  if undo then render() end
   local out = {}
   local job_args = { BASH, SCRIPT }
   vim.list_extend(job_args, args)
@@ -843,8 +1048,13 @@ local function run_action(args, describe)  local pr = current_pr()
         notify(describe .. " PR #" .. pr.id .. ": done.")
         load(false, true)
       else
+        if undo then
+          undo()
+          render()
+        end
         local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify(describe .. " failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
+        notify(describe .. " failed (exit " .. code .. "): " .. msg
+          .. (undo and " - change reverted." or ""), vim.log.levels.ERROR)
       end
     end,
   })
@@ -858,6 +1068,38 @@ local VOTE_OPTIONS = {
   { key = "0",   label = "Reset (no vote)" },
 }
 
+-- Record my vote on the row's record and recompute the derived vote ratio
+-- and reviewer summary the way the data provider does, so the row updates
+-- before the server has answered. Returns an undo function.
+local function set_my_vote(pr, vote)
+  local snap = { voteRatio = pr.voteRatio, reviewerSummary = pr.reviewerSummary,
+                 reviewers = vim.deepcopy(pr.reviewers or {}) }
+  local me = pr.myName or ""
+  pr.reviewers = pr.reviewers or {}
+  local mine
+  for _, r in ipairs(pr.reviewers) do
+    if r.name == me then mine = r break end
+  end
+  if not mine then
+    mine = { name = me, vote = 0 }
+    table.insert(pr.reviewers, mine)
+  end
+  mine.vote = vote
+  local signed, parts = 0, {}
+  for _, r in ipairs(pr.reviewers) do
+    local v = tonumber(r.vote) or 0
+    local ok = v == 10 or v == 5
+    if ok then signed = signed + 1 end
+    parts[#parts + 1] = (ok and "\u{2713}" or (v == -10 and "\u{2717}" or (v == -5 and "~" or "\u{00B7}")))
+      .. surname(r.name)
+  end
+  pr.voteRatio = signed .. " / " .. #pr.reviewers
+  pr.reviewerSummary = table.concat(parts, " ")
+  return function()
+    pr.voteRatio, pr.reviewerSummary, pr.reviewers = snap.voteRatio, snap.reviewerSummary, snap.reviewers
+  end
+end
+
 local function vote_pr()
   local pr = current_pr()
   if not pr then return end
@@ -870,7 +1112,9 @@ local function vote_pr()
     notify("Cancelled.")
     return
   end
-  run_action({ "--vote", VOTE_OPTIONS[idx].key }, "Voting on")
+  run_action({ "--vote", VOTE_OPTIONS[idx].key }, "Voting on", function(p)
+    return set_my_vote(p, tonumber(VOTE_OPTIONS[idx].key) or 0)
+  end)
 end
 
 local MERGE_TYPES = {
@@ -893,7 +1137,16 @@ local function complete_pr()
     return
   end
   -- Defaults: delete source branch + transition work items (like the web UI).
-  run_action({ "--complete", MERGE_TYPES[idx].key, "true", "true" }, "Completing")
+  -- Optimistically drop the row: a completed PR leaves the active list.
+  run_action({ "--complete", MERGE_TYPES[idx].key, "true", "true" }, "Completing", function(p)
+    local at
+    for i, x in ipairs(prs) do
+      if x == p then at = i break end
+    end
+    if not at then return nil end
+    table.remove(prs, at)
+    return function() table.insert(prs, math.min(at, #prs + 1), p) end
+  end)
 end
 
 -- Toggle "complete automatically when requirements are met" (auto-complete)
@@ -914,7 +1167,11 @@ local function toggle_auto_complete()
       notify("Cancelled.")
       return
     end
-    run_action({ "--auto-complete", "off" }, "Cancelling auto-complete on")
+    run_action({ "--auto-complete", "off" }, "Cancelling auto-complete on", function(p)
+      local was, by = p.autoComplete, p.autoCompleteSetBy
+      p.autoComplete, p.autoCompleteSetBy = false, ""
+      return function() p.autoComplete, p.autoCompleteSetBy = was, by end
+    end)
     return
   end
 
@@ -928,7 +1185,11 @@ local function toggle_auto_complete()
     return
   end
   -- Defaults: delete source branch + transition work items (like the web UI).
-  run_action({ "--auto-complete", "on", MERGE_TYPES[idx].key, "true", "true" }, "Setting auto-complete on")
+  run_action({ "--auto-complete", "on", MERGE_TYPES[idx].key, "true", "true" }, "Setting auto-complete on", function(p)
+    local was, by = p.autoComplete, p.autoCompleteSetBy
+    p.autoComplete, p.autoCompleteSetBy = true, p.myName or ""
+    return function() p.autoComplete, p.autoCompleteSetBy = was, by end
+  end)
 end
 
 -- Re-queue the build validation (e.g. an expired build) for the PR under the cursor.
@@ -983,14 +1244,19 @@ end, opts)
 vim.keymap.set("n", "q", "<Cmd>qa!<CR>", opts)
 
 -- Prefetch the PR under the cursor once movement settles (debounced), so the
--- reviewer opens with branches already warmed.
+-- reviewer opens with branches already warmed. Half a second of stillness
+-- rather than a fifth: each prefetch is a bash + git fetch spawn, and at
+-- 200ms a leisurely scroll through the list fired one per row passed over.
 local prefetch_timer
 vim.api.nvim_create_autocmd("CursorMoved", {
   buffer = buf,
   callback = function()
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
-    prefetch_timer = vim.fn.timer_start(200, function()
-      ensure_warm(current_pr())
+    prefetch_timer = vim.fn.timer_start(500, function()
+      local pr = current_pr()
+      ensure_warm(pr, function(ok)
+        if ok then prefetch_content(pr) end
+      end)
     end)
   end,
 })
@@ -1008,9 +1274,11 @@ vim.api.nvim_create_autocmd("VimResized", {
 })
 
 -- Periodic auto-refresh (silent + change-aware). Stop any timer from a previous
--- swap into this dashboard so timers don't stack across W/P swaps.
+-- swap into this dashboard so timers don't stack across W/P swaps. Once a
+-- minute: each poll is a full ADO sweep, and at 30s the machine was busy
+-- with background sweeps more often than not.
 if _G.PR_DASH_TIMER then pcall(vim.fn.timer_stop, _G.PR_DASH_TIMER) end
-_G.PR_DASH_TIMER = vim.fn.timer_start(30000, function()
+_G.PR_DASH_TIMER = vim.fn.timer_start(60000, function()
   -- Keep polling while the list is shown in any tab, so build/PR status stays
   -- fresh even while a PR is open in an embedded reviewer tab; stop once the
   -- dashboard buffer has been swapped away (e.g. to the work-items dashboard).

@@ -8,10 +8,10 @@
 # Usage: wi-list.sh [current|next]   (default: current)
 #
 # Config via environment (sensible BarLev-RnD / DUNE SW defaults):
-#   ADO_PAT            always resolved from azure-cli.yml (via
-#                       `azure-cli.exe --print-pat`) for the account matching
-#                       WIDASH_COLLECTION/WIDASH_PROJECT; never taken from an
-#                       ambient ADO_PAT env var, config is the only source
+#   ADO_PAT            always resolved from azure-cli.yml (see resolve-pat.sh)
+#                       for the account matching WIDASH_COLLECTION/WIDASH_PROJECT;
+#                       never taken from an ambient ADO_PAT env var, config is
+#                       the only source
 #   WIDASH_COLLECTION  TFS collection URL
 #   WIDASH_PROJECT     team project
 #   WIDASH_TEAM        team (for current-sprint + area resolution)
@@ -45,17 +45,12 @@ case "$SPRINT_SELECT" in
   *) echo "ERROR: selector must be current|next|sprints|items, got '$SPRINT_SELECT'" >&2; exit 1 ;;
 esac
 
-# Always resolve the PAT from azure-cli.yml via a headless azure-cli.exe call
-# (never from an ambient ADO_PAT env var) - config is the single source of
-# truth, same as review-pr.sh.
-if [[ -z "${PRDASH_EXE:-}" ]]; then
-  echo "ERROR: PRDASH_EXE not set - can't resolve the PAT from azure-cli.yml." >&2
-  exit 1
-fi
-ADO_PAT="$("$PRDASH_EXE" --print-pat --org "$COLLECTION" --project "$PROJECT" 2>/dev/null)" || true
-: "${ADO_PAT:?ERROR: no PAT available - add 'pat:' to this account in azure-cli.yml}" >&2
-
-AUTH="$(printf ":%s" "$ADO_PAT" | base64 | tr -d '\r\n')"
+# Shared PAT lookup (pure-bash scan of PRDASH_PATS when launched through
+# azure-cli.exe, else one --print-pat call) - see resolve-pat.sh.
+if [[ "${BASH_SOURCE[0]}" == */* ]]; then . "${BASH_SOURCE[0]%/*}/resolve-pat.sh"; else . "./resolve-pat.sh"; fi
+resolve_pat_into ADO_PAT "$COLLECTION" "$PROJECT" \
+  || { echo "ERROR: no PAT available - add 'pat:' to this account in azure-cli.yml" >&2; exit 1; }
+export ADO_PAT
 
 urlencode() {
   local s="$1" out="" i c
@@ -73,23 +68,23 @@ TEAM_ESCAPED="$(urlencode "$TEAM")"
 ITERS_URL="${COLLECTION}/${PROJECT}/${TEAM_ESCAPED}/_apis/work/teamsettings/iterations?timeframe=all&api-version=7.1"
 AREAS_URL="${COLLECTION}/${PROJECT}/${TEAM_ESCAPED}/_apis/work/teamsettings/teamfieldvalues?api-version=7.1"
 
-ITERS_JSON="$(curl -sS -H "Authorization: Basic ${AUTH}" "$ITERS_URL")"
-AREAS_JSON="$(curl -sS -H "Authorization: Basic ${AUTH}" "$AREAS_URL")"
+ITERS_JSON="$(curl -sS -u ":${ADO_PAT}" "$ITERS_URL")"
+AREAS_JSON="$(curl -sS -u ":${ADO_PAT}" "$AREAS_URL")"
 if [[ -z "$ITERS_JSON" || "${ITERS_JSON:0:1}" != "{" ]]; then
   echo "ERROR: could not fetch iterations from ADO - check the PAT's permissions/scope" \
        "(needs Work Items - Read) for $COLLECTION/$PROJECT: ${ITERS_JSON:0:200}" >&2
   exit 1
 fi
-export ITERS_JSON AREAS_JSON COLLECTION PROJECT AUTH ASSIGNEE TYPES SPRINT_SELECT ITEM_PATH
+export ITERS_JSON AREAS_JSON COLLECTION PROJECT ASSIGNEE TYPES SPRINT_SELECT ITEM_PATH
 
 PY="python"; command -v python >/dev/null 2>&1 || PY="python3"
 
 "$PY" - <<'PYEOF'
-import os, sys, json, re, datetime, urllib.request, urllib.error
+import os, sys, json, base64, re, datetime, urllib.request, urllib.error
 
 collection = os.environ["COLLECTION"]
 project    = os.environ["PROJECT"]
-auth       = os.environ["AUTH"]
+auth       = base64.b64encode((":" + os.environ["ADO_PAT"]).encode()).decode()
 assignee   = os.environ["ASSIGNEE"]
 types      = os.environ["TYPES"]
 api        = "7.1"

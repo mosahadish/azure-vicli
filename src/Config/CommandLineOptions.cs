@@ -39,7 +39,7 @@ namespace AzureCli.Configuration
         /// <summary>
         /// Headless mode: print the configured PAT for the account matching
         /// --org (and --project, if given) and exit. Lets shell scripts
-        /// (review-pr.sh) resolve credentials straight from pr-dash.yml
+        /// (review-pr.sh) resolve credentials straight from azure-cli.yml
         /// instead of needing their own copy of the PAT in an env var.
         /// </summary>
         [Option("print-pat", HelpText = "Print the configured PAT for --org/--project and exit (no TUI)")]

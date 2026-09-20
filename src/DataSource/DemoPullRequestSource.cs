@@ -45,39 +45,6 @@ namespace AzureCli.DataSource
         public event EventHandler<StatisticsUpdateEventArgs>? StatisticsUpdate;
 
         /// <inheritdoc/>
-        public async IAsyncEnumerable<PullRequestViewElement> FetchAssignedPullRequests(PrState state)
-        {
-            m_statistics.Reset();
-
-            await Task.CompletedTask;
-
-            yield return Fake("Fix: Validate function parameters coming from user", "Alice G.");
-            yield return Fake("Docs: Use xunit branding from the website");
-            yield return Fake("Docs: Update README.md with more details");
-            yield return Fake("GitPullRequestExtensions: Fix null - ref bug where a PR can have no commits");
-            yield return Fake("Feature: Add description view, disabled by default for now.");
-            yield return Fake("DataSouce: Skip reviews that the reviewer has declined");
-            yield return Fake("Docs: Try to syntax highlight config in README.md");
-            yield return Fake("Docs: Update README.md");
-            yield return Fake("Feature: Add 's' hot key to filter view to signedoff pull requests");
-            yield return Fake("Switch build version");
-            yield return Fake("Docs: Document AAD feature in README.md");
-
-            m_statistics.SignedOff = 20;
-            m_statistics.Waiting = 2;
-            m_statistics.Drafts = 1;
-
-            OnStatisticsUpdate();
-        }
-
-        /// <inheritdoc/>
-        public async IAsyncEnumerable<PullRequestViewElement> FetchCreatedPullRequests()
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
-
-        /// <inheritdoc/>
         public async IAsyncEnumerable<PullRequestViewElement> FetchGroupedPullRequests()
         {
             m_statistics.Reset();

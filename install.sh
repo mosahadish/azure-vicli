@@ -5,7 +5,8 @@
 #      on Windows, python for the wi-*.sh helper scripts).
 #   2. Builds src\azure-cli.csproj.
 #   3. Creates the azure-cli.yml config file (if it doesn't already exist) at
-#      the OS-appropriate location, pre-filled with whatever this script can
+#      the location the exe reads it from (%APPDATA% on Windows, the XDG
+#      config dir elsewhere), pre-filled with whatever this script can
 #      figure out for the current machine (bash_path on Windows, a guessed
 #      clones_dir, ...). Everything else (org_url/pat/project_name) is left
 #      as a placeholder for the user to fill in.
@@ -161,15 +162,13 @@ if $IS_WINDOWS; then
   fi
   CONFIG_DIR="$(printf '%s' "$APPDATA_WIN" | sed 's#\\#/#g; s#^\([A-Za-z]\):#/\L\1#')"
 else
-  CONFIG_DIR="$HOME"
+  # Same place .NET's ApplicationData folder resolves to on Unix, which is
+  # where azure-cli.exe looks: $XDG_CONFIG_HOME, else ~/.config.
+  CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
 fi
 mkdir -p "$CONFIG_DIR"
 
-if $IS_WINDOWS; then
-  CONFIG_FILE="$CONFIG_DIR/azure-cli.yml"
-else
-  CONFIG_FILE="$CONFIG_DIR/.azure-cli.yml"
-fi
+CONFIG_FILE="$CONFIG_DIR/azure-cli.yml"
 
 if [[ -f "$CONFIG_FILE" ]]; then
   log "Config file already exists at $CONFIG_FILE, leaving it untouched."
