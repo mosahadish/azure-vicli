@@ -225,9 +225,11 @@ namespace AzureCli.DataSource
             Guid userId, string userName, AccountConfig account, PrState state,
             Task<List<GitPullRequestCommentThread>> threadsTask)
         {
-            Task<(string Status, int? QueuePosition)> buildTask = GetBuildStatus(policyClient, buildClient, pr, account.Project);
+            Task<(string Status, int? QueuePosition, string BuildUrl, List<PolicyInfo> Policies, List<string> MissingReviewers)> buildTask =
+                GetBuildStatus(policyClient, buildClient, pr, account);
             (int active, int total, int myActive) = await CountThreads(threadsTask, userId).ConfigureAwait(false);
-            (string buildStatus, int? queuePosition) = await buildTask.ConfigureAwait(false);
+            (string buildStatus, int? queuePosition, string buildUrl, List<PolicyInfo> policies, List<string> missingReviewers) =
+                await buildTask.ConfigureAwait(false);
 
             return new PullRequestViewElement(pr)
             {
@@ -240,6 +242,9 @@ namespace AzureCli.DataSource
                 MyActiveThreadCount = myActive,
                 BuildStatus = buildStatus,
                 QueuePosition = queuePosition,
+                BuildUrl = buildUrl,
+                Policies = policies,
+                MissingReviewers = missingReviewers,
                 CurrentUserId = userId,
                 CurrentUserName = userName,
             };
@@ -330,17 +335,27 @@ namespace AzureCli.DataSource
         /// into a single status: "succeeded", "failed", "expired" (stale build that
         /// needs re-queueing), "running", or "none" (no build policy / lookup failed).
         /// Also resolves the queue position of the build backing that status, when it
-        /// is still waiting for an agent (i.e. not yet actually running).
+        /// is still waiting for an agent (i.e. not yet actually running), the web link
+        /// to that build, the non-build branch policies (required reviewers, minimum
+        /// reviewer count, work item linking, comment requirements, ...), and - for
+        /// any "Required reviewers" policy - the display names of required reviewers
+        /// who have not yet approved. All of this comes from the single evaluations
+        /// request below; no extra API calls are made for it.
         /// </summary>
-        private static async Task<(string Status, int? QueuePosition)> GetBuildStatus(PolicyHttpClient policyClient, BuildHttpClient buildClient, GitPullRequest pr, string? project)
+        private static async Task<(string Status, int? QueuePosition, string BuildUrl, List<PolicyInfo> Policies, List<string> MissingReviewers)> GetBuildStatus(
+            PolicyHttpClient policyClient, BuildHttpClient buildClient, GitPullRequest pr, AccountConfig? account)
         {
+            List<PolicyInfo> policies = new List<PolicyInfo>();
+            List<string> missingReviewers = new List<string>();
+
             try
             {
-                if (policyClient == null || string.IsNullOrEmpty(project) || pr?.Repository?.ProjectReference == null)
+                if (policyClient == null || account == null || string.IsNullOrEmpty(account.Project) || pr?.Repository?.ProjectReference == null)
                 {
-                    return ("none", null);
+                    return ("none", null, string.Empty, policies, missingReviewers);
                 }
 
+                string project = account.Project!;
                 Guid projectId = pr.Repository.ProjectReference.Id;
                 string artifactId = string.Format(
                     CultureInfo.InvariantCulture,
@@ -356,58 +371,93 @@ namespace AzureCli.DataSource
                 bool anyExpired = false;
                 bool anyRunning = false;
                 bool anyPending = false;
+                int? failedBuildId = null;
+                int? expiredBuildId = null;
                 int? runningBuildId = null;
+                int? succeededBuildId = null;
+                HashSet<string> missingReviewerNames = new HashSet<string>(StringComparer.Ordinal);
+                HashSet<string> unresolvedRequiredReviewerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (PolicyEvaluationRecord record in evaluations)
                 {
-                    if (!IsBuildPolicy(record))
+                    if (IsBuildPolicy(record))
                     {
+                        anyBuild = true;
+                        switch (record.Status)
+                        {
+                            case PolicyEvaluationStatus.Rejected:
+                            case PolicyEvaluationStatus.Broken:
+                                anyFailed = true;
+                                failedBuildId ??= GetBuildId(record);
+                                break;
+                            case PolicyEvaluationStatus.Running:
+                            case PolicyEvaluationStatus.Queued:
+                                // A stale build reports as Queued but carries isExpired in its
+                                // context; Azure DevOps surfaces that as a failed required check.
+                                if (IsExpiredBuild(record))
+                                {
+                                    anyExpired = true;
+                                    expiredBuildId ??= GetBuildId(record);
+                                }
+                                else
+                                {
+                                    anyRunning = true;
+                                    runningBuildId ??= GetBuildId(record);
+                                }
+
+                                break;
+                            case PolicyEvaluationStatus.Approved:
+                                succeededBuildId ??= GetBuildId(record);
+                                break;
+                            default:
+                                anyPending = true;
+                                break;
+                        }
+
                         continue;
                     }
 
-                    anyBuild = true;
-                    switch (record.Status)
-                    {
-                        case PolicyEvaluationStatus.Rejected:
-                        case PolicyEvaluationStatus.Broken:
-                            anyFailed = true;
-                            break;
-                        case PolicyEvaluationStatus.Running:
-                        case PolicyEvaluationStatus.Queued:
-                            // A stale build reports as Queued but carries isExpired in its
-                            // context; Azure DevOps surfaces that as a failed required check.
-                            if (IsExpiredBuild(record))
-                            {
-                                anyExpired = true;
-                            }
-                            else
-                            {
-                                anyRunning = true;
-                                runningBuildId ??= GetBuildId(record);
-                            }
+                    // Everything else is a non-build branch policy: surface it (unless
+                    // it doesn't apply to this PR) and, for required reviewers, work
+                    // out who on that list still hasn't approved.
+                    //
+                    AddPolicyInfo(record, policies);
+                    CollectMissingReviewers(record, pr, missingReviewerNames, unresolvedRequiredReviewerIds);
+                }
 
-                            break;
-                        case PolicyEvaluationStatus.Approved:
-                            break;
-                        default:
-                            anyPending = true;
-                            break;
-                    }
+                foreach (string name in missingReviewerNames)
+                {
+                    missingReviewers.Add(name);
+                }
+
+                if (unresolvedRequiredReviewerIds.Count > 0)
+                {
+                    // Required reviewer ids that aren't themselves a reviewer on the PR
+                    // are (almost always) groups: we can't resolve a name or tell
+                    // whether the group's requirement has been satisfied, so they're
+                    // reported as a count instead of silently dropped or guessed at.
+                    missingReviewers.Add(string.Format(CultureInfo.InvariantCulture, "{0} more", unresolvedRequiredReviewerIds.Count));
                 }
 
                 if (!anyBuild)
                 {
-                    return ("none", null);
+                    return ("none", null, string.Empty, policies, missingReviewers);
                 }
+
+                string org = (account.OrganizationUrl?.ToString() ?? string.Empty).TrimEnd('/');
+                string encodedProject = Uri.EscapeDataString(project);
+                string BuildUrlFor(int? id) => id.HasValue && org.Length > 0
+                    ? string.Format(CultureInfo.InvariantCulture, "{0}/{1}/_build/results?buildId={2}", org, encodedProject, id.Value)
+                    : string.Empty;
 
                 if (anyFailed)
                 {
-                    return ("failed", null);
+                    return ("failed", null, BuildUrlFor(failedBuildId), policies, missingReviewers);
                 }
 
                 if (anyExpired)
                 {
-                    return ("expired", null);
+                    return ("expired", null, BuildUrlFor(expiredBuildId), policies, missingReviewers);
                 }
 
                 if (anyRunning || anyPending)
@@ -415,14 +465,100 @@ namespace AzureCli.DataSource
                     int? queuePosition = runningBuildId.HasValue
                         ? await GetQueuePosition(buildClient, project, runningBuildId.Value).ConfigureAwait(false)
                         : null;
-                    return ("running", queuePosition);
+                    return ("running", queuePosition, BuildUrlFor(runningBuildId), policies, missingReviewers);
                 }
 
-                return ("succeeded", null);
+                return ("succeeded", null, BuildUrlFor(succeededBuildId), policies, missingReviewers);
             }
             catch (Exception)
             {
-                return ("none", null);
+                return ("none", null, string.Empty, policies, missingReviewers);
+            }
+        }
+
+        /// <summary>
+        /// Adds a non-build policy evaluation to <paramref name="policies"/> as its
+        /// type's display name and lowercased status, skipping evaluations that don't
+        /// apply to this PR (no status, or "not applicable") or whose policy type
+        /// can't be identified.
+        /// </summary>
+        private static void AddPolicyInfo(PolicyEvaluationRecord record, List<PolicyInfo> policies)
+        {
+            if (record?.Status == null || record.Status == PolicyEvaluationStatus.NotApplicable)
+            {
+                return;
+            }
+
+            string name = record.Configuration?.Type?.DisplayName ?? string.Empty;
+            if (name.Length == 0)
+            {
+                return;
+            }
+
+            policies.Add(new PolicyInfo
+            {
+                Name = name,
+                Status = record.Status.Value.ToString().ToLowerInvariant(),
+            });
+        }
+
+        /// <summary>
+        /// For a "Required reviewers" policy evaluation, resolves each configured
+        /// reviewer id against the pull request's reviewer list: a match with a vote
+        /// of 5 ("approved with suggestions") or higher counts as done, anything else
+        /// is added (by display name) to <paramref name="missingNames"/>. An id with
+        /// no matching reviewer on the PR - almost always a group, since groups
+        /// aren't listed as individual PR reviewers - can't be resolved to a name or
+        /// an approval state, so it's added to <paramref name="unresolvedIds"/>
+        /// instead and reported by the caller as a plain count. Never throws: a
+        /// missing or malformed configuration degrades to no missing reviewers for
+        /// that policy.
+        /// </summary>
+        private static void CollectMissingReviewers(PolicyEvaluationRecord record, GitPullRequest pr, HashSet<string> missingNames, HashSet<string> unresolvedIds)
+        {
+            try
+            {
+                string? typeName = record?.Configuration?.Type?.DisplayName;
+                if (!string.Equals(typeName, "Required reviewers", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                if (record?.Status == null || record.Status == PolicyEvaluationStatus.NotApplicable)
+                {
+                    return;
+                }
+
+                JToken? idsToken = record.Configuration?.Settings?["requiredReviewerIds"];
+                if (idsToken == null || idsToken.Type != JTokenType.Array)
+                {
+                    return;
+                }
+
+                foreach (JToken idToken in (JArray)idsToken)
+                {
+                    string? id = idToken.Value<string>();
+                    if (string.IsNullOrEmpty(id))
+                    {
+                        continue;
+                    }
+
+                    IdentityRefWithVote? reviewer = pr.Reviewers?.FirstOrDefault(
+                        r => r != null && string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
+
+                    if (reviewer == null)
+                    {
+                        unresolvedIds.Add(id);
+                    }
+                    else if (reviewer.Vote < 5)
+                    {
+                        missingNames.Add(string.IsNullOrEmpty(reviewer.DisplayName) ? id : reviewer.DisplayName);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Degrade to "no missing reviewers reported" for this policy.
             }
         }
 

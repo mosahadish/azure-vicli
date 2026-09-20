@@ -104,9 +104,10 @@ first. The list refreshes every minute.
 |---|---|
 | `j` / `k` | Move |
 | `<CR>` | Open the PR in the reviewer, cloning its repo first if needed |
-| `gd` | Show the description |
+| `gd` | Show the description, build status and branch policies |
 | `gy` | Copy the PR link |
 | `o` | Open in the browser |
+| `gb` | Open the PR's build in the browser |
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
 | `gm` | Complete (merge) |
@@ -130,6 +131,13 @@ Each row carries badges to the left of the id:
 The build column to the right of the id shows `✓` succeeded, `✗` failed,
 `↻` expired, and `●` running with the queue position when known. `⚠` marks a
 merge conflict and `A` marks auto-complete.
+
+`gd`'s description popup also shows a "Build:" line (status and, when known,
+a link to the build behind it) and a "Policies:" section listing the PR's
+other branch policies (required reviewers, minimum reviewer count, work item
+linking, comment requirements, ...) as `✓`/`✗`/`…` for approved/rejected or
+broken/queued or running, with a "Waiting on:" line naming the required
+reviewers who haven't approved yet when that's known.
 
 Votes, completion and auto-complete apply to the row immediately and are
 reverted with an error if the call fails.
