@@ -40,11 +40,6 @@ namespace AzureCli.DataSource
                 await writer.WriteLineAsync(Serialize(element));
             }
 
-            await foreach (PullRequestViewElement element in source.FetchCreatedPullRequests())
-            {
-                await writer.WriteLineAsync(Serialize(element));
-            }
-
             await writer.FlushAsync();
         }
 
@@ -91,6 +86,8 @@ namespace AzureCli.DataSource
                 url = BuildUrl(element),
                 cloneUrl = BuildCloneUrl(element),
                 clonesDir = element.ClonesDirectory ?? string.Empty,
+                myId = element.CurrentUserId?.ToString() ?? string.Empty,
+                myName = element.CurrentUserName ?? string.Empty,
                 reviewers,
             };
 

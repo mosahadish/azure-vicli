@@ -48,6 +48,17 @@ namespace AzureCli.View
         public string? ClonesDirectory { get; set; }
 
         /// <summary>
+        /// The id (GUID) of the authenticated user this PR was fetched as, so the
+        /// reviewer can tell "my" comments apart without a separate identity call.
+        /// </summary>
+        public Guid? CurrentUserId { get; set; }
+
+        /// <summary>
+        /// The display name of the authenticated user this PR was fetched as.
+        /// </summary>
+        public string? CurrentUserName { get; set; }
+
+        /// <summary>
         /// The number of active (unresolved) comment threads, or null/-1 when unknown.
         /// </summary>
         public int? ActiveThreadCount { get; set; }
