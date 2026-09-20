@@ -324,8 +324,30 @@ Optional overrides:
 ```
 dotnet build src/azure-cli.csproj      # data provider
 dotnet test test/azure-cli-test.csproj # needs a .NET 6 runtime
+bash tests/run.sh                      # Lua/shell test suite, needs bash, git, luajit
 ```
 
 Most files use CRLF line endings; edit them byte-wise. The Lua files can be
 syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
 `bash -n`. Build outputs and `.prefetch/` are ignored by git.
+
+`tests/run.sh` is the test suite for everything outside `src/` (it doesn't
+need dotnet): a `luajit -bl` syntax check and a global-name scan (catches a
+`local` read before its declaration - easy to do by accident in these long,
+forward-referencing files) over every Lua UI file, `bash -n` over every
+shell script, and four Lua unit tests under `tests/`:
+
+| Test | Covers |
+|---|---|
+| `test-split.lua` | `prdash-cache.lua`'s `split_diff`/`parse_diff` against per-file `git diff` output, over a real multi-file range of this repo's own history |
+| `test-prefetch.lua` | The prefetch pipeline end to end (caching, coalescing concurrent calls, refetch on thread-count change, the failure path, eviction), with a shimmed `vim.fn.jobstart` against a scratch git repo and a stub `review-pr.sh --threads` |
+| `test-nav.lua` | `pr-review.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
+| `test-decorate.lua` | The revision-buffer decoration line walk (extracted verbatim by pattern) against a real diff, both sides |
+
+The prefetch/split/decorate tests run against a small scratch git repo the
+runner builds in a temp dir (two branches, `tgt` and `src`, exposed as
+`refs/remotes/origin/{tgt,src}` since that's what the prefetch pipeline
+diffs). Everything is cleaned up on exit.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `dotnet build` and
+`bash tests/run.sh` on every push and pull request.

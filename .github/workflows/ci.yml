@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tests/test-split.lua diffs across this repo's own history, so it
+          # needs more than the tip commit a shallow checkout would give it.
+          fetch-depth: 0
+
+      - name: Install luajit
+        run: sudo apt-get update && sudo apt-get install -y luajit
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "6.0.x"
+
+      - name: Build data provider
+        run: dotnet build src/azure-cli.csproj
+
+      - name: Run tests
+        run: bash tests/run.sh
