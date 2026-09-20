@@ -19,12 +19,6 @@ namespace AzureCli.Configuration
         private static string ConfigName = "azure-cli.yml";
 
         /// <summary>
-        /// The legacy configuration file name (still honored if azure-cli.yml
-        /// doesn't exist), from back when this project was named pr-dash.
-        /// </summary>
-        private static string LegacyConfigName = "pr-dash.yml";
-
-        /// <summary>
         /// The name of the root account node.
         /// </summary>
         private static string YamlRootAccountsToken = "accounts";
@@ -65,29 +59,15 @@ namespace AzureCli.Configuration
         private static string YamlFieldRepoPathToken = "repo_path";
 
         /// <summary>
-        /// The fully qualified configuration file path. Prefers azure-cli.yml;
-        /// falls back to the legacy pr-dash.yml name if that's the only one present.
+        /// The fully qualified configuration file path (azure-cli.yml in the
+        /// user's application-data directory).
         /// </summary>
         public static string ConfigPath
         {
             get
             {
                 string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string preferred = Path.Combine(appData, ConfigName);
-                if (File.Exists(preferred))
-                {
-                    return preferred;
-                }
-
-                string legacy = Path.Combine(appData, LegacyConfigName);
-                if (File.Exists(legacy))
-                {
-                    return legacy;
-                }
-
-                // Neither exists yet: report the preferred (new) name so
-                // ValidateConfigExists' error message points at the right file.
-                return preferred;
+                return Path.Combine(appData, ConfigName);
             }
         }
 

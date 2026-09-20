@@ -28,7 +28,7 @@
 --                comment matching the filter under cursor (runs in the
 --                background), dd/x: remove, q/<Esc>: close; hides threads
 --                whose first comment contains any added string
---   gO        :  open pr-dash.yml (accounts/PAT/clones_dir config) in a new tab
+--   gO        :  open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab
 --   K         :  view comment(s) on the current line (in a regular file) in a
 --                large float; R/s inside it reply / set status without
 --                closing the popup
@@ -258,22 +258,22 @@ local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO)
 end
 
--- Resolve pr-dash.yml's path (matches Config.ConfigPath in the C# source):
--- %APPDATA%\pr-dash.yml on Windows, ~/.pr-dash.yml elsewhere.
+-- Resolve azure-cli.yml's path (matches Config.ConfigPath in the C# source):
+-- %APPDATA%\azure-cli.yml on Windows, ~/.azure-cli.yml elsewhere.
 local function config_path()
   if vim.fn.has("win32") == 1 then
-    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\pr-dash.yml"
+    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\azure-cli.yml"
   end
-  return vim.fn.expand("~/.pr-dash.yml")
+  return vim.fn.expand("~/.azure-cli.yml")
 end
 
--- Open pr-dash.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
+-- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
 local function open_config_file()
   local path = config_path()
   vim.cmd("tabnew " .. vim.fn.fnameescape(path))
   vim.bo.filetype = "yaml"
   if vim.fn.filereadable(path) == 0 then
-    notify("pr-dash.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
+    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
   end
 end
 

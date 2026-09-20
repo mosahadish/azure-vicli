@@ -133,16 +133,16 @@ local function seed_unseen(fresh_prs)
   if dirty then save_seen() end
 end
 
--- Resolve pr-dash.yml's path (matches Config.ConfigPath in the C# source):
--- %APPDATA%\pr-dash.yml on Windows, ~/.pr-dash.yml elsewhere.
+-- Resolve azure-cli.yml's path (matches Config.ConfigPath in the C# source):
+-- %APPDATA%\azure-cli.yml on Windows, ~/.azure-cli.yml elsewhere.
 local function config_path()
   if vim.fn.has("win32") == 1 then
-    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\pr-dash.yml"
+    return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\azure-cli.yml"
   end
-  return vim.fn.expand("~/.pr-dash.yml")
+  return vim.fn.expand("~/.azure-cli.yml")
 end
 
--- Open pr-dash.yml (accounts/PAT/clones_dir config) in a new tab for quick
+-- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick
 -- editing, so you don't have to go dig it up manually to add an account or
 -- tweak hide_ancient/clones_dir.
 local function open_config_file()
@@ -150,7 +150,7 @@ local function open_config_file()
   vim.cmd("tabnew " .. vim.fn.fnameescape(path))
   vim.bo.filetype = "yaml"
   if vim.fn.filereadable(path) == 0 then
-    notify("pr-dash.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
+    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
   end
 end
 
@@ -177,7 +177,7 @@ local function is_cloned(path)
 end
 
 -- Resolve the local clone path for a PR. Prefers the account's configured
--- clones_dir (pr.clonesDir, from pr-dash.yml) — <clones_dir>/<repo> — which
+-- clones_dir (pr.clonesDir, from azure-cli.yml) — <clones_dir>/<repo> — which
 -- works even when that repo hasn't been cloned yet (ensure_cloned below will
 -- offer to clone it there). Falls back to inferring a sibling directory next
 -- to the configured PRDASH_REPO_PATH when clones_dir isn't set, for backward
@@ -203,7 +203,7 @@ local function clone_for(pr)
 end
 
 -- Clone `pr`'s repo to `path` if it isn't already there (requires clones_dir
--- to be configured in pr-dash.yml so we know where to put it, and cloneUrl
+-- to be configured in azure-cli.yml so we know where to put it, and cloneUrl
 -- from the PR record). Calls cb(true) once `path` is a usable clone, or
 -- cb(false) if cloning wasn't possible/failed (caller should fall back to
 -- notifying the user rather than trying to open a nonexistent repo).
@@ -213,9 +213,9 @@ local function ensure_cloned(pr, path, cb)
     return
   end
   if to_win_path(pr.clonesDir) == "" then
-    notify("PR #" .. tostring(pr.id) .. "'s repo isn't cloned, and no clones_dir is set in pr-dash.yml "
+    notify("PR #" .. tostring(pr.id) .. "'s repo isn't cloned, and no clones_dir is set in azure-cli.yml "
       .. "to auto-clone it. Add e.g. `clones_dir: C:\\Users\\you\\source\\repos` to your account in "
-      .. "%APPDATA%\\pr-dash.yml, or clone " .. (pr.repo or "the repo") .. " manually.", vim.log.levels.ERROR)
+      .. "%APPDATA%\\azure-cli.yml, or clone " .. (pr.repo or "the repo") .. " manually.", vim.log.levels.ERROR)
     cb(false)
     return
   end
