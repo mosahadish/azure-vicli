@@ -13,7 +13,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The four Lua unit tests below it in this directory, against a
+#   4. The five Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed review-pr.sh --threads.
 #
 # The repo's Lua and shell files are CRLF (see README.md); luajit needs LF
@@ -105,10 +105,14 @@ for f in "${SH_FILES[@]}"; do
 done
 
 # --- Scratch git repo + stub review script for the prefetch/split/decorate
-#     tests. Recipe: tgt branch has f.txt = "a\nb\n" and d/g.txt = "x\n";
-#     src branch (from tgt) edits f.txt to "a\nB\nc\n", adds n.txt, removes
-#     d/g.txt; both are exposed as refs/remotes/origin/{src,tgt} because
-#     prdash-cache.lua's prefetch always diffs origin/<target>...origin/<source>.
+#     tests. Recipe: tgt branch has f.txt = "a\nb\n", d/g.txt = "x\n" and
+#     ws.txt = "same content\n"; src branch (from tgt) edits f.txt to
+#     "a\nB\nc\n", adds n.txt, removes d/g.txt, and only adds trailing
+#     whitespace to ws.txt (ws.txt exercises the gw/ignore_ws prefetch
+#     variant in test-prefetch.lua: it has a plain diff but none under
+#     --ignore-all-space). Both branches are exposed as
+#     refs/remotes/origin/{src,tgt} because prdash-cache.lua's prefetch
+#     always diffs origin/<target>...origin/<source>.
 SCRATCH="$TMP/scratch-repo"
 build_scratch_repo() {
   git init -q "$SCRATCH"
@@ -120,12 +124,14 @@ build_scratch_repo() {
     mkdir -p d
     printf 'a\nb\n' > f.txt
     printf 'x\n' > d/g.txt
+    printf 'same content\n' > ws.txt
     git add -A
     git commit -q -m "tgt"
     git checkout -q -b src
     printf 'a\nB\nc\n' > f.txt
     printf 'new\n' > n.txt
     git rm -q d/g.txt
+    printf 'same content \n' > ws.txt
     git add -A
     git commit -q -m "src"
     git update-ref refs/remotes/origin/src src
@@ -175,6 +181,7 @@ run_lua_test test-split.lua "$REPO_ROOT" "$CACHE_LUA" "$SPLIT_RANGE"
 run_lua_test test-prefetch.lua "$REPO_ROOT" "$CACHE_LUA" "$SCRATCH" "$STUB_SCRIPT"
 run_lua_test test-nav.lua "$REPO_ROOT" "$REVIEW_LUA"
 run_lua_test test-decorate.lua "$REPO_ROOT" "$CACHE_LUA" "$REVIEW_LUA" "$SCRATCH"
+run_lua_test test-worddiff.lua "$REPO_ROOT" "$CACHE_LUA"
 
 echo
 echo "== summary =="

@@ -1117,7 +1117,13 @@ pcall(vim.api.nvim_set_hl, 0, "PrDiffAddBg",   { bg = "#20302a" })
 pcall(vim.api.nvim_set_hl, 0, "PrDiffDelBg",   { bg = "#332329" })
 pcall(vim.api.nvim_set_hl, 0, "PrDiffAddSign", { fg = "#a6e3a1", bg = "#20302a", bold = true })
 pcall(vim.api.nvim_set_hl, 0, "PrDiffDelSign", { fg = "#f38ba8", bg = "#332329", bold = true })
-local function decorate_diff(buf, map)
+-- Word-level highlight inside a changed line pair (see CACHE.word_diff):
+-- the same hue as the line background, stronger and bold, so a one-token
+-- edit on a long line stands out instead of the whole line reading as
+-- uniformly changed.
+pcall(vim.api.nvim_set_hl, 0, "PrDiffAddWord", { bg = "#2d5940", bold = true })
+pcall(vim.api.nvim_set_hl, 0, "PrDiffDelWord", { bg = "#5a2d36", bold = true })
+local function decorate_diff(buf, lines, map)
   vim.api.nvim_buf_clear_namespace(buf, diff_ns, 0, -1)
   for bl, m in ipairs(map) do
     if m.kind == "add" or m.kind == "del" then
@@ -1128,6 +1134,16 @@ local function decorate_diff(buf, map)
         line_hl_group = is_add and "PrDiffAddBg" or "PrDiffDelBg",
       })
     end
+  end
+  -- Narrow modified-block line pairs down to the bytes that actually
+  -- changed (CACHE.word_diff pairs the i-th deleted line with the i-th
+  -- added line of each such block), so a one-token change on a long line
+  -- stands out instead of the whole line reading uniformly green/red.
+  for _, w in ipairs(CACHE.word_diff(lines, map)) do
+    vim.api.nvim_buf_set_extmark(buf, diff_ns, w.line - 1, w.s, {
+      end_col = w.e,
+      hl_group = w.kind == "add" and "PrDiffAddWord" or "PrDiffDelWord",
+    })
   end
 end
 
@@ -1951,7 +1967,7 @@ local function open_file(path, focus)
       vim.bo[buf].modifiable = false
       entry.map = cached.map
       maps_by_buf[buf] = cached.map
-      decorate_diff(buf, cached.map)
+      decorate_diff(buf, cached.lines, cached.map)
       decorate_comments(buf, path, cached.map)
     else
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading diff…" })
@@ -1964,7 +1980,7 @@ local function open_file(path, focus)
         vim.bo[buf].modifiable = false
         entry.map = map
         maps_by_buf[buf] = map
-        decorate_diff(buf, map)
+        decorate_diff(buf, lines, map)
         decorate_comments(buf, path, map)
       end)
     end
@@ -2123,6 +2139,38 @@ local function decorate_revision(buf)
       end
     end
     flush(n + 1)
+
+    -- Word-level highlights on real lines only: the other side above is
+    -- shown as virtual text (virt_lines can't carry extmarks), so only the
+    -- own-side half of a CACHE.word_diff pair ever applies here. Walks the
+    -- map a second time for its own line-position counters rather than
+    -- reusing the walk above, which only leaves `old`/`new` at their final
+    -- totals once it's done.
+    local word_marks = CACHE.word_diff(lines, map)
+    if #word_marks > 0 then
+      local by_line = {}
+      for _, w in ipairs(word_marks) do
+        if w.kind == own_kind then by_line[w.line] = w end
+      end
+      local wold, wnew = 0, 0
+      for i, m in ipairs(map) do
+        if m.kind == "add" then
+          wnew = wnew + 1
+        elseif m.kind == "del" then
+          wold = wold + 1
+        elseif m.kind == "ctx" then
+          wnew, wold = wnew + 1, wold + 1
+        end
+        local w = by_line[i]
+        if w then
+          local own_line = own_side == "R" and wnew or wold
+          pcall(vim.api.nvim_buf_set_extmark, buf, diff_ns, own_line - 1, w.s, {
+            end_col = w.e,
+            hl_group = w.kind == "add" and "PrDiffAddWord" or "PrDiffDelWord",
+          })
+        end
+      end
+    end
   end)
 end
 
