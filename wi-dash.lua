@@ -903,7 +903,7 @@ vim.api.nvim_create_autocmd("CursorMoved", {
   buffer = buf,
   callback = function()
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
-    prefetch_timer = vim.fn.timer_start(200, function()
+    prefetch_timer = vim.fn.timer_start(400, function()
       local it = current_item()
       if it then prefetch(it.id) end
     end)

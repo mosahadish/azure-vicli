@@ -720,7 +720,11 @@ end
 
 -- Fetch the PR list from the headless provider and render it. Renders the
 -- cached list instantly (making swaps instant) and only refetches when the
--- cache is stale or a refresh is forced.
+-- cache is stale or a refresh is forced. Only one --list run is ever in
+-- flight: a poll (or an r press) that lands while the previous fetch is
+-- still going is skipped rather than stacked on top of it, so a slow server
+-- can't pile up concurrent sweeps that fight each other for the connection.
+local list_inflight = false
 local function load(silent, force)
   local cache = _G.PR_LIST_CACHE
   local prev_prs = cache and cache.prs
@@ -738,6 +742,12 @@ local function load(silent, force)
     return
   end
 
+  if list_inflight then
+    if not silent then notify("Refresh already in progress…") end
+    return
+  end
+  list_inflight = true
+
   local fresh = {}
   local out = {}
   local err = {}
@@ -747,6 +757,7 @@ local function load(silent, force)
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
+      list_inflight = false
       if code ~= 0 then
         local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
         vim.bo[buf].modifiable = true
@@ -983,13 +994,15 @@ end, opts)
 vim.keymap.set("n", "q", "<Cmd>qa!<CR>", opts)
 
 -- Prefetch the PR under the cursor once movement settles (debounced), so the
--- reviewer opens with branches already warmed.
+-- reviewer opens with branches already warmed. Half a second of stillness
+-- rather than a fifth: each prefetch is a bash + git fetch spawn, and at
+-- 200ms a leisurely scroll through the list fired one per row passed over.
 local prefetch_timer
 vim.api.nvim_create_autocmd("CursorMoved", {
   buffer = buf,
   callback = function()
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
-    prefetch_timer = vim.fn.timer_start(200, function()
+    prefetch_timer = vim.fn.timer_start(500, function()
       ensure_warm(current_pr())
     end)
   end,
@@ -1008,9 +1021,11 @@ vim.api.nvim_create_autocmd("VimResized", {
 })
 
 -- Periodic auto-refresh (silent + change-aware). Stop any timer from a previous
--- swap into this dashboard so timers don't stack across W/P swaps.
+-- swap into this dashboard so timers don't stack across W/P swaps. Once a
+-- minute: each poll is a full ADO sweep, and at 30s the machine was busy
+-- with background sweeps more often than not.
 if _G.PR_DASH_TIMER then pcall(vim.fn.timer_stop, _G.PR_DASH_TIMER) end
-_G.PR_DASH_TIMER = vim.fn.timer_start(30000, function()
+_G.PR_DASH_TIMER = vim.fn.timer_start(60000, function()
   -- Keep polling while the list is shown in any tab, so build/PR status stays
   -- fresh even while a PR is open in an embedded reviewer tab; stop once the
   -- dashboard buffer has been swapped away (e.g. to the work-items dashboard).

@@ -2371,9 +2371,9 @@ end
 -- diff buffers and the Overview row are updated once the threads arrive.
 refresh_threads({ announce = true })
 
--- Periodic auto-refresh of comment threads (silent), so per-file closed/total
--- counts and the Overview row/page stay current even if someone else updates a
--- thread while this view is open. Guarded by refresh_threads_inflight so an
+-- Periodic auto-refresh of comment threads (silent, once a minute), so per-file
+-- closed/total counts and the Overview row/page stay current even if someone
+-- else updates a thread while this view is open. Guarded by refresh_threads_inflight so an
 -- overlapping fetch is skipped rather than stacking (matches review-pr's other
 -- polling timers). Stops itself once the file-list window is gone.
 local refresh_threads_inflight = false
@@ -2391,7 +2391,7 @@ refresh_threads = function(opts)
 end
 
 if _G.PRDASH_REVIEW_THREADS_TIMER then pcall(vim.fn.timer_stop, _G.PRDASH_REVIEW_THREADS_TIMER) end
-_G.PRDASH_REVIEW_THREADS_TIMER = vim.fn.timer_start(30000, function()
+_G.PRDASH_REVIEW_THREADS_TIMER = vim.fn.timer_start(60000, function()
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     refresh_threads()
   else
