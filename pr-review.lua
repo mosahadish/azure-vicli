@@ -32,6 +32,13 @@
 --   K         :  view comment(s) on the current line (in a regular file) in a
 --                large float; R/s inside it reply / set status without
 --                closing the popup
+--   gd / gr   :  go to the definition of / find references to the word under
+--                the cursor, across the whole repo at the PR's revision (no
+--                checkout or LSP needed: git grep + a definition heuristic).
+--                Results open read-only at that revision; keep pressing
+--                gd/gr there to follow further, <BS> walks back one jump.
+--   gf        :  open the current file at the PR's revision (read-only, on
+--                the same line) to read around the change
 
 vim.o.compatible = false
 vim.o.number = true
@@ -263,6 +270,7 @@ local function filtered(list)
 end
 
 local list_win, diff_win
+local nav_goto_definition, nav_find_references, nav_open_file  -- code navigation (gd/gr/gf); assigned once the nav block exists.
 local fit_list_width   -- defined once the list window exists; re-fits its width.
 local refresh_threads  -- re-fetches PR threads and re-decorates; assigned below.
 local redraw_after_write  -- redraws every thread surface after an optimistic write; assigned below.
@@ -1800,6 +1808,9 @@ local function setup_diff_keymaps(buf)
   vim.keymap.set("n", "gA", toggle_active_filter, opts)
   vim.keymap.set("n", "gF", manage_ignore_texts, opts)
   vim.keymap.set("n", "gO", open_config_file, opts)
+  vim.keymap.set("n", "gd", function() nav_goto_definition() end, opts)
+  vim.keymap.set("n", "gr", function() nav_find_references() end, opts)
+  vim.keymap.set("n", "gf", function() nav_open_file() end, opts)
   vim.keymap.set("n", "<", function() resize_list(-5) end, opts)
   vim.keymap.set("n", ">", function() resize_list(5) end, opts)
   vim.keymap.set("n", "<BS>", function()
@@ -1816,7 +1827,7 @@ local function set_diff_winbar(path)
   vim.wo[diff_win].winbar = path
     .. (active_only and "  [active-only]" or "")
     .. ignore_texts_tag()
-    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gv: vote  gm: complete  gA: active-only  gF: hide text  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files)"
+    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  gv: vote  gm: complete  gA: active-only  gF: hide text  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files)"
 end
 
 -- Show a file's diff in the right window. focus=true moves the cursor into
@@ -1869,6 +1880,323 @@ local function open_file(path, focus)
       vim.api.nvim_win_set_cursor(diff_win, { 1, 0 })
     end
   end
+end
+
+-- Code navigation (no LSP needed) ------------------------------------------
+-- Works on any ref without checking it out: `git grep` finds every use of
+-- a word across the whole repo at the PR's revision, a small heuristic
+-- ranks the definition-looking hits for gd, and `git show` opens a file at
+-- that revision read-only for gf and for every jump. Available in diff
+-- buffers and in the revision buffers they open, so you can keep following
+-- code; <BS> walks back one jump at a time, q drops back to the diff.
+local NAV_REF = { R = "origin/" .. SOURCE, L = "origin/" .. TARGET }
+local nav_meta = {}   -- revision bufnr -> { ref, path }
+local nav_bufs = {}   -- "ref\tpath" -> bufnr, reused across jumps
+local nav_stack = {}  -- { buf, cursor } to return to on <BS>
+local NAV_MAX_HITS = 2000
+
+local function set_nav_winbar(buf)
+  if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
+  local meta = nav_meta[buf]
+  vim.wo[diff_win].winbar = "[" .. meta.ref .. "] " .. meta.path
+    .. "   (gd: definition  gr: references  <BS>: back  q: back to diff)"
+end
+
+-- Winbar + file-list highlight for whatever buffer the diff window shows now.
+local function nav_restore_chrome(buf)
+  if nav_meta[buf] then
+    set_nav_winbar(buf)
+  elseif buf == overview_buf then
+    set_overview_winbar()
+    if mark_current_file then mark_current_file(OVERVIEW_MARK) end
+  elseif paths_by_buf[buf] then
+    set_diff_winbar(paths_by_buf[buf])
+    if mark_current_file then mark_current_file(paths_by_buf[buf]) end
+  end
+end
+
+-- What's under the cursor in `buf` as (ref, path, lineno-or-nil): a
+-- revision buffer maps 1:1; a diff buffer maps through its side/lineno
+-- table (deleted lines belong to the target branch, all else to source).
+local function nav_context(buf)
+  local meta = nav_meta[buf]
+  if meta then
+    return meta.ref, meta.path, vim.api.nvim_win_get_cursor(0)[1]
+  end
+  local path = paths_by_buf[buf]
+  if not path then return nil end
+  local m = (maps_by_buf[buf] or {})[vim.api.nvim_win_get_cursor(0)[1]]
+  local side = (m and m.side) or "R"
+  return NAV_REF[side], path, m and m.lineno or nil
+end
+
+-- Show `buf` in the diff window, remembering where we came from.
+local function nav_show(buf, lnum)
+  if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
+  local cur = vim.api.nvim_win_get_buf(diff_win)
+  if cur ~= buf then
+    nav_stack[#nav_stack + 1] = { buf = cur, cursor = vim.api.nvim_win_get_cursor(diff_win) }
+    vim.api.nvim_win_set_buf(diff_win, buf)
+  end
+  vim.api.nvim_set_current_win(diff_win)
+  if lnum then
+    pcall(vim.api.nvim_win_set_cursor, diff_win, { math.max(1, lnum), 0 })
+    vim.cmd("normal! zz")
+  end
+end
+
+local function nav_back()
+  local top = table.remove(nav_stack)
+  while top and not vim.api.nvim_buf_is_valid(top.buf) do top = table.remove(nav_stack) end
+  if not top then
+    notify("Nothing to go back to.")
+    return
+  end
+  vim.api.nvim_win_set_buf(diff_win, top.buf)
+  pcall(vim.api.nvim_win_set_cursor, diff_win, top.cursor)
+  nav_restore_chrome(top.buf)
+end
+
+-- Pop every revision buffer, landing on the diff/Overview we started from.
+local function nav_back_to_diff()
+  repeat nav_back() until #nav_stack == 0 or not nav_meta[vim.api.nvim_win_get_buf(diff_win)]
+end
+
+local setup_nav_keymaps  -- below (needs the nav functions)
+
+-- Open `path` as it is at `ref`, read-only, on line `lnum` (when given).
+local function open_revision(ref, path, lnum)
+  local key = ref .. "\t" .. path
+  local buf = nav_bufs[key]
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    nav_show(buf, lnum)
+    set_nav_winbar(buf)
+    return
+  end
+  buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].filetype = ft_for_path(path) or "text"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "(loading " .. path .. " @ " .. ref .. "\u{2026})" })
+  vim.bo[buf].modifiable = false
+  pcall(vim.api.nvim_buf_set_name, buf, "[" .. ref .. "] " .. path)
+  nav_meta[buf] = { ref = ref, path = path }
+  nav_bufs[key] = buf
+  setup_nav_keymaps(buf)
+  nav_show(buf, nil)
+  set_nav_winbar(buf)
+
+  local out = {}
+  vim.fn.jobstart(git_args("show", ref .. ":" .. path), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(buf) then return end
+        vim.bo[buf].modifiable = true
+        if code ~= 0 then
+          nav_bufs[key] = nil
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "(could not read " .. path .. " at " .. ref .. ")" })
+        else
+          if out[#out] == "" then out[#out] = nil end
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, out)
+        end
+        vim.bo[buf].modifiable = false
+        if code == 0 and lnum and diff_win and vim.api.nvim_win_is_valid(diff_win)
+            and vim.api.nvim_win_get_buf(diff_win) == buf then
+          pcall(vim.api.nvim_win_set_cursor, diff_win, { math.max(1, math.min(lnum, #out)), 0 })
+          vim.cmd("normal! zz")
+        end
+      end)
+    end,
+  })
+end
+
+-- `git grep` for the whole word `word` at `ref`: cb(hits, truncated) with
+-- hits = { {path, lnum, text}, ... }. Fixed-string so identifiers with
+-- regex characters are safe; -I skips binaries.
+local function git_grep(word, ref, cb)
+  local out = {}
+  vim.fn.jobstart(git_args("grep", "-n", "-w", "-I", "-F", "--no-color", "-e", word, ref, "--"), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function()
+      vim.schedule(function()
+        local hits, truncated = {}, false
+        local prefix = ref .. ":"
+        for _, l in ipairs(out) do
+          if l:sub(1, #prefix) == prefix then
+            local path, lnum, text = l:sub(#prefix + 1):match("^(.-):(%d+):(.*)$")
+            if path then
+              if #hits >= NAV_MAX_HITS then truncated = true break end
+              hits[#hits + 1] = { path = path, lnum = tonumber(lnum), text = text }
+            end
+          end
+        end
+        cb(hits, truncated)
+      end)
+    end,
+  })
+end
+
+-- Rank a grep hit by how much it looks like `word`'s definition rather than
+-- a use. Language-agnostic and deliberately simple: a declaring keyword
+-- before the word, or a type-like token before it with a signature /
+-- property / assignment shape after it. Comments score below zero.
+local DEF_KEYWORDS = {
+  "class", "struct", "interface", "enum", "record", "delegate", "def", "function",
+  "func", "fn", "type", "trait", "impl", "module", "namespace", "typedef", "event",
+}
+local DECL_MODIFIERS = {
+  "public", "private", "protected", "internal", "static", "const", "let", "var",
+  "local", "val", "readonly", "override", "virtual", "abstract", "export", "final",
+}
+local NOT_A_TYPE = {
+  "await", "return", "new", "throw", "yield", "case", "in", "not", "and", "or",
+  "if", "elseif", "else", "while", "for", "do", "then", "using", "goto", "echo",
+  "is", "as", "typeof", "sizeof", "nameof", "delete", "print", "assert",
+}
+local function def_score(word, text)
+  local esc = vim.pesc(word)
+  local before = text:match("^(.-)%f[%w_]" .. esc .. "%f[^%w_]")
+  if not before then return 0 end
+  local after = text:sub(#before + #word + 1)
+  if before:match("^%s*//") or before:match("^%s*#") or before:match("^%s*%-%-")
+      or before:match("^%s*%*") or before:match("^%s*/%*") then
+    return -1
+  end
+  local score = 0
+  for _, kw in ipairs(DEF_KEYWORDS) do
+    if before:match("%f[%w_]" .. kw .. "%f[^%w_]") then score = score + 6 break end
+  end
+  for _, kw in ipairs(DECL_MODIFIERS) do
+    if before:match("%f[%w_]" .. kw .. "%f[^%w_]") then score = score + 2 break end
+  end
+  -- "Type Name(" / "Type Name {" / "Type Name =" / "name:" shapes, where
+  -- something type-like sits right before the word - not "." / "=" / "("
+  -- and not a keyword that merely precedes a use (await, return, new, ...).
+  local typed = before:match("[%w_>%]%*&%?]%s+$") ~= nil
+  if typed then
+    for _, kw in ipairs(NOT_A_TYPE) do
+      if before:match("%f[%w_]" .. kw .. "%s+$") then typed = false break end
+    end
+  end
+  if typed then
+    if after:match("^%s*%(") then score = score + 4
+    elseif after:match("^%s*{") or after:match("^%s*=[^=]") or after:match("^%s*:") then score = score + 3 end
+  end
+  return score
+end
+
+-- Results picker: a big float listing hits (same file first, then same
+-- extension, then by path); <CR> opens the hit at its revision.
+local function show_hits(title, hits, ref, current_path, truncated)
+  local ext = (current_path or ""):match("%.([%w_]+)$")
+  local function rank(h)
+    if h.path == current_path then return 0 end
+    if ext and h.path:sub(-(#ext + 1)) == "." .. ext then return 1 end
+    return 2
+  end
+  table.sort(hits, function(a, b)
+    local ra, rb = rank(a), rank(b)
+    if ra ~= rb then return ra < rb end
+    if a.path ~= b.path then return a.path < b.path end
+    return a.lnum < b.lnum
+  end)
+  local lines = { title .. (truncated and ("  (first " .. #hits .. ")") or "") }
+  for _, h in ipairs(hits) do
+    lines[#lines + 1] = string.format("%s:%d  %s", h.path, h.lnum, vim.trim(h.text))
+  end
+  local win = open_float(lines, true, { big = true })
+  if not win then return end
+  vim.wo[win].wrap = false
+  vim.wo[win].cursorline = true
+  pcall(vim.api.nvim_win_set_cursor, win, { math.min(2, #lines), 0 })
+  local fbuf = vim.api.nvim_win_get_buf(win)
+  vim.keymap.set("n", "<CR>", function()
+    local h = hits[vim.api.nvim_win_get_cursor(win)[1] - 1]
+    if not h then return end
+    vim.api.nvim_win_close(win, true)
+    open_revision(ref, h.path, h.lnum)
+  end, { buffer = fbuf, silent = true, nowait = true })
+end
+
+local function nav_word()
+  local word = vim.fn.expand("<cword>")
+  if not word or not word:match("^[%w_]+$") then
+    notify("No identifier under the cursor.", vim.log.levels.WARN)
+    return nil
+  end
+  return word
+end
+
+nav_find_references = function()
+  local word = nav_word()
+  if not word then return end
+  local ref, path = nav_context(vim.api.nvim_get_current_buf())
+  if not ref then return end
+  notify("Searching references to '" .. word .. "' at " .. ref .. "\u{2026}")
+  git_grep(word, ref, function(hits, truncated)
+    if #hits == 0 then
+      notify("No references to '" .. word .. "' at " .. ref .. ".")
+      return
+    end
+    show_hits("References to '" .. word .. "' @ " .. ref .. " (" .. #hits .. ")", hits, ref, path, truncated)
+  end)
+end
+
+nav_goto_definition = function()
+  local word = nav_word()
+  if not word then return end
+  local ref, path = nav_context(vim.api.nvim_get_current_buf())
+  if not ref then return end
+  notify("Looking for the definition of '" .. word .. "' at " .. ref .. "\u{2026}")
+  git_grep(word, ref, function(hits, truncated)
+    if #hits == 0 then
+      notify("No occurrences of '" .. word .. "' at " .. ref .. ".")
+      return
+    end
+    local best, candidates = 0, {}
+    for _, h in ipairs(hits) do
+      h.score = def_score(word, h.text)
+      if h.score > best then best = h.score end
+    end
+    if best >= 4 then
+      for _, h in ipairs(hits) do
+        if h.score == best then candidates[#candidates + 1] = h end
+      end
+    end
+    if #candidates == 1 then
+      open_revision(ref, candidates[1].path, candidates[1].lnum)
+    elseif #candidates > 1 then
+      show_hits("Definition candidates for '" .. word .. "' @ " .. ref .. " (" .. #candidates .. ")",
+        candidates, ref, path, false)
+    else
+      notify("No definition-looking line for '" .. word .. "'; showing all " .. #hits .. " references.")
+      show_hits("References to '" .. word .. "' @ " .. ref .. " (" .. #hits .. ")", hits, ref, path, truncated)
+    end
+  end)
+end
+
+nav_open_file = function()
+  local buf = vim.api.nvim_get_current_buf()
+  if nav_meta[buf] then return end  -- already a revision buffer
+  local ref, path, lnum = nav_context(buf)
+  if not ref then
+    notify("Not a diff buffer.", vim.log.levels.WARN)
+    return
+  end
+  open_revision(ref, path, lnum)
+end
+
+setup_nav_keymaps = function(buf)
+  local opts = { buffer = buf, silent = true, nowait = true }
+  vim.keymap.set("n", "gd", function() nav_goto_definition() end, opts)
+  vim.keymap.set("n", "gr", function() nav_find_references() end, opts)
+  vim.keymap.set("n", "<BS>", nav_back, opts)
+  vim.keymap.set("n", "q", nav_back_to_diff, opts)
+  vim.keymap.set("n", "gO", open_config_file, opts)
+  vim.keymap.set("n", "<", function() resize_list(-5) end, opts)
+  vim.keymap.set("n", ">", function() resize_list(5) end, opts)
 end
 
 -- ---------------------------------------------------------------------------
