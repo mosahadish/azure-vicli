@@ -42,6 +42,14 @@ vim.o.laststatus = 2
 vim.o.mouse = "a"
 vim.cmd("syntax on")
 
+-- Shared per-PR content caches + prefetch pipeline (next to this file).
+local function script_dir()
+  local src = debug.getinfo(1, "S").source
+  local path = src:sub(1, 1) == "@" and src:sub(2) or src
+  return vim.fn.fnamemodify(path, ":p:h")
+end
+local CACHE = dofile((script_dir() .. "/prdash-cache.lua"):gsub("\\", "/"))
+
 local env       = vim.env
 local ID        = env.PRDASH_ID or "?"
 local ORG       = env.PRDASH_ORG or ""
@@ -657,50 +665,12 @@ local function ft_for_path(path)
   return FT_BY_EXT[ext:lower()]
 end
 
--- Parses raw `git diff` output into display lines plus a per-line {side,
--- lineno} map so a comment on any buffer line anchors to the correct
--- file/side. Line numbers are derived from the hunk headers
--- (@@ -a,b +c,d @@); header/metadata lines get a nil side (not commentable).
-local function parse_diff_output(raw)
-  local lines = {}
-  local map = {}
-  local new, old = 0, 0
-  for _, l in ipairs(raw) do
-    local c = l:sub(1, 1)
-    if l:match("^@@") then
-      -- Hunk header: update line counters but don't display it.
-      old = (tonumber(l:match("%-(%d+)")) or 1) - 1
-      new = (tonumber(l:match("%+(%d+)")) or 1) - 1
-    elseif l:match("^%+%+%+") or l:match("^%-%-%-") or l:match("^diff ")
-        or l:match("^index ") or l:match("^new file") or l:match("^deleted file")
-        or l:match("^old mode") or l:match("^new mode")
-        or l:match("^rename ") or l:match("^similarity ")
-        or l:match("^copy ") or l:match("^\\") then
-      -- Git metadata: drop it entirely.
-    elseif c == "+" then
-      new = new + 1
-      lines[#lines + 1] = l:sub(2)
-      map[#map + 1] = { side = "R", lineno = new, kind = "add" }
-    elseif c == "-" then
-      old = old + 1
-      lines[#lines + 1] = l:sub(2)
-      map[#map + 1] = { side = "L", lineno = old, kind = "del" }
-    else
-      new = new + 1
-      old = old + 1
-      lines[#lines + 1] = l:sub(2)
-      map[#map + 1] = { side = "R", lineno = new, kind = "ctx" }
-    end
-  end
-  if #lines == 0 then
-    lines = { "(no textual diff for this file)" }
-    map = { {} }
-  end
-  return lines, map
-end
+-- Parses one file's raw `git diff` output into display lines plus the
+-- per-line {side, lineno} map (see prdash-cache.lua).
+local parse_diff_output = CACHE.parse_diff
 
--- Runs `git diff` for one file as a background job (never blocks the UI) and
--- calls cb(lines, map) once it completes.
+-- Builds one file's diff on its own, for a cache miss (the dashboard's
+-- prefetch normally has every file ready before the PR is even opened).
 local function build_diff_async(path, cb)
   local out = {}
   vim.fn.jobstart(git_args("diff", "--unified=100000", RANGE, "--", path), {
@@ -713,28 +683,17 @@ local function build_diff_async(path, cb)
   })
 end
 
--- Built diffs {lines, map} keyed by file path, persisted in _G so they stay
--- warm across leaving and re-entering this PR (each entry is re-luafile'd
--- fresh, resetting every local). Namespaced per PR + its updatedIso so a new
--- push invalidates the cache instead of showing a stale diff. Old PRs' caches
--- are trimmed so this can't grow unbounded across a long nvim session.
-_G.PR_DIFF_CACHE = _G.PR_DIFF_CACHE or {}       -- cache_key -> { [path] = {lines, map} }
-_G.PR_DIFF_CACHE_ORDER = _G.PR_DIFF_CACHE_ORDER or {}  -- cache_keys, oldest first
-local DIFF_CACHE_MAX_PRS = 8
+-- Built diffs {lines, map} keyed by file path, held in the shared cache
+-- (prdash-cache.lua) so they stay warm across leaving and re-entering this
+-- PR and are shared with the dashboard's background prefetch. Namespaced per
+-- PR + its updatedIso so a new push invalidates the cache instead of showing
+-- a stale diff.
 local function diff_cache_key()
   local pr = current_pr_record()
-  return tostring(ID) .. ":" .. tostring(pr and pr.updatedIso or "")
+  return CACHE.key(ID, pr and pr.updatedIso or "")
 end
 local cache_key = diff_cache_key()
-if not _G.PR_DIFF_CACHE[cache_key] then
-  _G.PR_DIFF_CACHE[cache_key] = {}
-  table.insert(_G.PR_DIFF_CACHE_ORDER, cache_key)
-  while #_G.PR_DIFF_CACHE_ORDER > DIFF_CACHE_MAX_PRS do
-    local evict = table.remove(_G.PR_DIFF_CACHE_ORDER, 1)
-    _G.PR_DIFF_CACHE[evict] = nil
-  end
-end
-local content_cache = _G.PR_DIFF_CACHE[cache_key]  -- path -> {lines, map}
+local content_cache = CACHE.diffs(cache_key)  -- path -> {lines, map}
 
 -- Fetches (or joins an in-flight fetch of) a file's diff content, calling
 -- cb(lines, map) once available. Serves from content_cache instantly when
@@ -1576,6 +1535,12 @@ end
 -- build_overview, i.e. on every Overview render including the very first
 -- one at open - a ~300ms freeze under git-bash before anything was drawn.
 local function load_overview_commits()
+  local cached = CACHE.commits(cache_key)
+  if cached then
+    overview_commits = cached
+    render_overview()
+    return
+  end
   local out = {}
   vim.fn.jobstart(git_args("log", "--format=%h  %ad  %an: %s", "--date=short",
       "origin/" .. TARGET .. "..origin/" .. SOURCE), {
@@ -1585,6 +1550,7 @@ local function load_overview_commits()
       vim.schedule(function()
         if code == 0 then
           overview_commits = vim.tbl_filter(function(l) return l ~= "" end, out)
+          CACHE.set_commits(cache_key, overview_commits)
         else
           overview_commits = {}
         end
@@ -1775,30 +1741,18 @@ local current_file_ns = vim.api.nvim_create_namespace("prdash_current_file")
 local files = {}
 local files_loaded = false
 
--- Warm content_cache for every file in the background, a few at a time, so
--- by the time you've looked at a couple of files the rest are ready and
--- switching between them (j/k in the file list) is instant. Skips files
--- that are already cached (warm from a previous visit/session, or already
--- fetched by an explicit open). Safe to call repeatedly; ensure_diff_content
--- de-dupes against any fetch already in flight.
+-- Warm content_cache for every file still missing, with a single git run
+-- over the whole range (see prdash-cache.lua), so switching between files
+-- (j/k in the file list) is instant. Usually a no-op: the dashboard's
+-- hover/warm-all prefetch has normally filled the cache before the PR is
+-- opened. Files opened explicitly meanwhile are fetched on their own by
+-- ensure_diff_content, which de-dupes against its own in-flight builds.
 local function prefetch_all_diffs()
-  local queue = {}
-  for _, f in ipairs(files) do queue[#queue + 1] = f end
-  local CONCURRENCY = 4
-  local active = 0
-  local function pump()
-    while active < CONCURRENCY and #queue > 0 do
-      local path = table.remove(queue, 1)
-      if not content_cache[path] then
-        active = active + 1
-        ensure_diff_content(path, function()
-          active = active - 1
-          pump()
-        end)
-      end
-    end
-  end
-  pump()
+  local pr = current_pr_record()
+  CACHE.prefetch({
+    id = ID, updatedIso = pr and pr.updatedIso or "",
+    source = SOURCE, target = TARGET, repo = REPO_PATH,
+  })
 end
 
 -- Count comment threads anchored to a file: line-anchored threads (keyed
@@ -2238,7 +2192,33 @@ load_overview_commits()
 -- "loading" row and fills in when git returns. A non-zero exit is git's
 -- "unknown revision" (128): the branch was deleted, or this PR's repo isn't
 -- the clone we're pointed at - the same cases the rev-parse pair guarded.
+local function apply_files(list)
+  if not vim.api.nvim_buf_is_valid(list_buf) then return end
+  files = list
+  files_loaded = true
+  if #files == 0 then
+    notify("No changed files in this PR (range " .. RANGE .. ").", vim.log.levels.WARN)
+    if EMBED then leave() end
+    return
+  end
+  local rows = {}
+  for _, f in ipairs(files) do rows[#rows + 1] = file_label(f) end
+  vim.bo[list_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(list_buf, 1, -1, false, rows)
+  vim.bo[list_buf].modifiable = false
+  fit_list_width()
+  mark_current_file(current_file_path)
+  prefetch_all_diffs()
+  notify("PR #" .. ID .. ": " .. #files
+    .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+end
 local function load_files()
+  -- Prefetched by the dashboard (hover / warm-all)? Then there's nothing to wait for.
+  local cached = CACHE.files(cache_key)
+  if cached then
+    apply_files(cached)
+    return
+  end
   local out, err = {}, {}
   vim.fn.jobstart(git_args("diff", "--name-only", RANGE), {
     stdout_buffered = true,
@@ -2256,23 +2236,9 @@ local function load_files()
           if EMBED then leave() end
           return
         end
-        files = vim.tbl_filter(function(f) return f ~= "" end, out)
-        files_loaded = true
-        if #files == 0 then
-          notify("No changed files in this PR (range " .. RANGE .. ").", vim.log.levels.WARN)
-          if EMBED then leave() end
-          return
-        end
-        local rows = {}
-        for _, f in ipairs(files) do rows[#rows + 1] = file_label(f) end
-        vim.bo[list_buf].modifiable = true
-        vim.api.nvim_buf_set_lines(list_buf, 1, -1, false, rows)
-        vim.bo[list_buf].modifiable = false
-        fit_list_width()
-        mark_current_file(current_file_path)
-        prefetch_all_diffs()
-        notify("PR #" .. ID .. ": " .. #files
-          .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+        local list = vim.tbl_filter(function(f) return f ~= "" end, out)
+        CACHE.set_files(cache_key, list)
+        apply_files(list)
       end)
     end,
   })
@@ -2294,32 +2260,19 @@ load_files()
 -- qualify - so posting your own comment, someone else commenting on a PR/
 -- thread that isn't yours, or a filtered-out comment never notifies.
 local threads_baseline_established = false
-refresh_threads = function(opts)
-  opts = opts or {}
-  local chunks = {}
-  local err_chunks = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--threads" }, {
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(chunks, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(err_chunks, d) end end,
-    on_exit = function(_, code)
-      if code ~= 0 then
-        -- Surface the failure instead of silently showing zero comments -
-        -- e.g. a bad/expired PAT, network error, or misconfigured account
-        -- would otherwise look identical to "this PR has no comments".
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err_chunks), " ")
-        notify("Failed to load PR comments (exit " .. code .. ")"
-          .. (msg ~= "" and (": " .. msg) or " - check azure-cli.yml (PAT/org_url) and connectivity."),
-          vim.log.levels.ERROR)
-        if opts.on_done then opts.on_done() end
-        return
-      end
-
+-- Apply a thread-list JSON payload: parse, diff against what's shown, swap in
+-- and redecorate only on change, notify on qualifying new comments. Shared by
+-- the network fetch below and the cache seed at open. opts.seed marks a
+-- payload that came from the dashboard's prefetch cache: it's shown at once
+-- for a first paint but never becomes the notification baseline, so anything
+-- that arrived since the cache was filled still notifies when the real fetch
+-- lands rather than being silently absorbed.
+local function apply_threads_json(json, opts)
+      opts = opts or {}
       -- Parse into a scratch copy first so we can diff before touching the
       -- live tables the decoration closures read from.
       local new_by_key, new_file_by_path, new_general = {}, {}, {}
-      parse_threads(table.concat(chunks, "\n"), new_by_key, new_file_by_path, new_general)
+      parse_threads(json, new_by_key, new_file_by_path, new_general)
 
       local prev_counts = snapshot_comment_counts(threads_by_key, file_threads_by_path, general_threads)
       local new_counts = snapshot_comment_counts(new_by_key, new_file_by_path, new_general)
@@ -2353,7 +2306,7 @@ refresh_threads = function(opts)
         refresh_file_rows()
         render_overview()
       end
-      threads_baseline_established = true
+      if not opts.seed then threads_baseline_established = true end
 
       if opts.announce then
         local n = #general_threads
@@ -2362,14 +2315,52 @@ refresh_threads = function(opts)
           notify(n .. " comment thread(s) loaded.")
         end
       end
+end
+
+refresh_threads = function(opts)
+  opts = opts or {}
+  local chunks = {}
+  local err_chunks = {}
+  vim.fn.jobstart({ BASH, SCRIPT, "--threads" }, {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(chunks, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(err_chunks, d) end end,
+    on_exit = function(_, code)
+      if code ~= 0 then
+        -- Surface the failure instead of silently showing zero comments -
+        -- e.g. a bad/expired PAT, network error, or misconfigured account
+        -- would otherwise look identical to "this PR has no comments".
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err_chunks), " ")
+        notify("Failed to load PR comments (exit " .. code .. ")"
+          .. (msg ~= "" and (": " .. msg) or " - check azure-cli.yml (PAT/org_url) and connectivity."),
+          vim.log.levels.ERROR)
+        if opts.on_done then opts.on_done() end
+        return
+      end
+
+      local json = table.concat(chunks, "\n")
+      -- Keep the shared cache current so re-opening this PR (or the
+      -- dashboard's next prefetch) starts from what was just fetched.
+      local pr = current_pr_record()
+      CACHE.set_threads(ID, json, pr and pr.totalThreads or nil)
+      apply_threads_json(json, opts)
       if opts.on_done then opts.on_done() end
     end,
   })
 end
 
--- Load existing PR comments asynchronously so the reviewer opens immediately;
--- diff buffers and the Overview row are updated once the threads arrive.
-refresh_threads({ announce = true })
+-- Paint the comments straight from the dashboard's prefetch cache when it
+-- has them (normally the case: filled while the cursor rested on the PR),
+-- then fetch for real in the background so the view is authoritative within
+-- a round-trip either way. Without a cached copy the first fetch announces.
+do
+  local cached = CACHE.threads(ID)
+  if cached then
+    apply_threads_json(cached.json, { announce = true, seed = true })
+  end
+  refresh_threads({ announce = cached == nil })
+end
 
 -- Periodic auto-refresh of comment threads (silent, once a minute), so per-file
 -- closed/total counts and the Overview row/page stay current even if someone

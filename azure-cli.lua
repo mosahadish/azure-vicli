@@ -47,6 +47,9 @@ local REVIEW_LUA = (DIR .. "/pr-review.lua"):gsub("\\", "/")
 local WI_DASH_LUA = (DIR .. "/wi-dash.lua"):gsub("\\", "/")
 -- Work-items list provider, warmed in the background so the first W swap is instant.
 local WI_LIST = env.WIDASH_LIST or (DIR .. "/wi-list.sh")
+-- Shared per-PR content caches + prefetch pipeline (files, diffs, commits,
+-- threads), filled here in the background and read by the reviewer on open.
+local CACHE = dofile((DIR .. "/prdash-cache.lua"):gsub("\\", "/"))
 
 -- Section order and friendly titles.
 local SECTIONS = {
@@ -682,6 +685,25 @@ local function ensure_warm(pr, cb, allow_clone)
   end)
 end
 
+-- Fill the shared content cache for `pr` (file list, every file's diff, the
+-- commit list, the comment threads) so opening it has nothing left to fetch.
+-- Requires the branches to be warm already (see ensure_warm); no-op for a
+-- PR whose repo isn't cloned. cb (optional) runs once the pipeline is done.
+local function prefetch_content(pr, cb)
+  local path = clone_for(pr)
+  if not pr or not is_cloned(path) or not pr.source or pr.source == ""
+      or not pr.target or pr.target == "" then
+    if cb then cb() end
+    return
+  end
+  CACHE.prefetch({
+    id = pr.id, updatedIso = pr.updatedIso,
+    source = pr.source, target = pr.target, repo = path,
+    totalThreads = pr.totalThreads,
+    bash = BASH, script = SCRIPT, env = pr_env(pr),
+  }, cb)
+end
+
 -- Diffs a freshly fetched PR list against the previous one (by id), looking
 -- for growth in thread counts that means "someone commented since last time":
 -- for a PR I authored, any growth in its total comment count; for any other
@@ -1003,7 +1025,10 @@ vim.api.nvim_create_autocmd("CursorMoved", {
   callback = function()
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
     prefetch_timer = vim.fn.timer_start(500, function()
-      ensure_warm(current_pr())
+      local pr = current_pr()
+      ensure_warm(pr, function(ok)
+        if ok then prefetch_content(pr) end
+      end)
     end)
   end,
 })
