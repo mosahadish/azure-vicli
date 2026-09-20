@@ -117,6 +117,8 @@ first. The list refreshes every minute.
 | `W` | Switch to the work-items dashboard |
 | `q` | Quit |
 
+Press `?` for a popup with these keys plus the badge legend below.
+
 Each row carries badges to the left of the id:
 
 | Badge | Meaning |
@@ -154,6 +156,8 @@ File list:
 | `<BS>` | Back to the PR list |
 | `q` | Close the reviewer |
 
+Press `?` in the file list for a popup with these keys.
+
 Diff pane:
 
 | Key | Action |
@@ -166,6 +170,8 @@ Diff pane:
 | `]C` / `[C` | Next / previous thread |
 | `gd` / `gr` / `gf` | Code navigation, see below |
 | `<BS>` | Back to the file list |
+
+Press `?` in the diff pane or the Overview page for a popup with its keys.
 
 Comments, replies and status changes appear the instant you submit them,
 tagged "(sending…)" until the server confirms. If the call fails the entry is
@@ -194,7 +200,7 @@ hit, `q` closes the peek.
 Opened files and previews show the PR's changes: added lines in green, and
 the lines the PR removed in red as virtual lines where they used to be. In a
 revision buffer `gd` and `gr` keep working, `<BS>` walks back one jump, and
-`q` returns to the diff.
+`q` returns to the diff. Press `?` there for a popup with these keys.
 
 The definition lookup is a heuristic that ranks grep hits by declaring
 keywords, modifiers, and shapes such as a type followed by `Name(`. When one
@@ -217,8 +223,10 @@ sprints of the quarter.
 | `P` | Back to the PR dashboard |
 | `q` | Quit |
 
+Press `?` for a popup with these keys.
+
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
-`o` opens the browser, and `<BS>` returns to the list.
+`o` opens the browser, `<BS>` returns to the list, and `?` shows its keys.
 
 The collection, project, team, assignee and item types default to values in
 `wi-list.sh` and can be overridden with the `WIDASH_*` variables listed below.

@@ -14,6 +14,7 @@
 --   gr          re-queue build validation for the PR under the cursor
 --   r           refresh the list
 --   q           quit
+--   ?           show this help
 --
 -- Row badges (left of the id): \u{25CF} unread comment activity, \u{21E3} branches or
 -- content being fetched in the background right now, \u{25C6} fully prefetched
@@ -81,7 +82,7 @@ local function pr_matches(pr, q)
 end
 
 local BASE_WINBAR =
-  "pull requests   (<CR>: open  gy: copy  o: browser  gd: description  /: filter  gv: vote  gm: complete  ga: auto-complete  gr: re-queue build  gO: config  r: refresh  W: work items  q: quit)"
+  "pull requests   (<CR>: open  gy: copy  o: browser  gd: description  /: filter  gv: vote  gm: complete  ga: auto-complete  gr: re-queue build  gO: config  r: refresh  W: work items  q: quit  ?: help)"
 
 local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO)
@@ -606,6 +607,42 @@ local function show_description()
       table.insert(lines, l)
     end
   end
+  open_float(lines)
+end
+
+-- Show this dashboard's keys and the row/build badge legend in a float,
+-- kept in sync by hand with BASE_WINBAR and the header comment above.
+local function show_help()
+  local lines = {
+    "PR dashboard keys",
+    "",
+    "  j / k       move",
+    "  <CR>        open the PR under the cursor in the reviewer",
+    "  gd          show the description",
+    "  gy          copy the PR link",
+    "  o           open in the browser",
+    "  /           filter by title, repo or author",
+    "  gv          vote",
+    "  gm          complete (merge)",
+    "  ga          toggle auto-complete",
+    "  gr          re-queue build validation",
+    "  gO          open the config file",
+    "  r           refresh",
+    "  W           switch to the work-items dashboard",
+    "  q           quit",
+    "  ?           this help",
+    "",
+    "Row badges (left of the id):",
+    "  \u{25CF}           unread comment activity since you last opened the PR",
+    "  \u{21E3}           branches or content being fetched in the background right now",
+    "  \u{25C6}           fully prefetched, opens instantly",
+    "",
+    "Build column (right of the id):",
+    "  \u{2713}           succeeded     \u{2717}  failed",
+    "  \u{21BB}           expired       \u{25CF}  running (queue position when known)",
+    "",
+    "  \u{26A0}           merge conflict     A  auto-complete is on",
+  }
   open_float(lines)
 end
 
@@ -1241,6 +1278,7 @@ vim.keymap.set("n", "r", function() load(false, true) end, opts)
 vim.keymap.set("n", "W", function()
   vim.cmd("luafile " .. vim.fn.fnameescape(WI_DASH_LUA))
 end, opts)
+vim.keymap.set("n", "?", show_help, opts)
 vim.keymap.set("n", "q", "<Cmd>qa!<CR>", opts)
 
 -- Prefetch the PR under the cursor once movement settles (debounced), so the

@@ -15,6 +15,7 @@
 --   r      refresh
 --   P      switch to the pull-request dashboard
 --   q      quit
+--   ?      show this help
 
 vim.o.compatible = false
 vim.o.number = false
@@ -874,13 +875,59 @@ local function open_browser()
   vim.notify("Opening #" .. tostring(it.id) .. " in browser…")
 end
 
+-- Open a scratch floating window at the cursor showing the given text lines
+-- (same small helper as azure-cli.lua's open_float; kept local since the two
+-- dashboards don't share a require'd module).
+local function open_float(lines)
+  if #lines == 0 then return end
+  local width = 20
+  for _, l in ipairs(lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(l))
+  end
+  width = math.min(width, 100)
+  local height = math.min(#lines, 24)
+  local fbuf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, lines)
+  vim.bo[fbuf].modifiable = false
+  vim.bo[fbuf].buftype = "nofile"
+  vim.api.nvim_open_win(fbuf, true, {
+    relative = "cursor", row = 1, col = 0,
+    width = width, height = height,
+    style = "minimal", border = "rounded",
+  })
+  local fopts = { buffer = fbuf, silent = true, nowait = true }
+  vim.keymap.set("n", "q", "<Cmd>close<CR>", fopts)
+  vim.keymap.set("n", "<Esc>", "<Cmd>close<CR>", fopts)
+end
+
+-- Show this dashboard's keys in a float.
+local function show_help()
+  open_float({
+    "Work-items dashboard keys",
+    "",
+    "  j / k        move",
+    "  <CR>         open the item: parent, children, description",
+    "  gs           change the item's state, with the allowed transitions and reasons",
+    "  [ / ]        previous / next sprint (also <S-Tab> / <Tab>)",
+    "  {n}gt        jump to sprint n",
+    "  click        click a tab in the tab bar to jump straight to that sprint",
+    "  gy           copy the item's link",
+    "  o            open in the browser",
+    "  gO           open the config file",
+    "  r            refresh",
+    "  P            switch to the pull-request dashboard",
+    "  q            quit",
+    "  ?            this help",
+  })
+end
+
 buf = vim.api.nvim_create_buf(false, true)
 vim.bo[buf].buftype = "nofile"
 vim.bo[buf].filetype = "widash"
 vim.api.nvim_set_current_buf(buf)
 win = vim.api.nvim_get_current_win()
 pcall(function()
-  vim.wo[win].winbar = "work items   (<CR>: open  gs: set state  o: browser  gy: copy link  [ ]/{n}gt/click: sprint nav  gO: config  r: refresh  P: PR dashboard  q: quit)"
+  vim.wo[win].winbar = "work items   (<CR>: open  gs: set state  o: browser  gy: copy link  [ ]/{n}gt/click: sprint nav  gO: config  r: refresh  P: PR dashboard  q: quit  ?: help)"
 end)
 
 local opts = { buffer = buf, silent = true, nowait = true }
@@ -897,6 +944,7 @@ vim.keymap.set("n", "<LeftMouse>", on_click, opts)
 vim.keymap.set("n", "P", open_pr_dash, opts)
 vim.keymap.set("n", "gy", yank_link, opts)
 vim.keymap.set("n", "gO", open_config_file, opts)
+vim.keymap.set("n", "?", show_help, opts)
 vim.keymap.set("n", "q", "<Cmd>qa!<CR>", opts)
 
 -- Prefetch the item under the cursor once movement settles (debounced), so the
