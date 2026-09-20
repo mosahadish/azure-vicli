@@ -225,16 +225,27 @@ sprints of the quarter.
 |---|---|
 | `<CR>` | Open the item: parent, children, description |
 | `gs` | Change the item's state, with the allowed transitions and reasons |
+| `n` | New work item: type, title, and parent (if the cursor is on one) |
+| `ga` | Assign the item under the cursor (empty input = assign to me) |
+| `gp` | Set the item's priority (1-4) |
+| `ge` | Edit the item's title |
+| `gi` | Move the item to another sprint of the quarter |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
 | `P` | Back to the PR dashboard |
 | `q` | Quit |
 
-Press `?` for a popup with these keys.
+Press `?` for a popup with these keys. `ga`, `gp`, `ge` and `gi` apply to the
+row immediately and are reverted with an error if the call fails, the same
+optimistic pattern the PR dashboard uses for votes and completion. `n` has no
+id to show until the server answers, so it notifies and reloads the active
+sprint's list instead.
 
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
-`o` opens the browser, `<BS>` returns to the list, and `?` shows its keys.
+`ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
+detail on success), `o` opens the browser, `<BS>` returns to the list, and
+`?` shows its keys.
 
 The collection, project, team, assignee and item types default to values in
 `wi-list.sh` and can be overridden with the `WIDASH_*` variables listed below.
@@ -277,7 +288,7 @@ azure-cli.exe (C#)        headless data provider + launcher
                           wi-dash.lua        review-pr.sh    REST via curl (threads, comments,
                           wi-view.lua                        votes, complete, prefetch)
                              │
-                          wi-list.sh / wi-detail.sh / wi-state.sh   REST via curl + python
+                          wi-list.sh / wi-detail.sh / wi-state.sh / wi-edit.sh   REST via curl + python
                              │
                           resolve-pat.sh     shared PAT lookup
                           prdash-cache.lua   shared content cache + prefetch pipeline
@@ -293,6 +304,7 @@ azure-cli.exe (C#)        headless data provider + launcher
 | `resolve-pat.sh` | PAT lookup from the exported table with `--print-pat` fallback. |
 | `wi-dash.lua`, `wi-view.lua` | Work-item dashboard and detail view. |
 | `wi-list.sh`, `wi-detail.sh`, `wi-state.sh` | Work-item data providers. |
+| `wi-edit.sh` | Work-item create/edit: title, assignee, priority, iteration, tags, description. |
 | `install.sh` | One-shot setup. |
 
 State that survives restarts lives in Neovim's data directory: the per-PR
@@ -310,7 +322,7 @@ Set by the exe when it launches Neovim; only needed when starting Neovim by hand
 | `PRDASH_BASH` | bash to run the scripts under. |
 | `PRDASH_PATS` | One `org<TAB>project<TAB>pat` line per account, read from the config. |
 | `PRDASH_REPO_PATH` | Legacy single clone path. |
-| `WIDASH_LIST`, `WIDASH_DETAIL` | Paths to the work-item scripts (`WIDASH_STATE` defaults to `wi-state.sh` next to them). |
+| `WIDASH_LIST`, `WIDASH_DETAIL` | Paths to the work-item scripts (`WIDASH_STATE` and `WIDASH_EDIT` default to `wi-state.sh` and `wi-edit.sh` next to them). |
 
 Optional overrides:
 

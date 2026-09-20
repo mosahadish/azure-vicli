@@ -7,6 +7,10 @@
 -- Keys
 --   <CR>   on a parent/child line: open that work item here
 --   gs     change the state of this work item
+--   ga     assign this work item
+--   gp     set this work item's priority
+--   ge     edit this work item's title
+--   gi     move this work item to another sprint
 --   o      open this work item in the browser
 --   r      refresh
 --   <BS>/q close and return to the dashboard
@@ -22,8 +26,11 @@ local DIR    = script_dir()
 local env    = vim.env
 local DETAIL = env.WIDASH_DETAIL or (DIR .. "/wi-detail.sh")
 local STATE  = env.WIDASH_STATE or (DIR .. "/wi-state.sh")
+local EDIT   = env.WIDASH_EDIT or (DIR .. "/wi-edit.sh")
 local BASH   = env.PRDASH_BASH or "bash"
 local ID     = env.WIDASH_ID or ""
+-- Same default assignee as wi-list.sh: used to preset ga.
+local ASSIGNEE = env.WIDASH_ASSIGNEE or "Hadish, Mosa"
 
 local buf = vim.api.nvim_get_current_buf()
 vim.bo[buf].buftype = "nofile"
@@ -163,7 +170,7 @@ local function render(data)
 
   pcall(function()
     vim.wo[0].winbar = "work item #" .. tostring(it.id or "?")
-      .. "   (<CR>: open linked  gs: set state  o: browser  gy: copy link  r: refresh  <BS>/q: back  ?: help)"
+      .. "   (<CR>: open linked  gs: state  ga: assign  gp: priority  ge: title  gi: move sprint  o: browser  gy: copy link  r: refresh  <BS>/q: back  ?: help)"
   end)
 end
 
@@ -382,6 +389,111 @@ local function set_state()
   end)
 end
 
+-- Commit a single-field wi-edit.sh "set" for this work item, then refresh
+-- this view (the way apply_state does) and, when given, reconcile the
+-- dashboard's cached record via dash_patch (best-effort: no-op if the
+-- dashboard globals were never installed in this session).
+local function apply_field(arg_name, value, describe, dash_patch)
+  if ID == "" then return end
+  notify(describe .. " #" .. ID .. " \u{2026}")
+  local err = {}
+  vim.fn.jobstart({ BASH, EDIT, "set", ID, arg_name, tostring(value) }, {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        notify(describe .. " #" .. ID .. ": done.")
+        _G.WI_DETAIL_CACHE[ID] = nil
+        load(ID, true)
+        if dash_patch then dash_patch() end
+      else
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify(describe .. " #" .. ID .. " failed: " .. msg, vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
+-- Assign this work item. Prefilled with its current assignee; submitting
+-- empty assigns it to me (the WIDASH_ASSIGNEE default).
+local function assign_item()
+  if ID == "" then return end
+  local typed = vim.fn.input("Assign #" .. ID .. " to (empty = me): ", current_item.assignedTo or "")
+  local new = (typed ~= "") and typed or ASSIGNEE
+  apply_field("assignedTo", new, "Assigning", function()
+    if _G.WI_ITEM_CHANGED then _G.WI_ITEM_CHANGED(ID, { assignedTo = new }) end
+  end)
+end
+
+local PRIORITIES = { 1, 2, 3, 4 }
+
+-- Set the priority of this work item (1-4).
+local function set_priority()
+  if ID == "" then return end
+  local choices = { "Priority for #" .. ID .. ":" }
+  for i, p in ipairs(PRIORITIES) do choices[#choices + 1] = i .. ": P" .. p end
+  local idx = tonumber(vim.fn.inputlist(choices))
+  if not idx or idx < 1 or idx > #PRIORITIES then
+    notify("Cancelled.")
+    return
+  end
+  local new = PRIORITIES[idx]
+  apply_field("priority", new, "Setting priority on", function()
+    if _G.WI_ITEM_CHANGED then _G.WI_ITEM_CHANGED(ID, { priority = new }) end
+  end)
+end
+
+-- Edit the title of this work item, prefilled with the current one.
+local function edit_title()
+  if ID == "" then return end
+  local new = vim.fn.input("Title for #" .. ID .. ": ", current_item.title or "")
+  if new == "" or new == current_item.title then
+    notify("Cancelled.")
+    return
+  end
+  apply_field("title", new, "Renaming", function()
+    if _G.WI_ITEM_CHANGED then _G.WI_ITEM_CHANGED(ID, { title = new }) end
+  end)
+end
+
+-- Move this work item to another sprint of the quarter, offered from the
+-- dashboard's cached sprint list (wi-dash.lua always populates it before a
+-- detail tab can be opened). Re-renders this view on success rather than
+-- patching in place - unlike wi-dash.lua's own 'gi' there's no row for this
+-- item to optimistically drop here.
+local function move_sprint_item()
+  if ID == "" then return end
+  local list = (_G.WI_SPRINTS_CACHE and _G.WI_SPRINTS_CACHE.list) or {}
+  if #list == 0 then
+    notify("Sprint list not loaded - open this item from the dashboard first.", vim.log.levels.WARN)
+    return
+  end
+  local from_path = current_item.iterationPath or ""
+  local choices = { "Move #" .. ID .. " to sprint:" }
+  local targets = {}
+  for _, sp in ipairs(list) do
+    if sp.path ~= from_path then
+      targets[#targets + 1] = sp
+      choices[#choices + 1] = #targets .. ": " .. (sp.label or sp.name or sp.path)
+    end
+  end
+  if #targets == 0 then
+    notify("No other sprint to move to.", vim.log.levels.WARN)
+    return
+  end
+  local idx = tonumber(vim.fn.inputlist(choices))
+  if not idx or idx < 1 or idx > #targets then
+    notify("Cancelled.")
+    return
+  end
+  local target = targets[idx]
+  apply_field("iteration", target.path, "Moving", function()
+    if _G.WI_ITEM_MOVED then _G.WI_ITEM_MOVED(ID, from_path, target.path) end
+  end)
+end
+
 local function open_browser()
   if current_url == "" then return end
   local ok = pcall(vim.ui.open, current_url)
@@ -431,6 +543,10 @@ local function show_help()
     "  j / k        move",
     "  <CR>         on a parent/child line: open that work item here",
     "  gs           change the state of this work item",
+    "  ga           assign this work item",
+    "  gp           set this work item's priority",
+    "  ge           edit this work item's title",
+    "  gi           move this work item to another sprint",
     "  o            open this work item in the browser",
     "  gy           copy this work item's link",
     "  r            refresh",
@@ -453,6 +569,10 @@ end
 local opts = { buffer = buf, silent = true, nowait = true }
 vim.keymap.set("n", "<CR>", open_linked, opts)
 vim.keymap.set("n", "gs", set_state, opts)
+vim.keymap.set("n", "ga", assign_item, opts)
+vim.keymap.set("n", "gp", set_priority, opts)
+vim.keymap.set("n", "ge", edit_title, opts)
+vim.keymap.set("n", "gi", move_sprint_item, opts)
 vim.keymap.set("n", "o", open_browser, opts)
 vim.keymap.set("n", "gy", yank_link, opts)
 vim.keymap.set("n", "r", function() if ID ~= "" then load(ID, true) end end, opts)

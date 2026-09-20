@@ -48,7 +48,7 @@ for tool in luajit git bash; do
 done
 
 LUA_FILES=(azure-cli.lua pr-review.lua wi-dash.lua wi-view.lua prdash-cache.lua)
-SH_FILES=(install.sh resolve-pat.sh review-pr.sh wi-detail.sh wi-list.sh wi-state.sh)
+SH_FILES=(install.sh resolve-pat.sh review-pr.sh wi-detail.sh wi-edit.sh wi-list.sh wi-state.sh)
 
 # Names luajit's bytecode listing may report GGET/GSET for without it being a
 # sign of trouble: Lua/LuaJIT builtins these files actually use, plus `vim`
