@@ -12,7 +12,11 @@
 --                                         split per file, not one spawn per
 --                                         file: under git-bash each spawn is
 --                                         ~300ms, so a 20-file PR went from
---                                         twenty spawns to one)
+--                                         twenty spawns to one; cached twice
+--                                         per PR version, plain and with
+--                                         --ignore-all-space (the reviewer's
+--                                         gw toggle), under a ":iws"-suffixed
+--                                         key so both are warm at once)
 --   threads  the raw comment-thread JSON (review-pr.sh --threads), keyed by
 --            id only and stamped with the thread count it was fetched at so
 --            the list feed's count can tell when it's out of date
@@ -21,7 +25,7 @@
 -- reads them on open and falls back to fetching on its own for any miss.
 local M = {}
 
-_G.PR_DIFF_CACHE    = _G.PR_DIFF_CACHE or {}     -- key -> { [path] = {lines, map} }
+_G.PR_DIFF_CACHE    = _G.PR_DIFF_CACHE or {}     -- key -> { [path] = {lines, map} }; key..":iws" holds the --ignore-all-space variant
 _G.PR_FILES_CACHE   = _G.PR_FILES_CACHE or {}    -- key -> { paths }
 _G.PR_COMMITS_CACHE = _G.PR_COMMITS_CACHE or {}  -- key -> { lines }
 _G.PR_CACHE_ORDER   = _G.PR_CACHE_ORDER or {}    -- keys, oldest first
@@ -34,21 +38,32 @@ function M.key(id, updated_iso)
   return tostring(id) .. ":" .. tostring(updated_iso or "")
 end
 
--- Register a key (creating its diff bucket) and evict the oldest PRs' entries
--- across all three per-key caches once over MAX_PRS.
+-- Register a key (creating its diff buckets, plain and ignore-whitespace) and
+-- evict the oldest PRs' entries across all three per-key caches once over
+-- MAX_PRS. Eviction counts PR versions, not diff variants: both buckets for
+-- a key are created and evicted together, so toggling gw never changes how
+-- many PRs the cache holds.
 local function touch(key)
   if _G.PR_DIFF_CACHE[key] then return end
   _G.PR_DIFF_CACHE[key] = {}
+  _G.PR_DIFF_CACHE[key .. ":iws"] = {}
   table.insert(_G.PR_CACHE_ORDER, key)
   while #_G.PR_CACHE_ORDER > M.MAX_PRS do
     local evict = table.remove(_G.PR_CACHE_ORDER, 1)
     _G.PR_DIFF_CACHE[evict] = nil
+    _G.PR_DIFF_CACHE[evict .. ":iws"] = nil
     _G.PR_FILES_CACHE[evict] = nil
     _G.PR_COMMITS_CACHE[evict] = nil
   end
 end
 
-function M.diffs(key) touch(key); return _G.PR_DIFF_CACHE[key] end
+-- ignore_ws selects the --ignore-all-space diff variant, cached separately
+-- under key..":iws" (files/commits/threads have no whitespace dimension, so
+-- they stay keyed by `key` alone - see M.files/M.commits/M.threads below).
+function M.diffs(key, ignore_ws)
+  touch(key)
+  return _G.PR_DIFF_CACHE[ignore_ws and (key .. ":iws") or key]
+end
 function M.files(key) return _G.PR_FILES_CACHE[key] end
 function M.commits(key) return _G.PR_COMMITS_CACHE[key] end
 function M.threads(id) return _G.PR_THREADS_CACHE[tostring(id)] end
@@ -163,42 +178,57 @@ end
 -- run side by side. cb() (optional) runs once everything has finished.
 --
 -- spec: { id, updatedIso, source, target, repo (clone path), totalThreads,
---         bash, script, env }  - the last three drive the threads fetch and
---         may be omitted to skip it (the reviewer does its own).
-local inflight = {}  -- key -> { callbacks }
+--         bash, script, env, ignore_ws }  - bash/script/env drive the threads
+--         fetch and may be omitted to skip it (the reviewer does its own).
+--         ignore_ws selects the --ignore-all-space diff variant (cached
+--         separately under key..":iws", see M.diffs); files/commits/threads
+--         are unaffected, so the dashboard's normal (non-ignore_ws) prefetch
+--         and a toggled reviewer's can run for the same PR at once.
+local inflight = {}  -- key (":iws"-suffixed when ignore_ws) -> { callbacks }
 function M.prefetch(spec, cb)
   local key = M.key(spec.id, spec.updatedIso)
-  if inflight[key] then
-    if cb then table.insert(inflight[key], cb) end
+  local variant_key = spec.ignore_ws and (key .. ":iws") or key
+  if inflight[variant_key] then
+    if cb then table.insert(inflight[variant_key], cb) end
     return
   end
-  inflight[key] = { cb }
+  inflight[variant_key] = { cb }
   local range = "origin/" .. spec.target .. "...origin/" .. spec.source
+  local diff_args = { "diff", "--unified=100000" }
+  if spec.ignore_ws then diff_args[#diff_args + 1] = "--ignore-all-space" end
+  diff_args[#diff_args + 1] = range
   local pending = 0
   local function start() pending = pending + 1 end
   local function done_one()
     pending = pending - 1
     if pending > 0 then return end
-    local cbs = inflight[key] or {}
-    inflight[key] = nil
+    local cbs = inflight[variant_key] or {}
+    inflight[variant_key] = nil
     for _, f in ipairs(cbs) do if f then f() end end
   end
 
   -- Files, then every missing file's diff from a single git run.
   start()
   local function after_files(files)
-    local bucket = M.diffs(key)
+    local bucket = M.diffs(key, spec.ignore_ws)
     local missing = false
     for _, f in ipairs(files) do
       if not bucket[f] then missing = true break end
     end
     if not missing then done_one() return end
-    run(M.git(spec.repo, { "diff", "--unified=100000", range }), nil, function(code, out)
+    run(M.git(spec.repo, diff_args), nil, function(code, out)
       if code == 0 then
         local per = M.split_diff(out)
         for _, f in ipairs(files) do
-          if not bucket[f] and per[f] then
-            local lines, map = M.parse_diff(per[f])
+          if not bucket[f] then
+            -- A file --name-only lists can still be absent from the combined
+            -- diff's sections when ignore_ws is on and its only changes were
+            -- whitespace: git omits such a file entirely rather than
+            -- emitting an empty hunk for it. parse_diff({}) is exactly what
+            -- a single-file build of that file would produce anyway (the
+            -- "no textual diff" placeholder), so caching that here keeps it
+            -- from being re-fetched on every open instead of ever settling.
+            local lines, map = M.parse_diff(per[f] or {})
             bucket[f] = { lines = lines, map = map }
           end
         end

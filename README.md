@@ -159,6 +159,7 @@ File list:
 | `]C` / `[C` | Next / previous file with comments |
 | `gA` | Show only active (unresolved) comments |
 | `gF` | Manage text filters that hide matching threads |
+| `gw` | Toggle ignoring whitespace in diffs |
 | `gv` / `gm` | Vote / complete |
 | `<` / `>` | Resize the list |
 | `<BS>` | Back to the PR list |
@@ -177,6 +178,7 @@ Diff pane:
 | `s` | Set the thread's status |
 | `]C` / `[C` | Next / previous thread |
 | `gd` / `gr` / `gf` | Code navigation, see below |
+| `gw` | Toggle ignoring whitespace in diffs |
 | `<BS>` | Back to the file list |
 
 Press `?` in the diff pane or the Overview page for a popup with its keys.

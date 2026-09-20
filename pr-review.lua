@@ -28,6 +28,8 @@
 --                comment matching the filter under cursor (runs in the
 --                background), dd/x: remove, q/<Esc>: close; hides threads
 --                whose first comment contains any added string
+--   gw        :  toggle ignoring whitespace in every diff shown (file list,
+--                diff pane, Overview); persists for the rest of the session
 --   gO        :  open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab
 --   K         :  view comment(s) on the current line (in a regular file) in a
 --                large float; R/s inside it reply / set status without
@@ -176,6 +178,13 @@ resolve_my_identity()
 -- closed/total counts in the file list (both drop non-active threads).
 local active_only = false
 
+-- Toggle: when true, every diff (file list previews, the diff pane, and the
+-- per-file build the code-navigation revision buffers decorate with) is
+-- built with `git diff --ignore-all-space` instead of a plain diff. Flip
+-- with gw. Kept in _G (like the whoami/badge-timer state below) so it
+-- survives re-opening a PR within the same nvim session.
+local ignore_ws = _G.PRDASH_IGNORE_WS or false
+
 -- Where persistent text filters are saved (nvim's per-user data dir), shared
 -- across every PR review session on this machine.
 local FILTERS_FILE = vim.fn.stdpath("data") .. "/pr-dash-comment-filters.json"
@@ -280,6 +289,7 @@ local refresh_threads  -- re-fetches PR threads and re-decorates; assigned below
 local redraw_after_write  -- redraws every thread surface after an optimistic write; assigned below.
 local set_list_winbar  -- rebuilds the file-list winbar; assigned once it exists.
 local toggle_active_filter  -- flips active_only and redraws everything; assigned below.
+local toggle_ignore_ws      -- flips ignore_ws and rebuilds the diffs on screen; assigned below.
 local manage_ignore_texts   -- opens the add/remove text-filter popup; assigned below.
 local refresh_file_rows  -- re-renders file-list rows with fresh counts; assigned once it exists.
 local mark_current_file  -- highlights the file-list row for the shown diff; assigned once it exists.
@@ -870,9 +880,14 @@ local parse_diff_output = CACHE.parse_diff
 
 -- Builds one file's diff on its own, for a cache miss (the dashboard's
 -- prefetch normally has every file ready before the PR is even opened).
-local function build_diff_async(path, cb)
+-- want_ws adds --ignore-all-space, matching whichever content_cache variant
+-- (see below) the caller is currently filling.
+local function build_diff_async(path, want_ws, cb)
   local out = {}
-  vim.fn.jobstart(git_args("diff", "--unified=100000", RANGE, "--", path), {
+  local args = want_ws
+    and git_args("diff", "--unified=100000", "--ignore-all-space", RANGE, "--", path)
+    or git_args("diff", "--unified=100000", RANGE, "--", path)
+  vim.fn.jobstart(args, {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, _code)
@@ -892,26 +907,35 @@ local function diff_cache_key()
   return CACHE.key(ID, pr and pr.updatedIso or "")
 end
 local cache_key = diff_cache_key()
-local content_cache = CACHE.diffs(cache_key)  -- path -> {lines, map}
+-- path -> {lines, map} for the current ignore_ws variant; reassigned by
+-- toggle_ignore_ws (below), which updates every closure that captured this
+-- local the same way apply_threads_json swaps in a fresh threads_by_key.
+local content_cache = CACHE.diffs(cache_key, ignore_ws)
 
 -- Fetches (or joins an in-flight fetch of) a file's diff content, calling
 -- cb(lines, map) once available. Serves from content_cache instantly when
 -- warm; otherwise de-dupes concurrent requests for the same path so opening
 -- a file that's already being prefetched doesn't spawn a second git process.
-local diff_content_cbs = {}  -- path -> pending callbacks while a fetch is in flight
+-- Keyed by path *and* the requested variant so a build started just before a
+-- gw toggle can't have its result delivered to (or stored under) the other
+-- variant once it lands; each build snapshots its own target bucket instead
+-- of reading content_cache again from the completion callback.
+local diff_content_cbs = {}  -- "path\tvariant" -> pending callbacks while a fetch is in flight
 local function ensure_diff_content(path, cb)
   local cached = content_cache[path]
   if cached then
     cb(cached.lines, cached.map)
     return
   end
-  diff_content_cbs[path] = diff_content_cbs[path] or {}
-  table.insert(diff_content_cbs[path], cb)
-  if #diff_content_cbs[path] > 1 then return end  -- already in flight
-  build_diff_async(path, function(lines, map)
-    content_cache[path] = { lines = lines, map = map }
-    local cbs = diff_content_cbs[path] or {}
-    diff_content_cbs[path] = nil
+  local want_ws, bucket = ignore_ws, content_cache
+  local dkey = path .. "\t" .. tostring(want_ws)
+  diff_content_cbs[dkey] = diff_content_cbs[dkey] or {}
+  table.insert(diff_content_cbs[dkey], cb)
+  if #diff_content_cbs[dkey] > 1 then return end  -- already in flight
+  build_diff_async(path, want_ws, function(lines, map)
+    bucket[path] = { lines = lines, map = map }
+    local cbs = diff_content_cbs[dkey] or {}
+    diff_content_cbs[dkey] = nil
     for _, f in ipairs(cbs) do f(lines, map) end
   end)
 end
@@ -1759,7 +1783,7 @@ end
 local function set_overview_winbar()
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
   vim.wo[diff_win].winbar = "Overview: PR #" .. ID .. "  " .. SOURCE .. " -> " .. TARGET
-    .. "   (c: new PR comment  R: reply  s: status  gv: vote  gm: complete  gA: active-only  gF: hide text  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
+    .. "   (c: new PR comment  R: reply  s: status  gv: vote  gm: complete  gA: active-only  gF: hide text  gw: whitespace  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
 end
 
 -- Overview keys, shown by `?` there.
@@ -1775,6 +1799,7 @@ local function show_overview_help()
     "  gv / gm    vote / complete",
     "  gA         toggle active (unresolved) comments only",
     "  gF         manage text filters that hide matching threads",
+    "  gw         toggle ignoring whitespace in diffs",
     "  gO         open the config file",
     "  < / >      resize the file list",
     "  <BS>       back to the file list",
@@ -1796,6 +1821,7 @@ local function setup_overview_keymaps(buf)
   vim.keymap.set("n", "gm", complete_pr, opts)
   vim.keymap.set("n", "gA", toggle_active_filter, opts)
   vim.keymap.set("n", "gF", manage_ignore_texts, opts)
+  vim.keymap.set("n", "gw", toggle_ignore_ws, opts)
   vim.keymap.set("n", "gO", open_config_file, opts)
   vim.keymap.set("n", "<", function() resize_list(-5) end, opts)
   vim.keymap.set("n", ">", function() resize_list(5) end, opts)
@@ -1848,6 +1874,7 @@ local function show_diff_help()
     "  gv / gm    vote / complete",
     "  gA         toggle active (unresolved) comments only",
     "  gF         manage text filters that hide matching threads",
+    "  gw         toggle ignoring whitespace in diffs",
     "  gO         open the config file",
     "  < / >      resize the file list",
     "  <BS>       back to the file list",
@@ -1875,6 +1902,7 @@ local function setup_diff_keymaps(buf)
   vim.keymap.set("n", "[C", function() jump_comment(-1) end, opts)
   vim.keymap.set("n", "gA", toggle_active_filter, opts)
   vim.keymap.set("n", "gF", manage_ignore_texts, opts)
+  vim.keymap.set("n", "gw", toggle_ignore_ws, opts)
   vim.keymap.set("n", "gO", open_config_file, opts)
   vim.keymap.set("n", "gd", function() nav_goto_definition() end, opts)
   vim.keymap.set("n", "gr", function() nav_find_references() end, opts)
@@ -1890,13 +1918,15 @@ local function setup_diff_keymaps(buf)
   vim.keymap.set("n", "q", leave, opts)
 end
 
--- Build the diff-pane winbar for `path`, including the active-only/text-filter tags when set.
+-- Build the diff-pane winbar for `path`, including the active-only/ignore-ws/
+-- text-filter tags when set.
 local function set_diff_winbar(path)
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
   vim.wo[diff_win].winbar = path
     .. (active_only and "  [active-only]" or "")
+    .. (ignore_ws and "  [ignore-ws]" or "")
     .. ignore_texts_tag()
-    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  gv: vote  gm: complete  gA: active-only  gF: hide text  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
+    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  gv: vote  gm: complete  gA: active-only  gF: hide text  gw: whitespace  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
 end
 
 -- Show a file's diff in the right window. focus=true moves the cursor into
@@ -2505,7 +2535,7 @@ local function prefetch_all_diffs()
   local pr = current_pr_record()
   CACHE.prefetch({
     id = ID, updatedIso = pr and pr.updatedIso or "",
-    source = SOURCE, target = TARGET, repo = REPO_PATH,
+    source = SOURCE, target = TARGET, repo = REPO_PATH, ignore_ws = ignore_ws,
   })
 end
 
@@ -2652,8 +2682,9 @@ local function set_list_winbar_impl()
       .. (clabel and ("  [" .. clabel .. "]") or "")
       .. (alabel and ("  [" .. alabel .. "]") or "")
       .. (active_only and "  [active-only]" or "")
+      .. (ignore_ws and "  [ignore-ws]" or "")
       .. ignore_texts_tag()
-      .. "   (<CR>: open  cf: file comment  gC: new PR comment  gA: active-only  gF: hide text  gO: config  gv: vote  gm: complete  ]C/[C: file w/comments  </>: resize  <BS>: back to PR list  q: quit  ?: help)"
+      .. "   (<CR>: open  cf: file comment  gC: new PR comment  gA: active-only  gF: hide text  gw: whitespace  gO: config  gv: vote  gm: complete  ]C/[C: file w/comments  </>: resize  <BS>: back to PR list  q: quit  ?: help)"
   end)
 end
 set_list_winbar = set_list_winbar_impl
@@ -2714,6 +2745,54 @@ toggle_active_filter = function()
   active_only = not active_only
   refresh_after_filter_change()
   notify("Comment filter: " .. (active_only and "active only" or "all statuses") .. ".")
+end
+
+-- Flip ignore-whitespace (gw) and rebuild every diff currently on screen for
+-- it. Switches content_cache to the other cached variant (prdash-cache.lua
+-- keeps both warm side by side), then drops every per-path diff buffer:
+-- ones not currently shown are deleted outright (nothing is looking at
+-- them); the one currently shown is rebuilt through open_file so the diff
+-- pane refreshes in place, and only then is its old buffer deleted, so the
+-- window is never left pointing at a dead buffer. Comments still decorate by
+-- (path, side, lineno) and keep working - -w only changes which lines count
+-- as changed, not the line numbers of lines that didn't change. Also
+-- re-decorates any already-open revision buffer (gd/gr/gf), which reads
+-- through ensure_diff_content and so follows the new mode once redecorated.
+toggle_ignore_ws = function()
+  ignore_ws = not ignore_ws
+  _G.PRDASH_IGNORE_WS = ignore_ws
+  content_cache = CACHE.diffs(cache_key, ignore_ws)
+
+  local shown = current_file_path
+  local shown_entry = nil
+  for path, entry in pairs(diff_cache) do
+    if entry.buf then
+      maps_by_buf[entry.buf] = nil
+      paths_by_buf[entry.buf] = nil
+      comments_by_buf[entry.buf] = nil
+    end
+    if path == shown then
+      shown_entry = entry
+    elseif entry.buf and vim.api.nvim_buf_is_valid(entry.buf) then
+      pcall(vim.api.nvim_buf_delete, entry.buf, { force = true })
+    end
+  end
+  diff_cache = {}
+  if shown and shown ~= OVERVIEW_MARK and files_loaded then
+    open_file(shown, false)
+  end
+  if shown_entry and shown_entry.buf and vim.api.nvim_buf_is_valid(shown_entry.buf) then
+    pcall(vim.api.nvim_buf_delete, shown_entry.buf, { force = true })
+  end
+
+  prefetch_all_diffs()
+  refresh_after_filter_change()
+
+  for _, buf in pairs(nav_bufs) do
+    if vim.api.nvim_buf_is_valid(buf) then decorate_revision(buf) end
+  end
+
+  notify("Diffs: " .. (ignore_ws and "ignoring whitespace" or "showing whitespace") .. ".")
 end
 
 -- Manage the list of comment text filters in a small floating popup: `a` adds
@@ -2879,6 +2958,7 @@ local function show_file_list_help()
     "  ]C / [C    next / previous file with comments",
     "  gA         toggle active (unresolved) comments only",
     "  gF         manage text filters that hide matching threads",
+    "  gw         toggle ignoring whitespace in diffs",
     "  gO         open the config file",
     "  gv / gm    vote / complete",
     "  < / >      resize the list",
@@ -2908,6 +2988,7 @@ vim.keymap.set("n", "q", leave, lopts)
 vim.keymap.set("n", "gC", comment_on_pr, lopts)
 vim.keymap.set("n", "gA", toggle_active_filter, lopts)
 vim.keymap.set("n", "gF", manage_ignore_texts, lopts)
+vim.keymap.set("n", "gw", toggle_ignore_ws, lopts)
 vim.keymap.set("n", "gO", open_config_file, lopts)
 vim.keymap.set("n", "gv", cast_vote, lopts)
 vim.keymap.set("n", "gm", complete_pr, lopts)
