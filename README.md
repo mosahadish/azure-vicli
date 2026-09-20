@@ -50,7 +50,8 @@ editing. It is safe to re-run and never overwrites an existing config.
 ## Configuration
 
 The config file is `%APPDATA%\azure-cli.yml` on Windows and
-`~/.config/azure-cli.yml` elsewhere. Press `gO` in any dashboard to open it.
+`$XDG_CONFIG_HOME/azure-cli.yml` (default `~/.config/azure-cli.yml`) elsewhere.
+Press `gO` in any dashboard to open it.
 
 ```yaml
 # Machine-wide settings.

@@ -124,12 +124,15 @@ local function notify(msg, level)
 end
 
 -- Resolve azure-cli.yml's path (matches Config.ConfigPath in the C# source):
--- %APPDATA%\azure-cli.yml on Windows, ~/.azure-cli.yml elsewhere.
+-- %APPDATA%\azure-cli.yml on Windows, $XDG_CONFIG_HOME/azure-cli.yml (default
+-- ~/.config) elsewhere - the same place .NET's ApplicationData resolves to.
 local function config_path()
   if vim.fn.has("win32") == 1 then
     return (vim.env.APPDATA or vim.fn.expand("$APPDATA")) .. "\\azure-cli.yml"
   end
-  return vim.fn.expand("~/.azure-cli.yml")
+  local xdg = vim.env.XDG_CONFIG_HOME
+  if not xdg or xdg == "" then xdg = vim.fn.expand("~/.config") end
+  return xdg .. "/azure-cli.yml"
 end
 
 -- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
