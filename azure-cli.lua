@@ -766,10 +766,12 @@ end
 -- which repo they live in. A clone's repository-wide `git fetch`
 -- (review-pr.sh's "all" prefetch mode) runs lazily the first time one of
 -- its PRs comes up, and is skipped when nothing in that clone has activity
--- we haven't fetched yet. Runs at the lowest priority so it never competes
--- with an interactive open for git; if a list load lands while a pass is
--- still going, the next load picks up where it left off.
+-- we haven't fetched yet. WARM_CONCURRENCY PRs are in flight at once (their
+-- git work touches different files and the thread fetches are independent
+-- network calls), still in queue order; if a list load lands while a pass
+-- is still going, the next load picks up where it left off.
 local WARM_RANK = { Actionable = 1, Created = 2, Drafts = 3, SignedOff = 4, Waiting = 5 }
+local WARM_CONCURRENCY = 4
 local warm_all_running = false
 local function warm_all(list)
   if warm_all_running then return end
@@ -789,7 +791,10 @@ local function warm_all(list)
 
   -- Per clone within this pass: "ok" once its fetch succeeded (or wasn't
   -- needed), "failed" to leave its PRs cold rather than cache diffs against
-  -- refs that may be missing or behind.
+  -- refs that may be missing or behind, or a list of callbacks while the
+  -- fetch is in flight so concurrent workers on the same clone wait for the
+  -- one fetch instead of starting a second (two fetches in one clone fight
+  -- over ref locks).
   local clone_state = {}
   local function clone_needs_fetch(path)
     for _, pr in ipairs(queue) do
@@ -798,12 +803,21 @@ local function warm_all(list)
     return false
   end
   local function ensure_clone_fetched(pr, path, cb)
-    if clone_state[path] then cb(clone_state[path] == "ok") return end
+    local st = clone_state[path]
+    if type(st) == "table" then
+      st[#st + 1] = cb
+      return
+    end
+    if st then
+      cb(st == "ok")
+      return
+    end
     if not clone_needs_fetch(path) then
       clone_state[path] = "ok"
       cb(true)
       return
     end
+    clone_state[path] = { cb }
     syncing_clone[path] = true
     schedule_render()
     vim.fn.jobstart({ BASH, SCRIPT }, {
@@ -811,34 +825,44 @@ local function warm_all(list)
       on_exit = function(_, code)
         syncing_clone[path] = nil
         schedule_render()
+        local waiting = clone_state[path]
         clone_state[path] = code == 0 and "ok" or "failed"
         if code == 0 then
           for _, q in ipairs(queue) do
             if clone_for(q) == path then warmed[tostring(q.id)] = q.updatedIso end
           end
         end
-        cb(code == 0)
+        for _, f in ipairs(waiting) do f(code == 0) end
       end,
     })
   end
 
-  local function step(i)
-    local pr = queue[i]
+  -- WARM_CONCURRENCY workers each pull the next PR off the shared queue
+  -- (so the front of the queue is always what's being worked on) and the
+  -- pass ends once every worker has run out of PRs.
+  local next_index, active = 0, 0
+  local function worker()
+    next_index = next_index + 1
+    local pr = queue[next_index]
     if not pr then
-      warm_all_running = false
+      active = active - 1
+      if active == 0 then warm_all_running = false end
       return
     end
     if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
-      step(i + 1)
+      worker()
       return
     end
     local path = clone_for(pr)
     ensure_clone_fetched(pr, path, function(ok)
-      if not ok then step(i + 1) return end
-      prefetch_content(pr, function() step(i + 1) end)
+      if not ok then worker() return end
+      prefetch_content(pr, worker)
     end)
   end
-  step(1)
+  for _ = 1, math.min(WARM_CONCURRENCY, #queue) do
+    active = active + 1
+    worker()
+  end
 end
 
 -- Diffs a freshly fetched PR list against the previous one (by id), looking
