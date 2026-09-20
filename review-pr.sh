@@ -532,7 +532,9 @@ if [[ -n "${PRDASH_PREFETCH:-}" ]]; then
     else
       tlog "prefetch(all) git fetch FAILED (rc=$pf_rc) after $(( _n - t_pf0 )) ms: $(printf '%s' "$pf_err" | tr '\n' ' ' | tail -c 300)"
     fi
-    exit 0
+    # Report the fetch's own result: the dashboard only marks branches warm
+    # (and only prefetches content against them) on success.
+    exit $pf_rc
   fi
 
   # Per-PR warm: fetch just this PR's two branches.
@@ -554,7 +556,7 @@ if [[ -n "${PRDASH_PREFETCH:-}" ]]; then
   else
     tlog "prefetch git fetch FAILED (rc=$pf_rc) after $(( _n - t_pf0 )) ms: $(printf '%s' "$pf_err" | tr '\n' ' ' | tail -c 300)"
   fi
-  exit 0
+  exit $pf_rc
 fi
 
 # Interactive open: the reviewer's own REST calls (via this script's

@@ -704,6 +704,83 @@ local function prefetch_content(pr, cb)
   }, cb)
 end
 
+-- Warm every open PR after a list load, so even the first open after
+-- start-up is instant, not just PRs the cursor has rested on. Per clone:
+-- one repository-wide `git fetch` (review-pr.sh's "all" prefetch mode),
+-- skipped when nothing in that clone has activity we haven't fetched yet,
+-- then the content pipeline for each of its PRs one at a time - Actionable
+-- first, then my own, then Waiting; signed-off and draft PRs are left to
+-- the hover prefetch. Runs one clone at a time at the lowest priority so it
+-- never competes with an interactive open for git; if a list load lands
+-- while a pass is still going, the next load picks up where it left off.
+local WARM_RANK = { Actionable = 1, Created = 2, Waiting = 3 }
+local warm_all_running = false
+local function warm_all(list)
+  if warm_all_running then return end
+  local by_clone, clones = {}, {}
+  for _, pr in ipairs(list) do
+    if WARM_RANK[pr.state] and pr.source and pr.source ~= "" and pr.target and pr.target ~= "" then
+      local path = clone_for(pr)
+      if is_cloned(path) then
+        if not by_clone[path] then
+          by_clone[path] = {}
+          clones[#clones + 1] = path
+        end
+        table.insert(by_clone[path], pr)
+      end
+    end
+  end
+  if #clones == 0 then return end
+  warm_all_running = true
+
+  local ci = 0
+  local function next_clone()
+    ci = ci + 1
+    local path = clones[ci]
+    if not path then
+      warm_all_running = false
+      return
+    end
+    local prs = by_clone[path]
+    table.sort(prs, function(a, b)
+      if WARM_RANK[a.state] ~= WARM_RANK[b.state] then return WARM_RANK[a.state] < WARM_RANK[b.state] end
+      return tostring(a.id) < tostring(b.id)
+    end)
+    local function prefetch_each(i)
+      local pr = prs[i]
+      if not pr then next_clone() return end
+      if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
+        prefetch_each(i + 1)
+        return
+      end
+      prefetch_content(pr, function() prefetch_each(i + 1) end)
+    end
+
+    local stale = false
+    for _, pr in ipairs(prs) do
+      if warmed[tostring(pr.id)] ~= pr.updatedIso then stale = true break end
+    end
+    if not stale then
+      prefetch_each(1)
+      return
+    end
+    vim.fn.jobstart({ BASH, SCRIPT }, {
+      env = vim.tbl_extend("force", pr_env(prs[1]), { PRDASH_PREFETCH = "all", PRDASH_REPO_PATH = path }),
+      on_exit = function(_, code)
+        if code ~= 0 then
+          -- Fetch failed: leave this clone's PRs cold rather than caching
+          -- diffs against refs that may be missing or behind.
+          next_clone()
+          return
+        end
+        for _, pr in ipairs(prs) do warmed[tostring(pr.id)] = pr.updatedIso end
+        prefetch_each(1)
+      end,
+    })
+  end
+  next_clone()
+end
+
 -- Diffs a freshly fetched PR list against the previous one (by id), looking
 -- for growth in thread counts that means "someone commented since last time":
 -- for a PR I authored, any growth in its total comment count; for any other
@@ -803,6 +880,7 @@ local function load(silent, force)
       prs = fresh
       _G.PR_LIST_CACHE = { prs = fresh, ts = os.time() }
       render()
+      warm_all(fresh)
     end,
   })
 end
