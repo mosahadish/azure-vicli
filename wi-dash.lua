@@ -9,6 +9,11 @@
 --   j/k    move
 --   <CR>   open the work item under the cursor (parent/children/description)
 --   gs     change the state of the work item under the cursor
+--   n      new work item: type, title, and parent (if the cursor is on one)
+--   ga     assign the item under the cursor
+--   gp     set the item's priority
+--   ge     edit the item's title
+--   gi     move the item to another sprint of the quarter
 --   [ ]    jump to the previous / next sprint in the quarter (also <S-Tab>/<Tab>)
 --   {n}gt  jump to sprint n (1-based, like vim's tab gt); gt with no count = next
 --   click  click a tab in the tab bar to jump straight to that sprint
@@ -36,7 +41,11 @@ local env    = vim.env
 local LIST   = env.WIDASH_LIST or (DIR .. "/wi-list.sh")
 local DETAIL = env.WIDASH_DETAIL or (DIR .. "/wi-detail.sh")
 local STATE  = env.WIDASH_STATE or (DIR .. "/wi-state.sh")
+local EDIT   = env.WIDASH_EDIT or (DIR .. "/wi-edit.sh")
 local BASH   = env.PRDASH_BASH or "bash"
+-- Same default assignee as wi-list.sh: used to preset ga and as the
+-- assignee of a newly created item (n).
+local ASSIGNEE = env.WIDASH_ASSIGNEE or "Hadish, Mosa"
 local WI_VIEW_LUA = (DIR .. "/wi-view.lua"):gsub("\\", "/")
 local PR_DASH_LUA = (DIR .. "/azure-cli.lua"):gsub("\\", "/")
 -- PR list provider (headless exe), warmed in the background so the first P swap is instant.
@@ -656,19 +665,48 @@ local function open_item()
   vim.cmd("luafile " .. vim.fn.fnameescape(WI_VIEW_LUA))
 end
 
--- Reflect a committed state change immediately: patch the in-memory list and
--- caches, drop any stale detail cache, and re-render. Exposed globally so a
--- change made from the detail view (wi-view.lua) updates the dashboard too.
-function _G.WI_STATE_CHANGED(id, new)
+-- Merge `fields` into every cached record for `id` (the active list plus
+-- every sprint's cache), drop its stale detail cache entry, and re-render.
+-- Exposed globally so a change committed from the detail view (wi-view.lua) -
+-- state, assignee, priority or title - updates the dashboard too.
+function _G.WI_ITEM_CHANGED(id, fields)
   id = tostring(id)
   local function patch(list)
     if not list then return end
     for _, it in ipairs(list) do
-      if tostring(it.id) == id then it.state = new end
+      if tostring(it.id) == id then
+        for k, v in pairs(fields) do it[k] = v end
+      end
     end
   end
   patch(items)
   for _, c in pairs(_G.WI_SPRINT_ITEMS or {}) do patch(c.items) end
+  if _G.WI_DETAIL_CACHE then _G.WI_DETAIL_CACHE[id] = nil end
+  if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
+end
+
+-- Backward-compatible alias for the one field the dashboard's own 'gs' uses.
+function _G.WI_STATE_CHANGED(id, new)
+  _G.WI_ITEM_CHANGED(id, { state = new })
+end
+
+-- Reflect a work item moving to a different sprint (wi-view.lua's 'gi'):
+-- drop it from the active list and its old sprint's cache, and drop the
+-- target sprint's cache so it refetches fresh (with correct ranking/state)
+-- next time that tab is visited. Exposed globally for the same reason as
+-- WI_ITEM_CHANGED above.
+function _G.WI_ITEM_MOVED(id, from_path, to_path)
+  id = tostring(id)
+  local function drop(list)
+    if not list then return end
+    for i, it in ipairs(list) do
+      if tostring(it.id) == id then table.remove(list, i); return end
+    end
+  end
+  drop(items)
+  local cache = from_path and _G.WI_SPRINT_ITEMS[from_path]
+  if cache then drop(cache.items) end
+  if to_path then _G.WI_SPRINT_ITEMS[to_path] = nil end
   if _G.WI_DETAIL_CACHE then _G.WI_DETAIL_CACHE[id] = nil end
   if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
@@ -808,6 +846,219 @@ local function set_state()
   end)
 end
 
+-- Run a wi-edit.sh "set" call for a work item, optimistically. Mirrors
+-- azure-cli.lua's run_action: apply(it) mutates the record right away and
+-- returns an undo function; on failure that undo runs and the error is
+-- shown, on success on_success(stdout_lines) runs (e.g. to drop stale detail
+-- caches / poke an open detail tab). apply/on_success are both optional.
+local function run_edit(it, cmd_args, describe, apply, on_success)
+  notify(describe .. " #" .. it.id .. " \u{2026}")
+  local undo = apply and apply(it)
+  if undo then render() end
+  local out, err = {}, {}
+  local job_args = { BASH, EDIT }
+  vim.list_extend(job_args, cmd_args)
+  vim.fn.jobstart(job_args, {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        notify(describe .. " #" .. it.id .. ": done.")
+        if on_success then on_success(out) end
+      else
+        if undo then
+          undo()
+          render()
+        end
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify(describe .. " #" .. it.id .. " failed: " .. msg
+          .. (undo and " - change reverted." or ""), vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
+-- Poke any open detail tab for `id` to reload, and drop its stale cache entry,
+-- after a field committed here from the dashboard.
+local function nudge_detail(id)
+  id = tostring(id)
+  if _G.WI_DETAIL_CACHE then _G.WI_DETAIL_CACHE[id] = nil end
+  local reload = _G.WI_VIEW_RELOAD and _G.WI_VIEW_RELOAD[id]
+  if reload then vim.schedule(reload) end
+end
+
+-- Assign the item under the cursor. Prefilled with its current assignee;
+-- submitting empty assigns it to me (the WIDASH_ASSIGNEE default).
+local function assign_item()
+  local it = current_item()
+  if not it then return end
+  local typed = vim.fn.input("Assign #" .. it.id .. " to (empty = me): ", it.assignedTo or "")
+  local new = (typed ~= "") and typed or ASSIGNEE
+  run_edit(it, { "set", tostring(it.id), "assignedTo", new }, "Assigning", function(rec)
+    local prev = rec.assignedTo
+    rec.assignedTo = new
+    return function() rec.assignedTo = prev end
+  end, function() nudge_detail(it.id) end)
+end
+
+local PRIORITIES = { 1, 2, 3, 4 }
+
+-- Set the priority of the item under the cursor (1-4).
+local function set_priority()
+  local it = current_item()
+  if not it then return end
+  local choices = { "Priority for #" .. it.id .. ":" }
+  for i, p in ipairs(PRIORITIES) do choices[#choices + 1] = i .. ": P" .. p end
+  local idx = tonumber(vim.fn.inputlist(choices))
+  if not idx or idx < 1 or idx > #PRIORITIES then
+    notify("Cancelled.")
+    return
+  end
+  local new = PRIORITIES[idx]
+  run_edit(it, { "set", tostring(it.id), "priority", tostring(new) }, "Setting priority on", function(rec)
+    local prev = rec.priority
+    rec.priority = new
+    return function() rec.priority = prev end
+  end, function() nudge_detail(it.id) end)
+end
+
+-- Edit the title of the item under the cursor, prefilled with the current one.
+local function edit_title()
+  local it = current_item()
+  if not it then return end
+  local new = vim.fn.input("Title for #" .. it.id .. ": ", it.title or "")
+  if new == "" or new == it.title then
+    notify("Cancelled.")
+    return
+  end
+  run_edit(it, { "set", tostring(it.id), "title", new }, "Renaming", function(rec)
+    local prev = rec.title
+    rec.title = new
+    return function() rec.title = prev end
+  end, function() nudge_detail(it.id) end)
+end
+
+-- Move the item under the cursor to another sprint of the quarter, offered
+-- from the same cached sprint list the tab bar uses. Optimistic: the item
+-- leaves the current tab's in-memory list and cache immediately; the target
+-- sprint's cache is dropped rather than guessed at, so it refetches fresh
+-- (with correct ranking/state) the next time that tab is visited.
+local function move_sprint_item()
+  local it = current_item()
+  if not it then return end
+  if #sprints == 0 then
+    notify("Sprint list not loaded yet.", vim.log.levels.WARN)
+    return
+  end
+  local from_path = sprints[active_index].path
+  local choices = { "Move #" .. it.id .. " to sprint:" }
+  local targets = {}
+  for _, sp in ipairs(sprints) do
+    if sp.path ~= from_path then
+      targets[#targets + 1] = sp
+      choices[#choices + 1] = #targets .. ": " .. (sp.label or sp.name or sp.path)
+    end
+  end
+  if #targets == 0 then
+    notify("No other sprint to move to.", vim.log.levels.WARN)
+    return
+  end
+  local idx = tonumber(vim.fn.inputlist(choices))
+  if not idx or idx < 1 or idx > #targets then
+    notify("Cancelled.")
+    return
+  end
+  local target = targets[idx]
+  run_edit(it, { "set", tostring(it.id), "iteration", target.path }, "Moving", function(rec)
+    local at
+    for i, x in ipairs(items) do
+      if x == rec then at = i; break end
+    end
+    if at then table.remove(items, at) end
+    local cache = _G.WI_SPRINT_ITEMS[from_path]
+    local cache_at
+    if cache and cache.items then
+      for i, x in ipairs(cache.items) do
+        if x == rec then cache_at = i; break end
+      end
+      if cache_at then table.remove(cache.items, cache_at) end
+    end
+    _G.WI_SPRINT_ITEMS[target.path] = nil  -- force a fresh fetch next time it's opened
+    return function()
+      if at then table.insert(items, math.min(at, #items + 1), rec) end
+      if cache and cache.items and cache_at then
+        table.insert(cache.items, math.min(cache_at, #cache.items + 1), rec)
+      end
+    end
+  end, function() nudge_detail(it.id) end)
+end
+
+local NEW_TYPES = { "User Story", "Bug" }
+
+-- Create a new work item in the active sprint. Prompts for type, then title,
+-- then (only when the cursor is on an item) whether to parent it under that
+-- item. There is no id to insert optimistically until the server answers, so
+-- this just notifies and reloads the active sprint's list on success.
+local function new_item()
+  local choices = { "New work item type:" }
+  for i, t in ipairs(NEW_TYPES) do choices[#choices + 1] = i .. ": " .. t end
+  local tidx = tonumber(vim.fn.inputlist(choices))
+  if not tidx or tidx < 1 or tidx > #NEW_TYPES then
+    notify("Cancelled.")
+    return
+  end
+  local wtype = NEW_TYPES[tidx]
+  local title = vim.fn.input("Title: ")
+  if title == "" then
+    notify("Cancelled.")
+    return
+  end
+  local under = current_item()
+  local parent_id = ""
+  if under then
+    local pidx = tonumber(vim.fn.inputlist({
+      "Parent:",
+      "1: none",
+      "2: child of #" .. under.id .. " " .. (under.title or ""),
+    }))
+    if not pidx or pidx < 1 or pidx > 2 then
+      notify("Cancelled.")
+      return
+    end
+    if pidx == 2 then parent_id = tostring(under.id) end
+  end
+  local sp = sprints[active_index]
+  if not sp then
+    notify("Sprint not loaded yet.", vim.log.levels.WARN)
+    return
+  end
+  notify("Creating " .. wtype .. " \u{2026}")
+  local out, err = {}, {}
+  vim.fn.jobstart({ BASH, EDIT, "create", wtype, title, parent_id, sp.path }, {
+    detach = true,
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        local line = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "")
+        local ok, rec = pcall(vim.json.decode, line)
+        notify("Created #" .. tostring(ok and type(rec) == "table" and rec.id or "?") .. ".")
+        if sprints[active_index] and sprints[active_index].path == sp.path then
+          load(false, true)
+        end
+      else
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify("Create failed: " .. msg, vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
 -- Pre-warm the state/reason caches in the background so 'gs' is instant: for
 -- each distinct (type, currentState) in the list, fetch its transitions, then
 -- fetch the reasons for each reachable target state. All coalesced/cached.
@@ -908,6 +1159,11 @@ local function show_help()
     "  j / k        move",
     "  <CR>         open the item: parent, children, description",
     "  gs           change the item's state, with the allowed transitions and reasons",
+    "  n            new work item: type, title, and parent (if the cursor is on one)",
+    "  ga           assign the item under the cursor",
+    "  gp           set the item's priority",
+    "  ge           edit the item's title",
+    "  gi           move the item to another sprint of the quarter",
     "  [ / ]        previous / next sprint (also <S-Tab> / <Tab>)",
     "  {n}gt        jump to sprint n",
     "  click        click a tab in the tab bar to jump straight to that sprint",
@@ -927,12 +1183,17 @@ vim.bo[buf].filetype = "widash"
 vim.api.nvim_set_current_buf(buf)
 win = vim.api.nvim_get_current_win()
 pcall(function()
-  vim.wo[win].winbar = "work items   (<CR>: open  gs: set state  o: browser  gy: copy link  [ ]/{n}gt/click: sprint nav  gO: config  r: refresh  P: PR dashboard  q: quit  ?: help)"
+  vim.wo[win].winbar = "work items   (<CR>: open  gs: state  n: new  ga: assign  gp: priority  ge: title  gi: move sprint  o: browser  gy: copy link  [ ]/{n}gt/click: sprint nav  gO: config  r: refresh  P: PR dashboard  q: quit  ?: help)"
 end)
 
 local opts = { buffer = buf, silent = true, nowait = true }
 vim.keymap.set("n", "<CR>", open_item, opts)
 vim.keymap.set("n", "gs", set_state, opts)
+vim.keymap.set("n", "n", new_item, opts)
+vim.keymap.set("n", "ga", assign_item, opts)
+vim.keymap.set("n", "gp", set_priority, opts)
+vim.keymap.set("n", "ge", edit_title, opts)
+vim.keymap.set("n", "gi", move_sprint_item, opts)
 vim.keymap.set("n", "o", open_browser, opts)
 vim.keymap.set("n", "r", function() load(false, true) end, opts)
 vim.keymap.set("n", "]", function() goto_sprint(1) end, opts)
