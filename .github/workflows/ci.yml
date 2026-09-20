@@ -17,12 +17,9 @@ jobs:
       - name: Install luajit
         run: sudo apt-get update && sudo apt-get install -y luajit
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-python@v5
         with:
-          dotnet-version: "6.0.x"
-
-      - name: Build data provider
-        run: dotnet build src/azure-cli.csproj
+          python-version: "3.x"
 
       - name: Run tests
         run: bash tests/run.sh

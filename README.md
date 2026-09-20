@@ -27,13 +27,17 @@ instant.
 ## Requirements
 
 - Windows with Git for Windows (git-bash) is the primary platform. Linux and
-  macOS work for the C# and Lua parts; the shell scripts assume bash 4+.
-- .NET 6 SDK, to build the data provider.
+  macOS work too; the shell scripts assume bash 4+.
+- Python 3.8 or newer - it's the data provider's runtime (`azure-cli.py`,
+  standard library only, nothing to install with pip) as well as what the
+  work-item scripts use to talk to the REST API. No .NET or other build
+  toolchain is needed - there's nothing to compile.
 - Neovim 0.9 or newer (0.11 recommended).
-- git, curl, python 3.
+- git, curl.
 - An Azure DevOps personal access token (PAT) with Code read/write and Work
-  Items read/write scopes. Azure AD login is used as a fallback on Windows
-  when an account has no PAT, but the work-item screens need a PAT.
+  Items read/write scopes, on every account in the config file. Unlike the
+  old .NET build, there is no Azure AD fallback on Windows - a PAT is always
+  required now.
 
 ## Install
 
@@ -43,9 +47,10 @@ cd azure-vicli
 bash install.sh
 ```
 
-`install.sh` checks or installs the dependencies, builds the project, creates
-the config file at its platform location with placeholders, and opens it for
-editing. It is safe to re-run and never overwrites an existing config.
+`install.sh` checks or installs the dependencies (Neovim, git-bash, python),
+creates the config file at its platform location with placeholders, and
+opens it for editing. It is safe to re-run and never overwrites an existing
+config. There's no build step - `azure-cli.py` runs directly.
 
 ## Configuration
 
@@ -67,11 +72,11 @@ accounts:
 
 | Field | Scope | Meaning |
 |---|---|---|
-| `bash_path` | top level | git-bash to run the helper scripts under. Optional on Windows; probed when unset. |
+| `bash_path` | top level | git-bash to run the helper scripts under. Optional on Windows; probed when unset (including, now, a plain `bash` on PATH - useful on Linux/macOS). |
 | `repo_path` | top level | Legacy single-clone fallback. Prefer `clones_dir`. |
 | `project_name` | account | The Azure DevOps project. |
 | `org_url` | account | Organization or collection URL. Several accounts may share one. |
-| `pat` | account | Personal access token. Required for work items; optional on Windows for PRs. |
+| `pat` | account | Personal access token. Required - there is no Azure AD fallback. |
 | `hide_ancient` | account | Drop PRs whose latest commit is older than 30 days. |
 | `clones_dir` | account | Directory holding one clone per repository, named after the repo. Repos are cloned here on demand when you open a PR. |
 
@@ -81,11 +86,16 @@ or `ADO_PAT` variables in your shell are never consulted.
 ## Running
 
 ```
-src\bin\Debug\net6.0\azure-cli.exe
+./azure-cli          # Linux/macOS/git-bash
+azure-cli.cmd         # Windows cmd.exe / PowerShell
 ```
 
-With no arguments the exe launches Neovim with the dashboard and the
-environment the helper scripts need. Headless flags exist for scripting:
+`azure-cli`/`azure-cli.cmd` are thin launchers so the data provider stays a
+single executable token (the same reason `azure-cli.exe` was one) - they
+just run `azure-cli.py` under `python3`/`python`. With no arguments they
+launch Neovim with the dashboard and the environment the helper scripts
+need. Headless flags exist for scripting (and work identically whether you
+invoke `./azure-cli`, `azure-cli.cmd`, or `python3 azure-cli.py` directly):
 
 | Flag | Output |
 |---|---|
@@ -319,7 +329,9 @@ invalidates it automatically. It holds 24 PRs. Knobs: `WARM_CONCURRENCY` and
 ## Architecture
 
 ```
-azure-cli.exe (C#)        headless data provider + launcher
+azure-cli.py (python, via         headless data provider + launcher
+the azure-cli/azure-cli.cmd
+launchers)
   --list  ───────────────▶ azure-cli.lua      PR dashboard (Neovim)
                              │  <CR>            ▼
                              │               pr-review.lua   reviewer
@@ -337,7 +349,8 @@ azure-cli.exe (C#)        headless data provider + launcher
 
 | File | Role |
 |---|---|
-| `src/` | C# data provider. `EntryPoint.cs` handles flags and launches Neovim; `DataSource/AzureDevOpsPullRequestSource.cs` classifies PRs and gathers thread and build status; `PullRequestListWriter.cs` emits NDJSON. |
+| `azure-cli.py` | Data provider: classifies PRs, gathers thread/mention/build status, emits NDJSON for `--list`, re-queues builds, prints PATs/identity, and launches Neovim with no flags. Standard-library-only python (urllib for REST, no third-party packages). |
+| `azure-cli`, `azure-cli.cmd` | One-line launchers so `azure-cli.py` stays a single executable token (`$PRDASH_EXE`) for git-bash/cmd.exe, like the old exe was. |
 | `azure-cli.lua` | PR dashboard: rendering, badges, hover and warm-all prefetch, optimistic actions. |
 | `pr-review.lua` | Reviewer: file list, diffs, comments, optimistic writes, code navigation and peek view. |
 | `prdash-cache.lua` | Per-PR content cache shared by dashboard and reviewer, and the prefetch pipeline that fills it. |
@@ -359,7 +372,7 @@ Set by the exe when it launches Neovim; only needed when starting Neovim by hand
 
 | Variable | Meaning |
 |---|---|
-| `PRDASH_EXE` | Path to `azure-cli.exe`. |
+| `PRDASH_EXE` | Path to the `azure-cli` launcher script (not `azure-cli.py` directly - see Architecture). |
 | `PRDASH_SCRIPT` | Path to `review-pr.sh`. |
 | `PRDASH_BASH` | bash to run the scripts under. |
 | `PRDASH_PATS` | One `org<TAB>project<TAB>pat` line per account, read from the config. |
@@ -379,8 +392,9 @@ Optional overrides:
 
 - **"Configuration does not exist"**: create the config file at the path
   printed, or run `install.sh`.
-- **"No PAT available"**: add `pat:` to the matching account. The org URL is
-  compared case-insensitively with the trailing slash ignored.
+- **"No PAT available" / "no configured PAT"**: add `pat:` to the matching
+  account. The org URL is compared case-insensitively with the trailing
+  slash ignored. Every account needs one now - there is no Azure AD fallback.
 - **A PR won't open, "branch not found"**: the source branch was deleted, or
   `clones_dir` points at a different repository. Check the clone path in the
   error.
@@ -393,20 +407,25 @@ Optional overrides:
 ## Development
 
 ```
-dotnet build src/azure-cli.csproj      # data provider
-dotnet test test/azure-cli-test.csproj # needs a .NET 6 runtime
-bash tests/run.sh                      # Lua/shell test suite, needs bash, git, luajit
+bash tests/run.sh   # whole test suite: Lua/shell checks + python unit tests
 ```
+
+There's no build step - `azure-cli.py` runs directly under python, and the
+Lua/shell files are interpreted as-is. Requires bash, git, luajit and
+python3.
 
 Most files use CRLF line endings; edit them byte-wise. The Lua files can be
 syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
-`bash -n`. Build outputs and `.prefetch/` are ignored by git.
+`bash -n`. `azure-cli.py` and `tests/test_*.py` are plain LF, like every
+other file that postdates the C# provider. Build outputs (`__pycache__/`)
+and `.prefetch/` are ignored by git.
 
-`tests/run.sh` is the test suite for everything outside `src/` (it doesn't
-need dotnet): a `luajit -bl` syntax check and a global-name scan (catches a
-`local` read before its declaration - easy to do by accident in these long,
-forward-referencing files) over every Lua UI file, `bash -n` over every
-shell script, and five Lua unit tests under `tests/`:
+`tests/run.sh` runs, in order: a `luajit -bl` syntax check and a
+global-name scan (catches a `local` read before its declaration - easy to
+do by accident in these long, forward-referencing files) over every Lua UI
+file; `bash -n` over every shell script (and the `azure-cli` launcher);
+six Lua unit tests under `tests/`; and `python3 -m unittest discover` over
+`tests/test_*.py`.
 
 | Test | Covers |
 |---|---|
@@ -416,11 +435,12 @@ shell script, and five Lua unit tests under `tests/`:
 | `test-decorate.lua` | The revision-buffer decoration line walk (extracted verbatim by pattern) against a real diff, both sides |
 | `test-worddiff.lua` | `prdash-cache.lua`'s `word_diff` pairing and token-diff (single-token change, unequal block sizes, a whole-line rewrite, a whitespace-only change, the byte-size cap) |
 | `test-notify.lua` | `prdash-notify.lua`'s toast backend selection, XML/PowerShell/AppleScript escaping, the `PRDASH_TOASTS` opt-out, and same-title rate-limit coalescing, with a shimmed `vim.fn.jobstart`/`timer_start` |
+| `test_provider.py` | `azure-cli.py`'s YAML-subset config parser; PR classification (every branch of the assigned/created/draft/declined/signed-off/waiting/actionable rules); thread and @-mention counting; build-status aggregation and policy/missing-reviewer derivation; vote ratio, reviewer summary and humanized-date formatting; and an NDJSON serialization check that the emitted keys match the C# writer's field list exactly. HTTP is mocked by swapping `AzureDevOpsPullRequestSource.fetch` for a fake - no network access or live Azure DevOps instance is needed. |
 
 The prefetch/split/decorate tests run against a small scratch git repo the
 runner builds in a temp dir (two branches, `tgt` and `src`, exposed as
 `refs/remotes/origin/{tgt,src}` since that's what the prefetch pipeline
 diffs). Everything is cleaned up on exit.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `dotnet build` and
-`bash tests/run.sh` on every push and pull request.
+GitHub Actions (`.github/workflows/ci.yml`) runs `bash tests/run.sh` on
+every push and pull request.

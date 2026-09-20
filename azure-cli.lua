@@ -46,7 +46,7 @@ end
 
 local DIR    = script_dir()
 local env    = vim.env
-local EXE    = env.PRDASH_EXE or (DIR .. "/src/bin/Debug/net6.0/azure-cli.exe")
+local EXE    = env.PRDASH_EXE or (DIR .. "/azure-cli")
 local SCRIPT = env.PRDASH_SCRIPT or (DIR .. "/review-pr.sh")
 local BASH   = env.PRDASH_BASH or "bash"
 -- Local clone used by the reviewer for diffs (per-repo mapping is a later step).

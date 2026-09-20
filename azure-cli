@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# azure-cli - thin launcher so "azure-cli"/"$PRDASH_EXE" stays a single
+# executable token everywhere the old azure-cli.exe was invoked as one
+# (git-bash, resolve-pat.sh, azure-cli.lua's jobstart calls, ...).
+# Delegates straight to the python data provider next to this script.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "$DIR/azure-cli.py" "$@"
+fi
+
+exec python "$DIR/azure-cli.py" "$@"

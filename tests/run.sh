@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/run.sh - azure-vicli test runner.
 #
-# Requires: bash, git, luajit. Does NOT require dotnet - CI builds the C#
-# project as a separate step; this script only exercises the Lua UIs and
-# the bash helpers.
+# Requires: bash, git, luajit, python3. There is no compiled data provider
+# any more (azure-cli.py is run directly by python), so nothing here needs
+# a build step first.
 #
 # What it checks, in order:
 #   1. luajit -bl syntax check on every Lua UI file.
@@ -15,10 +15,17 @@
 #   3. bash -n on every shell script.
 #   4. The five Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed review-pr.sh --threads.
+#   5. `python3 -m unittest` over tests/test_*.py - unit tests for
+#      azure-cli.py (the YAML-subset config parser, PR classification,
+#      thread/mention counting, build-status aggregation, formatting and
+#      NDJSON serialization), all against hand-built fixtures and a fake
+#      `fetch` - no network access or live Azure DevOps instance needed.
 #
 # The repo's Lua and shell files are CRLF (see README.md); luajit needs LF
 # input for -bl and dofile, and CR bytes upset some `bash -n` diagnostics,
 # so everything gets CR-stripped into a temp dir before it's touched.
+# azure-cli.py and tests/test_*.py are plain LF, like every other new
+# (post-C#) file in this repo.
 #
 # Prints a PASS/FAIL line per check and a summary, and exits non-zero if
 # anything failed.
@@ -43,12 +50,12 @@ fail() {
   if [ -n "${2:-}" ]; then printf '%s\n' "$2" | sed 's/^/      /'; fi
 }
 
-for tool in luajit git bash; do
+for tool in luajit git bash python3; do
   command -v "$tool" >/dev/null 2>&1 || { echo "tests/run.sh: '$tool' is required but not on PATH" >&2; exit 1; }
 done
 
 LUA_FILES=(azure-cli.lua pr-review.lua wi-dash.lua wi-view.lua prdash-cache.lua prdash-notify.lua)
-SH_FILES=(install.sh resolve-pat.sh review-pr.sh wi-detail.sh wi-edit.sh wi-list.sh wi-state.sh)
+SH_FILES=(azure-cli install.sh resolve-pat.sh review-pr.sh wi-detail.sh wi-edit.sh wi-list.sh wi-state.sh)
 
 # Names luajit's bytecode listing may report GGET/GSET for without it being a
 # sign of trouble: Lua/LuaJIT builtins these files actually use, plus `vim`
@@ -184,6 +191,14 @@ run_lua_test test-nav.lua "$REPO_ROOT" "$REVIEW_LUA"
 run_lua_test test-decorate.lua "$REPO_ROOT" "$CACHE_LUA" "$REVIEW_LUA" "$SCRATCH"
 run_lua_test test-worddiff.lua "$REPO_ROOT" "$CACHE_LUA"
 run_lua_test test-notify.lua "$REPO_ROOT" "$NOTIFY_LUA"
+
+echo
+echo "== 5. python tests (azure-cli.py) =="
+if out="$(cd "$REPO_ROOT" && python3 -m unittest discover -s tests -p 'test_*.py' 2>&1)"; then
+  pass "python: tests/test_*.py"
+else
+  fail "python: tests/test_*.py" "$out"
+fi
 
 echo
 echo "== summary =="

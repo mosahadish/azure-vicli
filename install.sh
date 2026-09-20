@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 #
 # install.sh - one-shot setup for azure-cli:
-#   1. Installs/checks the required dependencies (.NET 6 SDK, Neovim, git-bash
-#      on Windows, python for the wi-*.sh helper scripts).
-#   2. Builds src\azure-cli.csproj.
-#   3. Creates the azure-cli.yml config file (if it doesn't already exist) at
-#      the location the exe reads it from (%APPDATA% on Windows, the XDG
-#      config dir elsewhere), pre-filled with whatever this script can
+#   1. Installs/checks the required dependencies (Neovim, git-bash on
+#      Windows, python 3 - which is both the data provider's runtime and
+#      what the wi-*.sh helper scripts use to talk to the REST API).
+#   2. Creates the azure-cli.yml config file (if it doesn't already exist) at
+#      the location azure-cli.py reads it from (%APPDATA% on Windows, the
+#      XDG config dir elsewhere), pre-filled with whatever this script can
 #      figure out for the current machine (bash_path on Windows, a guessed
 #      clones_dir, ...). Everything else (org_url/pat/project_name) is left
 #      as a placeholder for the user to fill in.
-#   4. Opens the config file in an editor so the user can fill in the rest.
+#   3. Opens the config file in an editor so the user can fill in the rest.
 #
 # Safe to re-run: it skips anything already installed/present, and never
-# overwrites an existing config file.
+# overwrites an existing config file. There is no build step - azure-cli.py
+# is the data provider, run directly by python (via the "azure-cli"/
+# "azure-cli.cmd" launcher scripts), no compilation needed.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,30 +36,6 @@ esac
 # 2. Dependencies
 # ---------------------------------------------------------------------------
 log "Checking dependencies..."
-
-install_dotnet_sdk() {
-  if command -v dotnet >/dev/null 2>&1; then
-    log "dotnet SDK already installed ($(dotnet --version 2>/dev/null))."
-    return
-  fi
-
-  log ".NET SDK not found, attempting to install .NET 6 SDK..."
-  if $IS_WINDOWS; then
-    if command -v winget >/dev/null 2>&1; then
-      winget install --id Microsoft.DotNet.SDK.6 -e --source winget
-    else
-      warn "winget not found. Install the .NET 6 SDK manually from https://dotnet.microsoft.com/download/dotnet/6.0"
-    fi
-  elif command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update && sudo apt-get install -y dotnet-sdk-6.0
-  elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y dotnet-sdk-6.0
-  elif command -v brew >/dev/null 2>&1; then
-    brew install --cask dotnet-sdk
-  else
-    warn "No supported package manager found. Install the .NET 6 SDK manually from https://dotnet.microsoft.com/download/dotnet/6.0"
-  fi
-}
 
 install_neovim() {
   if command -v nvim >/dev/null 2>&1; then
@@ -84,7 +62,7 @@ install_neovim() {
 }
 
 find_git_bash() {
-  # Well-known Git-for-Windows locations, same order azure-cli.exe probes.
+  # Well-known Git-for-Windows locations, same order azure-cli.py probes.
   local candidates=(
     "/c/Program Files/Git/bin/bash.exe"
     "/c/Program Files/Git/usr/bin/bash.exe"
@@ -113,7 +91,8 @@ install_git_bash() {
 }
 
 install_python() {
-  # Used by wi-list.sh / wi-detail.sh to talk to the Azure DevOps REST API.
+  # Runs azure-cli.py (the data provider itself) as well as wi-list.sh /
+  # wi-detail.sh, which also talk to the Azure DevOps REST API via python.
   if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
     log "python already installed."
     return
@@ -137,23 +116,14 @@ install_python() {
   fi
 }
 
-install_dotnet_sdk
 install_neovim
 install_git_bash
 install_python
 
-# ---------------------------------------------------------------------------
-# 3. Build
-# ---------------------------------------------------------------------------
-if command -v dotnet >/dev/null 2>&1; then
-  log "Building azure-cli (dotnet build)..."
-  dotnet build "$REPO_ROOT/src/azure-cli.csproj"
-else
-  warn "Skipping build - dotnet is not on PATH. Re-run this script after installing the .NET 6 SDK."
-fi
+chmod +x "$REPO_ROOT/azure-cli" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 4. Config file
+# 3. Config file
 # ---------------------------------------------------------------------------
 if $IS_WINDOWS; then
   APPDATA_WIN="${APPDATA:-}"
@@ -162,8 +132,8 @@ if $IS_WINDOWS; then
   fi
   CONFIG_DIR="$(printf '%s' "$APPDATA_WIN" | sed 's#\\#/#g; s#^\([A-Za-z]\):#/\L\1#')"
 else
-  # Same place .NET's ApplicationData folder resolves to on Unix, which is
-  # where azure-cli.exe looks: $XDG_CONFIG_HOME, else ~/.config.
+  # Same place azure-cli.py looks (Config.path() in azure-cli.py):
+  # $XDG_CONFIG_HOME, else ~/.config.
   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
 fi
 mkdir -p "$CONFIG_DIR"
@@ -207,7 +177,7 @@ else
     echo "accounts:"
     echo "  - project_name: # TODO: e.g. sample-project"
     echo "    org_url: # TODO: e.g. https://dev.azure.com/example"
-    echo "    pat: # TODO: your personal access token (optional on Windows w/ AAD)"
+    echo "    pat: # TODO: your personal access token (required - no Azure AD fallback)"
     echo "    hide_ancient: true"
     if [[ -n "$CLONES_DIR_GUESS" ]]; then
       echo "    clones_dir: ${CLONES_DIR_GUESS//\\/\\\\}"
@@ -220,7 +190,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Open the config file for editing
+# 4. Open the config file for editing
 # ---------------------------------------------------------------------------
 log "Opening $CONFIG_FILE for editing..."
 if $IS_WINDOWS; then
@@ -238,4 +208,4 @@ else
     || vi "$CONFIG_FILE"
 fi
 
-log "Done. Re-run 'src/bin/Debug/net6.0/azure-cli.exe' (or 'azure-cli' on PATH) once the config is filled in."
+log "Done. Re-run './azure-cli' (or 'azure-cli.cmd' on Windows, or 'azure-cli' on PATH) once the config is filled in."

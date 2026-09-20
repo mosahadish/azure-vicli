@@ -54,7 +54,7 @@ local PROJECT = env.WIDASH_PROJECT or "BarLev-RnD"
 local WI_VIEW_LUA = (DIR .. "/wi-view.lua"):gsub("\\", "/")
 local PR_DASH_LUA = (DIR .. "/azure-cli.lua"):gsub("\\", "/")
 -- PR list provider (headless exe), warmed in the background so the first P swap is instant.
-local PR_EXE = env.PRDASH_EXE or (DIR .. "/src/bin/Debug/net6.0/azure-cli.exe")
+local PR_EXE = env.PRDASH_EXE or (DIR .. "/azure-cli")
 
 -- Detail cache shared with wi-view.lua (same nvim session): id -> {body, ts}.
 -- Prefetching the item under the cursor lets the detail tab open instantly.
