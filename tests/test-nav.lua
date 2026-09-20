@@ -6,7 +6,7 @@
 --
 -- Usage: luajit test-nav.lua <pr-review.lua path>
 -- Run with cwd inside the repo (run.sh runs it from the real azure-vicli
--- checkout, where ComputeState exists in src/DataSource/*.cs).
+-- checkout, where AccountConfig exists in azure-cli.py).
 
 vim = { pesc = function(s) return (s:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")) end,
         trim = function(s) return s:match("^%s*(.-)%s*$") end }
@@ -53,11 +53,12 @@ for _, c in ipairs(cases) do
 end
 print(fails == 0 and "def_score: all cases pass" or ("def_score: " .. fails .. " unexpected"))
 
--- Grep parsing against real output. Scoped to src/ (where ComputeState is a
--- C# identifier) so this doesn't also match the literal string "ComputeState"
--- inside this test file once tests/ is itself tracked by git.
+-- Grep parsing against real output. Scoped to azure-cli.py (where
+-- AccountConfig is a real python identifier) so this doesn't also match
+-- the literal string "AccountConfig" inside this test file once tests/ is
+-- itself tracked by git.
 local ref = "HEAD"
-local p = io.popen("git grep -n -w -I -F --no-color -e ComputeState " .. ref .. " -- src/")
+local p = io.popen("git grep -n -w -I -F --no-color -e AccountConfig " .. ref .. " -- azure-cli.py")
 local hits = {}
 for l in p:lines() do
   local prefix = ref .. ":"
@@ -68,7 +69,7 @@ for l in p:lines() do
 end
 p:close()
 assert(#hits > 0, "grep hits")
-for _, h in ipairs(hits) do assert(h.path:match("%.cs$") and h.lnum > 0, "parsed " .. h.path) end
+for _, h in ipairs(hits) do assert(h.path:match("%.py$") and h.lnum > 0, "parsed " .. h.path) end
 print("git grep parse ok: " .. #hits .. " hits, e.g. " .. hits[1].path .. ":" .. hits[1].lnum)
 
 if fails > 0 then os.exit(1) end
