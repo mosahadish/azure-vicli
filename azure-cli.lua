@@ -12,6 +12,7 @@
 --   gm          complete (merge) the PR under the cursor
 --   ga          toggle auto-complete on the PR under the cursor
 --   gr          re-queue build validation for the PR under the cursor
+--   gN          toggle desktop notifications for this session
 --   r           refresh the list
 --   q           quit
 --   ?           show this help
@@ -62,6 +63,8 @@ local WI_LIST = env.WIDASH_LIST or (DIR .. "/wi-list.sh")
 -- Shared per-PR content caches + prefetch pipeline (files, diffs, commits,
 -- threads), filled here in the background and read by the reviewer on open.
 local CACHE = dofile((DIR .. "/prdash-cache.lua"):gsub("\\", "/"))
+-- OS-level toast notifications for new PR comments/mentions (see notify_new_pr_comments below).
+local NOTIFY = dofile((DIR .. "/prdash-notify.lua"):gsub("\\", "/"))
 
 -- Section order and friendly titles. "Mentions" isn't one of these - it's a
 -- virtual section built in render() from every PR with mentionThreads > 0,
@@ -90,7 +93,7 @@ local function pr_matches(pr, q)
 end
 
 local BASE_WINBAR =
-  "pull requests   (<CR>: open  gy: copy  o: browser  gd: description  gb: build  /: filter  gv: vote  gm: complete  ga: auto-complete  gr: re-queue build  gO: config  r: refresh  W: work items  q: quit  ?: help)"
+  "pull requests   (<CR>: open  gy: copy  o: browser  gd: description  gb: build  /: filter  gv: vote  gm: complete  ga: auto-complete  gr: re-queue build  gN: notifications  gO: config  r: refresh  W: work items  q: quit  ?: help)"
 
 local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO)
@@ -736,6 +739,7 @@ local function show_help()
     "  gm          complete (merge)",
     "  ga          toggle auto-complete",
     "  gr          re-queue build validation",
+    "  gN          toggle desktop notifications for this session",
     "  gO          open the config file",
     "  r           refresh",
     "  W           switch to the work-items dashboard",
@@ -1056,12 +1060,15 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
 
   for _, pr in ipairs(mine_events) do
     notify("New comment on your PR #" .. pr.id .. ": " .. (pr.title or ""))
+    NOTIFY.toast("PR #" .. pr.id, "New comment on your PR: " .. (pr.title or ""))
   end
   for _, pr in ipairs(thread_events) do
     notify("New reply on your thread in PR #" .. pr.id .. ": " .. (pr.title or ""))
+    NOTIFY.toast("PR #" .. pr.id, "New reply on your thread")
   end
   for _, pr in ipairs(mention_events) do
     notify("New mention in PR #" .. pr.id .. ": " .. (pr.title or ""))
+    NOTIFY.toast("PR #" .. pr.id, "New mention")
   end
 end
 
@@ -1398,6 +1405,10 @@ vim.keymap.set("n", "gv", vote_pr, opts)
 vim.keymap.set("n", "gm", complete_pr, opts)
 vim.keymap.set("n", "ga", toggle_auto_complete, opts)
 vim.keymap.set("n", "gr", requeue_pr, opts)
+vim.keymap.set("n", "gN", function()
+  local on = NOTIFY.toggle()
+  notify("Desktop notifications " .. (on and "enabled" or "disabled") .. " for this session.")
+end, opts)
 vim.keymap.set("n", "gO", open_config_file, opts)
 vim.keymap.set("n", "r", function() load(false, true) end, opts)
 vim.keymap.set("n", "W", function()
