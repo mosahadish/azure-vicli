@@ -15,9 +15,10 @@
 --   r           refresh the list
 --   q           quit
 --
--- Row badges (left of the id): \u{25CF} unread comment activity, \u{21BB} branches or
--- content being fetched in the background right now, \u{2713} fully prefetched
--- (opens instantly).
+-- Row badges (left of the id): \u{25CF} unread comment activity, \u{21E3} branches or
+-- content being fetched in the background right now, \u{25C6} fully prefetched
+-- (opens instantly). The build column to the right of the id keeps its own
+-- \u{2713} ok / \u{2717} failed / \u{21BB} expired / \u{25CF} running glyphs.
 
 vim.o.compatible = false
 vim.o.number = false
@@ -381,9 +382,10 @@ local function box_and_center(lines, spans, win)
   return final, shifted, row_offset, col_offset
 end
 
--- Sync-state glyph for a row: "\u{21BB}" while this PR's branches or content
--- are being fetched in the background, "\u{2713}" once everything the
--- reviewer needs is cached (opening it is instant), blank otherwise.
+-- Sync-state glyph for a row: "\u{21E3}" while this PR's branches or content
+-- are being fetched in the background, "\u{25C6}" once everything the
+-- reviewer needs is cached (opening it is instant), blank otherwise. Chosen
+-- to stay clear of the build column's own \u{2713}/\u{2717}/\u{21BB}/\u{25CF}.
 -- Assigned once the warm/prefetch bookkeeping it reads exists (below).
 local pr_sync_state
 
@@ -445,7 +447,7 @@ local function render()
         seg(fit(pr_is_unread(pr) and "\u{25CF}" or "", 1), "PrdashUnread")
         seg(" ")
         local sync = pr_sync_state and pr_sync_state(pr)
-        seg(fit(sync == "syncing" and "\u{21BB}" or (sync == "ready" and "\u{2713}" or ""), 1),
+        seg(fit(sync == "syncing" and "\u{21E3}" or (sync == "ready" and "\u{25C6}" or ""), 1),
           sync == "syncing" and "PrdashSyncing" or "PrdashReady")
         seg(" ")
         seg(fit("#" .. tostring(pr.id), 7), "PrdashId")
