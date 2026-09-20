@@ -265,6 +265,7 @@ end
 local list_win, diff_win
 local fit_list_width   -- defined once the list window exists; re-fits its width.
 local refresh_threads  -- re-fetches PR threads and re-decorates; assigned below.
+local redraw_after_write  -- redraws every thread surface after an optimistic write; assigned below.
 local set_list_winbar  -- rebuilds the file-list winbar; assigned once it exists.
 local toggle_active_filter  -- flips active_only and redraws everything; assigned below.
 local manage_ignore_texts   -- opens the add/remove text-filter popup; assigned below.
@@ -570,6 +571,7 @@ end
 -- participated in - same rule as the poll notifications) AND has more
 -- comments than were recorded the last time I looked at it.
 local function thread_is_new(t)
+  if t.pending then return false end  -- my own, still being sent
   if not (IS_MY_PR or thread_involves_me(t)) then return false end
   local seen_count = seen_threads[tostring(t.id)]
   return (seen_count or 0) < #t.comments
@@ -621,15 +623,189 @@ local function auto_complete_label()
 end
 
 -- Render a list of threads into flat text lines for a floating window.
+-- Optimistic writes ---------------------------------------------------------
+-- Comments, replies and status changes show up the instant they're submitted
+-- (tagged "(sending…)") and are confirmed or rolled back when the REST call
+-- returns, instead of waiting a round-trip - or, for new comments, a
+-- round-trip plus a full thread refetch - before anything appeared. A thread
+-- refetch that lands while a write is still unconfirmed re-applies it
+-- (reapply_pending), so nothing blinks out; once confirmed, the next refetch
+-- replaces the synthetic entry with the server's copy.
+local pending_threads = {}  -- { entry, bucket = "line"|"file"|"general", where }
+local pending_replies = {}  -- { thread_id, comment }
+local pending_status = {}   -- thread id -> status key
+local pending_seq = 0
+
+local function my_display_name()
+  local rec = _G.PR_CURRENT
+  if rec and tostring(rec.id) == tostring(ID) and rec.myName and rec.myName ~= "" then
+    return rec.myName
+  end
+  local w = _G.PRDASH_WHOAMI and _G.PRDASH_WHOAMI[ORG .. "|" .. PROJECT]
+  if w and w.displayName and w.displayName ~= "" then return w.displayName end
+  return "You"
+end
+
+local function sending_tag(x)
+  return (x and (x.pending or x.status_pending)) and "  (sending\u{2026})" or ""
+end
+
+local function bucket_list(bucket, where, create)
+  if bucket == "general" then return general_threads end
+  local tbl = bucket == "line" and threads_by_key or file_threads_by_path
+  if create and not tbl[where] then tbl[where] = {} end
+  return tbl[where]
+end
+
+local function remove_entry(list, entry)
+  if not list then return end
+  for i = #list, 1, -1 do
+    if list[i] == entry then table.remove(list, i) end
+  end
+end
+
+local function find_thread(id)
+  local function scan(list)
+    for _, t in ipairs(list or {}) do
+      if tostring(t.id) == tostring(id) then return t end
+    end
+  end
+  for _, list in pairs(threads_by_key) do
+    local t = scan(list)
+    if t then return t end
+  end
+  for _, list in pairs(file_threads_by_path) do
+    local t = scan(list)
+    if t then return t end
+  end
+  return scan(general_threads)
+end
+
+-- Show a new thread now; returns the pending record to confirm or drop.
+local function add_pending_thread(text, bucket, where, path, side, lineno)
+  pending_seq = pending_seq + 1
+  local entry = {
+    id = "pending-" .. pending_seq, status = "active", pending = true,
+    path = path, side = side, lineno = lineno,
+    comments = { { author = my_display_name(), authorId = my_id, content = text, pending = true } },
+  }
+  local p = { entry = entry, bucket = bucket, where = where }
+  table.insert(bucket_list(bucket, where, true), entry)
+  pending_threads[#pending_threads + 1] = p
+  return p
+end
+local function drop_pending_thread(p)
+  remove_entry(bucket_list(p.bucket, p.where, false), p.entry)
+  remove_entry(pending_threads, p)
+end
+-- Confirmed: stop tracking it (the refetch will swap in the server's copy)
+-- but leave it showing, untagged, until then.
+local function confirm_pending_thread(p)
+  p.entry.pending = nil
+  p.entry.comments[1].pending = nil
+  remove_entry(pending_threads, p)
+end
+
+-- After a refetch replaced the live tables, put every unconfirmed write back.
+local function reapply_pending()
+  for _, p in ipairs(pending_threads) do
+    table.insert(bucket_list(p.bucket, p.where, true), p.entry)
+  end
+  for _, r in ipairs(pending_replies) do
+    local t = find_thread(r.thread_id)
+    if t then
+      local present = false
+      for _, c in ipairs(t.comments) do
+        if c == r.comment then present = true break end
+      end
+      if not present then table.insert(t.comments, r.comment) end
+    end
+  end
+  for id, key in pairs(pending_status) do
+    local t = find_thread(id)
+    if t then
+      t.status = key
+      t.status_pending = true
+    end
+  end
+end
+
+-- Run a review-pr.sh write in the background: on_ok() on success, else
+-- on_fail(details). Detached so the write completes even if the PR is
+-- left before it returns.
+local function run_write(args, on_ok, on_fail)
+  local out = {}
+  local cmd = { BASH, SCRIPT }
+  vim.list_extend(cmd, args)
+  vim.fn.jobstart(cmd, {
+    detach = true,
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        on_ok()
+        return
+      end
+      local msg = table.concat(vim.tbl_filter(function(x) return x ~= "" end, out), " ")
+      on_fail("exit " .. code .. (msg ~= "" and (": " .. msg) or ""))
+    end,
+  })
+end
+
+-- After a failed write, offer the same prompt again with the text prefilled
+-- so a flaky call never eats what was typed. Scheduled, since input() can't
+-- run from inside a job callback.
+local function retry_prompt(prompt, text, resend)
+  vim.schedule(function()
+    local again = vim.fn.input(prompt, text)
+    if again and again:gsub("%s", "") ~= "" then
+      resend(again)
+    else
+      notify("Discarded.")
+    end
+  end)
+end
+
+local function redraw()
+  if redraw_after_write then redraw_after_write() end
+end
+
+-- The comment text is always the last script argument; swap it for a retry.
+local function args_with_text(args, text)
+  local a = vim.list_slice(args, 1, #args - 1)
+  a[#a + 1] = text
+  return a
+end
+
+-- Post a new thread (line-anchored, file-level or PR-level), shown at once.
+local function post_new_thread(args, bucket, where, path, side, lineno, text, label, retry_label)
+  local p = add_pending_thread(text, bucket, where, path, side, lineno)
+  redraw()
+  run_write(args, function()
+    confirm_pending_thread(p)
+    notify(label .. " posted.")
+    if refresh_threads then refresh_threads() end
+  end, function(msg)
+    drop_pending_thread(p)
+    redraw()
+    notify(label .. " failed (" .. msg .. ").", vim.log.levels.ERROR)
+    retry_prompt("Retry " .. retry_label .. ": ", text, function(again)
+      post_new_thread(args_with_text(args, again), bucket, where, path, side, lineno, again, label, retry_label)
+    end)
+  end)
+end
+
 local function threads_to_lines(threads)
   local lines = {}
   for ti, t in ipairs(threads) do
     if ti > 1 then
       lines[#lines + 1] = ""
     end
-    lines[#lines + 1] = "┌─ thread [" .. tostring(t.status or "?") .. "]"
+    lines[#lines + 1] = "┌─ thread [" .. tostring(t.status or "?") .. "]" .. sending_tag(t)
     for _, c in ipairs(t.comments) do
-      lines[#lines + 1] = "│ " .. c.author .. ":"
+      lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
       for _, cl in ipairs(vim.split(c.content, "\n", { plain = true })) do
         lines[#lines + 1] = "│   " .. cl
       end
@@ -737,24 +913,11 @@ local function comment_here()
     notify("Cancelled.")
     return
   end
-  notify("Posting comment...")
-  local out = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--post", path, m.side, tostring(m.lineno), text }, {
-    detach = true,  -- finish the ADO write even if the user leaves the PR before it returns
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("Comment posted on " .. path .. " " .. m.side .. ":" .. m.lineno .. ".")
-        if refresh_threads then refresh_threads() end
-      else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify("Post failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  local where = path .. "\t" .. m.side .. "\t" .. m.lineno
+  post_new_thread({ "--post", path, m.side, tostring(m.lineno), text }, "line", where,
+    path, m.side, m.lineno, text,
+    "Comment on " .. path .. " " .. m.side .. ":" .. m.lineno,
+    "comment (" .. path .. " " .. m.side .. ":" .. m.lineno .. ")")
 end
 
 -- Post a file-level comment (not tied to a line) on the given repo-relative path.
@@ -768,24 +931,8 @@ local function comment_on_file(path)
     notify("Cancelled.")
     return
   end
-  notify("Posting file comment...")
-  local out = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--file-comment", path, text }, {
-    detach = true,
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("File comment posted on " .. path .. ".")
-        if refresh_threads then refresh_threads() end
-      else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify("File comment failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  post_new_thread({ "--file-comment", path, text }, "file", path, path, nil, nil, text,
+    "File comment on " .. path, "file comment (" .. path .. ")")
 end
 
 -- Post a PR-level (general) comment, not tied to any file or line.
@@ -795,24 +942,8 @@ local function comment_on_pr()
     notify("Cancelled.")
     return
   end
-  notify("Posting PR comment...")
-  local out = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--pr-comment", text }, {
-    detach = true,
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("PR comment posted.")
-        if refresh_threads then refresh_threads() end
-      else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify("PR comment failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  post_new_thread({ "--pr-comment", text }, "general", nil, nil, nil, nil, text,
+    "PR comment", "PR comment (#" .. ID .. ")")
 end
 
 -- A changed line is one the diff marked as added or removed (tracked in the map,
@@ -979,9 +1110,39 @@ end
 -- Post a reply to a specific thread. Shows the thread (unfocused) while typing,
 -- posts via the --reply subcommand, and on success appends the reply locally
 -- and calls on_success so the caller can refresh its view.
+-- Send a reply that's already shown in `target`; confirm or roll back.
+local function send_reply(target, comment, text, on_success)
+  local rec = { thread_id = target.id, comment = comment }
+  pending_replies[#pending_replies + 1] = rec
+  run_write({ "--reply", tostring(target.id), text }, function()
+    comment.pending = nil
+    remove_entry(pending_replies, rec)
+    notify("Reply posted to thread " .. target.id .. ".")
+    redraw()
+  end, function(msg)
+    remove_entry(pending_replies, rec)
+    local t = find_thread(target.id) or target
+    remove_entry(t.comments, comment)
+    redraw()
+    notify("Reply failed (" .. msg .. ").", vim.log.levels.ERROR)
+    retry_prompt("Retry reply to thread " .. target.id .. ": ", text, function(again)
+      local c = { author = my_display_name(), authorId = my_id, content = again, pending = true }
+      local live = find_thread(target.id) or target
+      table.insert(live.comments, c)
+      mark_thread_read(live)
+      if on_success then on_success() end
+      send_reply(live, c, again, on_success)
+    end)
+  end)
+end
+
 local function reply_to_thread(target, on_success)
   if not target or not target.id then
     notify("Thread id unknown; cannot reply.", vim.log.levels.ERROR)
+    return
+  end
+  if target.pending then
+    notify("That comment is still being sent; reply once it's confirmed.", vim.log.levels.WARN)
     return
   end
 
@@ -998,26 +1159,12 @@ local function reply_to_thread(target, on_success)
     return
   end
 
-  notify("Posting reply...")
-  local out = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--reply", tostring(target.id), text }, {
-    detach = true,
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("Reply posted to thread " .. target.id .. ".")
-        -- Optimistically add the reply so views show it before the next refresh.
-        table.insert(target.comments, { author = "You", content = text })
-        if on_success then on_success() end
-      else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify("Reply failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  -- Show the reply at once; the write confirms or removes it.
+  local comment = { author = my_display_name(), authorId = my_id, content = text, pending = true }
+  table.insert(target.comments, comment)
+  mark_thread_read(target)
+  if on_success then on_success() end
+  send_reply(target, comment, text, on_success)
 end
 
 -- Reply to an existing thread anchored to the diff line under the cursor. If
@@ -1055,26 +1202,39 @@ local STATUS_OPTIONS = {
 
 -- PATCH a thread's status via the --status subcommand. On success updates the
 -- thread's status locally and calls on_success.
+-- Change a thread's status: shown at once, confirmed or reverted on return.
+-- on_done(ok) (optional) runs when the write returns; the optimistic redraw
+-- happens via on_apply (optional) right away.
+local function set_status_optimistic(target, status, on_apply, on_done)
+  if target.pending then
+    notify("That comment is still being sent; set its status once it's confirmed.", vim.log.levels.WARN)
+    if on_done then on_done(false) end
+    return
+  end
+  local prev = target.status
+  target.status = status.key
+  target.status_pending = true
+  pending_status[tostring(target.id)] = status.key
+  if on_apply then on_apply() end
+  run_write({ "--status", tostring(target.id), status.key }, function()
+    pending_status[tostring(target.id)] = nil
+    local t = find_thread(target.id) or target
+    t.status_pending = nil
+    if on_done then on_done(true) end
+  end, function(msg)
+    pending_status[tostring(target.id)] = nil
+    local t = find_thread(target.id) or target
+    t.status, t.status_pending = prev, nil
+    notify("Status update failed (" .. msg .. "); reverted.", vim.log.levels.ERROR)
+    if on_done then on_done(false) end
+  end)
+end
+
 local function apply_status(target, status, on_success)
-  notify("Setting status to " .. status.label .. "...")
-  local out = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--status", tostring(target.id), status.key }, {
-    detach = true,
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("Thread " .. target.id .. " -> " .. status.label .. ".")
-        target.status = status.key   -- optimistic local update
-        if on_success then on_success() end
-      else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify("Status update failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  set_status_optimistic(target, status, on_success, function(ok)
+    if ok then notify("Thread " .. target.id .. " -> " .. status.label .. ".") end
+    redraw()
+  end)
 end
 
 -- Same as apply_status but without the per-thread "Setting status to..." /
@@ -1083,19 +1243,7 @@ end
 -- that one PATCH finishes. Each call is fully async/detached, so firing off
 -- many of these in a loop runs them all in the background concurrently.
 local function apply_status_quiet(target, status, on_done)
-  local out = {}
-  vim.fn.jobstart({ BASH, SCRIPT, "--status", tostring(target.id), status.key }, {
-    detach = true,
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      local ok = code == 0
-      if ok then target.status = status.key end  -- optimistic local update
-      if on_done then on_done(ok) end
-    end,
-  })
+  set_status_optimistic(target, status, nil, on_done)
 end
 
 -- Kick off a background status change for every thread in `matches`, without
@@ -1501,9 +1649,9 @@ local function build_overview()
     for _, t in ipairs(comments) do
       lines[#lines + 1] = ""
       thread_map[#lines + 1] = { t }
-      lines[#lines + 1] = "┌─ thread [" .. tostring(t.status or "?") .. "]" .. (thread_is_new(t) and "  🆕" or "")
+      lines[#lines + 1] = "┌─ thread [" .. tostring(t.status or "?") .. "]" .. sending_tag(t) .. (thread_is_new(t) and "  🆕" or "")
       for _, c in ipairs(t.comments) do
-        lines[#lines + 1] = "│ " .. c.author .. ":"
+        lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
         for _, cl in ipairs(vim.split(c.content, "\n", { plain = true })) do
           lines[#lines + 1] = "│   " .. cl
         end
@@ -1953,6 +2101,8 @@ local function refresh_after_filter_change()
   end
 end
 
+redraw_after_write = refresh_after_filter_change
+
 -- Flip the active-only filter and redraw everything that depends on it.
 toggle_active_filter = function()
   active_only = not active_only
@@ -2292,6 +2442,7 @@ local function apply_threads_json(json, opts)
         -- captured them as an upvalue, so this is a safe swap-in even though
         -- decoration code elsewhere holds no separate reference to copy.
         threads_by_key, file_threads_by_path, general_threads = new_by_key, new_file_by_path, new_general
+        reapply_pending()
 
         if threads_baseline_established then
           -- Only notify once we have a real baseline to diff against, so the

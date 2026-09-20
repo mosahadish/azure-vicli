@@ -991,12 +991,19 @@ local function open_pr()
   end, true)
 end
 
--- Run a quick review-pr.sh subcommand (vote/complete) for the PR under cursor.
-local function run_action(args, describe)  local pr = current_pr()
+-- Run a quick review-pr.sh subcommand (vote/complete/auto-complete) for the
+-- PR under the cursor. Optimistic: `apply(pr)` (optional) changes the row's
+-- record right away and returns a function that undoes it; on failure that
+-- undo runs and the error is shown, on success the list is reloaded so the
+-- server's view wins either way.
+local function run_action(args, describe, apply)
+  local pr = current_pr()
   if not pr then
     return
   end
   notify(describe .. " PR #" .. pr.id .. " …")
+  local undo = apply and apply(pr)
+  if undo then render() end
   local out = {}
   local job_args = { BASH, SCRIPT }
   vim.list_extend(job_args, args)
@@ -1012,8 +1019,13 @@ local function run_action(args, describe)  local pr = current_pr()
         notify(describe .. " PR #" .. pr.id .. ": done.")
         load(false, true)
       else
+        if undo then
+          undo()
+          render()
+        end
         local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify(describe .. " failed (exit " .. code .. "): " .. msg, vim.log.levels.ERROR)
+        notify(describe .. " failed (exit " .. code .. "): " .. msg
+          .. (undo and " - change reverted." or ""), vim.log.levels.ERROR)
       end
     end,
   })
@@ -1027,6 +1039,38 @@ local VOTE_OPTIONS = {
   { key = "0",   label = "Reset (no vote)" },
 }
 
+-- Record my vote on the row's record and recompute the derived vote ratio
+-- and reviewer summary the way the data provider does, so the row updates
+-- before the server has answered. Returns an undo function.
+local function set_my_vote(pr, vote)
+  local snap = { voteRatio = pr.voteRatio, reviewerSummary = pr.reviewerSummary,
+                 reviewers = vim.deepcopy(pr.reviewers or {}) }
+  local me = pr.myName or ""
+  pr.reviewers = pr.reviewers or {}
+  local mine
+  for _, r in ipairs(pr.reviewers) do
+    if r.name == me then mine = r break end
+  end
+  if not mine then
+    mine = { name = me, vote = 0 }
+    table.insert(pr.reviewers, mine)
+  end
+  mine.vote = vote
+  local signed, parts = 0, {}
+  for _, r in ipairs(pr.reviewers) do
+    local v = tonumber(r.vote) or 0
+    local ok = v == 10 or v == 5
+    if ok then signed = signed + 1 end
+    parts[#parts + 1] = (ok and "\u{2713}" or (v == -10 and "\u{2717}" or (v == -5 and "~" or "\u{00B7}")))
+      .. surname(r.name)
+  end
+  pr.voteRatio = signed .. " / " .. #pr.reviewers
+  pr.reviewerSummary = table.concat(parts, " ")
+  return function()
+    pr.voteRatio, pr.reviewerSummary, pr.reviewers = snap.voteRatio, snap.reviewerSummary, snap.reviewers
+  end
+end
+
 local function vote_pr()
   local pr = current_pr()
   if not pr then return end
@@ -1039,7 +1083,9 @@ local function vote_pr()
     notify("Cancelled.")
     return
   end
-  run_action({ "--vote", VOTE_OPTIONS[idx].key }, "Voting on")
+  run_action({ "--vote", VOTE_OPTIONS[idx].key }, "Voting on", function(p)
+    return set_my_vote(p, tonumber(VOTE_OPTIONS[idx].key) or 0)
+  end)
 end
 
 local MERGE_TYPES = {
@@ -1062,7 +1108,16 @@ local function complete_pr()
     return
   end
   -- Defaults: delete source branch + transition work items (like the web UI).
-  run_action({ "--complete", MERGE_TYPES[idx].key, "true", "true" }, "Completing")
+  -- Optimistically drop the row: a completed PR leaves the active list.
+  run_action({ "--complete", MERGE_TYPES[idx].key, "true", "true" }, "Completing", function(p)
+    local at
+    for i, x in ipairs(prs) do
+      if x == p then at = i break end
+    end
+    if not at then return nil end
+    table.remove(prs, at)
+    return function() table.insert(prs, math.min(at, #prs + 1), p) end
+  end)
 end
 
 -- Toggle "complete automatically when requirements are met" (auto-complete)
@@ -1083,7 +1138,11 @@ local function toggle_auto_complete()
       notify("Cancelled.")
       return
     end
-    run_action({ "--auto-complete", "off" }, "Cancelling auto-complete on")
+    run_action({ "--auto-complete", "off" }, "Cancelling auto-complete on", function(p)
+      local was, by = p.autoComplete, p.autoCompleteSetBy
+      p.autoComplete, p.autoCompleteSetBy = false, ""
+      return function() p.autoComplete, p.autoCompleteSetBy = was, by end
+    end)
     return
   end
 
@@ -1097,7 +1156,11 @@ local function toggle_auto_complete()
     return
   end
   -- Defaults: delete source branch + transition work items (like the web UI).
-  run_action({ "--auto-complete", "on", MERGE_TYPES[idx].key, "true", "true" }, "Setting auto-complete on")
+  run_action({ "--auto-complete", "on", MERGE_TYPES[idx].key, "true", "true" }, "Setting auto-complete on", function(p)
+    local was, by = p.autoComplete, p.autoCompleteSetBy
+    p.autoComplete, p.autoCompleteSetBy = true, p.myName or ""
+    return function() p.autoComplete, p.autoCompleteSetBy = was, by end
+  end)
 end
 
 -- Re-queue the build validation (e.g. an expired build) for the PR under the cursor.
