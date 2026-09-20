@@ -121,6 +121,7 @@ show up here.
 | `gm` | Complete (merge) |
 | `ga` | Toggle auto-complete |
 | `gr` | Re-queue build validation |
+| `gN` | Toggle desktop notifications for this session |
 | `gO` | Open the config file |
 | `r` | Refresh |
 | `W` | Switch to the work-items dashboard |
@@ -150,6 +151,16 @@ reviewers who haven't approved yet when that's known.
 
 Votes, completion and auto-complete apply to the row immediately and are
 reverted with an error if the call fails.
+
+### Desktop notifications
+
+A new comment on a PR you authored, a reply on a thread you took part in, or
+a fresh @-mention fires an OS-level "toast" alongside the in-Neovim
+`vim.notify` - so activity surfaces even when Neovim isn't the focused
+window. It uses PowerShell's WinRT toast API on Windows, `notify-send` on
+Linux, and `osascript` on macOS; a missing backend is silently a no-op. Press
+`gN` to toggle notifications off or on for the rest of the session, or set
+`PRDASH_TOASTS=0` in the environment to disable them permanently.
 
 ## Reviewer
 
@@ -303,6 +314,7 @@ azure-cli.exe (C#)        headless data provider + launcher
                              │
                           resolve-pat.sh     shared PAT lookup
                           prdash-cache.lua   shared content cache + prefetch pipeline
+                          prdash-notify.lua  desktop toast notifications
 ```
 
 | File | Role |
@@ -311,6 +323,7 @@ azure-cli.exe (C#)        headless data provider + launcher
 | `azure-cli.lua` | PR dashboard: rendering, badges, hover and warm-all prefetch, optimistic actions. |
 | `pr-review.lua` | Reviewer: file list, diffs, comments, optimistic writes, code navigation and peek view. |
 | `prdash-cache.lua` | Per-PR content cache shared by dashboard and reviewer, and the prefetch pipeline that fills it. |
+| `prdash-notify.lua` | OS-level toast notifications (Windows/Linux/macOS), rate-limited and dofile'd by the dashboard. |
 | `review-pr.sh` | REST helpers for PR actions, plus the branch prefetch modes. |
 | `resolve-pat.sh` | PAT lookup from the exported table with `--print-pat` fallback. |
 | `wi-dash.lua`, `wi-view.lua` | Work-item dashboard and detail view. |
@@ -342,6 +355,7 @@ Optional overrides:
 | `WIDASH_COLLECTION`, `WIDASH_PROJECT`, `WIDASH_TEAM`, `WIDASH_ASSIGNEE`, `WIDASH_TYPES` | Work-item query parameters. |
 | `PRDASH_PREFETCH_DIR` | Where branch-prefetch markers are written (default `.prefetch/` next to the scripts). |
 | `PRDASH_TIMING`, `PRDASH_TIMING_LOG` | Append phase timings of `review-pr.sh` to a log. |
+| `PRDASH_TOASTS` | Set to `0` to disable desktop toast notifications (also toggleable per-session with `gN`). |
 
 ## Troubleshooting
 
@@ -374,7 +388,7 @@ syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
 need dotnet): a `luajit -bl` syntax check and a global-name scan (catches a
 `local` read before its declaration - easy to do by accident in these long,
 forward-referencing files) over every Lua UI file, `bash -n` over every
-shell script, and four Lua unit tests under `tests/`:
+shell script, and five Lua unit tests under `tests/`:
 
 | Test | Covers |
 |---|---|
@@ -382,6 +396,7 @@ shell script, and four Lua unit tests under `tests/`:
 | `test-prefetch.lua` | The prefetch pipeline end to end (caching, coalescing concurrent calls, refetch on thread-count change, the failure path, eviction), with a shimmed `vim.fn.jobstart` against a scratch git repo and a stub `review-pr.sh --threads` |
 | `test-nav.lua` | `pr-review.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
 | `test-decorate.lua` | The revision-buffer decoration line walk (extracted verbatim by pattern) against a real diff, both sides |
+| `test-notify.lua` | `prdash-notify.lua`'s toast backend selection, XML/PowerShell/AppleScript escaping, the `PRDASH_TOASTS` opt-out, and same-title rate-limit coalescing, with a shimmed `vim.fn.jobstart`/`timer_start` |
 
 The prefetch/split/decorate tests run against a small scratch git repo the
 runner builds in a temp dir (two branches, `tgt` and `src`, exposed as

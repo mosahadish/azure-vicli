@@ -13,7 +13,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The four Lua unit tests below it in this directory, against a
+#   4. The five Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed review-pr.sh --threads.
 #
 # The repo's Lua and shell files are CRLF (see README.md); luajit needs LF
@@ -47,7 +47,7 @@ for tool in luajit git bash; do
   command -v "$tool" >/dev/null 2>&1 || { echo "tests/run.sh: '$tool' is required but not on PATH" >&2; exit 1; }
 done
 
-LUA_FILES=(azure-cli.lua pr-review.lua wi-dash.lua wi-view.lua prdash-cache.lua)
+LUA_FILES=(azure-cli.lua pr-review.lua wi-dash.lua wi-view.lua prdash-cache.lua prdash-notify.lua)
 SH_FILES=(install.sh resolve-pat.sh review-pr.sh wi-detail.sh wi-edit.sh wi-list.sh wi-state.sh)
 
 # Names luajit's bytecode listing may report GGET/GSET for without it being a
@@ -151,6 +151,7 @@ echo "== 4. lua tests =="
 
 CACHE_LUA="$TMP/lua/prdash-cache.lua"
 REVIEW_LUA="$TMP/lua/pr-review.lua"
+NOTIFY_LUA="$TMP/lua/prdash-notify.lua"
 
 # test-split.lua wants a real, multi-file range - use this repo's own
 # history rather than the tiny scratch repo above. Falls back gracefully
@@ -175,6 +176,7 @@ run_lua_test test-split.lua "$REPO_ROOT" "$CACHE_LUA" "$SPLIT_RANGE"
 run_lua_test test-prefetch.lua "$REPO_ROOT" "$CACHE_LUA" "$SCRATCH" "$STUB_SCRIPT"
 run_lua_test test-nav.lua "$REPO_ROOT" "$REVIEW_LUA"
 run_lua_test test-decorate.lua "$REPO_ROOT" "$CACHE_LUA" "$REVIEW_LUA" "$SCRATCH"
+run_lua_test test-notify.lua "$REPO_ROOT" "$NOTIFY_LUA"
 
 echo
 echo "== summary =="
