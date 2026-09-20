@@ -54,6 +54,12 @@ namespace AzureCli.DataSource
                 reviewers.Add(new { name = r.Name, vote = r.Vote });
             }
 
+            var policies = new List<object>();
+            foreach (PolicyInfo p in element.Policies)
+            {
+                policies.Add(new { name = p.Name, status = p.Status });
+            }
+
             var record = new
             {
                 id = element.Id,
@@ -82,6 +88,9 @@ namespace AzureCli.DataSource
                 description = element.Description ?? string.Empty,
                 buildStatus = element.BuildStatus ?? "none",
                 queuePosition = element.QueuePosition ?? -1,
+                buildUrl = element.BuildUrl ?? string.Empty,
+                policies,
+                missingReviewers = element.MissingReviewers ?? Array.Empty<string>(),
                 mergeConflict = element.HasMergeConflict,
                 url = BuildUrl(element),
                 cloneUrl = BuildCloneUrl(element),

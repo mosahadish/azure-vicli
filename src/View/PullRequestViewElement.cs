@@ -90,6 +90,29 @@ namespace AzureCli.View
         /// </summary>
         public int? QueuePosition { get; set; }
 
+        /// <summary>
+        /// The web link to the build backing <see cref="BuildStatus"/> (preferring a
+        /// failed/expired build over a running/succeeded one when several builds are
+        /// involved), or empty when there is no such build.
+        /// </summary>
+        public string BuildUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The non-build branch policy evaluations that apply to this PR (required
+        /// reviewers, minimum reviewer count, work item linking, comment
+        /// requirements, ...). "Not applicable" evaluations are excluded.
+        /// </summary>
+        public IReadOnlyList<PolicyInfo> Policies { get; set; } = Array.Empty<PolicyInfo>();
+
+        /// <summary>
+        /// Display names of "Required reviewers" who have not yet approved (voted
+        /// 5 or higher). A required reviewer id that isn't itself a reviewer on the
+        /// PR - almost always a group - can't be resolved to a name or an
+        /// individual approval state, so it's reported as a trailing "N more" count
+        /// entry instead of being silently dropped.
+        /// </summary>
+        public IReadOnlyList<string> MissingReviewers { get; set; } = Array.Empty<string>();
+
         /// <summary>Whether the PR currently has merge conflicts against its target branch.</summary>
         public bool HasMergeConflict => m_pullRequest.MergeStatus == PullRequestAsyncStatus.Conflicts;
 

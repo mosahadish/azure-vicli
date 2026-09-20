@@ -82,7 +82,7 @@ local function pr_matches(pr, q)
 end
 
 local BASE_WINBAR =
-  "pull requests   (<CR>: open  gy: copy  o: browser  gd: description  /: filter  gv: vote  gm: complete  ga: auto-complete  gr: re-queue build  gO: config  r: refresh  W: work items  q: quit  ?: help)"
+  "pull requests   (<CR>: open  gy: copy  o: browser  gd: description  gb: build  /: filter  gv: vote  gm: complete  ga: auto-complete  gr: re-queue build  gO: config  r: refresh  W: work items  q: quit  ?: help)"
 
 local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO)
@@ -569,6 +569,23 @@ local function open_browser()
   notify("Opening #" .. tostring(pr.id) .. " in browser…")
 end
 
+-- Open the build backing the PR's reported build status (see gd's "Build:"
+-- line) in the default web browser. Nil-safe: older cached records from
+-- before this field existed just report "no build".
+local function open_build()
+  local pr = current_pr()
+  if not pr then return end
+  if not pr.buildUrl or pr.buildUrl == "" then
+    notify("No build for #" .. tostring(pr.id) .. ".")
+    return
+  end
+  local ok = pcall(function() vim.ui.open(pr.buildUrl) end)
+  if not ok then
+    vim.fn.jobstart({ "cmd", "/c", "start", "", pr.buildUrl })
+  end
+  notify("Opening build for #" .. tostring(pr.id) .. " in browser…")
+end
+
 -- Open a scratch floating window at the cursor showing the given text lines.
 local function open_float(lines)
   if #lines == 0 then return end
@@ -592,7 +609,10 @@ local function open_float(lines)
   vim.keymap.set("n", "<Esc>", "<Cmd>close<CR>", fopts)
 end
 
--- Show the title and description of the PR under the cursor in a float.
+-- Show the title and description of the PR under the cursor in a float,
+-- plus its build status and non-build branch policies when known. Nil-safe
+-- throughout: older cached records from before these fields existed just
+-- omit the sections.
 local function show_description()
   local pr = current_pr()
   if not pr then return end
@@ -607,6 +627,33 @@ local function show_description()
       table.insert(lines, l)
     end
   end
+
+  if pr.buildStatus and pr.buildStatus ~= "" and pr.buildStatus ~= "none" then
+    table.insert(lines, "")
+    local build_line = "Build: " .. pr.buildStatus
+    if pr.buildUrl and pr.buildUrl ~= "" then
+      build_line = build_line .. "  " .. pr.buildUrl
+    end
+    table.insert(lines, build_line)
+  end
+
+  if type(pr.policies) == "table" and #pr.policies > 0 then
+    table.insert(lines, "")
+    table.insert(lines, "Policies:")
+    for _, p in ipairs(pr.policies) do
+      local mark = "\u{2026}"
+      if p.status == "approved" then
+        mark = "\u{2713}"
+      elseif p.status == "rejected" or p.status == "broken" then
+        mark = "\u{2717}"
+      end
+      table.insert(lines, "  " .. mark .. " " .. (p.name or ""))
+    end
+    if type(pr.missingReviewers) == "table" and #pr.missingReviewers > 0 then
+      table.insert(lines, "  Waiting on: " .. table.concat(pr.missingReviewers, ", "))
+    end
+  end
+
   open_float(lines)
 end
 
@@ -618,9 +665,10 @@ local function show_help()
     "",
     "  j / k       move",
     "  <CR>        open the PR under the cursor in the reviewer",
-    "  gd          show the description",
+    "  gd          show the description (build status and policies too)",
     "  gy          copy the PR link",
     "  o           open in the browser",
+    "  gb          open the PR's build in the browser",
     "  /           filter by title, repo or author",
     "  gv          vote",
     "  gm          complete (merge)",
@@ -1268,6 +1316,7 @@ vim.keymap.set("n", "<CR>", open_pr, opts)
 vim.keymap.set("n", "gy", yank_link, opts)
 vim.keymap.set("n", "o", open_browser, opts)
 vim.keymap.set("n", "gd", show_description, opts)
+vim.keymap.set("n", "gb", open_build, opts)
 vim.keymap.set("n", "/", set_filter, opts)
 vim.keymap.set("n", "gv", vote_pr, opts)
 vim.keymap.set("n", "gm", complete_pr, opts)
