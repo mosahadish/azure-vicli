@@ -1966,6 +1966,69 @@ end
 
 local setup_nav_keymaps  -- below (needs the nav functions)
 
+-- Colour a revision buffer the way the diff pane is coloured, so a preview
+-- or a gd/gr/gf jump still shows what the PR changed: in the source-branch
+-- copy of a file the PR touches, added lines get the green background and
+-- the lines the PR removed appear in red as virtual lines where they used
+-- to be; in the target-branch copy it's the reverse. Files the PR doesn't
+-- touch are left plain. Uses the same parsed diff the diff pane uses (from
+-- the shared cache, fetched on demand for a miss).
+local function decorate_revision(buf)
+  local meta = nav_meta[buf]
+  if not meta or not meta.loaded then return end
+  local pr_files = CACHE.files(cache_key)
+  if not pr_files or not vim.tbl_contains(pr_files, meta.path) then return end
+  ensure_diff_content(meta.path, function(lines, map)
+    if not vim.api.nvim_buf_is_valid(buf) then return end
+    vim.api.nvim_buf_clear_namespace(buf, diff_ns, 0, -1)
+    local own_side = (meta.ref == NAV_REF.L) and "L" or "R"
+    local own_kind = own_side == "R" and "add" or "del"
+    local own_bg = own_side == "R" and "PrDiffAddBg" or "PrDiffDelBg"
+    local own_sign = own_side == "R" and "PrDiffAddSign" or "PrDiffDelSign"
+    local other_bg = own_side == "R" and "PrDiffDelBg" or "PrDiffAddBg"
+    local n = vim.api.nvim_buf_line_count(buf)
+
+    -- Walk the diff in order keeping both sides' line counters, so every
+    -- entry has a position in this buffer's numbering: own-side changes
+    -- highlight that line, the other side's changes stack up as virtual
+    -- lines above the next own-side line (or below the last one).
+    local old, new = 0, 0
+    local pending = {}
+    local function flush(anchor)
+      if #pending == 0 then return end
+      local virt = {}
+      for _, t in ipairs(pending) do virt[#virt + 1] = { { t, other_bg } } end
+      local above = anchor <= n
+      pcall(vim.api.nvim_buf_set_extmark, buf, diff_ns, math.max(0, math.min(anchor, n) - 1), 0,
+        { virt_lines = virt, virt_lines_above = above })
+      pending = {}
+    end
+    for i, m in ipairs(map) do
+      if m.kind == "add" then
+        new = new + 1
+      elseif m.kind == "del" then
+        old = old + 1
+      elseif m.kind == "ctx" then
+        new, old = new + 1, old + 1
+      end
+      local own_line = own_side == "R" and new or old
+      if m.kind == own_kind then
+        flush(own_line)
+        pcall(vim.api.nvim_buf_set_extmark, buf, diff_ns, own_line - 1, 0, {
+          sign_text = own_side == "R" and "+" or "-",
+          sign_hl_group = own_sign,
+          line_hl_group = own_bg,
+        })
+      elseif m.kind == "ctx" then
+        flush(own_line)
+      elseif m.kind then
+        pending[#pending + 1] = lines[i]
+      end
+    end
+    flush(n + 1)
+  end)
+end
+
 -- Load (or reuse) the read-only buffer holding `path` as it is at `ref`,
 -- without showing it. Contents arrive asynchronously; see when_loaded.
 local function ensure_revision_buf(ref, path)
@@ -2000,6 +2063,7 @@ local function ensure_revision_buf(ref, path)
         vim.bo[buf].modifiable = false
         local meta = nav_meta[buf]
         meta.loaded = true
+        if code == 0 then decorate_revision(buf) end
         local waiters = meta.waiters
         meta.waiters = {}
         for _, f in ipairs(waiters) do f(buf) end
@@ -2180,7 +2244,7 @@ local function show_hits(title, hits, ref, current_path, truncated, word)
     clear_marks()
     local line = vim.api.nvim_buf_get_lines(buf, h.lnum - 1, h.lnum, false)[1]
     if not line then return end
-    pcall(vim.api.nvim_buf_set_extmark, buf, peek_ns, h.lnum - 1, 0, { line_hl_group = "AzureCliPeekLine" })
+    pcall(vim.api.nvim_buf_set_extmark, buf, peek_ns, h.lnum - 1, 0, { line_hl_group = "AzureCliPeekLine", priority = 300 })
     if not word then return end
     local from = 1
     while true do
