@@ -10,6 +10,7 @@
 --   o      open this work item in the browser
 --   r      refresh
 --   <BS>/q close and return to the dashboard
+--   ?      show this help
 
 local function script_dir()
   local src = debug.getinfo(1, "S").source
@@ -162,7 +163,7 @@ local function render(data)
 
   pcall(function()
     vim.wo[0].winbar = "work item #" .. tostring(it.id or "?")
-      .. "   (<CR>: open linked  gs: set state  o: browser  gy: copy link  r: refresh  <BS>/q: back)"
+      .. "   (<CR>: open linked  gs: set state  o: browser  gy: copy link  r: refresh  <BS>/q: back  ?: help)"
   end)
 end
 
@@ -397,6 +398,47 @@ local function yank_link()
   vim.notify("Copied link to #" .. tostring(ID) .. ": " .. current_url)
 end
 
+-- Open a scratch floating window at the cursor showing the given text lines
+-- (same small helper as azure-cli.lua's and wi-dash.lua's open_float; kept
+-- local since this file has no require'd module to share it from).
+local function open_float(lines)
+  if #lines == 0 then return end
+  local width = 20
+  for _, l in ipairs(lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(l))
+  end
+  width = math.min(width, 100)
+  local height = math.min(#lines, 24)
+  local fbuf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, lines)
+  vim.bo[fbuf].modifiable = false
+  vim.bo[fbuf].buftype = "nofile"
+  vim.api.nvim_open_win(fbuf, true, {
+    relative = "cursor", row = 1, col = 0,
+    width = width, height = height,
+    style = "minimal", border = "rounded",
+  })
+  local fopts = { buffer = fbuf, silent = true, nowait = true }
+  vim.keymap.set("n", "q", "<Cmd>close<CR>", fopts)
+  vim.keymap.set("n", "<Esc>", "<Cmd>close<CR>", fopts)
+end
+
+-- Show this view's keys in a float.
+local function show_help()
+  open_float({
+    "Work-item detail keys",
+    "",
+    "  j / k        move",
+    "  <CR>         on a parent/child line: open that work item here",
+    "  gs           change the state of this work item",
+    "  o            open this work item in the browser",
+    "  gy           copy this work item's link",
+    "  r            refresh",
+    "  <BS> / q     close and return to the dashboard",
+    "  ?            this help",
+  })
+end
+
 local function leave()
   if _G.WI_VIEW_RELOAD then _G.WI_VIEW_RELOAD[ID] = nil end
   if #vim.api.nvim_list_tabpages() > 1 then
@@ -416,6 +458,7 @@ vim.keymap.set("n", "gy", yank_link, opts)
 vim.keymap.set("n", "r", function() if ID ~= "" then load(ID, true) end end, opts)
 vim.keymap.set("n", "<BS>", leave, opts)
 vim.keymap.set("n", "q", leave, opts)
+vim.keymap.set("n", "?", show_help, opts)
 
 if ID == "" then
   set_lines({ "No work item id (WIDASH_ID) set." })

@@ -41,6 +41,8 @@
 --                there to follow further, <BS> walks back one jump.
 --   gf        :  open the current file at the PR's revision (read-only, on
 --                the same line) to read around the change
+--   ?         :  show the keys for whichever buffer you're in (file list,
+--                diff pane, Overview, or a revision buffer)
 
 vim.o.compatible = false
 vim.o.number = true
@@ -532,6 +534,14 @@ local function open_float(lines, focus, opts)
   end
   return win
 end
+
+-- Shared one-line notes reused by the `?` help popups below, so the
+-- code-navigation and optimistic-write behaviour is described the same way
+-- everywhere it applies instead of being retyped per buffer.
+local HELP_NOTE_NAV =
+  "gd/gr open a peek view (hits on the left, the file at that revision previewed on the right); <CR> opens the hit read-only at that revision, q closes the peek. Inside an opened revision gd/gr keep working and <BS> walks back one jump. gf opens the current file at the PR's revision, read-only, on the same line."
+local HELP_NOTE_SENDING =
+  "Comments, replies and status changes appear instantly, tagged \"(sending\u{2026})\" until the server confirms; if the call fails the entry is removed and the prompt reopens with your text so nothing is lost."
 
 -- Find this PR's record (stashed by the dashboard) to read metadata like the
 -- description and build status. The cache is consulted first because the
@@ -1749,7 +1759,30 @@ end
 local function set_overview_winbar()
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
   vim.wo[diff_win].winbar = "Overview: PR #" .. ID .. "  " .. SOURCE .. " -> " .. TARGET
-    .. "   (c: new PR comment  R: reply  s: status  gv: vote  gm: complete  gA: active-only  gF: hide text  ]C/[C: comment  </>: resize  <BS>: files)"
+    .. "   (c: new PR comment  R: reply  s: status  gv: vote  gm: complete  gA: active-only  gF: hide text  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
+end
+
+-- Overview keys, shown by `?` there.
+local function show_overview_help()
+  open_float({
+    "Overview keys",
+    "",
+    "  j / k      move",
+    "  c          new PR-level comment",
+    "  R          reply to the thread under the cursor",
+    "  s          set the thread's status",
+    "  ]C / [C    next / previous thread",
+    "  gv / gm    vote / complete",
+    "  gA         toggle active (unresolved) comments only",
+    "  gF         manage text filters that hide matching threads",
+    "  gO         open the config file",
+    "  < / >      resize the file list",
+    "  <BS>       back to the file list",
+    "  q          close the reviewer",
+    "  ?          this help",
+    "",
+    HELP_NOTE_SENDING,
+  }, true, { min_width = 60 })
 end
 
 local function setup_overview_keymaps(buf)
@@ -1771,6 +1804,7 @@ local function setup_overview_keymaps(buf)
       vim.api.nvim_set_current_win(list_win)
     end
   end, opts)
+  vim.keymap.set("n", "?", show_overview_help, opts)
   vim.keymap.set("n", "q", leave, opts)
 end
 
@@ -1795,6 +1829,35 @@ local function open_overview(focus)
       vim.api.nvim_win_set_cursor(diff_win, { 1, 0 })
     end
   end
+end
+
+-- Diff-pane keys, shown by `?` there.
+local function show_diff_help()
+  open_float({
+    "Diff pane keys",
+    "",
+    "  j / k / C-d / C-u   move",
+    "  ]c / [c    next / previous change",
+    "  c          comment on the current line",
+    "  cf         comment on the whole file",
+    "  K          view the comments on the current line in a popup (R/s work inside it)",
+    "  R          reply to the thread on the current line",
+    "  s          set the thread's status",
+    "  ]C / [C    next / previous thread",
+    "  gd / gr / gf   code navigation, see below",
+    "  gv / gm    vote / complete",
+    "  gA         toggle active (unresolved) comments only",
+    "  gF         manage text filters that hide matching threads",
+    "  gO         open the config file",
+    "  < / >      resize the file list",
+    "  <BS>       back to the file list",
+    "  q          close the reviewer",
+    "  ?          this help",
+    "",
+    HELP_NOTE_NAV,
+    "",
+    HELP_NOTE_SENDING,
+  }, true, { min_width = 60 })
 end
 
 local function setup_diff_keymaps(buf)
@@ -1823,6 +1886,7 @@ local function setup_diff_keymaps(buf)
       vim.api.nvim_set_current_win(list_win)
     end
   end, opts)
+  vim.keymap.set("n", "?", show_diff_help, opts)
   vim.keymap.set("n", "q", leave, opts)
 end
 
@@ -1832,7 +1896,7 @@ local function set_diff_winbar(path)
   vim.wo[diff_win].winbar = path
     .. (active_only and "  [active-only]" or "")
     .. ignore_texts_tag()
-    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  gv: vote  gm: complete  gA: active-only  gF: hide text  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files)"
+    .. "   (c: comment  cf: file comment  K: view  R: reply  s: status  gd/gr/gf: definition/references/file  gv: vote  gm: complete  gA: active-only  gF: hide text  gO: config  ]c/[c: change  ]C/[C: comment  </>: resize  <BS>: files  ?: help)"
 end
 
 -- Show a file's diff in the right window. focus=true moves the cursor into
@@ -1904,7 +1968,7 @@ local function set_nav_winbar(buf)
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
   local meta = nav_meta[buf]
   vim.wo[diff_win].winbar = "[" .. meta.ref .. "] " .. meta.path
-    .. "   (gd: definition  gr: references  <BS>: back  q: back to diff)"
+    .. "   (gd: definition  gr: references  <BS>: back  q: back to diff  ?: help)"
 end
 
 -- Winbar + file-list highlight for whatever buffer the diff window shows now.
@@ -2384,6 +2448,23 @@ nav_open_file = function()
   open_revision(ref, path, lnum)
 end
 
+-- Revision-buffer keys, shown by `?` there.
+local function show_nav_help()
+  open_float({
+    "Revision buffer keys",
+    "",
+    "  j / k      move",
+    "  gd / gr    definition / references from here",
+    "  <BS>       walk back one jump",
+    "  q          back to the diff",
+    "  gO         open the config file",
+    "  < / >      resize the file list",
+    "  ?          this help",
+    "",
+    HELP_NOTE_NAV,
+  }, true, { min_width = 60 })
+end
+
 setup_nav_keymaps = function(buf)
   local opts = { buffer = buf, silent = true, nowait = true }
   vim.keymap.set("n", "gd", function() nav_goto_definition() end, opts)
@@ -2393,6 +2474,7 @@ setup_nav_keymaps = function(buf)
   vim.keymap.set("n", "gO", open_config_file, opts)
   vim.keymap.set("n", "<", function() resize_list(-5) end, opts)
   vim.keymap.set("n", ">", function() resize_list(5) end, opts)
+  vim.keymap.set("n", "?", show_nav_help, opts)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2571,7 +2653,7 @@ local function set_list_winbar_impl()
       .. (alabel and ("  [" .. alabel .. "]") or "")
       .. (active_only and "  [active-only]" or "")
       .. ignore_texts_tag()
-      .. "   (<CR>: open  cf: file comment  gC: new PR comment  gA: active-only  gF: hide text  gO: config  gv: vote  gm: complete  ]C/[C: file w/comments  </>: resize  <BS>: back to PR list  q: quit)"
+      .. "   (<CR>: open  cf: file comment  gC: new PR comment  gA: active-only  gF: hide text  gO: config  gv: vote  gm: complete  ]C/[C: file w/comments  </>: resize  <BS>: back to PR list  q: quit  ?: help)"
   end)
 end
 set_list_winbar = set_list_winbar_impl
@@ -2785,6 +2867,27 @@ local function jump_file_with_comments(dir)
   notify(dir > 0 and "No further files with comments." or "No previous files with comments.")
 end
 
+-- File-list keys, shown by `?` there.
+local function show_file_list_help()
+  open_float({
+    "File list keys",
+    "",
+    "  j / k      move; the right pane previews the file as you go",
+    "  <CR>       open and focus the file",
+    "  cf         comment on the whole file",
+    "  gC         new PR-level comment",
+    "  ]C / [C    next / previous file with comments",
+    "  gA         toggle active (unresolved) comments only",
+    "  gF         manage text filters that hide matching threads",
+    "  gO         open the config file",
+    "  gv / gm    vote / complete",
+    "  < / >      resize the list",
+    "  <BS>       back to the PR list",
+    "  q          close the reviewer",
+    "  ?          this help",
+  }, true, { min_width = 60 })
+end
+
 -- File-list keymaps. Line 1 is the pinned Overview row; files occupy lines
 -- 2..#files+1.
 local lopts = { buffer = list_buf, silent = true, nowait = true }
@@ -2820,6 +2923,7 @@ vim.keymap.set("n", "cf", function()
   end
   comment_on_file(files[line - 1])
 end, lopts)
+vim.keymap.set("n", "?", show_file_list_help, lopts)
 
 -- Preview-on-move: scrolling the list updates the diff pane (Overview or a
 -- file's diff) without stealing focus. Debounced (like the dashboard's own
