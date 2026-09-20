@@ -2,9 +2,17 @@
 #
 # wi-detail.sh <id> - fetch a single work item plus its parent and children for
 # the Neovim detail view (wi-view.lua). Prints one JSON object to stdout:
-#   { "item": {...}, "parent": {...}|null, "children": [ {...}, ... ] }
-# HTML fields (description / acceptance criteria / repro steps) are flattened
-# to plain text so they render cleanly in a scratch buffer.
+#   { "item": {...}, "parent": {...}|null, "children": [ {...}, ... ],
+#     "comments": [ {...}, ... ], "commentsUnsupported": bool }
+# HTML fields (description / acceptance criteria / repro steps, and comment
+# text) are flattened to plain text so they render cleanly in a scratch
+# buffer. The item object's "pullRequests" field lists the pull requests
+# linked to it via ArtifactLink relations, as [{"id":..}, ...].
+#
+# Comments come from GET .../workItems/{id}/comments (api-version
+# 7.1-preview.4), oldest first. Older on-prem TFS instances don't expose this
+# endpoint: an HTTP 404/400 degrades to an empty "comments" list plus
+# "commentsUnsupported": true instead of failing the whole detail fetch.
 #
 # Config via environment (same defaults as wi-list.sh):
 #   ADO_PAT always resolved from azure-cli.yml via azure-cli.exe --print-pat
@@ -76,6 +84,51 @@ def assigned_str(v):
         return v.get("displayName","") or v.get("uniqueName","") or ""
     return "" if v is None else str(v)
 
+def fetch_comments(wid):
+    # On-prem TFS may not expose this endpoint at all: degrade to an empty
+    # list rather than failing the whole detail fetch on HTTP 404/400.
+    url = f"{collection}/{project}/_apis/wit/workItems/{wid}/comments?api-version=7.1-preview.4"
+    headers = {"Authorization": f"Basic {auth}", "Accept": "application/json"}
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 404):
+            return [], True
+        body = e.read().decode("utf-8", errors="replace")[:400]
+        print(f"ERROR: HTTP {e.code} GET {url}\n{body}", file=sys.stderr)
+        sys.exit(2)
+    raw = d.get("comments") if isinstance(d, dict) else None
+    if raw is None:
+        raw = d if isinstance(d, list) else []
+    raw = sorted(raw, key=lambda c: (str(c.get("createdDate","")), c.get("id") or 0))
+    out = []
+    for c in raw:
+        out.append({
+            "id": c.get("id"),
+            "author": assigned_str(c.get("createdBy","")),
+            "date": str(c.get("createdDate","")),
+            "text": html_to_text(c.get("text","")),
+        })
+    return out, False
+
+def pr_ids_from_relations(relations):
+    # ArtifactLink relations to a pull request look like
+    # vstfs:///Git/PullRequestId/{projectGuid}%2F{repoGuid}%2F{prId} (the
+    # last segment after the final %2F/%2f or plain "/" is the PR id).
+    out = []
+    for rel in (relations or []):
+        if rel.get("rel") != "ArtifactLink":
+            continue
+        url = rel.get("url","") or ""
+        if not url.startswith("vstfs:///Git/PullRequestId/"):
+            continue
+        m = re.search(r"(?:%2[Ff]|/)([0-9]+)$", url)
+        if m:
+            out.append({"id": int(m.group(1))})
+    return out
+
 def summary(wi):
     f = wi.get("fields") or {}
     return {
@@ -130,12 +183,17 @@ item = {
     "acceptanceCriteria": html_to_text(f.get("Microsoft.VSTS.Common.AcceptanceCriteria","")),
     "reproSteps": html_to_text(f.get("Microsoft.VSTS.TCM.ReproSteps","")),
     "url": f"{collection}/{project}/_workitems/edit/{full.get('id')}",
+    "pullRequests": pr_ids_from_relations(full.get("relations")),
 }
+
+comments, comments_unsupported = fetch_comments(wid)
 
 out = {
     "item": item,
     "parent": related.get(parent_id) if parent_id else None,
     "children": [related[c] for c in child_ids if c in related],
+    "comments": comments,
+    "commentsUnsupported": comments_unsupported,
 }
 print(json.dumps(out, ensure_ascii=False))
 PYEOF

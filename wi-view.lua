@@ -11,6 +11,9 @@
 --   gp     set this work item's priority
 --   ge     edit this work item's title
 --   gi     move this work item to another sprint
+--   gc     add a discussion comment
+--   gl     link a pull request
+--   gL     unlink a pull request
 --   o      open this work item in the browser
 --   r      refresh
 --   <BS>/q close and return to the dashboard
@@ -31,6 +34,10 @@ local BASH   = env.PRDASH_BASH or "bash"
 local ID     = env.WIDASH_ID or ""
 -- Same default assignee as wi-list.sh: used to preset ga.
 local ASSIGNEE = env.WIDASH_ASSIGNEE or "Hadish, Mosa"
+-- Same collection/project defaults as wi-edit.sh: the fallback org/project
+-- for gl (link a PR) when the PR isn't in the dashboard's cached PR list.
+local COLLECTION = env.WIDASH_COLLECTION or "https://tfs.zeiss.org/tfs/SMT_SMS"
+local PROJECT = env.WIDASH_PROJECT or "BarLev-RnD"
 
 local buf = vim.api.nvim_get_current_buf()
 vim.bo[buf].buftype = "nofile"
@@ -61,7 +68,7 @@ local STATE_HL = {
 local KNOWN_LABEL = {
   Parent = true, Children = true, Assigned = true, Priority = true,
   Created = true, Changed = true, Reason = true, Area = true,
-  Iteration = true, Tags = true, URL = true,
+  Iteration = true, Tags = true, URL = true, PRs = true,
 }
 local ns = vim.api.nvim_create_namespace("wiview")
 
@@ -85,6 +92,12 @@ local function add_block(lines, title, text)
   for _, l in ipairs(vim.split(text, "\n", { plain = true })) do
     lines[#lines + 1] = l
   end
+end
+
+-- "(sending…)" tag for a comment still awaiting its POST to confirm, the
+-- same convention pr-review.lua uses for its own optimistic writes.
+local function comment_tag(c)
+  return (c and c.pending) and "  (sending\u{2026})" or ""
 end
 
 local function render(data)
@@ -131,10 +144,35 @@ local function render(data)
   lines[#lines + 1] = "Iteration: " .. (it.iterationPath or "")
   if it.tags and it.tags ~= "" then lines[#lines + 1] = "Tags:      " .. it.tags end
   lines[#lines + 1] = "URL:       " .. (it.url or "")
+  local prs = it.pullRequests or {}
+  if #prs > 0 then
+    local pr_ids = {}
+    for _, p in ipairs(prs) do pr_ids[#pr_ids + 1] = "!" .. tostring(p.id) end
+    lines[#lines + 1] = "PRs:" .. string.rep(" ", 11 - 4) .. table.concat(pr_ids, ", ")
+  end
 
   add_block(lines, "Description", it.description)
   add_block(lines, "Acceptance Criteria", it.acceptanceCriteria)
   add_block(lines, "Repro Steps", it.reproSteps)
+
+  local comments = data.comments or {}
+  local disc_title = "Discussion (" .. #comments .. ")"
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = disc_title
+  lines[#lines + 1] = string.rep("─", #disc_title)
+  if data.commentsUnsupported then
+    lines[#lines + 1] = "  (comments not available on this server)"
+  elseif #comments == 0 then
+    lines[#lines + 1] = "  (none)"
+  else
+    for _, c in ipairs(comments) do
+      lines[#lines + 1] = (c.author or "") .. "  " .. (c.date or "") .. comment_tag(c)
+      for _, cl in ipairs(vim.split(c.text or "", "\n", { plain = true })) do
+        lines[#lines + 1] = "  " .. cl
+      end
+      lines[#lines + 1] = ""
+    end
+  end
 
   set_lines(lines)
 
@@ -170,12 +208,13 @@ local function render(data)
 
   pcall(function()
     vim.wo[0].winbar = "work item #" .. tostring(it.id or "?")
-      .. "   (<CR>: open linked  gs: state  ga: assign  gp: priority  ge: title  gi: move sprint  o: browser  gy: copy link  r: refresh  <BS>/q: back  ?: help)"
+      .. "   (<CR>: open linked  gs: state  ga: assign  gp: priority  ge: title  gi: move sprint  gc: comment  gl: link PR  gL: unlink PR  o: browser  gy: copy link  r: refresh  <BS>/q: back  ?: help)"
   end)
 end
 
 local current_url = ""
 local current_item = {}
+local current_data = {}
 
 -- Detail cache shared with wi-dash.lua's prefetch (same nvim session).
 _G.WI_DETAIL_CACHE = _G.WI_DETAIL_CACHE or {}
@@ -251,6 +290,7 @@ local function apply(body)
   end
   current_url = (data.item or {}).url or ""
   current_item = data.item or {}
+  current_data = data
   render(data)
   prefetch_state_meta()
   return true
@@ -494,6 +534,136 @@ local function move_sprint_item()
   end)
 end
 
+-- Add a discussion comment to this work item. Shown at once, tagged
+-- "(sending…)"; the tag drops on success, or the entry is removed and the
+-- failure notified - the same optimistic pattern pr-review.lua uses for its
+-- own comments (see comment_tag above), simplified: no retry prompt here.
+local function add_comment()
+  if ID == "" then return end
+  local text = vim.fn.input("Comment on #" .. ID .. ": ")
+  if not text or text:gsub("%s", "") == "" then
+    notify("Cancelled.")
+    return
+  end
+  current_data.comments = current_data.comments or {}
+  local entry = { author = ASSIGNEE, date = "", text = text, pending = true }
+  table.insert(current_data.comments, entry)
+  render(current_data)
+  local err = {}
+  vim.fn.jobstart({ BASH, EDIT, "comment", ID, text }, {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        entry.pending = nil
+        notify("Comment added to #" .. ID .. ".")
+      else
+        for i, c in ipairs(current_data.comments) do
+          if c == entry then table.remove(current_data.comments, i); break end
+        end
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify("Comment on #" .. ID .. " failed: " .. msg, vim.log.levels.ERROR)
+      end
+      render(current_data)
+    end,
+  })
+end
+
+-- Link a pull request to this work item. Resolves the PR's org/project/repo
+-- from the dashboard's cached PR list (_G.PR_LIST_CACHE.prs, populated by
+-- wi-dash.lua's background prefetch) when its id is there; otherwise prompts
+-- for the repository name and falls back to this account's own
+-- collection/project.
+local function link_pr()
+  if ID == "" then return end
+  local pr_id = vim.fn.input("Link PR id to #" .. ID .. ": ")
+  pr_id = (pr_id or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub("^!", "")
+  if pr_id == "" then
+    notify("Cancelled.")
+    return
+  end
+  if not pr_id:match("^%d+$") then
+    notify("PR id must be numeric.", vim.log.levels.WARN)
+    return
+  end
+  local org, project, repo
+  local cache = _G.PR_LIST_CACHE and _G.PR_LIST_CACHE.prs
+  if cache then
+    for _, pr in ipairs(cache) do
+      if tostring(pr.id) == pr_id then
+        org, project, repo = pr.org, pr.project, pr.repo
+        break
+      end
+    end
+  end
+  if not repo then
+    repo = vim.fn.input("Repository name: ")
+    if repo == "" then
+      notify("Cancelled.")
+      return
+    end
+    org = org or COLLECTION
+    project = project or PROJECT
+  end
+  notify("Linking PR !" .. pr_id .. " to #" .. ID .. " \u{2026}")
+  local err = {}
+  vim.fn.jobstart({ BASH, EDIT, "link-pr", ID, org, project, repo, pr_id }, {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        notify("Linked PR !" .. pr_id .. " to #" .. ID .. ".")
+        _G.WI_DETAIL_CACHE[ID] = nil
+        load(ID, true)
+      else
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify("Link PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
+-- Unlink a pull request from this work item, picked from the ones currently
+-- linked (an inputlist by PR id).
+local function unlink_pr()
+  if ID == "" then return end
+  local prs = current_item.pullRequests or {}
+  if #prs == 0 then
+    notify("No linked pull requests on #" .. ID .. ".", vim.log.levels.WARN)
+    return
+  end
+  local choices = { "Unlink PR from #" .. ID .. ":" }
+  for i, p in ipairs(prs) do choices[#choices + 1] = i .. ": !" .. tostring(p.id) end
+  local idx = tonumber(vim.fn.inputlist(choices))
+  if not idx or idx < 1 or idx > #prs then
+    notify("Cancelled.")
+    return
+  end
+  local pr_id = tostring(prs[idx].id)
+  notify("Unlinking PR !" .. pr_id .. " from #" .. ID .. " \u{2026}")
+  local err = {}
+  vim.fn.jobstart({ BASH, EDIT, "unlink-pr", ID, pr_id }, {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        notify("Unlinked PR !" .. pr_id .. " from #" .. ID .. ".")
+        _G.WI_DETAIL_CACHE[ID] = nil
+        load(ID, true)
+      else
+        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        notify("Unlink PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
 local function open_browser()
   if current_url == "" then return end
   local ok = pcall(vim.ui.open, current_url)
@@ -547,6 +717,9 @@ local function show_help()
     "  gp           set this work item's priority",
     "  ge           edit this work item's title",
     "  gi           move this work item to another sprint",
+    "  gc           add a discussion comment",
+    "  gl           link a pull request",
+    "  gL           unlink a pull request",
     "  o            open this work item in the browser",
     "  gy           copy this work item's link",
     "  r            refresh",
@@ -573,6 +746,9 @@ vim.keymap.set("n", "ga", assign_item, opts)
 vim.keymap.set("n", "gp", set_priority, opts)
 vim.keymap.set("n", "ge", edit_title, opts)
 vim.keymap.set("n", "gi", move_sprint_item, opts)
+vim.keymap.set("n", "gc", add_comment, opts)
+vim.keymap.set("n", "gl", link_pr, opts)
+vim.keymap.set("n", "gL", unlink_pr, opts)
 vim.keymap.set("n", "o", open_browser, opts)
 vim.keymap.set("n", "gy", yank_link, opts)
 vim.keymap.set("n", "r", function() if ID ~= "" then load(ID, true) end end, opts)
