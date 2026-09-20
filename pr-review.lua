@@ -115,6 +115,16 @@ local function resolve_my_identity(on_done)
     if on_done then on_done() end
     return
   end
+  -- The list feed (--list) already carries the identity each PR was fetched
+  -- as; the dashboard hands the record over in _G.PR_CURRENT. Using it here
+  -- saves a --whoami spawn (a .NET start-up plus an ADO round-trip) per org.
+  local rec = _G.PR_CURRENT
+  if rec and tostring(rec.id) == tostring(ID) and rec.myId and rec.myId ~= "" then
+    _G.PRDASH_WHOAMI[cache_key] = { id = rec.myId, displayName = rec.myName or "" }
+    my_id = rec.myId
+    if on_done then on_done() end
+    return
+  end
   if EXE == "" or ORG == "" then
     if on_done then on_done() end
     return
@@ -1474,6 +1484,11 @@ end
 -- thread, on its "┌─ thread" header line) so R/s/]C/[C work on it exactly
 -- like they do for a commented line in a regular file's diff.
 local overview_buf  -- created once by open_overview; content rebuilt in place.
+-- Commits between the target and source branches, shown on the Overview page.
+-- nil until the background `git log` (load_overview_commits) has returned,
+-- then a list (possibly empty). Fetched once: the branches don't move within
+-- a review session.
+local overview_commits = nil
 
 local function build_overview()
   local pr = current_pr_record()
@@ -1508,12 +1523,12 @@ local function build_overview()
 
   lines[#lines + 1] = ""
   lines[#lines + 1] = "Commits (who pushed):"
-  local commits = vim.fn.systemlist(
-    git_args("log", "--format=%h  %ad  %an: %s", "--date=short", "origin/" .. TARGET .. "..origin/" .. SOURCE))
-  if vim.v.shell_error ~= 0 or #commits == 0 then
+  if overview_commits == nil then
+    lines[#lines + 1] = "  (loading…)"
+  elseif #overview_commits == 0 then
     lines[#lines + 1] = "  (none found - branch may not be fetched yet)"
   else
-    for _, c in ipairs(commits) do
+    for _, c in ipairs(overview_commits) do
       lines[#lines + 1] = "  " .. c
     end
   end
@@ -1540,8 +1555,8 @@ local function build_overview()
   return lines, thread_map
 end
 
--- (Re)render the Overview buffer in place. Cheap (no network calls beyond the
--- local `git log` above), so safe to call on every open plus after every
+-- (Re)render the Overview buffer in place. Cheap (pure in-memory: no git or
+-- network calls), so safe to call on every open plus after every
 -- comment/reply/status change and thread poll. Also marks every shown
 -- PR-level thread read, since seeing it here is "going to" it.
 local function render_overview()
@@ -1554,6 +1569,29 @@ local function render_overview()
   vim.api.nvim_buf_set_lines(overview_buf, 0, -1, false, lines)
   vim.bo[overview_buf].modifiable = false
   mark_threads_read(filtered(general_threads))
+end
+
+-- Fetch the PR's commit list for the Overview page in the background and
+-- re-render it once it lands. This used to be a blocking `git log` inside
+-- build_overview, i.e. on every Overview render including the very first
+-- one at open - a ~300ms freeze under git-bash before anything was drawn.
+local function load_overview_commits()
+  local out = {}
+  vim.fn.jobstart(git_args("log", "--format=%h  %ad  %an: %s", "--date=short",
+      "origin/" .. TARGET .. "..origin/" .. SOURCE), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code == 0 then
+          overview_commits = vim.tbl_filter(function(l) return l ~= "" end, out)
+        else
+          overview_commits = {}
+        end
+        render_overview()
+      end)
+    end,
+  })
 end
 
 -- Reply to / set the status of the thread anchored to the Overview line under
@@ -1731,30 +1769,11 @@ pcall(vim.api.nvim_set_hl, 0, "AzureCliCommentNew", { fg = "#f38ba8", bold = tru
 pcall(vim.api.nvim_set_hl, 0, "AzureCliCurrentFile", { bg = "#313244", bold = true })
 local current_file_ns = vim.api.nvim_create_namespace("prdash_current_file")
 
-local files = vim.fn.systemlist(git_args("diff", "--name-only", RANGE))
-files = vim.tbl_filter(function(f) return f ~= "" end, files)
-
--- Verify the diff range resolves; a missing ref means the branch was deleted,
--- or this PR's repo isn't the clone we're pointed at (multi-repo mismatch).
-local function ref_exists(ref)
-  vim.fn.systemlist(git_args("rev-parse", "--verify", "--quiet", ref .. "^{commit}"))
-  return vim.v.shell_error == 0
-end
-
-if not ref_exists("origin/" .. TARGET) or not ref_exists("origin/" .. SOURCE) then
-  notify("Cannot diff PR #" .. ID .. " (" .. RANGE .. "): branch not found in "
-    .. (REPO_PATH ~= "" and REPO_PATH or "the current repo")
-    .. ". It may be deleted, or repo '" .. (env.PRDASH_REPO or "?")
-    .. "' isn't cloned here.", vim.log.levels.ERROR)
-  if EMBED then leave() end
-  return
-end
-
-if #files == 0 then
-  notify("No changed files in this PR (range " .. RANGE .. ").", vim.log.levels.WARN)
-  if EMBED then leave() end
-  return
-end
+-- The PR's changed files, filled in asynchronously by load_files (below, at
+-- startup) so the reviewer opens before git has answered. Empty until then;
+-- files_loaded tells the placeholder row apart from a genuinely empty PR.
+local files = {}
+local files_loaded = false
 
 -- Warm content_cache for every file in the background, a few at a time, so
 -- by the time you've looked at a couple of files the rest are ready and
@@ -1853,6 +1872,10 @@ local OVERVIEW_ROW = 1
 local current_file_path  -- path (or OVERVIEW_MARK) currently shown in the diff pane, for re-marking after redraws.
 local function list_lines()
   local out = { overview_row_label(nil) }
+  if not files_loaded then
+    out[#out + 1] = "  (loading files…)"
+    return out
+  end
   for _, f in ipairs(files) do
     out[#out + 1] = file_label(f)
   end
@@ -2143,6 +2166,10 @@ vim.keymap.set("n", "<CR>", function()
     open_overview(true)
     return
   end
+  if not files_loaded then
+    notify("Still loading the file list…")
+    return
+  end
   open_file(files[line - 1], true)
 end, lopts)
 vim.keymap.set("n", "<BS>", leave, lopts)
@@ -2202,9 +2229,55 @@ vim.api.nvim_create_autocmd("VimEnter", {
   end,
 })
 open_overview(false)
-prefetch_all_diffs()
-notify("PR #" .. ID .. ": " .. #files
-  .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+load_overview_commits()
+
+-- Populate the file list in the background. This used to be a blocking
+-- `git diff --name-only` plus two blocking rev-parse checks before anything
+-- was drawn - three git spawns, close to a second under git-bash, during
+-- which the editor was frozen. The window now opens immediately with a
+-- "loading" row and fills in when git returns. A non-zero exit is git's
+-- "unknown revision" (128): the branch was deleted, or this PR's repo isn't
+-- the clone we're pointed at - the same cases the rev-parse pair guarded.
+local function load_files()
+  local out, err = {}, {}
+  vim.fn.jobstart(git_args("diff", "--name-only", RANGE), {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(list_buf) then return end
+        if code ~= 0 then
+          notify("Cannot diff PR #" .. ID .. " (" .. RANGE .. "): branch not found in "
+            .. (REPO_PATH ~= "" and REPO_PATH or "the current repo")
+            .. ". It may be deleted, or repo '" .. (env.PRDASH_REPO or "?")
+            .. "' isn't cloned here.", vim.log.levels.ERROR)
+          if EMBED then leave() end
+          return
+        end
+        files = vim.tbl_filter(function(f) return f ~= "" end, out)
+        files_loaded = true
+        if #files == 0 then
+          notify("No changed files in this PR (range " .. RANGE .. ").", vim.log.levels.WARN)
+          if EMBED then leave() end
+          return
+        end
+        local rows = {}
+        for _, f in ipairs(files) do rows[#rows + 1] = file_label(f) end
+        vim.bo[list_buf].modifiable = true
+        vim.api.nvim_buf_set_lines(list_buf, 1, -1, false, rows)
+        vim.bo[list_buf].modifiable = false
+        fit_list_width()
+        mark_current_file(current_file_path)
+        prefetch_all_diffs()
+        notify("PR #" .. ID .. ": " .. #files
+          .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+      end)
+    end,
+  })
+end
+load_files()
 
 -- Re-fetch PR comment threads from ADO and re-decorate every open diff buffer
 -- plus the Overview row/page. Called at startup and after posting a comment so
