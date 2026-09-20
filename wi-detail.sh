@@ -16,24 +16,23 @@ ID="${1:?ERROR: usage: wi-detail.sh <work-item-id>}"
 COLLECTION="${WIDASH_COLLECTION:-https://tfs.zeiss.org/tfs/SMT_SMS}"
 PROJECT="${WIDASH_PROJECT:-BarLev-RnD}"
 
-if [[ -z "${PRDASH_EXE:-}" ]]; then
-  echo "ERROR: PRDASH_EXE not set - can't resolve the PAT from azure-cli.yml." >&2
-  exit 1
-fi
-ADO_PAT="$("$PRDASH_EXE" --print-pat --org "$COLLECTION" --project "$PROJECT" 2>/dev/null)" || true
-: "${ADO_PAT:?ERROR: no PAT available - add 'pat:' to this account in azure-cli.yml}" >&2
-AUTH="$(printf ":%s" "$ADO_PAT" | base64 | tr -d '\r\n')"
-export COLLECTION PROJECT AUTH ID
+# Shared PAT lookup (pure-bash scan of PRDASH_PATS when launched through
+# azure-cli.exe, else one --print-pat call) - see resolve-pat.sh.
+if [[ "${BASH_SOURCE[0]}" == */* ]]; then . "${BASH_SOURCE[0]%/*}/resolve-pat.sh"; else . "./resolve-pat.sh"; fi
+resolve_pat_into ADO_PAT "$COLLECTION" "$PROJECT" \
+  || { echo "ERROR: no PAT available - add 'pat:' to this account in azure-cli.yml" >&2; exit 1; }
+export ADO_PAT
+export COLLECTION PROJECT ID
 
 PY="python"; command -v python >/dev/null 2>&1 || PY="python3"
 
 "$PY" - <<'PYEOF'
-import os, sys, json, re, urllib.request, urllib.error
+import os, sys, json, base64, re, urllib.request, urllib.error
 from html.parser import HTMLParser
 
 collection = os.environ["COLLECTION"]
 project    = os.environ["PROJECT"]
-auth       = os.environ["AUTH"]
+auth       = base64.b64encode((":" + os.environ["ADO_PAT"]).encode()).decode()
 wid        = os.environ["ID"]
 api        = "7.1"
 

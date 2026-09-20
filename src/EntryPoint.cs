@@ -211,6 +211,21 @@ namespace AzureCli
             psi.EnvironmentVariables["PRDASH_BASH"] = bashPath;
             psi.EnvironmentVariables["WIDASH_LIST"] = wiList;
             psi.EnvironmentVariables["WIDASH_DETAIL"] = wiDetail;
+
+            // Hand every account's PAT to the helper scripts up front (see
+            // resolve-pat.sh) so they don't have to spawn this exe - a full
+            // .NET start-up plus a config parse - on every single action just
+            // to read the same file again. The value still comes from the
+            // config file alone; this is simply where it's read once.
+            string patTable = BuildPatTable(config);
+            if (patTable.Length > 0)
+            {
+                psi.EnvironmentVariables["PRDASH_PATS"] = patTable;
+            }
+            else
+            {
+                psi.EnvironmentVariables.Remove("PRDASH_PATS");
+            }
             if (!string.IsNullOrEmpty(config.RepoPath))
             {
                 psi.EnvironmentVariables["PRDASH_REPO_PATH"] = config.RepoPath;
@@ -239,6 +254,29 @@ namespace AzureCli
                 Console.Error.WriteLine("azure-cli: failed to launch nvim (is it on PATH?): " + ex.Message);
                 return 1;
             }
+        }
+
+        /// <summary>
+        /// Formats the configured accounts' PATs for the helper scripts: one
+        /// "org\tproject\tpat" line per account that has a PAT, with the org
+        /// URL's trailing slash trimmed so it compares equal to what the
+        /// dashboard passes around as PRDASH_ORG.
+        /// </summary>
+        private static string BuildPatTable(Config config)
+        {
+            var lines = new System.Collections.Generic.List<string>();
+            foreach (AccountConfig account in config.Accounts)
+            {
+                if (string.IsNullOrEmpty(account.PersonalAccessToken) || account.OrganizationUrl == null)
+                {
+                    continue;
+                }
+
+                string org = account.OrganizationUrl.ToString().TrimEnd('/');
+                lines.Add(org + "\t" + (account.Project ?? string.Empty) + "\t" + account.PersonalAccessToken);
+            }
+
+            return string.Join("\n", lines);
         }
 
         /// <summary>
