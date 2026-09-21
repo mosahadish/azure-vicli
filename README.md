@@ -8,12 +8,26 @@ you in the current sprint. Everything a review needs is prefetched in the
 background, so opening a PR, switching files, and jumping to a definition are
 instant.
 
-![The pull request dashboard](docs/images/dashboard.png)
+![The pull request dashboard: PRs grouped by what they need from you, with build state, votes and thread counts](docs/images/dashboard.png)
 
-_Screenshots are generated from the [fake provider](docs/development.md#trying-it-without-azure-devops), so every name and PR in them is made up._
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><a href="docs/reviewer.md"><img src="docs/images/reviewer-thread.png" alt="The reviewer: file list on the left, a diff with an old/new gutter on the right, and a comment thread expanded inline"></a><br><sub><b>Reviewer</b> - file list, old/new gutter, folded context, a thread expanded inline with <code>Tab</code>.</sub></td>
+<td width="50%"><a href="docs/reviewer.md"><img src="docs/images/reviewer-files.png" alt="The reviewer's Overview: title, branches, author, votes, description, commits and PR-level comments"></a><br><sub><b>Overview</b> - description, commits and PR-level comments, first row of every review.</sub></td>
+</tr>
+<tr>
+<td width="50%"><a href="docs/reviewer.md"><img src="docs/images/complete-dialog.png" alt="The complete dialog: merge type, work-item and branch toggles, and a build, thread and vote summary"></a><br><sub><b>Complete</b> - merge type, toggles, and a warning when the build, threads or votes argue against merging.</sub></td>
+<td width="50%"><a href="docs/work-items.md"><img src="docs/images/workitems.png" alt="The work-items dashboard: sprint tabs, items grouped by type with state, priority and age"></a><br><sub><b>Work items</b> - your sprint's stories and bugs, with tabs for the other sprints.</sub></td>
+</tr>
+</table>
+
+_Every screenshot is generated from the test suite's [fake provider](docs/development.md#trying-it-without-azure-devops), so the people and PRs in them are made up._
 
 ## Contents
 
+- [Screenshots](#screenshots)
 - [Requirements](#requirements)
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -130,10 +144,6 @@ config-file scaffolding, or just create the config file by hand.
 - **[Troubleshooting](docs/troubleshooting.md)** and
   **[how it works](docs/development.md)** (the daemon, the caches, the
   test suite, extending the reviewer).
-
-![The reviewer: file list, old/new gutter, an inline thread expanded with Tab](docs/images/reviewer-thread.png)
-
-![The work-items dashboard](docs/images/workitems.png)
 
 ## Running
 
