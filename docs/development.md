@@ -169,14 +169,14 @@ cache live under Neovim's/the platform's cache directory (see
 not inside the repo.
 
 `tests/run.sh` is the whole test suite (bash, git, luajit and python3; a
-real `nvim` on PATH enables the stricter Neovim load check and two headless
+real `nvim` on PATH enables the stricter Neovim load check and the headless
 smokes - see below): a `luajit -bl` syntax check and a global-name scan
 (catches a `local` read before its declaration - easy to do by accident in
 these long, forward-referencing files) over every file under `lua/`,
 `plugin/` and `standalone/` (globbed, not a hand-written list, so a new
 module is picked up automatically), `bash -n` over every shell script (and
 the `azure-cli` launcher), twenty-one Lua unit tests under `tests/`,
-`python3 -m unittest discover` over `tests/test_*.py`, and four headless
+`python3 -m unittest discover` over `tests/test_*.py`, and five headless
 `nvim` smokes:
 
 | Test | Covers |
@@ -213,7 +213,7 @@ runner builds in a temp dir (two branches, `tgt` and `src`, exposed as
 `refs/remotes/origin/{tgt,src}` since that's what the prefetch pipeline
 diffs). Everything is cleaned up on exit.
 
-The four headless `nvim` smokes (skipped, not failed, when `nvim` isn't on
+The five headless `nvim` smokes (skipped, not failed, when `nvim` isn't on
 PATH): `setup()`/`config.lua` - `require('azure-cli').setup()` then asserting
 `require('azure-cli.config').get().keys.diff.next_hunk` resolves - proves
 `require("azure-cli")` and its dependents actually resolve through
@@ -226,7 +226,13 @@ renders (`filetype == 'azurecli-dashboard'`) even though `--list` fails fast on
 {next_hunk="]h"}}})` then asserting `keys.lua`'s `resolve` actually returns
 `]h`, not just that the default exists; and `:AzureCli status` -
 `setup({python=..., config=...})` then asserting `require('azure-cli').status()`'s
-returned table carries those exact values, not the probe/platform defaults.
+returned table carries those exact values, not the probe/platform defaults;
+and the fake-provider demo - `bash tests/demo.sh --headless` (see
+[Trying it without Azure DevOps](#trying-it-without-azure-devops) below)
+asserting the dashboard lists the fake PRs, through `rpc.lua`'s real daemon
+client, and that the reviewer then opens PR #101 with its file list, through
+the warm-all prefetch's real `git fetch` and the reviewer's `git diff`
+pipeline.
 
 `tests/gen-keys-table.lua` (`luajit tests/gen-keys-table.lua`) prints the
 [Keys](commands-and-keys.md#keys) section's tables straight from `config.lua`'s defaults - not
@@ -236,6 +242,60 @@ changing a default, so the two can't quietly drift apart.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `bash tests/run.sh` on
 every push and pull request.
+
+### Trying it without Azure DevOps
+
+```
+bash tests/demo.sh                # plugin mode: the dashboard in a plain nvim
+bash tests/demo.sh --standalone   # the launcher's own standalone/init.lua entry point
+bash tests/demo.sh --headless     # the self-check tests/run.sh runs
+bash tests/demo.sh --fresh        # rebuild the workspace (forgets what you did)
+```
+
+The Lua side never talks to Azure DevOps itself - every PR/work-item
+action, the branch prefetch and the `--serve` daemon go through the
+`python azure-cli.py` argv `config.lua`'s `provider_cmd()` builds - so
+the whole UI can be driven by a stand-in. `tests/fake-provider.py` is
+that stand-in: `demo.sh` points `AZVICLI_PY` at it, so the argv becomes
+`fake-provider.py azure-cli.py <args>` and the fake answers every
+subcommand (`--list`, `--threads`, `--post`, `--vote`, `--wi-list`, ...,
+`--serve`) from a workspace it builds under `$TMPDIR`/`/tmp`:
+
+- **Real git.** A bare `file://` "origin" per fixture repository and a
+  clone under `<ws>/clones` for the ones the `--list` records call cloned
+  (`gadgets` deliberately isn't, so opening PR #201 exercises
+  clone-on-open). Every PR is a real branch with real commits, so the
+  reviewer's file list, diffs, commit log, word diff and "changes since
+  my last review" run the real git commands.
+- **Stateful.** Posting, replying, editing and deleting comments, thread
+  status, votes, complete/auto-complete, re-queue and every work-item
+  state/field edit update the workspace's `state.json`, so the next
+  refresh shows what you did the way it would after a server round trip
+  (a vote moves the PR between dashboard sections, a reply shows up in
+  the thread, ...). Votes on #104's conflicting PR still complete-fail,
+  like the real thing.
+- **Traceable.** Every provider call the Lua side made - argv plus the
+  `AZVICLI_*` environment it carried - is appended to `<ws>/calls.log`.
+- **Isolated.** `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` point
+  into the workspace, so your real `azure-cli.yml`, viewed marks and
+  prefetch cache are never read or written; `AZVICLI_TOASTS=0` keeps
+  desktop notifications quiet.
+
+Fixtures: repo `widgets` with PRs #101 (Actionable, an inline thread
+that @-mentions you, a resolved one and a general one), #102 (yours),
+#103 (draft), #104 (waiting for author, failed build, merge conflict,
+whitespace-only file), #105 (signed off, auto-complete on); repo
+`gadgets` with #201; three sprints of work items with a parent feature,
+comments and linked PRs. Everything is in `PR_FIXTURES`/`WI_FIXTURES`
+at the top of `tests/fake-provider.py` - add a PR there and `--fresh`
+rebuilds the branches to match.
+
+What this doesn't cover: `azure-cli.py`'s own REST layer (that's
+`tests/test_*.py`'s job, against fakes) and anything only a real server
+can tell you - PAT scopes, on-prem quirks, real identities. For those,
+a free dev.azure.com organization with one small repo and one open PR is
+enough: put it in a throwaway config and run the standalone launcher
+with `XDG_CONFIG_HOME` pointed at it.
 
 ### Extending the reviewer
 

@@ -62,7 +62,7 @@ done
 # launcher's nvim entry point) - see README's Architecture section for the
 # tree. Sorted so the check output (and any failure) is stable across runs.
 LUA_FILES=($(cd "$REPO_ROOT" && find lua plugin standalone -name '*.lua' | LC_ALL=C sort))
-SH_FILES=(azure-cli install.sh)
+SH_FILES=(azure-cli install.sh tests/demo.sh)
 
 # Names luajit's bytecode listing may report GGET/GSET for without it being a
 # sign of trouble: Lua/LuaJIT builtins these files actually use, plus `vim`
@@ -89,6 +89,7 @@ for f in "${LUA_FILES[@]}"; do
   tr -d '\r' < "$REPO_ROOT/$f" > "$TMP/lua/$f"
 done
 for f in "${SH_FILES[@]}"; do
+  mkdir -p "$TMP/sh/$(dirname "$f")"
   tr -d '\r' < "$REPO_ROOT/$f" > "$TMP/sh/$f"
 done
 
@@ -305,7 +306,7 @@ else
 fi
 
 echo
-echo "== 6. headless nvim smokes (plugin load, standalone launch) =="
+echo "== 6. headless nvim smokes (plugin load, standalone launch, fake-provider demo) =="
 if command -v nvim >/dev/null 2>&1; then
   # setup()/config.lua smoke: the plugin loads standalone (rtp set by hand,
   # like a plugin manager would), setup() runs with no options, and
@@ -372,6 +373,22 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: :AzureCli status shows setup({python=..., config=...})'s resolved values"
   else
     fail "smoke: :AzureCli status shows setup({python=..., config=...})'s resolved values" "$out"
+  fi
+
+  # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
+  # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
+  # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua
+  # in a headless nvim wired up exactly like the interactive demo - the
+  # fake as AZVICLI_PY, its --serve daemon, private XDG dirs - and asserts
+  # the dashboard lists the fake PRs and the reviewer opens PR #101 with
+  # its file list. The one check that goes through rpc.lua's real daemon
+  # client, the real --list/--threads parsing, the warm-all prefetch's
+  # `git fetch` and the reviewer's git diff pipeline together.
+  out="$(bash "$REPO_ROOT/tests/demo.sh" --headless --fresh --workspace "$TMP/demo-ws" 2>&1)"
+  if [[ "$out" == *DEMO-SMOKE-OK* ]]; then
+    pass "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer"
+  else
+    fail "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer" "$out"
   fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"
