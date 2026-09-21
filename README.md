@@ -33,6 +33,7 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - [Quick start](#quick-start)
 - [What's in the box](#whats-in-the-box)
 - [Running](#running)
+- [License](#license)
 - Docs: [dashboard](docs/dashboard.md) · [reviewer](docs/reviewer.md) ·
   [work items](docs/work-items.md) · [commands and keys](docs/commands-and-keys.md) ·
   [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
@@ -169,3 +170,7 @@ directly):
 | `--print-pat --org <url> [--project <name>]` | The configured PAT for that account. |
 | `--whoami --org <url> [--project <name>]` | The authenticated identity as JSON. |
 | `--doctor [--json]` | Check the setup (config file, its fields, sign-in per organization, work items); exit 1 if anything fails. `--json` prints one object per check. |
+
+## License
+
+[MIT](LICENSE).
