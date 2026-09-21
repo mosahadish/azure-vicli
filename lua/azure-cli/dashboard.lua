@@ -1625,39 +1625,35 @@ local function vote_pr()
   end)
 end
 
-local MERGE_TYPES = {
-  { key = "squash",        label = "Squash commit" },
-  { key = "noFastForward", label = "Merge (no fast forward)" },
-  { key = "rebase",        label = "Rebase and fast-forward" },
-  { key = "rebaseMerge",   label = "Semi-linear merge" },
-}
+local MERGE = require("azure-cli.merge")
+local MERGE_TYPES = MERGE.MERGE_TYPES
 
+-- Complete (merge) the PR under the cursor: the same dialog the reviewer's
+-- gm opens (lua/azure-cli/merge.lua) - merge type, work-item/branch toggles,
+-- build/threads/votes with a warning when they argue against merging - fed
+-- from the row's own --list record.
 local function complete_pr()
   local pr = current_pr()
   if not pr then return end
-  PROMPT.select({ prompt = "Complete PR #" .. pr.id .. "  " .. (pr.title or "") .. " with", items = MERGE_TYPES },
-    function(mt)
-    if not mt then return end
-    -- Defaults: delete source branch + transition work items (like the web
-    -- UI) - said out loud in the confirmation, since they used to be silent.
-    PROMPT.confirm({
-      prompt = "Merge PR #" .. pr.id .. " (" .. mt.label .. "), delete the source branch and transition its work items?",
-      yes = "Merge", no = "Keep open",
-    }, function(yes)
-      if not yes then
-        notify("Cancelled.")
-        return
+  MERGE.dialog({
+    id = pr.id,
+    title = pr.title,
+    source = pr.source,
+    target = pr.target,
+    build_label = MERGE.build_label(pr),
+    conflict = pr.mergeConflict and true or false,
+    unresolved = (type(pr.activeThreads) == "number" and pr.activeThreads >= 0) and pr.activeThreads or nil,
+    vote_ratio = pr.voteRatio,
+  }, function(mt, delete_branch, work_items)
+    -- Optimistically drop the row: a completed PR leaves the active list.
+    run_action({ "--complete", mt.key, tostring(delete_branch), tostring(work_items) }, "Completing", function(p)
+      local at
+      for i, x in ipairs(prs) do
+        if x == p then at = i break end
       end
-      -- Optimistically drop the row: a completed PR leaves the active list.
-      run_action({ "--complete", mt.key, "true", "true" }, "Completing", function(p)
-        local at
-        for i, x in ipairs(prs) do
-          if x == p then at = i break end
-        end
-        if not at then return nil end
-        table.remove(prs, at)
-        return function() table.insert(prs, math.min(at, #prs + 1), p) end
-      end)
+      if not at then return nil end
+      table.remove(prs, at)
+      return function() table.insert(prs, math.min(at, #prs + 1), p) end
     end)
   end)
 end

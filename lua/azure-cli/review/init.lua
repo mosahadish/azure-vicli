@@ -707,20 +707,10 @@ local function mark_threads_read(list)
   end
 end
 
--- Compact build-validation label for the winbar, or nil when unknown/none.
+-- Compact build-validation label for the winbar, or nil when unknown/none
+-- (merge.lua's M.build_label, so the complete dialog and the winbar agree).
 local function build_status_label()
-  local pr = current_pr_record()
-  local s = pr and pr.buildStatus or nil
-  if s == "succeeded" then return "build \u{2713}" end
-  if s == "failed" then return "build \u{2717}" end
-  if s == "expired" then return "build \u{21BB}" end
-  if s == "running" then
-    if pr and type(pr.queuePosition) == "number" and pr.queuePosition > 0 then
-      return "build \u{25CF} (queue #" .. tostring(pr.queuePosition) .. ")"
-    end
-    return "build \u{25CF}"
-  end
-  return nil
+  return require("azure-cli.merge").build_label(current_pr_record())
 end
 
 -- Merge-conflict label for the winbar, or nil when there is no conflict.
@@ -1878,24 +1868,10 @@ local function cast_vote()
   end)
 end
 
--- Merge strategies offered when completing a PR (label + ADO strategy key).
-local MERGE_TYPES = {
-  { key = "squash",       label = "Squash commit" },
-  { key = "noFastForward", label = "Merge (no fast forward)" },
-  { key = "rebase",       label = "Rebase and fast-forward" },
-  { key = "rebaseMerge",  label = "Semi-linear merge" },
-}
-
--- Show a small window to complete (merge) the PR: pick a merge type and toggle
--- the post-completion options, then confirm to run --complete.
+-- Complete (merge) the PR: the shared dialog (lua/azure-cli/merge.lua -
+-- the dashboard's gm opens the same one) with this reviewer's live thread
+-- counts, then --complete with what was picked.
 local function complete_pr()
-  local st = { merge = 1, work_items = true, delete_branch = true }
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].buftype = "nofile"
-
-  -- What should give pause before merging: the build, a conflict, threads
-  -- nobody has resolved - all shown in the dialog rather than discovered
-  -- after.
   local rec = current_pr_record()
   local unresolved = 0
   local function count(list)
@@ -1906,73 +1882,22 @@ local function complete_pr()
   for _, list in pairs(threads_by_key) do count(list) end
   for _, list in pairs(file_threads_by_path) do count(list) end
   count(general_threads)
-  local blabel = build_status_label()
-  local warnings = {}
-  if blabel and not blabel:find("\u{2713}", 1, true) then warnings[#warnings + 1] = blabel end
-  if merge_conflict_label() then warnings[#warnings + 1] = "merge conflict" end
-  if unresolved > 0 then
-    warnings[#warnings + 1] = unresolved .. " unresolved thread" .. (unresolved == 1 and "" or "s")
-  end
 
-  local function render()
-    local lines = {
-      "Complete PR #" .. ID .. ((rec and rec.title and rec.title ~= "") and ("  " .. rec.title) or ""),
-      "  " .. SOURCE .. " \u{2192} " .. TARGET,
-      "────────────────────────────────────────",
-      "Merge type: " .. MERGE_TYPES[st.merge].label,
-      (st.work_items and "[x]" or "[ ]") .. " Complete associated work items",
-      (st.delete_branch and "[x]" or "[ ]") .. " Delete source branch"
-        .. (SOURCE ~= "" and (" (" .. SOURCE .. ")") or ""),
-      "────────────────────────────────────────",
-      "Build: " .. (blabel and blabel:gsub("^build ", "") or "none") .. "   Threads: "
-        .. unresolved .. " unresolved   Votes: " .. ((rec and rec.voteRatio) or "?"),
-    }
-    if #warnings > 0 then
-      lines[#lines + 1] = "\u{26A0} " .. table.concat(warnings, ", ") .. " - merge anyway?"
-    end
-    lines[#lines + 1] = "────────────────────────────────────────"
-    lines[#lines + 1] = "m: merge type   w/d: toggle   <CR>: complete   q: cancel"
-    return lines
-  end
-
-  local function draw()
-    vim.bo[buf].modifiable = true
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, render())
-    vim.bo[buf].modifiable = false
-  end
-  draw()
-
-  local lines = render()
-  local width = 20
-  for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l)) end
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    row = math.floor((vim.o.lines - #lines) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
-    width = width,
-    height = #lines,
-    style = "minimal",
-    border = "rounded",
-  })
-  set_float_wrap(win)
-
-  local kopts = { buffer = buf, silent = true, nowait = true }
-  vim.keymap.set("n", "m", function()
-    st.merge = st.merge % #MERGE_TYPES + 1
-    draw()
-  end, kopts)
-  vim.keymap.set("n", "w", function() st.work_items = not st.work_items; draw() end, kopts)
-  vim.keymap.set("n", "d", function() st.delete_branch = not st.delete_branch; draw() end, kopts)
-  vim.keymap.set("n", "q", "<Cmd>close<CR>", kopts)
-  vim.keymap.set("n", "<Esc>", "<Cmd>close<CR>", kopts)
-  vim.keymap.set("n", "<CR>", function()
-    local mt = MERGE_TYPES[st.merge]
-    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+  require("azure-cli.merge").dialog({
+    id = ID,
+    title = rec and rec.title or "",
+    source = SOURCE,
+    target = TARGET,
+    build_label = build_status_label(),
+    conflict = merge_conflict_label() ~= nil,
+    unresolved = unresolved,
+    vote_ratio = rec and rec.voteRatio or nil,
+  }, function(mt, delete_branch, work_items)
     notify("Completing PR #" .. ID .. " (" .. mt.label .. ")...")
     local out = {}
     EXT.rpc.run(EXT.provider({
       "--complete", mt.key,
-      tostring(st.delete_branch), tostring(st.work_items),
+      tostring(delete_branch), tostring(work_items),
     }), {
       detach = true,
       stdout_buffered = true,
@@ -2001,7 +1926,7 @@ local function complete_pr()
         end
       end,
     })
-  end, kopts)
+  end)
 end
 
 -- Jump to the next (dir=1) / previous (dir=-1) diff line that has comments.

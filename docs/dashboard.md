@@ -50,7 +50,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gb` | Open the PR's build in the browser |
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
-| `gm` | Complete (merge) |
+| `gm` | Complete (merge) - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items and delete the source branch, and the build/threads/votes summary |
 | `ga` | Toggle auto-complete |
 | `gr` | Re-queue build validation |
 | `za` | Toggle collapse on the section header under the cursor |
@@ -100,11 +100,14 @@ column is highlighted, so "have I voted on this one?" needs no scanning for
 your surname, and `gd` lists the branches, author, an absolute timestamp,
 every reviewer's vote (you marked) and the PR's URL above the description.
 
-Every menu this tool shows (votes, merge strategy, work-item states, ...)
-goes through `vim.ui.select`, so a picker plugin such as telescope, fzf-lua
-or dressing.nvim draws it when installed; the current value is marked
-`(current)`. Completing a PR asks once more, spelling out that the source
-branch is deleted and linked work items transitioned.
+Every menu this tool shows (votes, work-item states, ...) goes through
+`vim.ui.select`, so a picker plugin such as telescope, fzf-lua or
+dressing.nvim draws it when installed; the current value is marked
+`(current)`. Completing a PR opens a small dialog instead (see
+[Reviewer](reviewer.md#reviewer)'s `gm`): the merge type, whether the linked
+work items are completed and the source branch deleted (both on by
+default), and the build state, unresolved thread count and votes, with a
+warning when any of them argue against merging.
 
 ### Desktop notifications
 

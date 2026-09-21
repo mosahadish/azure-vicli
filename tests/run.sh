@@ -229,6 +229,7 @@ KEYS_LUA="$TMP/lua/lua/azure-cli/keys.lua"
 UI_LUA="$TMP/lua/lua/azure-cli/ui.lua"
 PROMPT_LUA="$TMP/lua/lua/azure-cli/prompt.lua"
 PRS_LUA="$TMP/lua/lua/azure-cli/prs.lua"
+MERGE_LUA="$TMP/lua/lua/azure-cli/merge.lua"
 PANE_LUA="$TMP/lua/lua/azure-cli/review/pane.lua"
 VIEWED_LUA="$TMP/lua/lua/azure-cli/review/viewed.lua"
 FILELIST_LUA="$TMP/lua/lua/azure-cli/review/filelist.lua"
@@ -236,11 +237,15 @@ MIGRATE_LUA="$TMP/lua/lua/azure-cli/migrate.lua"
 STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
 
 # test-split.lua wants a real, multi-file range - use this repo's own
-# history rather than the tiny scratch repo above. Falls back gracefully
-# (an empty but valid range) on a shallow checkout with no older commits.
+# history rather than the tiny scratch repo above. When there is nothing
+# older than HEAD to diff against (a single-commit history, or a shallow
+# checkout), diff the empty tree against HEAD instead, so the range still
+# covers every file in the repo.
 ROOT_COMMIT="$(git -C "$REPO_ROOT" rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)"
 HEAD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-if [ -z "$ROOT_COMMIT" ]; then ROOT_COMMIT="$HEAD_COMMIT"; fi
+if [ -z "$ROOT_COMMIT" ] || [ "$ROOT_COMMIT" = "$HEAD_COMMIT" ]; then
+  ROOT_COMMIT="$(git -C "$REPO_ROOT" hash-object -t tree /dev/null)"
+fi
 SPLIT_RANGE="$ROOT_COMMIT..$HEAD_COMMIT"
 
 # cache.lua/notify.lua/rpc.lua now require() their siblings (state.lua,
@@ -286,6 +291,7 @@ run_lua_test test-config.lua "$REPO_ROOT" "$CONFIG_LUA" "$CACHE_LUA"
 run_lua_test test-ui.lua "$REPO_ROOT" "$UI_LUA"
 run_lua_test test-prompt.lua "$REPO_ROOT" "$PROMPT_LUA"
 run_lua_test test-prs.lua "$REPO_ROOT" "$PRS_LUA"
+run_lua_test test-merge.lua "$REPO_ROOT" "$MERGE_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"

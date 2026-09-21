@@ -121,7 +121,11 @@ threads; `?` repeats them on its first line.
 
 `gm` shows the PR's title, branches, build state, unresolved thread count
 and votes before completing, and warns when any of them argue against
-merging; on success the reviewer closes. `gv` marks your current vote and
+merging. In the dialog `m` cycles the merge type, `w` toggles completing
+the linked work items (on by default - Azure DevOps moves each one to its
+next state, as the web UI's "Complete associated work items" does) and `d`
+toggles deleting the source branch; `<CR>` completes. The dashboard's `gm`
+opens the same dialog. On success the reviewer closes. `gv` marks your current vote and
 confirms a Reject, and the Overview's Votes line updates at once. `q` asks
 before closing when batch-review items are queued or comment drafts are
 unsent.
