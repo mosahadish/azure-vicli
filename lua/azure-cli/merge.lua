@@ -16,6 +16,19 @@ M.MERGE_TYPES = {
   { key = "rebaseMerge",   label = "Semi-linear merge" },
 }
 
+-- Which dialog row holds what, so <Space> on a row knows what to toggle.
+M.ROW = { merge = 4, work_items = 5, delete_branch = 6 }
+
+-- <Space> on `row`: flips the checkbox there (or cycles the merge type on
+-- its row). Returns true when the state changed, false on any other row.
+function M.toggle(st, row)
+  if row == M.ROW.work_items then st.work_items = not st.work_items
+  elseif row == M.ROW.delete_branch then st.delete_branch = not st.delete_branch
+  elseif row == M.ROW.merge then st.merge = st.merge % #M.MERGE_TYPES + 1
+  else return false end
+  return true
+end
+
 -- Compact build-validation label ("build ✓", "build ● (queue #2)", ...)
 -- from a PR record's buildStatus/queuePosition, or nil when unknown/none.
 function M.build_label(pr)
@@ -75,14 +88,17 @@ function M.lines(spec, st)
     lines[#lines + 1] = "\u{26A0} " .. table.concat(warnings, ", ") .. " - merge anyway?"
   end
   lines[#lines + 1] = rule
-  lines[#lines + 1] = "m: merge type   w/d: toggle   <CR>: complete   q: cancel"
+  lines[#lines + 1] = "<Space>: toggle   m: merge type   <CR>: complete   q: cancel"
   return lines
 end
 
 -- Open the dialog for `spec` = { id, title, source, target, build_label,
 -- conflict, unresolved, vote_ratio } (only `id` is required; `unresolved`
--- is a number, or nil when unknown). `on_confirm(merge_type, delete_branch,
--- work_items)` runs after the window has closed; cancelling runs nothing.
+-- is a number, or nil when unknown). The cursor starts on the first
+-- checkbox; <Space> toggles the checkbox under it (and cycles the merge
+-- type on its row), `m` cycles the merge type from anywhere, <CR>
+-- completes. `on_confirm(merge_type, delete_branch, work_items)` runs after
+-- the window has closed; cancelling runs nothing.
 function M.dialog(spec, on_confirm)
   local st = { merge = 1, work_items = true, delete_branch = true }
   local buf = vim.api.nvim_create_buf(false, true)
@@ -111,14 +127,16 @@ function M.dialog(spec, on_confirm)
   UI.wo(win, "wrap", true)
   UI.wo(win, "linebreak", true)
   UI.wo(win, "breakindent", true)
+  vim.api.nvim_win_set_cursor(win, { M.ROW.work_items, 0 })
 
   local kopts = { buffer = buf, silent = true, nowait = true }
   vim.keymap.set("n", "m", function()
     st.merge = st.merge % #M.MERGE_TYPES + 1
     draw()
   end, kopts)
-  vim.keymap.set("n", "w", function() st.work_items = not st.work_items; draw() end, kopts)
-  vim.keymap.set("n", "d", function() st.delete_branch = not st.delete_branch; draw() end, kopts)
+  vim.keymap.set("n", "<Space>", function()
+    if M.toggle(st, vim.api.nvim_win_get_cursor(win)[1]) then draw() end
+  end, kopts)
   vim.keymap.set("n", "q", "<Cmd>close<CR>", kopts)
   vim.keymap.set("n", "<Esc>", "<Cmd>close<CR>", kopts)
   vim.keymap.set("n", "<CR>", function()

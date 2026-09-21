@@ -33,7 +33,15 @@ check("lines: merge type", lines[4] == "Merge type: Squash commit", lines[4])
 check("lines: work items on", lines[5] == "[x] Complete associated work items", lines[5])
 check("lines: delete branch names it", lines[6] == "[x] Delete source branch (feat/x)", lines[6])
 check("lines: summary", lines[8] == "Build: \u{2713}   Threads: 0 unresolved   Votes: 1 / 2", lines[8])
-check("lines: no warning line", #lines == 10 and lines[10]:find("^m: merge type"), #lines)
+check("lines: no warning line", #lines == 10 and lines[10]:find("^<Space>: toggle"), #lines)
+check("rows: match the rendered lines", lines[MG.ROW.merge]:find("^Merge type") and lines[MG.ROW.work_items]:find("work items")
+  and lines[MG.ROW.delete_branch]:find("source branch"))
+
+local ts = { merge = 4, work_items = true, delete_branch = false }
+check("toggle: work items row", MG.toggle(ts, MG.ROW.work_items) and ts.work_items == false)
+check("toggle: delete branch row", MG.toggle(ts, MG.ROW.delete_branch) and ts.delete_branch == true)
+check("toggle: merge row wraps", MG.toggle(ts, MG.ROW.merge) and ts.merge == 1)
+check("toggle: other row is a no-op", MG.toggle(ts, 1) == false and ts.merge == 1 and ts.work_items == false)
 
 st = { merge = 3, work_items = false, delete_branch = false }
 lines = MG.lines({ id = 7, unresolved = 2, conflict = true }, st)
