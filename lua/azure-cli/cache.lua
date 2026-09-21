@@ -152,8 +152,11 @@ function M.parse_diff(raw)
         or l:match("^index ") or l:match("^new file") or l:match("^deleted file")
         or l:match("^old mode") or l:match("^new mode")
         or l:match("^rename ") or l:match("^similarity ")
-        or l:match("^copy ") or l:match("^\\") then
-      -- Git metadata: drop it entirely.
+        or l:match("^copy ") or l:match("^Binary files ") or l:match("^\\") then
+      -- Git metadata: drop it entirely. "Binary files ... differ" too: an
+      -- image's section is nothing but metadata, so it falls through to
+      -- the "(no textual diff for this file)" placeholder below instead of
+      -- rendering as a bogus context line.
     elseif c == "+" then
       new = new + 1
       lines[#lines + 1] = l:sub(2)
@@ -281,17 +284,22 @@ end
 -- rename: "--- a/<old>" always comes first in a section, so a rename with
 -- content changes has both lines and must not let the earlier "---" one
 -- win), falling back to "--- a/<path>" only when there's no "+++ b/..." at
--- all - a pure deletion (whose "+++" side is "/dev/null").
+-- all - a pure deletion (whose "+++" side is "/dev/null"). A binary file's
+-- section has neither line (just "Binary files ... differ"), so the last
+-- resort is the b-side of the "diff --git a/<path> b/<path>" header itself
+-- - otherwise an image in a PR would never get a diffs entry at all and
+-- its file-list row would show "(?)" forever.
 function M.split_diff(raw)
-  local out, cur, path, del_path = {}, nil, nil, nil
+  local out, cur, path, del_path, hdr_path = {}, nil, nil, nil, nil
   local function flush()
-    local p = path or del_path
+    local p = path or del_path or hdr_path
     if cur and p then out[p] = cur end
   end
   for _, l in ipairs(raw) do
     if l:match("^diff %-%-git ") then
       flush()
       cur, path, del_path = {}, nil, nil
+      hdr_path = l:match("^diff %-%-git a/.- b/(.*)$")
     end
     if cur then
       cur[#cur + 1] = l
