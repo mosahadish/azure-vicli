@@ -8,6 +8,8 @@ PRs are grouped into sections: Actionable, Waiting for author, Signed off,
 Drafts, and Created by me. Within a section the most recently updated PR is
 first. The list refreshes every minute.
 
+![The pull request dashboard](images/dashboard.png)
+
 A "Mentions" section at the top of the list collects every PR (from any of
 the sections below) that has an active comment thread @-mentioning you; the
 PR still appears in its normal section too, so nothing is hidden, just

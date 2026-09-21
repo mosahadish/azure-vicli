@@ -8,6 +8,12 @@ Opening a PR adds a tab with the file list on the left and the selected
 content on the right. The first row is always the Overview: title,
 description, commits, and PR-level comments.
 
+![The reviewer just opened: file list on the left, the Overview on the right](images/reviewer-files.png)
+
+![A file's diff: old/new line numbers in the gutter, a thread marker on the commented line](images/reviewer-diff.png)
+
+![The same thread expanded inline with Tab](images/reviewer-thread.png)
+
 Every winbar in the reviewer follows the same shape as the dashboard's - what
 you're looking at, then any active mode tags, then `?: help` instead of a key
 legend:
@@ -130,6 +136,8 @@ opens the same dialog. On success the reviewer closes. `gv` marks your current v
 confirms a Reject, and the Overview's Votes line updates at once. `q` asks
 before closing when batch-review items are queued or comment drafts are
 unsent.
+
+![The complete dialog: merge type, toggles, build/thread/vote summary](images/complete-dialog.png)
 
 ### Comment editor
 

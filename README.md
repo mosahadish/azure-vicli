@@ -8,6 +8,10 @@ you in the current sprint. Everything a review needs is prefetched in the
 background, so opening a PR, switching files, and jumping to a definition are
 instant.
 
+![The pull request dashboard](docs/images/dashboard.png)
+
+_Screenshots are generated from the [fake provider](docs/development.md#trying-it-without-azure-devops), so every name and PR in them is made up._
+
 ## Contents
 
 - [Requirements](#requirements)
@@ -126,6 +130,10 @@ config-file scaffolding, or just create the config file by hand.
 - **[Troubleshooting](docs/troubleshooting.md)** and
   **[how it works](docs/development.md)** (the daemon, the caches, the
   test suite, extending the reviewer).
+
+![The reviewer: file list, old/new gutter, an inline thread expanded with Tab](docs/images/reviewer-thread.png)
+
+![The work-items dashboard](docs/images/workitems.png)
 
 ## Running
 

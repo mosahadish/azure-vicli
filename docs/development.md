@@ -297,6 +297,22 @@ a free dev.azure.com organization with one small repo and one open PR is
 enough: put it in a throwaway config and run the standalone launcher
 with `XDG_CONFIG_HOME` pointed at it.
 
+### Screenshots
+
+```
+python3 tests/screenshots.py            # rewrites docs/images/*.png
+```
+
+The images under `docs/images/` are generated, not hand-taken: the script
+runs `tests/demo.sh --standalone` in a fixed-size detached `tmux` pane,
+walks through the fake provider's fixtures (dashboard, PR #101, its diff,
+the inline thread, the complete dialog, work items, a work item), captures
+each screen with its colours and rasterises it through ImageMagick's
+`pango:` coder. Needs tmux, an ImageMagick with pango support and a
+monospace font (Noto Sans Mono by default - `--font` picks another); no
+display. Re-run it after a UI change and commit the result; add a step to
+`SHOTS` in the script for a new screen.
+
 ### Extending the reviewer
 
 `review/init.lua` is a large file sitting close to LuaJIT's hard

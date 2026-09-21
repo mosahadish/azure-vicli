@@ -10,6 +10,10 @@ sprints of the quarter (or, with `work_items.sprint_scope: all`, every sprint
 the team has - see below). Its winbar is `Work items · Sprint 42 (Sep 1–14) ·
 N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 
+![The work-items dashboard: sprint tabs, items grouped by type](images/workitems.png)
+
+![A work item: parent, details, description, acceptance criteria and discussion](images/workitem-detail.png)
+
 | Key | Action |
 |---|---|
 | `<CR>` | Open the item: parent, children, description |
