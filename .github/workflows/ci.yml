@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tests/test-split.lua diffs across this repo's own history, so it
+          # needs more than the tip commit a shallow checkout would give it.
+          fetch-depth: 0
+
+      - name: Install luajit and neovim
+        run: sudo apt-get update && sudo apt-get install -y luajit neovim
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run tests
+        run: bash tests/run.sh
