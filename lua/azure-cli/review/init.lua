@@ -1063,7 +1063,12 @@ local function ensure_diff_content(path, cb)
   -- be included explicitly or a build already in flight for the old bucket
   -- could have its result joined - and delivered - to a caller waiting on
   -- the new one.
-  local dkey = path .. "\t" .. tostring(want_ws) .. "\t" .. tostring(EXT.since and EXT.since.variant or "")
+  -- cache_key is in the key for the same reason: EXT.reload_after_push
+  -- re-keys it to the new source SHA when a push lands, and a build already
+  -- in flight against the old ref must not be joined by a caller waiting on
+  -- the new one - it would hand back the pre-push lines.
+  local dkey = cache_key .. "\t" .. path .. "\t" .. tostring(want_ws)
+    .. "\t" .. tostring(EXT.since and EXT.since.variant or "")
   diff_content_cbs[dkey] = diff_content_cbs[dkey] or {}
   table.insert(diff_content_cbs[dkey], cb)
   if #diff_content_cbs[dkey] > 1 then return end  -- already in flight
@@ -4198,6 +4203,23 @@ end
 -- physical buffer line. A line that the push rewrote away simply isn't
 -- found and the file opens at the top.
 EXT.reload_after_push = function()
+  -- Re-key the caches first, or the rebuild below just re-reads the bucket
+  -- it already filled at open and repaints the identical diff - visibly
+  -- reloading while changing nothing, which is exactly how this failed the
+  -- first time it ran live.
+  --
+  -- cache_key is per PR + version precisely so a push invalidates it, but
+  -- it's computed once when the reviewer opens and diff_cache_key() derives
+  -- the version from current_pr_record().updatedIso - which only changes
+  -- after the *dashboard* has polled. Keying on the source SHA instead uses
+  -- what this module just fetched and knows to be current, so re-keying
+  -- never waits on another component. A fresh key means empty files/diffs/
+  -- commits buckets, so load_files and ensure_diff_content re-run git
+  -- against the new origin/<source> rather than serving the old lines.
+  -- Reassigning this local updates every closure that captured it, the same
+  -- way rebuild_view swaps content_cache.
+  if EXT.source_sha then cache_key = CACHE.key(ID, EXT.source_sha) end
+
   local path = current_file_path
   local anchor, want_path = nil, nil
   if path and path ~= OVERVIEW_MARK and diff_win and vim.api.nvim_win_is_valid(diff_win) then
