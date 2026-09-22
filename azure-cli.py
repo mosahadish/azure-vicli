@@ -516,6 +516,14 @@ def humanize(dt, now=None):
 
 BUILD_POLICY_TYPE_ID = "0609b952-1397-4640-95ec-e00a01b2c241"
 
+# Policy Evaluations has never graduated out of preview on any ADO/TFS
+# release (same situation as WI_COMMENTS_API further down) - every call
+# against it must pin this api-version explicitly, since http_request's
+# stable default ("7.1", falling back to "6.0" on a 400) 400s on both and
+# _get_build_status's blanket except Exception then swallows that as a
+# silent "none", with no error surfaced anywhere.
+POLICY_EVAL_API = "7.1-preview.1"
+
 
 def strip_refs_heads(ref_name):
     prefix = "refs/heads/"
@@ -1018,8 +1026,8 @@ class AzureDevOpsPullRequestSource:
         self.fetch = self._default_fetch
         self.fetch_bare = self._default_fetch_bare
 
-    def _default_fetch(self, method, url, pat, data=None):
-        return http_request(url, method=method, data=data, pat=pat)
+    def _default_fetch(self, method, url, pat, data=None, api_version="7.1"):
+        return http_request(url, method=method, data=data, pat=pat, api_version=api_version)
 
     def _default_fetch_bare(self, url, pat):
         """GET with no api-version at all. ConnectionData on on-prem TFS
@@ -1041,11 +1049,17 @@ class AzureDevOpsPullRequestSource:
             return "{0}?{1}".format(base, urllib.parse.urlencode(params))
         return base
 
-    def _get(self, org, pat, path, params=None):
-        return self.fetch("GET", self._build_url(org, path, params), pat)
+    def _get(self, org, pat, path, params=None, api_version=None):
+        url = self._build_url(org, path, params)
+        if api_version is None:
+            return self.fetch("GET", url, pat)
+        return self.fetch("GET", url, pat, api_version=api_version)
 
-    def _post(self, org, pat, path, params=None, data=None):
-        return self.fetch("POST", self._build_url(org, path, params), pat, data)
+    def _post(self, org, pat, path, params=None, data=None, api_version=None):
+        url = self._build_url(org, path, params)
+        if api_version is None:
+            return self.fetch("POST", url, pat, data)
+        return self.fetch("POST", url, pat, data, api_version=api_version)
 
     @staticmethod
     def _pick_pat(accounts):
@@ -1176,7 +1190,7 @@ class AzureDevOpsPullRequestSource:
             artifact_id = "vstfs:///CodeReview/CodeReviewId/{0}/{1}".format(project_id, pr.get("pullRequestId"))
             resp = self._get(
                 org, pat, "{0}/_apis/policy/evaluations".format(urllib.parse.quote(project, safe="")),
-                {"artifactId": artifact_id},
+                {"artifactId": artifact_id}, api_version=POLICY_EVAL_API,
             )
             evaluations = (resp or {}).get("value") or []
 
@@ -1348,7 +1362,8 @@ class AzureDevOpsPullRequestSource:
                 continue
 
             artifact_id = "vstfs:///CodeReview/CodeReviewId/{0}/{1}".format(project_id, pull_request_id)
-            resp = self._get(org, pat, "{0}/_apis/policy/evaluations".format(project_id), {"artifactId": artifact_id})
+            resp = self._get(org, pat, "{0}/_apis/policy/evaluations".format(project_id), {"artifactId": artifact_id},
+                              api_version=POLICY_EVAL_API)
             evaluations = (resp or {}).get("value") or []
 
             requeued = 0
@@ -1360,7 +1375,8 @@ class AzureDevOpsPullRequestSource:
                 failed = status in ("rejected", "broken")
                 if not failed and not is_expired_build(record):
                     continue
-                self._post(org, pat, "{0}/_apis/policy/evaluations/{1}".format(project_id, eval_id))
+                self._post(org, pat, "{0}/_apis/policy/evaluations/{1}".format(project_id, eval_id),
+                           api_version=POLICY_EVAL_API)
                 requeued += 1
 
             if requeued == 0:
