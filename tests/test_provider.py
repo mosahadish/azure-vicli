@@ -947,7 +947,11 @@ class RequeueBuildValidationTests(unittest.TestCase):
                 self.assertEqual(api_version, ac.POLICY_EVAL_API)
                 return {"value": evaluations}
             if "_apis/policy/evaluations/" in url:
-                self.assertEqual(method, "POST")
+                # PATCH, not POST - the documented method for "Requeue Policy
+                # Evaluation". On-prem TFS answers a method the route doesn't
+                # define with a 401 auth challenge rather than a 404/405, so
+                # getting this wrong reads as a rejected PAT.
+                self.assertEqual(method, "PATCH")
                 self.assertEqual(api_version, ac.POLICY_EVAL_API)
                 posted.append(url)
                 return {}
