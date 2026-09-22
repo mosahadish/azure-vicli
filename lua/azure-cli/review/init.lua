@@ -1063,7 +1063,12 @@ local function ensure_diff_content(path, cb)
   -- be included explicitly or a build already in flight for the old bucket
   -- could have its result joined - and delivered - to a caller waiting on
   -- the new one.
-  local dkey = path .. "\t" .. tostring(want_ws) .. "\t" .. tostring(EXT.since and EXT.since.variant or "")
+  -- cache_key is in the key for the same reason: EXT.reload_after_push
+  -- re-keys it to the new source SHA when a push lands, and a build already
+  -- in flight against the old ref must not be joined by a caller waiting on
+  -- the new one - it would hand back the pre-push lines.
+  local dkey = cache_key .. "\t" .. path .. "\t" .. tostring(want_ws)
+    .. "\t" .. tostring(EXT.since and EXT.since.variant or "")
   diff_content_cbs[dkey] = diff_content_cbs[dkey] or {}
   table.insert(diff_content_cbs[dkey], cb)
   if #diff_content_cbs[dkey] > 1 then return end  -- already in flight
@@ -4059,19 +4064,252 @@ end
 -- has them (normally the case: filled while the cursor rested on the PR),
 -- then fetch for real in the background so the view is authoritative within
 -- a round-trip either way. Without a cached copy the first fetch announces.
+-- Periodic check for a new push (the poll's other job, alongside comment
+-- threads below): a force-push or plain push adds a new iteration, and that
+-- should surface the same way a new comment does (notify_new_comments,
+-- above) instead of sitting unnoticed until gi or a reopen happens to
+-- catch it - and the new diff should then load by itself, rather than
+-- leaving a notification that only tells you to go press something.
+--
+-- Two separate signals, deliberately, because they become true at
+-- different times:
+--
+--   the notification  fires off ADO's own --iterations count (a push adds
+--                     one), so it's immediate and authoritative.
+--   the reload        waits until origin/<source> has actually moved in
+--                     the local clone. Nothing in this file ever runs `git
+--                     fetch` - the dashboard owns that (its warm_all pass,
+--                     keyed on each PR's updatedIso, with its own
+--                     per-clone coalescing so two fetches never fight over
+--                     ref locks), and it keeps running while a PR is open
+--                     in an embedded reviewer tab. Rebuilding the moment
+--                     ADO says "pushed" would just re-diff the same stale
+--                     ref and throw the reader's position away for
+--                     nothing, so the SHA check below is what gates it:
+--                     one poll later, once the fetch has landed, the
+--                     rebuild has something new to show. If the dashboard
+--                     was swapped away entirely no fetch ever happens, the
+--                     SHA never moves, and this stays a notification only.
+--
+-- State lives on EXT (never a new top-level local - see EXT's own comment
+-- near its declaration) since this file is already at LuaJIT's 200-local
+-- ceiling for its main chunk.
+EXT.iteration_count = nil  -- nil until the first successful fetch establishes a baseline
+EXT.iterations_inflight = false
+EXT.source_sha = nil       -- origin/<source> the shown diffs were built against
+EXT.check_new_push = function()
+  if EXT.iterations_inflight then return end
+  EXT.iterations_inflight = true
+  local chunks = {}
+  EXT.rpc.run(EXT.provider({ "--iterations" }), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(chunks, d) end end,
+    on_exit = function(_, code)
+      EXT.iterations_inflight = false
+      if code ~= 0 then return end
+      local ok, decoded = pcall(vim.json.decode, table.concat(chunks, "\n"),
+        { luanil = { object = true, array = true } })
+      if not ok or type(decoded) ~= "table" then return end
+      local list = decoded.value or decoded
+      if type(list) ~= "table" then return end
+      local n = #list
+      if EXT.iteration_count == nil then
+        EXT.iteration_count = n
+        return
+      end
+      if n > EXT.iteration_count then
+        local added = n - EXT.iteration_count
+        EXT.iteration_count = n
+        local msg = added .. " new push" .. (added == 1 and "" or "es") .. " on PR #" .. ID
+          .. " \u{2014} fetching\u{2026}"
+        notify(msg)
+        if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+        vim.schedule(EXT.fetch_new_commits)
+      end
+    end,
+  })
+end
+
+-- Fetches the commits ADO just told us about, instead of waiting for the
+-- dashboard's own poll to get round to it.
+--
+-- The dashboard is still the component that owns fetching (warm_pr runs
+-- this same provider prefetch), and this deliberately runs the identical
+-- job rather than its own `git fetch`, taking part in the same
+-- STATE.warm.warming mutex so the two never fetch one clone at once and
+-- fight over ref locks. What it doesn't do is wait for the dashboard's
+-- timer: that's a separate 30s cycle from this one, so relying on it left
+-- up to a minute of nothing visible between "new push" and the diff
+-- changing - long enough that quitting and reopening looks like the only
+-- thing that works.
+--
+-- The PR's own env is passed explicitly (opts.env wins over the ambient
+-- AZVICLI_* the daemon otherwise forwards) because vim.env follows
+-- whichever PR the dashboard opened most recently - with a second reviewer
+-- tab open, inheriting it would fetch the other PR's branches.
+EXT.fetch_new_commits = function()
+  local warm = STATE.warm
+  local warming = warm and warm.warming
+  if warming and warming[tostring(ID)] then return end  -- dashboard already on it
+  if EXT.fetch_inflight then return end
+  EXT.fetch_inflight = true
+  if warming then warming[tostring(ID)] = true end
+  local function done()
+    EXT.fetch_inflight = false
+    if warming then warming[tostring(ID)] = nil end
+  end
+  local ok = pcall(EXT.rpc.run, EXT.provider({}), {
+    env = {
+      AZVICLI_PREFETCH = "1",
+      AZVICLI_PR = tostring(ID),
+      AZVICLI_ORG = ORG,
+      AZVICLI_PROJECT = PROJECT,
+      AZVICLI_REPO = env.AZVICLI_REPO or "",
+      AZVICLI_SOURCE = SOURCE,
+      AZVICLI_TARGET = TARGET,
+      AZVICLI_REPO_PATH = REPO_PATH,
+    },
+    on_exit = function(_, code)
+      done()
+      if code == 0 then EXT.check_source_sha() end
+    end,
+  })
+  if not ok then done() end
+end
+
+-- True while pulling the view out from under the user would lose something
+-- they're in the middle of: any focusable floating window (the comment
+-- editor, a prompt/select, an expanded thread) or a non-normal mode. The
+-- flashes notify() puts in the corner are non-focusable, so this session's
+-- own "new push" notification never blocks its own reload. Nothing is
+-- dropped when this defers - the SHA comparison below simply doesn't match
+-- yet on this tick, and the next poll tries again.
+EXT.reload_would_interrupt = function()
+  local mode = vim.fn.mode()
+  if mode ~= "n" and mode ~= "" then return true end
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local cfg = vim.api.nvim_win_get_config(win)
+    if cfg.relative ~= "" and cfg.focusable ~= false then return true end
+  end
+  return false
+end
+
+-- Rebuilds the file list and diffs for commits that have landed in the
+-- clone since this view was built, putting the reader back on the source
+-- line they were on rather than at the top of the file: the line numbers
+-- shift when the diff changes, so the cursor is re-anchored by the
+-- {side, lineno} the old buffer's map had under it (the same way
+-- review/followup.lua's open_at_line lands on a thread's line), not by
+-- physical buffer line. A line that the push rewrote away simply isn't
+-- found and the file opens at the top.
+EXT.reload_after_push = function()
+  -- Re-key the caches first, or the rebuild below just re-reads the bucket
+  -- it already filled at open and repaints the identical diff - visibly
+  -- reloading while changing nothing, which is exactly how this failed the
+  -- first time it ran live.
+  --
+  -- cache_key is per PR + version precisely so a push invalidates it, but
+  -- it's computed once when the reviewer opens and diff_cache_key() derives
+  -- the version from current_pr_record().updatedIso - which only changes
+  -- after the *dashboard* has polled. Keying on the source SHA instead uses
+  -- what this module just fetched and knows to be current, so re-keying
+  -- never waits on another component. A fresh key means empty files/diffs/
+  -- commits buckets, so load_files and ensure_diff_content re-run git
+  -- against the new origin/<source> rather than serving the old lines.
+  -- Reassigning this local updates every closure that captured it, the same
+  -- way rebuild_view swaps content_cache.
+  if EXT.source_sha then cache_key = CACHE.key(ID, EXT.source_sha) end
+
+  local path = current_file_path
+  local anchor, want_path = nil, nil
+  if path and path ~= OVERVIEW_MARK and diff_win and vim.api.nvim_win_is_valid(diff_win) then
+    local buf = vim.api.nvim_win_get_buf(diff_win)
+    local map = maps_by_buf[buf]
+    local got, cur = pcall(vim.api.nvim_win_get_cursor, diff_win)
+    if got and map and map[cur[1]] then
+      want_path = path
+      anchor = { side = map[cur[1]].side, lineno = map[cur[1]].lineno }
+    end
+  end
+
+  EXT.rebuild_view(true)
+
+  if not (want_path and anchor) then return end
+  ensure_diff_content(want_path, function()
+    vim.schedule(function()
+      if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
+      local buf = vim.api.nvim_win_get_buf(diff_win)
+      if paths_by_buf[buf] ~= want_path then return end  -- moved on meanwhile
+      local map = maps_by_buf[buf]
+      if not map then return end
+      for i, m in ipairs(map) do
+        if m.side == anchor.side and m.lineno == anchor.lineno then
+          pcall(vim.api.nvim_win_set_cursor, diff_win, { i, 0 })
+          pcall(vim.api.nvim_win_call, diff_win, function() vim.cmd("normal! zz") end)
+          return
+        end
+      end
+    end)
+  end)
+end
+
+-- The reload half of the poll: cheap local `git rev-parse` (no network -
+-- see EXT.check_new_push's comment for why the fetch isn't ours to run),
+-- rebuilding only once the ref the diffs are built from has actually
+-- moved.
+EXT.check_source_sha = function()
+  if SOURCE == "" or EXT.sha_inflight then return end
+  EXT.sha_inflight = true
+  local out = {}
+  -- jobstart answers <= 0 when the spawn itself failed, and then never
+  -- calls on_exit - without clearing the flag here the guard above would
+  -- latch and this check would be dead for the rest of the session.
+  local job = vim.fn.jobstart(git_args("rev-parse", "origin/" .. SOURCE), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function(_, code)
+      EXT.sha_inflight = false
+      if code ~= 0 then return end
+      local sha = vim.trim(table.concat(out, ""))
+      if sha == "" then return end
+      -- Decide and act in one scheduled context: EXT.source_sha must only
+      -- move when the rebuild actually happens, or a push deferred for
+      -- being mid-edit would be marked as shown and never reloaded.
+      vim.schedule(function()
+        if EXT.source_sha == nil then
+          EXT.source_sha = sha  -- baseline: what the view already shows
+          return
+        end
+        if sha == EXT.source_sha then return end
+        if EXT.reload_would_interrupt() then return end  -- try again next poll
+        EXT.source_sha = sha
+        notify("New commits pulled in \u{2014} reloading the diff\u{2026}")
+        EXT.reload_after_push()
+      end)
+    end,
+  })
+  if job <= 0 then EXT.sha_inflight = false end
+end
+
 do
   local cached = CACHE.threads(ID)
   if cached then
     apply_threads_json(cached.json, { announce = true, seed = true })
   end
   refresh_threads({ announce = cached == nil })
+  EXT.check_new_push()
+  EXT.check_source_sha()
 end
 
--- Periodic auto-refresh of comment threads (silent, once a minute), so per-file
--- closed/total counts and the Overview row/page stay current even if someone
--- else updates a thread while this view is open. Guarded by refresh_threads_inflight so an
--- overlapping fetch is skipped rather than stacking (matches review-pr's other
--- polling timers). Stops itself once the file-list window is gone.
+-- Periodic auto-refresh (silent): comment threads, the new-push
+-- notification, and the reload that follows the commits into the view once
+-- they're in the clone - so per-file closed/total counts, the Overview
+-- row/page and the diffs themselves all stay current while this view sits
+-- open. See config.lua's timing.poll_seconds for the interval. Each of the
+-- three guards its own in-flight flag (refresh_threads_inflight,
+-- EXT.iterations_inflight, EXT.sha_inflight) so a slow one is skipped
+-- rather than stacked (matches review-pr's other polling timers). Stops
+-- itself once the file-list window is gone.
 local refresh_threads_inflight = false
 local base_refresh_threads = refresh_threads
 refresh_threads = function(opts)
@@ -4091,6 +4329,8 @@ STATE.review_threads_timer = vim.fn.timer_start(
   require("azure-cli.config").get().timing.poll_seconds * 1000, function()
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     refresh_threads()
+    EXT.check_new_push()
+    EXT.check_source_sha()
   else
     pcall(vim.fn.timer_stop, STATE.review_threads_timer)
     STATE.review_threads_timer = nil

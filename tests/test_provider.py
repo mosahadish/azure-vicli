@@ -922,6 +922,106 @@ class BuildStatusTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# requeue_build_validation (gr) - same policy/evaluations endpoint as
+# _get_build_status above, so it needs the same POLICY_EVAL_API pin: without
+# it, the GET (or the requeue POST) 400s and the whole action fails instead
+# of quietly requeuing nothing.
+# ---------------------------------------------------------------------------
+
+
+class RequeueBuildValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.config = ac.Config.from_string(
+            "accounts:\n  - project_name: proj\n    org_url: https://dev.azure.com/org\n    pat: tok\n"
+        )
+        self.source = ac.AzureDevOpsPullRequestSource(self.config)
+        self.pr_id = 42
+
+    def _fake_fetch(self, evaluations, posted):
+        def fake_fetch(method, url, pat, data=None, api_version=None):
+            if "_apis/git/pullrequests/" in url:
+                self.assertEqual(method, "GET")
+                return {"repository": {"project": {"id": "proj-guid-1"}}}
+            if url.endswith("_apis/policy/evaluations") or "_apis/policy/evaluations?" in url:
+                self.assertEqual(method, "GET")
+                self.assertEqual(api_version, ac.POLICY_EVAL_API)
+                return {"value": evaluations}
+            if "_apis/policy/evaluations/" in url:
+                # PATCH, not POST - the documented method for "Requeue Policy
+                # Evaluation". On-prem TFS answers a method the route doesn't
+                # define with a 401 auth challenge rather than a 404/405, so
+                # getting this wrong reads as a rejected PAT.
+                self.assertEqual(method, "PATCH")
+                self.assertEqual(api_version, ac.POLICY_EVAL_API)
+                posted.append(url)
+                return {}
+            raise AssertionError("unexpected url " + url)
+
+        return fake_fetch
+
+    def test_no_expired_or_failed_requeues_nothing(self):
+        records = [
+            {
+                "configuration": {"type": {"id": ac.BUILD_POLICY_TYPE_ID, "displayName": "Build"}},
+                "status": "approved",
+                "evaluationId": "eval-1",
+                "context": {"buildId": 1},
+            }
+        ]
+        posted = []
+        self.source.fetch = self._fake_fetch(records, posted)
+        msg = self.source.requeue_build_validation(self.pr_id)
+        self.assertIn("No expired or failed", msg)
+        self.assertEqual(posted, [])
+
+    def test_failed_build_is_requeued(self):
+        records = [
+            {
+                "configuration": {"type": {"id": ac.BUILD_POLICY_TYPE_ID, "displayName": "Build"}},
+                "status": "rejected",
+                "evaluationId": "eval-1",
+                "context": {"buildId": 1},
+            }
+        ]
+        posted = []
+        self.source.fetch = self._fake_fetch(records, posted)
+        msg = self.source.requeue_build_validation(self.pr_id)
+        self.assertIn("Re-queued 1", msg)
+        self.assertEqual(len(posted), 1)
+        self.assertIn("eval-1", posted[0])
+
+    def test_expired_build_is_requeued(self):
+        records = [
+            {
+                "configuration": {"type": {"id": ac.BUILD_POLICY_TYPE_ID, "displayName": "Build"}},
+                "status": "queued",
+                "evaluationId": "eval-2",
+                "context": {"buildId": 1, "isExpired": True},
+            }
+        ]
+        posted = []
+        self.source.fetch = self._fake_fetch(records, posted)
+        msg = self.source.requeue_build_validation(self.pr_id)
+        self.assertIn("Re-queued 1", msg)
+        self.assertEqual(len(posted), 1)
+
+    def test_zero_evaluation_id_is_skipped(self):
+        records = [
+            {
+                "configuration": {"type": {"id": ac.BUILD_POLICY_TYPE_ID, "displayName": "Build"}},
+                "status": "rejected",
+                "evaluationId": "00000000-0000-0000-0000-000000000000",
+                "context": {"buildId": 1},
+            }
+        ]
+        posted = []
+        self.source.fetch = self._fake_fetch(records, posted)
+        msg = self.source.requeue_build_validation(self.pr_id)
+        self.assertIn("No expired or failed", msg)
+        self.assertEqual(posted, [])
+
+
+# ---------------------------------------------------------------------------
 # NDJSON serialization - field names must match the C# writer exactly
 # ---------------------------------------------------------------------------
 

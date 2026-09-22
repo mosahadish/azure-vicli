@@ -1212,11 +1212,20 @@ class AzureDevOpsPullRequestSource:
             return self.fetch("GET", url, pat)
         return self.fetch("GET", url, pat, api_version=api_version)
 
-    def _post(self, org, pat, path, params=None, data=None, api_version=None):
+    def _patch(self, org, pat, path, params=None, data=None, api_version=None):
+        """PATCH, which the one write this class makes (requeueing a build
+        policy evaluation) requires - see requeue_build_validation. It was
+        a POST until a live on-prem TFS answered 401 for it: TFS resolves
+        authentication before routing, so a method the route doesn't define
+        never matches a route at all and comes back as an auth challenge
+        rather than a 404/405, which _auth_hint then reported as a rejected
+        PAT. The GET on the same endpoint with the same PAT had already
+        succeeded in the same run, which is what gave it away.
+        """
         url = self._build_url(org, path, params)
         if api_version is None:
-            return self.fetch("POST", url, pat, data)
-        return self.fetch("POST", url, pat, data, api_version=api_version)
+            return self.fetch("PATCH", url, pat, data)
+        return self.fetch("PATCH", url, pat, data, api_version=api_version)
 
     @staticmethod
     def _pick_pat(accounts):
@@ -1532,8 +1541,8 @@ class AzureDevOpsPullRequestSource:
                 failed = status in ("rejected", "broken")
                 if not failed and not is_expired_build(record):
                     continue
-                self._post(org, pat, "{0}/_apis/policy/evaluations/{1}".format(project_id, eval_id),
-                           api_version=POLICY_EVAL_API)
+                self._patch(org, pat, "{0}/_apis/policy/evaluations/{1}".format(project_id, eval_id),
+                            api_version=POLICY_EVAL_API)
                 requeued += 1
 
             if requeued == 0:
