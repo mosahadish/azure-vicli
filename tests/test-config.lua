@@ -217,7 +217,7 @@ end
 
 do
   local t = config.get().timing
-  check("timing: default poll_seconds", t.poll_seconds == 60, t.poll_seconds)
+  check("timing: default poll_seconds", t.poll_seconds == 30, t.poll_seconds)
   check("timing: default hover_ms", t.hover_ms == 500, t.hover_ms)
   check("timing: default warm_concurrency", t.warm_concurrency == 4, t.warm_concurrency)
   check("timing: default cached_prs", t.cached_prs == 24, t.cached_prs)
@@ -227,10 +227,10 @@ do
 end
 
 do
-  config.setup({ timing = { poll_seconds = 30 } })
+  config.setup({ timing = { poll_seconds = 45 } })
   local t = config.get().timing
   check("timing: partial override keeps siblings at default",
-    t.poll_seconds == 30 and t.hover_ms == 500, t.poll_seconds .. "/" .. t.hover_ms)
+    t.poll_seconds == 45 and t.hover_ms == 500, t.poll_seconds .. "/" .. t.hover_ms)
   config.setup({})
 end
 

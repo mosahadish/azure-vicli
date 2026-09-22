@@ -1836,9 +1836,10 @@ vim.api.nvim_create_autocmd("VimResized", {
 })
 
 -- Periodic auto-refresh (silent + change-aware). Stop any timer from a previous
--- swap into this dashboard so timers don't stack across W/P swaps. Once a
--- minute: each poll is a full ADO sweep, and at 30s the machine was busy
--- with background sweeps more often than not.
+-- swap into this dashboard so timers don't stack across W/P swaps. Each poll is
+-- a full ADO sweep, guarded by list_inflight (below) so a slow sweep is
+-- skipped rather than stacked if the next tick fires before it returns -
+-- see config.lua's timing.poll_seconds for the interval.
 if STATE.PR_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.PR_REFRESH_TIMER) end
 STATE.PR_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1000, function()
   -- Keep polling while the list is shown in any tab, so build/PR status stays

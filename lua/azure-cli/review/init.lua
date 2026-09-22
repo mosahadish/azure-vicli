@@ -4059,19 +4059,67 @@ end
 -- has them (normally the case: filled while the cursor rested on the PR),
 -- then fetch for real in the background so the view is authoritative within
 -- a round-trip either way. Without a cached copy the first fetch announces.
+-- Periodic check for a new push (the poll's other job, alongside comment
+-- threads below): a force-push or plain push adds a new iteration, and that
+-- should surface the same way a new comment does (notify_new_comments,
+-- above) instead of sitting unnoticed until gi or a reopen happens to
+-- catch it. It's only a heads-up though - it never touches the file list/
+-- diffs itself, so an in-progress review (cursor position, open buffers, a
+-- draft comment) is never disturbed by a background poll; gi (or
+-- reopening the PR) is still how the new commits actually get pulled in.
+-- State lives on EXT (never a new top-level local - see EXT's own comment
+-- near its declaration) since this file is already at LuaJIT's 200-local
+-- ceiling for its main chunk.
+EXT.iteration_count = nil  -- nil until the first successful fetch establishes a baseline
+EXT.iterations_inflight = false
+EXT.check_new_push = function()
+  if EXT.iterations_inflight then return end
+  EXT.iterations_inflight = true
+  local chunks = {}
+  EXT.rpc.run(EXT.provider({ "--iterations" }), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(chunks, d) end end,
+    on_exit = function(_, code)
+      EXT.iterations_inflight = false
+      if code ~= 0 then return end
+      local ok, decoded = pcall(vim.json.decode, table.concat(chunks, "\n"),
+        { luanil = { object = true, array = true } })
+      if not ok or type(decoded) ~= "table" then return end
+      local list = decoded.value or decoded
+      if type(list) ~= "table" then return end
+      local n = #list
+      if EXT.iteration_count == nil then
+        EXT.iteration_count = n
+        return
+      end
+      if n > EXT.iteration_count then
+        local added = n - EXT.iteration_count
+        EXT.iteration_count = n
+        local msg = added .. " new push" .. (added == 1 and "" or "es") .. " on PR #" .. ID
+          .. " \u{2014} gi to see what changed."
+        notify(msg)
+        if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+      end
+    end,
+  })
+end
+
 do
   local cached = CACHE.threads(ID)
   if cached then
     apply_threads_json(cached.json, { announce = true, seed = true })
   end
   refresh_threads({ announce = cached == nil })
+  EXT.check_new_push()
 end
 
--- Periodic auto-refresh of comment threads (silent, once a minute), so per-file
--- closed/total counts and the Overview row/page stay current even if someone
--- else updates a thread while this view is open. Guarded by refresh_threads_inflight so an
--- overlapping fetch is skipped rather than stacking (matches review-pr's other
--- polling timers). Stops itself once the file-list window is gone.
+-- Periodic auto-refresh of comment threads and new-push detection (silent),
+-- so per-file closed/total counts, the Overview row/page, and a heads-up
+-- about a new push all stay current even while this view sits open - see
+-- config.lua's timing.poll_seconds for the interval. Guarded by
+-- refresh_threads_inflight/EXT.iterations_inflight so an overlapping fetch
+-- is skipped rather than stacking (matches review-pr's other polling
+-- timers). Stops itself once the file-list window is gone.
 local refresh_threads_inflight = false
 local base_refresh_threads = refresh_threads
 refresh_threads = function(opts)
@@ -4091,6 +4139,7 @@ STATE.review_threads_timer = vim.fn.timer_start(
   require("azure-cli.config").get().timing.poll_seconds * 1000, function()
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     refresh_threads()
+    EXT.check_new_push()
   else
     pcall(vim.fn.timer_stop, STATE.review_threads_timer)
     STATE.review_threads_timer = nil

@@ -1548,9 +1548,11 @@ STATE.WI_REFRESH = function()
 end
 
 -- Periodic auto-refresh (silent + change-aware). Stop any timer from a previous
--- swap into this dashboard so timers don't stack across W/P swaps.
+-- swap into this dashboard so timers don't stack across W/P swaps - see
+-- config.lua's timing.poll_seconds for the interval (the same knob the PR
+-- dashboard/reviewer polls use).
 if STATE.WI_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.WI_REFRESH_TIMER) end
-STATE.WI_REFRESH_TIMER = vim.fn.timer_start(60000, function()
+STATE.WI_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1000, function()
   if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
     load_sprints(function() load(true) end, false)
   end

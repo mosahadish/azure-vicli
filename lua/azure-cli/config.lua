@@ -84,10 +84,12 @@ local DEFAULT_KEYS = {
 
 -- setup({timing=...}) tunables - each replaces one hard-coded constant a UI
 -- file used to own outright:
---   poll_seconds        dashboard.lua's PR list poll AND review/init.lua's
---                        reviewer threads poll (both were a bare 60000ms
---                        timer; one knob for both since they're the same
---                        "how often does this session re-check ADO" idea)
+--   poll_seconds        dashboard.lua's PR list poll, review/init.lua's
+--                        reviewer threads/new-push poll, and
+--                        workitems/dashboard.lua's list poll (each was a
+--                        bare 60000ms timer; one knob for all three since
+--                        they're the same "how often does this session
+--                        re-check ADO" idea)
 --   hover_ms             workitems/dashboard.lua's cursor-settle debounce
 --                        before prefetching the item under the cursor
 --   warm_concurrency     dashboard.lua's WARM_CONCURRENCY (warm-all pass)
@@ -101,7 +103,7 @@ local DEFAULT_KEYS = {
 -- M.get().timing at the point it's used, so a setup() call after a surface
 -- has already opened still takes effect on its next read.
 local DEFAULT_TIMING = {
-  poll_seconds = 60,
+  poll_seconds = 30,
   hover_ms = 500,
   warm_concurrency = 4,
   cached_prs = 24,
