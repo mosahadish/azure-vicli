@@ -100,8 +100,8 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 `accounts` is optional: leave it out and the plugin uses `azure-cli.yml`
 like the standalone launcher does (see [Configuration](docs/configuration.md#configuration)).
-In `setup()` the token is `pat_file` only - there's no inline `pat`, so the
-snippet above is safe to commit.
+In `setup()` the token comes from `pat_file`, so the snippet above is safe
+to commit.
 
 `opts` (however you spell it for your plugin manager) is passed straight to
 `require("azure-cli").setup()`; leaving it out (or the whole plugin
