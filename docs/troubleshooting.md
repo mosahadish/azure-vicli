@@ -18,9 +18,18 @@ _Part of the [azure-vicli](../README.md) docs._
   always ends with `(:AzureCli log)` as a reminder. Set `AZVICLI_DEBUG=1`
   (see [Environment variables](configuration.md#environment-variables)) to also have
   `azure-cli.py` print a full traceback when run directly from a terminal.
-- **"Configuration does not exist"**: create the config file at the path
-  printed, or run `install.sh`.
-- **"No PAT available" / "no configured PAT"**: add `pat:` to the matching
+- **"Configuration does not exist"**: open the dashboard (`./azure-cli` or
+  `:AzureCli`) - it writes a template at the path printed and opens it - or
+  run `azure-cli --init-config` from a terminal.
+- **"pat_file ... is readable by other users"** (from `:AzureCli doctor`):
+  `chmod 600` the file - it holds your token.
+- **"pat_file ... is inside the plugin folder" / "... inside a git working
+  tree"** (from `:AzureCli doctor`): the token file sits in this plugin's
+  clone (a plugin-manager update or push takes it along) or in some git
+  checkout (one `git add` from a commit - a dotfiles repo is the usual
+  case). Move it somewhere plain, e.g. `~/.config/azure-cli/pat`, or at the
+  very least add it to that repository's `.gitignore`.
+- **"No PAT available" / "no configured PAT"**: add `pat:` (or `pat_file:`) to the matching
   account. The org URL is compared case-insensitively with the trailing
   slash ignored. Every account needs one - there is no Azure AD sign-in.
 - **A PR won't open, "branch not found"**: the source branch was deleted, or
@@ -47,10 +56,9 @@ _Part of the [azure-vicli](../README.md) docs._
   problem entirely (every provider call runs as its own one-shot process
   instead).
 - **A provider action seems to use a stale `azure-cli.yml`**: the daemon
-  only re-reads the config file when its mtime changes (checked on the next
-  request, not on a timer), so an edit through `gO` should always take
-  effect on your very next action; if it somehow doesn't, `AZVICLI_NO_DAEMON=1`
-  followed by a normal restart forces a clean re-read. If `gO` doesn't open
+  reads the config once, at start-up. An edit (through `gO` or any other
+  editor), a rotated `pat_file` or a changed `setup({config=...})` takes
+  effect after you restart Neovim. If `gO` doesn't open
   the file you expected, check `:AzureCli status`'s `config` line and
   `AZVICLI_CONFIG` (see [setup() options](configuration.md#setup-options)/[Environment
   variables](configuration.md#environment-variables)) - a `setup({config=...})` call

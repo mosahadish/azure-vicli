@@ -239,40 +239,87 @@ class ServeLoopTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Config reload on mtime change
+# Config is read once per daemon
 # ---------------------------------------------------------------------------
 
 
-class ConfigReloadTests(unittest.TestCase):
+class ConfigReadOnceTests(unittest.TestCase):
     def _write(self, path, pat):
         with open(path, "w", encoding="utf-8") as f:
             f.write("accounts:\n  - project_name: p\n    org_url: https://x\n    pat: {0}\n".format(pat))
 
-    def test_reparses_only_when_mtime_changes(self):
+    def setUp(self):
+        self._saved = dict(ac._config_cache)
+        ac._config_cache.update({"config": None, "serving": False})
+
+    def tearDown(self):
+        ac._config_cache.clear()
+        ac._config_cache.update(self._saved)
+
+    def test_serving_daemon_never_rereads(self):
         with tempfile.TemporaryDirectory() as td:
             cfg_path = os.path.join(td, "azure-cli.yml")
             self._write(cfg_path, "first")
             with mock.patch.object(ac.Config, "path", staticmethod(lambda: cfg_path)):
-                ac._config_cache.update({"path": None, "mtime": None, "config": None})
+                ac._config_cache["serving"] = True
                 cfg1 = ac.get_cached_config()
                 self.assertEqual(cfg1.accounts[0].pat, "first")
+                self.assertIs(ac.get_cached_config(), cfg1)
 
-                # Same mtime: must reuse the cached Config object (not just
-                # an equal one) - proves it isn't re-reading the file.
-                cfg1_again = ac.get_cached_config()
-                self.assertIs(cfg1_again, cfg1)
-
-                # gO-style edit: new content AND a bumped mtime (nudged
-                # explicitly - some filesystems only have 1s mtime
-                # resolution, so a real edit within the same test can land
-                # on an identical mtime).
+                # An edit with a bumped mtime (nudged explicitly - some
+                # filesystems only have 1s resolution) is NOT picked up:
+                # the daemon reads its config once, at start-up, and a
+                # change waits for the next Neovim restart.
                 self._write(cfg_path, "second")
                 bumped = os.path.getmtime(cfg_path) + 5
                 os.utime(cfg_path, (bumped, bumped))
-
                 cfg2 = ac.get_cached_config()
-                self.assertEqual(cfg2.accounts[0].pat, "second")
+                self.assertIs(cfg2, cfg1)
+                self.assertEqual(cfg2.accounts[0].pat, "first")
+
+                # Nor is a changed AZVICLI_ACCOUNTS_JSON / config path.
+                other = json.dumps({"accounts": [{"project_name": "q", "org_url": "https://y", "pat_file": "/nope"}]})
+                with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: other}, clear=False):
+                    self.assertIs(ac.get_cached_config(), cfg1)
+
+    def test_outside_serve_every_call_reads_afresh(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = os.path.join(td, "azure-cli.yml")
+            self._write(cfg_path, "first")
+            with mock.patch.object(ac.Config, "path", staticmethod(lambda: cfg_path)):
+                cfg1 = ac.get_cached_config()
+                self._write(cfg_path, "second")
+                cfg2 = ac.get_cached_config()
                 self.assertIsNot(cfg2, cfg1)
+                self.assertEqual(cfg2.accounts[0].pat, "second")
+                self.assertIsNone(ac._config_cache["config"])
+
+    def test_serve_loads_the_config_at_startup(self):
+        """serve() reads the config before touching a single request, and a
+        config that doesn't parse leaves the daemon running for the first
+        request to report."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = os.path.join(td, "azure-cli.yml")
+            self._write(cfg_path, "tok")
+            with mock.patch.object(ac.Config, "path", staticmethod(lambda: cfg_path)), \
+                 mock.patch.object(ac.sys, "stdin", _FakeStdin([])), \
+                 mock.patch.object(ac.sys, "stdout", io.StringIO()), \
+                 mock.patch.object(ac.sys, "stderr", io.StringIO()):
+                self.assertEqual(ac.serve(), 0)
+            loaded = ac._config_cache["config"]
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.accounts[0].pat, "tok")
+            self.assertTrue(ac._config_cache["serving"])
+
+            ac._config_cache.update({"config": None, "serving": False})
+            with mock.patch.object(ac.Config, "from_config_file", side_effect=ValueError("bad yaml")), \
+                 mock.patch.object(ac.Config, "path", staticmethod(lambda: cfg_path)), \
+                 mock.patch.object(ac.sys, "stdin", _FakeStdin([])), \
+                 mock.patch.object(ac.sys, "stdout", io.StringIO()), \
+                 mock.patch.object(ac.sys, "stderr", io.StringIO()) as err:
+                self.assertEqual(ac.serve(), 0)
+                self.assertIn("bad yaml", err.getvalue())
+            self.assertIsNone(ac._config_cache["config"])
 
 
 # ---------------------------------------------------------------------------

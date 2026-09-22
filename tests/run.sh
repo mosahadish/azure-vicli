@@ -325,22 +325,41 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: setup()/config.lua keys.diff.next_hunk" "$out"
   fi
 
-  # standalone/init.lua smoke: run the launcher's actual nvim entry point
-  # headless, against a temp (deliberately unpopulated) config directory so
-  # azure-cli.py's --list fails fast on "configuration does not exist"
-  # rather than trying the network - the point of this smoke is that the
-  # dashboard buffer renders regardless (filetype "azurecli-dashboard"), not that the
-  # list fetch itself succeeds.
+  # standalone/init.lua first-run smoke: the launcher's real nvim entry
+  # point, headless, against a temp config directory with no azure-cli.yml.
+  # There is no install step any more (install.sh only checks dependencies),
+  # so this first launch must write the template (firstrun.lua -> the
+  # provider's --init-config) and open THAT file - filetype yaml, a TODO in
+  # it - rather than a dashboard that can only say "configuration does not
+  # exist".
   SMOKE_CFG="$TMP/smoke-config"
   mkdir -p "$SMOKE_CFG"
+  out="$(XDG_CONFIG_HOME="$SMOKE_CFG" nvim --headless -u "$REPO_ROOT/standalone/init.lua" \
+    -c "lua assert(vim.bo.filetype == 'yaml', 'filetype=' .. tostring(vim.bo.filetype))" \
+    -c "lua assert(vim.fn.expand('%:p') == '$SMOKE_CFG/azure-cli.yml', 'buffer=' .. vim.fn.expand('%:p'))" \
+    -c "lua assert(vim.fn.filereadable('$SMOKE_CFG/azure-cli.yml') == 1, 'template not written')" \
+    -c "lua assert(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\\n'):find('TODO', 1, true), 'no TODO in template')" \
+    -c "lua print('FIRSTRUN-SMOKE-OK')" \
+    -c "qa!" 2>&1)"
+  if [[ "$out" == *FIRSTRUN-SMOKE-OK* ]]; then
+    pass "smoke: standalone/init.lua first run writes the config template and opens it"
+  else
+    fail "smoke: standalone/init.lua first run writes the config template and opens it" "$out"
+  fi
+
+  # Second launch against the same directory: the (still-TODO) template now
+  # exists, so the dashboard buffer itself renders (filetype
+  # "azurecli-dashboard") - --list fails fast on the incomplete config, and
+  # that failure text is what the buffer shows; the point is that the
+  # dashboard opens, not that the fetch succeeds.
   out="$(XDG_CONFIG_HOME="$SMOKE_CFG" nvim --headless -u "$REPO_ROOT/standalone/init.lua" \
     -c "lua assert(vim.bo.filetype == 'azurecli-dashboard', 'filetype=' .. tostring(vim.bo.filetype))" \
     -c "lua print('STANDALONE-SMOKE-OK')" \
     -c "qa!" 2>&1)"
   if [[ "$out" == *STANDALONE-SMOKE-OK* ]]; then
-    pass "smoke: standalone/init.lua opens the dashboard buffer"
+    pass "smoke: standalone/init.lua opens the dashboard buffer once a config exists"
   else
-    fail "smoke: standalone/init.lua opens the dashboard buffer" "$out"
+    fail "smoke: standalone/init.lua opens the dashboard buffer once a config exists" "$out"
   fi
 
   # Stage 2 smoke: setup({keys={diff={next_hunk="]h"}}}) actually changes
@@ -373,6 +392,32 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: :AzureCli status shows setup({python=..., config=...})'s resolved values"
   else
     fail "smoke: :AzureCli status shows setup({python=..., config=...})'s resolved values" "$out"
+  fi
+
+  # setup({accounts=...}) smoke: a plugin install with no azure-cli.yml at
+  # all - the accounts table (with a pat_file) is exported to the provider,
+  # so the first :AzureCli opens the real dashboard buffer (not the
+  # first-run template), and the real provider resolves the token from the
+  # file for --print-pat. org_url points at a closed local port so the
+  # dashboard's own --list fails instantly instead of touching the network.
+  SMOKE_ACCT="$TMP/smoke-accounts"
+  mkdir -p "$SMOKE_ACCT/config"
+  printf 'the-token\n' > "$SMOKE_ACCT/pat"
+  chmod 600 "$SMOKE_ACCT/pat"
+  out="$(XDG_CONFIG_HOME="$SMOKE_ACCT/config" nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" \
+    -c "runtime plugin/azure-cli.lua" \
+    -c "lua require('azure-cli').setup({ accounts = { { project_name = 'P', org_url = 'http://127.0.0.1:9/', pat_file = '$SMOKE_ACCT/pat' } } })" \
+    -c "AzureCli dashboard" \
+    -c "lua assert(vim.bo.filetype == 'azurecli-dashboard', 'filetype=' .. tostring(vim.bo.filetype))" \
+    -c "lua assert(vim.fn.filereadable('$SMOKE_ACCT/config/azure-cli.yml') == 0, 'a template was written despite setup accounts')" \
+    -c "lua local argv = require('azure-cli.config').provider_cmd(); vim.list_extend(argv, { '--print-pat', '--org', 'http://127.0.0.1:9' }); local tok = vim.fn.system(argv); assert(tok == 'the-token', 'print-pat gave ' .. vim.inspect(tok))" \
+    -c "lua assert(require('azure-cli').status().config:find('setup({accounts', 1, true), 'status did not name setup()')" \
+    -c "lua print('ACCOUNTS-SMOKE-OK')" \
+    -c "qa!" 2>&1)"
+  if [[ "$out" == *ACCOUNTS-SMOKE-OK* ]]; then
+    pass "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token"
+  else
+    fail "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token" "$out"
   fi
 
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace

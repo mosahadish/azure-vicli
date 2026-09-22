@@ -287,7 +287,7 @@ accounts:
         cfg = ac.Config.from_string(self.TEMPLATE)
         problems = cfg.problems()
         self.assertEqual(len(problems), 1)
-        self.assertIn("install.sh template", problems[0])
+        self.assertIn("untouched template", problems[0])
 
     def test_each_missing_field_is_named(self):
         cfg = ac.Config.from_string("accounts:\n  - project_name: p\n    org_url: dev.azure.com/o\n")
@@ -415,7 +415,7 @@ class DoctorTests(unittest.TestCase):
             checks = ac.doctor_checks(path)
         self.assertEqual([c["check"] for c in checks], ["config file", "config fields"])
         self.assertFalse(checks[1]["ok"])
-        self.assertIn("install.sh template", checks[1]["detail"])
+        self.assertIn("untouched template", checks[1]["detail"])
 
     def test_sign_in_ok_and_work_items_optional(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1011,3 +1011,190 @@ class IdentityLookupTests(unittest.TestCase):
         self.assertTrue(seen["url"].endswith("/_apis/connectionData"))
         self.assertNotIn("api-version", seen["url"])
 
+
+class PatFileTests(unittest.TestCase):
+    """pat_file: - a file holding just the token, instead of pat: inline."""
+
+    def _cfg(self, pat_file):
+        return ac.Config.from_string(
+            "accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n    pat_file: {0}\n".format(pat_file))
+
+    def test_token_read_from_file_and_stripped(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "pat")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("  secret-token\n")
+            cfg = self._cfg(path)
+            self.assertEqual(cfg.problems(), [])
+            self.assertEqual(cfg.accounts[0].token(), "secret-token")
+            self.assertEqual(ac.resolve_account_pat(cfg, "https://dev.azure.com/o/", "P"), "secret-token")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(ac.cmd_print_pat(cfg, "https://dev.azure.com/o", None), 0)
+            self.assertEqual(out.getvalue(), "secret-token")
+
+    def test_inline_pat_wins_over_pat_file(self):
+        cfg = ac.Config.from_string(
+            "accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n    pat: inline\n    pat_file: /nope\n")
+        self.assertEqual(cfg.accounts[0].token(), "inline")
+        self.assertEqual(cfg.problems(), [])
+
+    def test_missing_or_empty_file_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as td:
+            missing = self._cfg(os.path.join(td, "absent"))
+            self.assertTrue(any("does not exist" in p for p in missing.problems()), missing.problems())
+            self.assertIsNone(missing.accounts[0].token())
+            empty_path = os.path.join(td, "empty")
+            open(empty_path, "w").close()
+            empty = self._cfg(empty_path)
+            self.assertTrue(any("empty" in p for p in empty.problems()), empty.problems())
+
+    def test_neither_pat_nor_pat_file_names_both(self):
+        cfg = ac.Config.from_string("accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n")
+        self.assertTrue(any("pat is missing" in p and "pat_file" in p for p in cfg.problems()), cfg.problems())
+
+    @unittest.skipIf(os.name == "nt", "no POSIX mode bits on Windows")
+    def test_doctor_flags_a_world_readable_pat_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "pat")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("t\n")
+            os.chmod(path, 0o644)
+            cfg = self._cfg(path)
+            self.assertIn("chmod 600", cfg.accounts[0].pat_file_permission_problem())
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")):
+                checks = ac._doctor_config_checks(cfg)
+            row = next(c for c in checks if c["check"].startswith("pat_file"))
+            self.assertFalse(row["ok"])
+            os.chmod(path, 0o600)
+            self.assertIsNone(cfg.accounts[0].pat_file_permission_problem())
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")):
+                checks = ac._doctor_config_checks(cfg)
+            row = next(c for c in checks if c["check"].startswith("pat_file"))
+            self.assertTrue(row["ok"])
+
+
+    def test_doctor_flags_a_pat_file_inside_the_plugin_folder_or_a_git_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            def token_at(*parts):
+                path = os.path.join(td, *parts)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("t\n")
+                os.chmod(path, 0o600)
+                return path
+
+            # Inside the plugin folder (no .git needed - a zip download too).
+            plugin = os.path.join(td, "plugin")
+            cfg = self._cfg(token_at("plugin", "pat"))
+            problem = cfg.accounts[0].pat_file_location_problem(plugin_root=plugin)
+            self.assertIn("inside the plugin folder", problem)
+            self.assertIn(plugin, problem)
+
+            # Inside some git working tree (a dotfiles repo): the nearest
+            # ancestor holding .git is named. A .git *file* (worktree/
+            # submodule) counts too.
+            os.makedirs(os.path.join(td, "dots", ".git"))
+            cfg = self._cfg(token_at("dots", "nvim", "pat"))
+            problem = cfg.accounts[0].pat_file_location_problem(plugin_root=plugin)
+            self.assertIn("git working tree", problem)
+            self.assertIn(os.path.join(td, "dots"), problem)
+            self.assertIn(".gitignore", problem)
+            os.makedirs(os.path.join(td, "wt"))
+            with open(os.path.join(td, "wt", ".git"), "w", encoding="utf-8") as f:
+                f.write("gitdir: /elsewhere\n")
+            cfg = self._cfg(token_at("wt", "pat"))
+            self.assertIn("git working tree", cfg.accounts[0].pat_file_location_problem(plugin_root=plugin))
+
+            # Somewhere plain: fine. Missing file, or pat: in use: not this check's business.
+            cfg = self._cfg(token_at("home", "pat"))
+            self.assertIsNone(cfg.accounts[0].pat_file_location_problem(plugin_root=plugin))
+            self.assertIsNone(self._cfg(os.path.join(td, "nope")).accounts[0].pat_file_location_problem(plugin_root=plugin))
+            inline = ac.Config.from_string(
+                "accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n    pat: x\n    pat_file: {0}\n"
+                .format(os.path.join(td, "dots", "nvim", "pat")))
+            self.assertIsNone(inline.accounts[0].pat_file_location_problem(plugin_root=plugin))
+
+            # --doctor: its own row, next to the permission one, failing on
+            # the misplaced file and passing on the plain one.
+            cfg = self._cfg(os.path.join(td, "dots", "nvim", "pat"))
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")), \
+                 mock.patch.object(ac, "PLUGIN_ROOT", plugin):
+                checks = ac._doctor_config_checks(cfg)
+            perm = next(c for c in checks if c["check"].startswith("pat_file for"))
+            where = next(c for c in checks if c["check"].startswith("pat_file location"))
+            self.assertTrue(perm["ok"])
+            self.assertFalse(where["ok"])
+            self.assertIn("git working tree", where["detail"])
+            cfg = self._cfg(os.path.join(td, "home", "pat"))
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")), \
+                 mock.patch.object(ac, "PLUGIN_ROOT", plugin):
+                checks = ac._doctor_config_checks(cfg)
+            where = next(c for c in checks if c["check"].startswith("pat_file location"))
+            self.assertTrue(where["ok"], where)
+
+
+class AccountsFromSetupTests(unittest.TestCase):
+    """AZVICLI_ACCOUNTS_JSON - what config.lua exports for
+    setup({accounts=...}); wins over azure-cli.yml entirely."""
+
+    @staticmethod
+    def _json(td, **extra):
+        """The export for one account whose token sits in <td>/pat - the
+        only shape config.lua produces, since setup() has no inline pat."""
+        path = os.path.join(td, "pat")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("tok\n")
+        os.chmod(path, 0o600)
+        acct = {"project_name": "P", "org_url": "https://dev.azure.com/o", "pat_file": path,
+                "clones_dir": "/src", "hide_ancient": True,
+                "work_items": {"team": "T", "types": ["User Story", "Bug"]}}
+        acct.update(extra)
+        return json.dumps({"accounts": [acct]})
+
+    def test_from_json_builds_the_same_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = ac.Config.from_json(self._json(td))
+            self.assertEqual(len(cfg.accounts), 1)
+            a = cfg.accounts[0]
+            self.assertEqual((a.project, a.org_url, a.token(), a.clones_dir, a.hide_ancient),
+                             ("P", "https://dev.azure.com/o", "tok", "/src", True))
+            self.assertEqual(a.work_items["team"], "T")
+            self.assertEqual(cfg.problems(), [])
+
+    def test_inline_pat_is_refused(self):
+        """setup() has no inline pat - the export never carries a token, and
+        a hand-set AZVICLI_ACCOUNTS_JSON with one is refused the same way."""
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError) as cm:
+                ac.Config.from_json(self._json(td, pat="tok"))
+            self.assertIn("pat_file", str(cm.exception))
+            with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: self._json(td, pat="tok")}, clear=False):
+                checks = ac.doctor_checks()
+            self.assertEqual([c["check"] for c in checks], ["config source", "config parses"])
+            self.assertFalse(checks[1]["ok"])
+            self.assertIn("pat_file", checks[1]["detail"])
+
+    def test_env_wins_over_the_file_everywhere(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: self._json(td),
+                                              "AZVICLI_CONFIG": os.path.join(td, "absent.yml")}, clear=False):
+                self.assertTrue(ac.Config.validate_exists())
+                self.assertTrue(ac.Config.is_configured())
+                self.assertIn("setup({accounts", ac.Config.source_label())
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    cfg = ac.get_cached_config()
+                self.assertEqual(cfg.accounts[0].project, "P")
+                self.assertIn("setup({accounts", err.getvalue())
+                with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")):
+                    checks = ac.doctor_checks()
+                self.assertEqual(checks[0]["check"], "config source")
+                self.assertTrue(checks[0]["ok"])
+                self.assertTrue(all(c["ok"] for c in checks), checks)
+
+    def test_bad_json_is_a_parse_failure_not_a_crash(self):
+        with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: "[1, 2]"}, clear=False):
+            checks = ac.doctor_checks()
+        self.assertEqual([c["check"] for c in checks], ["config source", "config parses"])
+        self.assertFalse(checks[1]["ok"])

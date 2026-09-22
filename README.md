@@ -70,10 +70,11 @@ cd azure-vicli
 bash install.sh
 ```
 
-`install.sh` checks or installs the dependencies (Neovim, git-bash, python),
-creates the config file at its platform location with placeholders, and
-opens it for editing. It is safe to re-run and never overwrites an existing
-config. There's no build step - `azure-cli.py` runs directly.
+`install.sh` only checks or installs the dependencies (Neovim, git-bash,
+python) and is safe to re-run; skip it if you already have them. There's no
+build step - `azure-cli.py` runs directly. The config file is created by
+the first launch, not by the script: `./azure-cli` writes a template at
+its platform location and opens it for you (see [Quick start](#quick-start)).
 
 ### As a plugin
 
@@ -84,10 +85,23 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
   "mosahadish/azure-vicli",
   cmd = "AzureCli",
   opts = {
+    accounts = {
+      {
+        project_name = "MyProject",
+        org_url = "https://dev.azure.com/my-org",
+        pat_file = "~/.config/azure-cli/pat",   -- a file holding just the token (chmod 600)
+        clones_dir = "~/src",
+      },
+    },
     -- keys = { diff = { next_hunk = "]h" } },  -- see Keys below; optional
   },
 }
 ```
+
+`accounts` is optional: leave it out and the plugin uses `azure-cli.yml`
+like the standalone launcher does (see [Configuration](docs/configuration.md#configuration)).
+In `setup()` the token comes from `pat_file`, so the snippet above is safe
+to commit.
 
 `opts` (however you spell it for your plugin manager) is passed straight to
 `require("azure-cli").setup()`; leaving it out (or the whole plugin
@@ -112,20 +126,22 @@ use({
 ```
 
 Either way, `azure-cli.py` (the data provider) still needs Python on `PATH`
-- see [Requirements](#requirements) - and the [config file](docs/configuration.md#configuration)
-still needs your account(s) filled in; `install.sh` isn't part of a plugin
-install, so run it once from a clone if you want its dependency checks and
-config-file scaffolding, or just create the config file by hand.
+- see [Requirements](#requirements). The first `:AzureCli` with no
+[config file](docs/configuration.md#configuration) writes a template at its
+platform location and opens it in a tab; fill in the TODO lines and save,
+and the dashboard opens. `install.sh` isn't part of a plugin install.
 
 ## Quick start
 
-1. `bash install.sh` - checks Neovim, git and python, writes the config
-   template and opens it. Fill in `org_url`, `project_name` and a PAT with
-   Code (read & write) and Work Items (read & write) scopes.
-2. `./azure-cli --doctor` - confirms the file parses and signs in to every
-   organization in it. Inside Neovim the same check is `:AzureCli doctor`.
-3. `./azure-cli` (or `:AzureCli` as a plugin) opens the dashboard. Press
-   `?` on any screen for its keys.
+1. `./azure-cli` (or `:AzureCli` as a plugin). With no config file yet it
+   writes a template to its platform location (`~/.config/azure-cli.yml`,
+   `%APPDATA%\azure-cli.yml` on Windows) and opens it. Fill in `org_url`,
+   `project_name` and a PAT with Code (read & write) and Work Items (read &
+   write) scopes, then save - the dashboard opens.
+2. `./azure-cli --doctor` (or `:AzureCli doctor`) whenever something looks
+   off: it confirms the file parses and signs in to every organization in
+   it.
+3. Press `?` on any screen for its keys.
 
 ## What's in the box
 

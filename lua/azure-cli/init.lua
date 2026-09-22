@@ -37,6 +37,9 @@ end
 function M.open_dashboard()
   local UI = require("azure-cli.ui")
   if UI.goto_tab(function(b) return vim.bo[b].filetype == "azurecli-dashboard" end) then return end
+  -- No config file yet (first run): firstrun.lua writes the template, opens
+  -- it instead, and calls back here once it's saved.
+  if not require("azure-cli.firstrun").ensure(M.open_dashboard) then return end
   if not M._standalone then
     vim.cmd("tabnew")
   end
@@ -48,6 +51,7 @@ end
 function M.open_workitems()
   local UI = require("azure-cli.ui")
   if UI.goto_tab(function(b) return vim.bo[b].filetype == "azurecli-workitems" end) then return end
+  if not require("azure-cli.firstrun").ensure(M.open_workitems) then return end
   if not M._standalone then
     vim.cmd("tabnew")
   end
@@ -98,7 +102,8 @@ function M.status()
   local config = require("azure-cli.config")
   local cmd = config.provider_cmd()
   st.python = cmd[1]
-  st.config = config.config_path()
+  local n = config.accounts_from_setup()
+  st.config = n and ("setup({accounts=...}) - " .. n .. " account(s)") or config.config_path()
   vim.notify(string.format(
     "azure-cli: daemon running=%s fallback=%s pid=%s\npython=%s\nconfig=%s",
     tostring(st.running), tostring(st.fallback), tostring(st.pid), st.python, st.config

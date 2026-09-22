@@ -426,6 +426,11 @@ end
 
 -- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
 local function open_config_file()
+  local notice = require("azure-cli.config").setup_accounts_notice()
+  if notice then
+    notify(notice)
+    return
+  end
   local path = config_path()
   vim.cmd("tabnew " .. vim.fn.fnameescape(path))
   vim.bo.filetype = "yaml"

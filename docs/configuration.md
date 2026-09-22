@@ -6,7 +6,10 @@ _Part of the [azure-vicli](../README.md) docs._
 
 The config file is `%APPDATA%\azure-cli.yml` on Windows and
 `$XDG_CONFIG_HOME/azure-cli.yml` (default `~/.config/azure-cli.yml`) elsewhere.
-Press `gO` in any dashboard to open it.
+You don't create it by hand: the first `./azure-cli` or `:AzureCli` with no
+file there writes the template below (with `TODO` placeholders) and opens it;
+saving it opens the dashboard. `azure-cli --init-config` does the same from
+a terminal, and `gO` in any dashboard opens it later.
 
 ```yaml
 accounts:
@@ -28,7 +31,8 @@ accounts:
 | `repo_path` | top level | Optional. A single clone to use when an account has no `clones_dir`. Prefer `clones_dir`. |
 | `project_name` | account | The Azure DevOps project. |
 | `org_url` | account | Organization or collection URL. Several accounts may share one. |
-| `pat` | account | Personal access token. Required - there is no Azure AD sign-in. |
+| `pat` | account | Personal access token. Required (or `pat_file`) - there is no Azure AD sign-in. |
+| `pat_file` | account | Instead of `pat`: the path of a file holding nothing but the token (`~` expands). Keeps the secret out of a config you might commit; `chmod 600` it and keep it outside any git checkout - `:AzureCli doctor` flags a file other users can read, and one inside the plugin folder or any git working tree (a dotfiles repo, say). |
 | `hide_ancient` | account | Drop PRs whose latest commit is older than `hide_ancient_days` (default 30 - see [setup() options](#setup-options) below, `setup({hide_ancient_days=...})`). |
 | `clones_dir` | account | Directory holding one clone per repository, named after the repo. Repos are cloned here on demand when you open a PR. |
 | `work_items` | account | Enables the [work-item screens](work-items.md#work-items) for this account: `org_url`/`project_name` become the work-item collection/project. Absent by default - no account's work items are queried until one account has this block. `team` (required) is a team under that project; `assignee` (optional) defaults to your own signed-in display name; `types` (optional, a YAML list or a plain comma-separated string) defaults to `User Story, Bug`; `states` (optional, a YAML list or a plain comma-separated string - see [Work items](work-items.md#work-items)) defaults to `[Active, New, Implemented, Resolved, Closed, Removed]`; `sprint_scope` (optional, `parent` or `all` - see [Work items](work-items.md#work-items)) defaults to `parent`. |
@@ -42,6 +46,37 @@ Only one account's `work_items:` block is ever active: the first account in
 its `project_name`. With no account configured this way and no
 `AZVICLI_WI_TEAM` override either, the work-item screens show a "no
 `work_items:` block" message instead of a PR/work-item mix-up.
+
+### Accounts in setup() instead of a file (plugin)
+
+A plugin install doesn't need `azure-cli.yml` at all: pass the same
+accounts to `setup()`, with the same field names, and no file is read or
+written (the [first-run template](#configuration) only appears when neither
+is configured). The token comes from a `pat_file`, so `init.lua` holds no
+secret and can live in a dotfiles repo:
+
+```lua
+require("azure-cli").setup({
+  accounts = {
+    {
+      project_name = "MyProject",
+      org_url = "https://dev.azure.com/my-org",
+      pat_file = "~/.config/azure-cli/pat",   -- a file holding just the token (chmod 600)
+      clones_dir = "~/src",
+      -- hide_ancient = true,
+      -- work_items = { team = "My Team", types = { "User Story", "Bug" } },
+    },
+  },
+})
+```
+
+`setup()` validates the table up front (a missing field or `pat_file`, an
+unknown key) and hands it to the provider, which
+prefers it over `azure-cli.yml` outright. `gO` then says so instead of
+opening the file, and `:AzureCli status`/`:AzureCli doctor` report
+"setup({accounts=...})" as the source. The standalone launcher has no
+`init.lua`, so it keeps using the file (its `azure-cli.lua` options file
+may carry `accounts` too, if you'd rather).
 
 ## setup() options
 
@@ -102,7 +137,7 @@ Optional overrides:
 | `AZVICLI_WI_ACCOUNT` | Selects which account's `work_items:` block backs the work-item screens, by `project_name`, when more than one account has one (default: the first account in `accounts:` that has one). |
 | `AZVICLI_WI_COLLECTION`, `AZVICLI_WI_PROJECT`, `AZVICLI_WI_TEAM`, `AZVICLI_WI_ASSIGNEE`, `AZVICLI_WI_TYPES` | Override the selected account's `org_url`/`project_name`/`work_items:` fields (see [Configuration](#configuration)) one at a time, without editing azure-cli.yml. |
 | `AZVICLI_PREFETCH_DIR` | Where branch-prefetch markers and the `.userid` cache are written. Default: the plugin sets this to Neovim's own cache directory (`stdpath("cache") .. "/azure-cli"`) for every provider call, so a plain `azure-cli.py` invocation with no Lua session around it (headless `--list`/`--print-pat`/...) falls back to the platform cache directory's own `azure-cli/` subfolder instead - `%LOCALAPPDATA%\azure-cli\cache` on Windows, `$XDG_CACHE_HOME/azure-cli` (default `~/.cache/azure-cli`) elsewhere. |
-| `AZVICLI_CONFIG` | Overrides the config file path entirely (`~` expanded), ahead of the platform default - see [setup() options](#setup-options)' `config`, which sets this. The `--serve` daemon re-reads it on every request (`Config.path()`), so a changed value takes effect on the daemon's next request without a restart, the same as an edited `azure-cli.yml`. |
+| `AZVICLI_CONFIG` | Overrides the config file path entirely (`~` expanded), ahead of the platform default - see [setup() options](#setup-options)' `config`, which sets this. The `--serve` daemon reads it once, at start-up: a changed value takes effect after a Neovim restart. |
 | `AZVICLI_HIDE_ANCIENT_DAYS` | The `hide_ancient: true` threshold, in days (default 30) - see [setup() options](#setup-options)' `hide_ancient_days`, which sets this. |
 | `AZVICLI_TOASTS` | Set to `0` to disable desktop toast notifications (also toggleable per-session with `gN`). |
 | `AZVICLI_NO_DAEMON` | Set to `1` to disable the `azure-cli.py --serve` daemon for this session: every provider call (`rpc.lua`'s `M.run`) always falls back to a plain one-shot `vim.fn.jobstart`. Useful to rule the daemon in or out while debugging a provider call. |

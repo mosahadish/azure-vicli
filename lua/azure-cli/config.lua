@@ -192,6 +192,87 @@ function M.provider_cmd()
   return { py, path }
 end
 
+-- setup({accounts=...}): the plugin-mode alternative to azure-cli.yml.
+-- Validated field by field (same names as the YAML file, minus `pat`: an
+-- init.lua lives in a dotfiles repo, so the token can only come from
+-- `pat_file`, and an inline `pat` is refused outright rather than exported
+-- into every provider process's environment), then exported as JSON in
+-- AZVICLI_ACCOUNTS_JSON for the provider (Config.from_json in
+-- azure-cli.py), which prefers it over the file outright. Returns the
+-- validated list.
+local ACCOUNT_FIELDS = {
+  project_name = "string", org_url = "string", pat_file = "string",
+  hide_ancient = "boolean", clones_dir = "string", work_items = "table",
+}
+local WORK_ITEM_FIELDS = {
+  team = "string", assignee = "string", types = "list", states = "list", sprint_scope = "string",
+}
+
+local function check_fields(tbl, allowed, where)
+  for k, v in pairs(tbl) do
+    local want = allowed[k]
+    if not want then
+      error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. where)
+    end
+    if want == "list" then
+      if type(v) ~= "string" and type(v) ~= "table" then
+        error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a string or a list of strings")
+      end
+      if type(v) == "table" then
+        for _, item in ipairs(v) do
+          if type(item) ~= "string" then
+            error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a list of strings")
+          end
+        end
+      end
+    elseif type(v) ~= want then
+      error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a " .. want)
+    end
+  end
+end
+
+local function validate_accounts(accounts)
+  if type(accounts) ~= "table" then
+    error("azure-cli.setup: `accounts` must be a list of account tables")
+  end
+  if #accounts == 0 then
+    error("azure-cli.setup: `accounts` is empty - add one with project_name, org_url and pat_file")
+  end
+  for i, a in ipairs(accounts) do
+    local where = "accounts[" .. i .. "]"
+    if type(a) ~= "table" then
+      error("azure-cli.setup: " .. where .. " must be a table")
+    end
+    if a.pat ~= nil then
+      error("azure-cli.setup: " .. where .. ".pat isn't accepted - setup() lives in your Neovim config, "
+        .. "so the token goes in a file of its own: pat_file = \"~/.config/azure-cli/pat\"")
+    end
+    check_fields(a, ACCOUNT_FIELDS, where)
+    for _, req in ipairs({ "project_name", "org_url" }) do
+      if type(a[req]) ~= "string" or a[req] == "" then
+        error("azure-cli.setup: " .. where .. " needs a non-empty `" .. req .. "`")
+      end
+    end
+    if not a.org_url:match("^[Hh][Tt][Tt][Pp][Ss]?://") then
+      error("azure-cli.setup: " .. where .. ".org_url must start with https:// (got " .. a.org_url .. ")")
+    end
+    if type(a.pat_file) ~= "string" or a.pat_file == "" then
+      error("azure-cli.setup: " .. where .. " needs a non-empty `pat_file` (a file holding just the token)")
+    end
+    if a.work_items ~= nil then
+      check_fields(a.work_items, WORK_ITEM_FIELDS, where .. ".work_items")
+      if type(a.work_items.team) ~= "string" or a.work_items.team == "" then
+        error("azure-cli.setup: " .. where .. ".work_items needs a non-empty `team`")
+      end
+      local scope = a.work_items.sprint_scope
+      if scope ~= nil and scope ~= "parent" and scope ~= "all" then
+        error("azure-cli.setup: " .. where .. ".work_items.sprint_scope must be \"parent\" or \"all\"")
+      end
+    end
+  end
+  return accounts
+end
+
 -- Merges `overrides` onto a deep copy of `base`, action by action, erroring
 -- on any surface/action name overrides doesn't recognise - see M.setup.
 local function merge_keys(base, overrides)
@@ -290,10 +371,20 @@ function M.setup(opts)
     end
     collapsed_sections = opts.collapsed_sections
   end
+  local accounts
+  if opts.accounts ~= nil then
+    accounts = validate_accounts(opts.accounts)
+    vim.env.AZVICLI_ACCOUNTS_JSON = vim.json.encode({ accounts = accounts })
+  else
+    -- No accounts here: the provider reads azure-cli.yml (and a stale
+    -- export from an earlier setup() call in this session must not linger).
+    vim.env.AZVICLI_ACCOUNTS_JSON = nil
+  end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
     python = opts.python,
+    accounts = accounts,
     timing = timing,
     hide_ancient_days = opts.hide_ancient_days or DEFAULTS.hide_ancient_days,
     notifications = opts.notifications or DEFAULTS.notifications,
@@ -419,6 +510,23 @@ end
 -- surface's own config_path() (dashboard.lua, workitems/dashboard.lua,
 -- review/init.lua) delegates here instead of re-deriving it, so gO and
 -- `:AzureCli status` never drift from what the provider itself resolves.
+-- How many accounts setup({accounts=...}) configured, or nil when the
+-- accounts come from azure-cli.yml. What firstrun.lua, health.lua,
+-- :AzureCli status and the gO keys branch on.
+function M.accounts_from_setup()
+  local a = M.get().accounts
+  return a and #a or nil
+end
+
+-- The message a gO key shows instead of opening azure-cli.yml when the
+-- accounts live in setup(); nil when the file is the config.
+function M.setup_accounts_notice()
+  local n = M.accounts_from_setup()
+  if not n then return nil end
+  return "azure-cli: your " .. n .. " account(s) are configured with setup({accounts=...}) in your Neovim "
+    .. "config, so azure-cli.yml isn't used - edit that setup() call instead."
+end
+
 function M.config_path()
   local env = vim.env
   if env.AZVICLI_CONFIG and env.AZVICLI_CONFIG ~= "" then

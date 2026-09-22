@@ -36,10 +36,18 @@ function M.local_checks()
     detail = prov_ok and provider or (provider .. " is missing") }
   local git_ok = vim.fn.executable("git") == 1
   out[#out + 1] = { check = "git", ok = git_ok, detail = git_ok and "on PATH" or "not on PATH - the reviewer needs it" }
-  local path = CONFIG.config_path()
-  local cfg_ok = vim.fn.filereadable(path) == 1
-  out[#out + 1] = { check = "config file", ok = cfg_ok,
-    detail = cfg_ok and path or (path .. " does not exist - bash install.sh writes a template, or :AzureCli options / gO") }
+  local from_setup = CONFIG.accounts_from_setup()
+  local cfg_ok
+  if from_setup then
+    cfg_ok = true
+    out[#out + 1] = { check = "accounts", ok = true,
+      detail = from_setup .. " account(s) from setup({accounts=...}); azure-cli.yml not used" }
+  else
+    local path = CONFIG.config_path()
+    cfg_ok = vim.fn.filereadable(path) == 1
+    out[#out + 1] = { check = "config file", ok = cfg_ok,
+      detail = cfg_ok and path or (path .. " does not exist - :AzureCli dashboard writes a template there and opens it") }
+  end
   return out, cfg_ok and py_ok
 end
 
