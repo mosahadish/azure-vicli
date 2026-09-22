@@ -155,3 +155,65 @@ class RequestEnvNewNamesHonoredTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InitConfigTests(unittest.TestCase):
+    """--init-config / write_config_template: what firstrun.lua runs on the
+    first dashboard launch with no azure-cli.yml (install.sh no longer
+    writes one)."""
+
+    def test_writes_template_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "nested", "azure-cli.yml")
+            self.assertTrue(ac.write_config_template(path, env={}))
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("accounts:", text)
+            self.assertIn("TODO", text)
+            self.assertIn("# clones_dir:", text)
+            self.assertNotIn("{clones_dir}", text)
+            # The untouched template must parse to exactly the "all empty"
+            # account config.problems() names, not a parse error.
+            cfg = ac.Config.from_file(path)
+            self.assertEqual(len(cfg.accounts), 1)
+            self.assertTrue(cfg.problems())
+            # A second call leaves an existing file alone.
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("accounts: []\n")
+            self.assertFalse(ac.write_config_template(path, env={}))
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "accounts: []\n")
+
+    def test_init_config_flag_prints_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "azure-cli.yml")
+            with mock.patch.dict(os.environ, {"AZVICLI_CONFIG": path}, clear=False):
+                code, out, err = ac.dispatch(["--init-config"], dict(os.environ))
+                self.assertEqual(code, 0)
+                self.assertEqual(out.strip(), path)
+                self.assertTrue(os.path.isfile(path))
+                # Idempotent: same path, still exit 0, file untouched.
+                with open(path, encoding="utf-8") as f:
+                    before = f.read()
+                code, out, _ = ac.dispatch(["--init-config"], dict(os.environ))
+                self.assertEqual((code, out.strip()), (0, path))
+                with open(path, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), before)
+
+    def test_bare_launch_without_config_still_launches_nvim(self):
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, "standalone"))
+            with open(os.path.join(td, "standalone", "init.lua"), "w", encoding="utf-8"):
+                pass
+            captured = {}
+
+            def fake_run(argv, env=None):
+                captured["argv"] = argv
+                captured["env"] = env
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(ac.subprocess, "run", side_effect=fake_run):
+                rc = ac.launch_dashboard(None, os.path.join(td, "azure-cli.py"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["argv"][0], "nvim")
+        self.assertNotIn("AZVICLI_REPO_PATH", captured["env"])

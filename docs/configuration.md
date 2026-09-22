@@ -6,7 +6,10 @@ _Part of the [azure-vicli](../README.md) docs._
 
 The config file is `%APPDATA%\azure-cli.yml` on Windows and
 `$XDG_CONFIG_HOME/azure-cli.yml` (default `~/.config/azure-cli.yml`) elsewhere.
-Press `gO` in any dashboard to open it.
+You don't create it by hand: the first `./azure-cli` or `:AzureCli` with no
+file there writes the template below (with `TODO` placeholders) and opens it;
+saving it opens the dashboard. `azure-cli --init-config` does the same from
+a terminal, and `gO` in any dashboard opens it later.
 
 ```yaml
 accounts:

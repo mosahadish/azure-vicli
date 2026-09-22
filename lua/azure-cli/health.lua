@@ -39,7 +39,7 @@ function M.local_checks()
   local path = CONFIG.config_path()
   local cfg_ok = vim.fn.filereadable(path) == 1
   out[#out + 1] = { check = "config file", ok = cfg_ok,
-    detail = cfg_ok and path or (path .. " does not exist - bash install.sh writes a template, or :AzureCli options / gO") }
+    detail = cfg_ok and path or (path .. " does not exist - :AzureCli dashboard writes a template there and opens it") }
   return out, cfg_ok and py_ok
 end
 

@@ -287,7 +287,7 @@ accounts:
         cfg = ac.Config.from_string(self.TEMPLATE)
         problems = cfg.problems()
         self.assertEqual(len(problems), 1)
-        self.assertIn("install.sh template", problems[0])
+        self.assertIn("untouched template", problems[0])
 
     def test_each_missing_field_is_named(self):
         cfg = ac.Config.from_string("accounts:\n  - project_name: p\n    org_url: dev.azure.com/o\n")
@@ -415,7 +415,7 @@ class DoctorTests(unittest.TestCase):
             checks = ac.doctor_checks(path)
         self.assertEqual([c["check"] for c in checks], ["config file", "config fields"])
         self.assertFalse(checks[1]["ok"])
-        self.assertIn("install.sh template", checks[1]["detail"])
+        self.assertIn("untouched template", checks[1]["detail"])
 
     def test_sign_in_ok_and_work_items_optional(self):
         with tempfile.TemporaryDirectory() as td:

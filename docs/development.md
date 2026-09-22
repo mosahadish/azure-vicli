@@ -144,7 +144,7 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/review/filelist.lua` | The file list's layout: `M.build` (pure) groups files by directory, trims their common prefix, and formats each row's status letter/+-stats/comment count; `M.render` writes it into the list buffer. `EXT.refresh_file_list` (review/init.lua) is the only caller - every row->file lookup goes through the model it returns instead of indexing `files` by row. |
 | `lua/azure-cli/workitems/dashboard.lua`, `lua/azure-cli/workitems/view.lua` | Work-item dashboard and detail view - run `azure-cli.py` for every work-item fetch/action (`--wi-list`/`--wi-detail`/`--wi-state`/`--wi-edit`), the same `PROVIDER_CMD` pattern `dashboard.lua` uses, through `rpc.lua`; no bash in the loop. |
 | `lua/azure-cli/workitems/states.lua` | Pure `work_items.states:` rank/highlight mapping (see [Work items](work-items.md#work-items)), shared by `workitems/dashboard.lua`/`workitems/view.lua`; falls back to the pre-`states:` hard-coded tables when the provider sends no `states` field. |
-| `install.sh` | One-shot setup for the standalone install. |
+| `install.sh` | Dependency check/install for the standalone launcher (Neovim, git, python). It never touches the config: `lua/azure-cli/firstrun.lua` writes the template through `azure-cli.py --init-config` on the first launch. |
 
 State that survives restarts lives in Neovim's data directory: the per-PR
 "seen" snapshot for the unread badge, per-thread read counts, and persistent

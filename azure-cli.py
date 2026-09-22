@@ -286,8 +286,9 @@ class Config:
             # error they show (this once went to stdout and rendered as a
             # blank "Failed to load PRs (exit 1):" on a brand-new install).
             print("Configuration does not exist: {0}\n"
-                  "Create it (bash install.sh writes a template there, or :AzureCli options / gO "
-                  "in the dashboard) - see README 'Configuration'.".format(p), file=sys.stderr)
+                  "Open the dashboard (./azure-cli, or :AzureCli in Neovim) and it writes a template "
+                  "there for you to fill in; `azure-cli --init-config` does the same from a terminal. "
+                  "See docs/configuration.md.".format(p), file=sys.stderr)
             return False
         return True
 
@@ -309,7 +310,7 @@ class Config:
             missing = [name for name, value in (("project_name", a.project), ("org_url", a.org_url), ("pat", a.pat))
                        if not isinstance(value, str) or not value.strip()]
             if len(missing) == 3:
-                out.append("{0}: project_name, org_url and pat are all empty - still the install.sh "
+                out.append("{0}: project_name, org_url and pat are all empty - still the untouched "
                            "template? Fill in the TODO lines.".format(label))
                 continue
             for name in missing:
@@ -3137,6 +3138,97 @@ def cmd_requeue(config, pull_request_id, env=None):
         return 1
 
 
+# ---------------------------------------------------------------------------
+# First run: the config template
+# ---------------------------------------------------------------------------
+#
+# The one copy of the azure-cli.yml starting point. Written by --init-config,
+# which lua/azure-cli/firstrun.lua runs the first time the dashboard opens
+# with no config file (standalone launcher and :AzureCli alike - install.sh
+# only checks dependencies and never touches the config), and which a
+# terminal user can run by hand. Never overwrites an existing file.
+
+CONFIG_TEMPLATE = """\
+# azure-cli configuration file.
+# See docs/configuration.md for every field.
+#
+# Fill in org_url / pat / project_name for each account below, then
+# remove any accounts you don't need. Add more accounts by copying
+# the block under 'accounts:'.
+#
+# pat: a personal access token, created at
+#   https://dev.azure.com/<your-org>/_usersSettings/tokens
+#   (on-prem: <collection-url>/_usersSettings/tokens)
+# with the scopes  Code: Read & write  and  Work Items: Read & write.
+# It is required - there is no Azure AD fallback.
+#
+# When done, save this file: the dashboard opens (or run
+# 'azure-cli --doctor' to check it from a terminal).
+
+accounts:
+  - project_name: # TODO: e.g. sample-project
+    org_url: # TODO: e.g. https://dev.azure.com/example
+    pat: # TODO: your personal access token (required - no Azure AD fallback)
+    hide_ancient: true
+{clones_dir}
+    # Optional - uncomment to enable the work-item screens (W key).
+    # work_items:
+    #   team: # TODO: e.g. My Team (required)
+    #   assignee: # optional; default = your signed-in display name
+    #   types: [User Story, Bug]  # optional; default shown
+    #   states: [New, Active, Resolved, Closed, Removed]  # optional; order = rank
+    #   sprint_scope: parent  # optional; parent (tabs under the current sprint's parent) or all
+
+# Plugin users: timing, hide_ancient_days, python and config path are
+# setup() options in Neovim, not fields here - see docs/configuration.md.
+"""
+
+
+def config_template(env=None):
+    """CONFIG_TEMPLATE with the clones_dir line filled in: a guess of
+    %USERPROFILE%\\source\\repos on Windows (Visual Studio's default), a
+    commented-out placeholder elsewhere."""
+    env = os.environ if env is None else env
+    guess = ""
+    if os.name == "nt" and env.get("USERPROFILE"):
+        guess = env["USERPROFILE"].rstrip("\\/") + "\\source\\repos"
+    if guess:
+        line = "    clones_dir: {0}".format(guess.replace("\\", "\\\\"))
+    else:
+        line = "    # clones_dir: /path/to/where/repos/are/cloned"
+    return CONFIG_TEMPLATE.replace("{clones_dir}", line)
+
+
+def write_config_template(path, env=None):
+    """Writes config_template() to `path` unless a file is already there.
+    Returns True when it wrote the file, False when one already existed.
+    Raises OSError when the directory can't be created or written."""
+    if os.path.isfile(path):
+        return False
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(config_template(env))
+    return True
+
+
+def cmd_init_config():
+    """--init-config: make sure the config file exists (writing the template
+    if not) and print its path - the one line firstrun.lua/terminal users
+    read. Exit 0 whether it was just written or already there."""
+    path = Config.path()
+    try:
+        wrote = write_config_template(path)
+    except OSError as ex:
+        print("azure-cli --init-config: could not write {0}: {1}".format(path, ex), file=sys.stderr)
+        return 1
+    print(path)
+    if wrote:
+        print("Wrote a config template; fill in the TODO lines.", file=sys.stderr)
+    return 0
+
+
 def doctor_checks(config_path=None):
     """Every setup check the provider can make, as dicts {check, ok,
     detail} in the order they should be read: the config file exists,
@@ -3150,7 +3242,8 @@ def doctor_checks(config_path=None):
     checks = []
     if not os.path.isfile(path):
         checks.append({"check": "config file", "ok": False,
-                       "detail": "{0} does not exist - run install.sh, or :AzureCli options / gO in the dashboard"
+                       "detail": "{0} does not exist - open the dashboard (./azure-cli or :AzureCli) to have "
+                                 "a template written there, or run `azure-cli --init-config`"
                        .format(path)})
         return checks
     checks.append({"check": "config file", "ok": True, "detail": path})
@@ -3418,6 +3511,8 @@ def _run_dispatch(argv, env):
     args = parse_args(argv)
     if args.doctor:
         return cmd_doctor(as_json=args.json)
+    if args.init_config:
+        return cmd_init_config()
     if not Config.validate_exists():
         return 1
     config = get_cached_config()
@@ -3572,7 +3667,7 @@ def launch_dashboard(config, script_path):
     env["AZVICLI_PY"] = sys.executable or "python3"
     env["AZVICLI_PROVIDER"] = os.path.abspath(script_path)
 
-    if config.repo_path:
+    if config is not None and getattr(config, "repo_path", None):
         env["AZVICLI_REPO_PATH"] = config.repo_path
     else:
         env.pop("AZVICLI_REPO_PATH", None)
@@ -3612,6 +3707,11 @@ def parse_args(argv):
         help="Check the setup: config file, its fields, sign-in per organization, work items (no TUI)",
     )
     parser.add_argument("--json", action="store_true", help="With --doctor: one JSON object per check instead of text")
+    parser.add_argument(
+        "--init-config", dest="init_config", action="store_true",
+        help="Write the azure-cli.yml template at its platform location if there is no config file yet, "
+             "print the path and exit (no TUI). What the first dashboard launch runs for you.",
+    )
     # Anything else is ignored rather than rejected - none of the shell/Lua
     # callers in this repo pass anything but the flags above.
     args, _unknown = parser.parse_known_args(argv)
@@ -3646,9 +3746,10 @@ def main(argv=None):
         # nvim UI from inside the daemon.
         if os.environ.get("AZVICLI_PREFETCH"):
             return cmd_prefetch()
-        if not Config.validate_exists():
-            return 1
-        config = get_cached_config()
+        # No config yet is not an error here: nvim opens and
+        # lua/azure-cli/firstrun.lua writes the template (via --init-config)
+        # and opens it for editing. Only an existing file is read.
+        config = get_cached_config() if os.path.isfile(Config.path()) else None
         return launch_dashboard(config, __file__)
 
     code, out, err = dispatch(argv, dict(os.environ))

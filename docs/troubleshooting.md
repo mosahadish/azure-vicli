@@ -18,8 +18,9 @@ _Part of the [azure-vicli](../README.md) docs._
   always ends with `(:AzureCli log)` as a reminder. Set `AZVICLI_DEBUG=1`
   (see [Environment variables](configuration.md#environment-variables)) to also have
   `azure-cli.py` print a full traceback when run directly from a terminal.
-- **"Configuration does not exist"**: create the config file at the path
-  printed, or run `install.sh`.
+- **"Configuration does not exist"**: open the dashboard (`./azure-cli` or
+  `:AzureCli`) - it writes a template at the path printed and opens it - or
+  run `azure-cli --init-config` from a terminal.
 - **"No PAT available" / "no configured PAT"**: add `pat:` to the matching
   account. The org URL is compared case-insensitively with the trailing
   slash ignored. Every account needs one - there is no Azure AD sign-in.
