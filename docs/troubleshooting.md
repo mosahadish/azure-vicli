@@ -23,6 +23,12 @@ _Part of the [azure-vicli](../README.md) docs._
   run `azure-cli --init-config` from a terminal.
 - **"pat_file ... is readable by other users"** (from `:AzureCli doctor`):
   `chmod 600` the file - it holds your token.
+- **"pat_file ... is inside the plugin folder" / "... inside a git working
+  tree"** (from `:AzureCli doctor`): the token file sits in this plugin's
+  clone (a plugin-manager update or push takes it along) or in some git
+  checkout (one `git add` from a commit - a dotfiles repo is the usual
+  case). Move it somewhere plain, e.g. `~/.config/azure-cli/pat`, or at the
+  very least add it to that repository's `.gitignore`.
 - **"No PAT available" / "no configured PAT"**: add `pat:` (or `pat_file:`) to the matching
   account. The org URL is compared case-insensitively with the trailing
   slash ignored. Every account needs one - there is no Azure AD sign-in.

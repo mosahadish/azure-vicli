@@ -1074,6 +1074,66 @@ class PatFileTests(unittest.TestCase):
             self.assertTrue(row["ok"])
 
 
+    def test_doctor_flags_a_pat_file_inside_the_plugin_folder_or_a_git_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            def token_at(*parts):
+                path = os.path.join(td, *parts)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("t\n")
+                os.chmod(path, 0o600)
+                return path
+
+            # Inside the plugin folder (no .git needed - a zip download too).
+            plugin = os.path.join(td, "plugin")
+            cfg = self._cfg(token_at("plugin", "pat"))
+            problem = cfg.accounts[0].pat_file_location_problem(plugin_root=plugin)
+            self.assertIn("inside the plugin folder", problem)
+            self.assertIn(plugin, problem)
+
+            # Inside some git working tree (a dotfiles repo): the nearest
+            # ancestor holding .git is named. A .git *file* (worktree/
+            # submodule) counts too.
+            os.makedirs(os.path.join(td, "dots", ".git"))
+            cfg = self._cfg(token_at("dots", "nvim", "pat"))
+            problem = cfg.accounts[0].pat_file_location_problem(plugin_root=plugin)
+            self.assertIn("git working tree", problem)
+            self.assertIn(os.path.join(td, "dots"), problem)
+            self.assertIn(".gitignore", problem)
+            os.makedirs(os.path.join(td, "wt"))
+            with open(os.path.join(td, "wt", ".git"), "w", encoding="utf-8") as f:
+                f.write("gitdir: /elsewhere\n")
+            cfg = self._cfg(token_at("wt", "pat"))
+            self.assertIn("git working tree", cfg.accounts[0].pat_file_location_problem(plugin_root=plugin))
+
+            # Somewhere plain: fine. Missing file, or pat: in use: not this check's business.
+            cfg = self._cfg(token_at("home", "pat"))
+            self.assertIsNone(cfg.accounts[0].pat_file_location_problem(plugin_root=plugin))
+            self.assertIsNone(self._cfg(os.path.join(td, "nope")).accounts[0].pat_file_location_problem(plugin_root=plugin))
+            inline = ac.Config.from_string(
+                "accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n    pat: x\n    pat_file: {0}\n"
+                .format(os.path.join(td, "dots", "nvim", "pat")))
+            self.assertIsNone(inline.accounts[0].pat_file_location_problem(plugin_root=plugin))
+
+            # --doctor: its own row, next to the permission one, failing on
+            # the misplaced file and passing on the plain one.
+            cfg = self._cfg(os.path.join(td, "dots", "nvim", "pat"))
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")), \
+                 mock.patch.object(ac, "PLUGIN_ROOT", plugin):
+                checks = ac._doctor_config_checks(cfg)
+            perm = next(c for c in checks if c["check"].startswith("pat_file for"))
+            where = next(c for c in checks if c["check"].startswith("pat_file location"))
+            self.assertTrue(perm["ok"])
+            self.assertFalse(where["ok"])
+            self.assertIn("git working tree", where["detail"])
+            cfg = self._cfg(os.path.join(td, "home", "pat"))
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")), \
+                 mock.patch.object(ac, "PLUGIN_ROOT", plugin):
+                checks = ac._doctor_config_checks(cfg)
+            where = next(c for c in checks if c["check"].startswith("pat_file location"))
+            self.assertTrue(where["ok"], where)
+
+
 class AccountsFromSetupTests(unittest.TestCase):
     """AZVICLI_ACCOUNTS_JSON - what config.lua exports for
     setup({accounts=...}); wins over azure-cli.yml entirely."""

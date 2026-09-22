@@ -279,6 +279,35 @@ class AccountConfig:
             return "pat_file {0} is empty or unreadable".format(path)
         return None
 
+    def pat_file_location_problem(self, plugin_root=None):
+        """A pat_file kept somewhere it could get committed: inside this
+        plugin's own folder (a git clone under a plugin manager, wiped or
+        pushed along with it) or inside any git working tree at all (one
+        `git add .` from a public commit). A warning --doctor raises like
+        the permission one above; nothing refuses to work over it. None
+        when the file is somewhere else, doesn't exist, or pat: is used
+        instead. `plugin_root` is the folder holding azure-cli.py unless a
+        test says otherwise."""
+        if not self.pat_file or (isinstance(self.pat, str) and self.pat.strip()):
+            return None
+        path = self.pat_file_path()
+        if not os.path.isfile(path):
+            return None
+        real = os.path.realpath(path)
+        root = os.path.realpath(plugin_root if plugin_root is not None else PLUGIN_ROOT)
+        if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
+            return ("pat_file {0} is inside the plugin folder ({1}) - a plugin-manager update or a push of that "
+                    "clone takes the token with it; move it out, e.g. to ~/.config/azure-cli/pat".format(path, root))
+        d = os.path.dirname(real)
+        while True:
+            if os.path.exists(os.path.join(d, ".git")):
+                return ("pat_file {0} is inside a git working tree ({1}) - one `git add` away from being committed; "
+                        "move it outside that repository, or at least add it to its .gitignore".format(path, d))
+            parent = os.path.dirname(d)
+            if parent == d:
+                return None
+            d = parent
+
     def pat_file_permission_problem(self):
         """A pat_file other users can read (group/other bits set) - a
         warning --doctor raises the way ssh does for a loose key; nothing
@@ -293,6 +322,13 @@ class AccountConfig:
         if mode & 0o077:
             return "pat_file {0} is readable by other users (mode {1:o}) - run: chmod 600 {0}".format(path, mode & 0o777)
         return None
+
+
+# The folder this provider lives in - the plugin's root when azure-cli.py
+# sits at the repo root, as it does under every plugin-manager install and
+# the standalone launcher. AccountConfig.pat_file_location_problem()'s
+# "inside the plugin folder" check compares against it.
+PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
 class Config:
@@ -3406,6 +3442,16 @@ def _doctor_config_checks(config):
             checks.append({"check": name, "ok": False, "detail": loose})
         else:
             checks.append({"check": name, "ok": True, "detail": "{0} (only you can read it)".format(a.pat_file_path())})
+        # Where it lives, separately from who can read it: a 600 file
+        # inside the plugin clone or a dotfiles repo is still a commit away
+        # from leaking.
+        misplaced = a.pat_file_location_problem()
+        name = "pat_file location for {0}".format(a.project or a.org_url or "?")
+        if misplaced:
+            checks.append({"check": name, "ok": False, "detail": misplaced})
+        elif os.path.isfile(a.pat_file_path()):
+            checks.append({"check": name, "ok": True,
+                           "detail": "outside the plugin folder and any git working tree"})
 
     source = AzureDevOpsPullRequestSource(config)
     for org, accounts in config.accounts_by_org():
