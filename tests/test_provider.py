@@ -788,9 +788,10 @@ class BuildStatusTests(unittest.TestCase):
         self.project_id = "proj-guid-1"
 
     def _evaluations(self, records):
-        def fake_fetch(method, url, pat, data=None):
+        def fake_fetch(method, url, pat, data=None, api_version=None):
             self.assertEqual(method, "GET")
             self.assertIn("_apis/policy/evaluations", url)
+            self.assertEqual(api_version, ac.POLICY_EVAL_API)
             return {"value": records}
 
         self.source.fetch = fake_fetch
@@ -851,8 +852,9 @@ class BuildStatusTests(unittest.TestCase):
             }
         ]
 
-        def fake_fetch(method, url, pat, data=None):
+        def fake_fetch(method, url, pat, data=None, api_version=None):
             if "_apis/policy/evaluations" in url:
+                self.assertEqual(api_version, ac.POLICY_EVAL_API)
                 return {"value": records}
             if "_apis/build/builds/7" in url:
                 return {"status": "notStarted", "queuePosition": 3}
