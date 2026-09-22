@@ -4115,12 +4115,61 @@ EXT.check_new_push = function()
       if n > EXT.iteration_count then
         local added = n - EXT.iteration_count
         EXT.iteration_count = n
-        local msg = added .. " new push" .. (added == 1 and "" or "es") .. " on PR #" .. ID .. "."
+        local msg = added .. " new push" .. (added == 1 and "" or "es") .. " on PR #" .. ID
+          .. " \u{2014} fetching\u{2026}"
         notify(msg)
         if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+        vim.schedule(EXT.fetch_new_commits)
       end
     end,
   })
+end
+
+-- Fetches the commits ADO just told us about, instead of waiting for the
+-- dashboard's own poll to get round to it.
+--
+-- The dashboard is still the component that owns fetching (warm_pr runs
+-- this same provider prefetch), and this deliberately runs the identical
+-- job rather than its own `git fetch`, taking part in the same
+-- STATE.warm.warming mutex so the two never fetch one clone at once and
+-- fight over ref locks. What it doesn't do is wait for the dashboard's
+-- timer: that's a separate 30s cycle from this one, so relying on it left
+-- up to a minute of nothing visible between "new push" and the diff
+-- changing - long enough that quitting and reopening looks like the only
+-- thing that works.
+--
+-- The PR's own env is passed explicitly (opts.env wins over the ambient
+-- AZVICLI_* the daemon otherwise forwards) because vim.env follows
+-- whichever PR the dashboard opened most recently - with a second reviewer
+-- tab open, inheriting it would fetch the other PR's branches.
+EXT.fetch_new_commits = function()
+  local warm = STATE.warm
+  local warming = warm and warm.warming
+  if warming and warming[tostring(ID)] then return end  -- dashboard already on it
+  if EXT.fetch_inflight then return end
+  EXT.fetch_inflight = true
+  if warming then warming[tostring(ID)] = true end
+  local function done()
+    EXT.fetch_inflight = false
+    if warming then warming[tostring(ID)] = nil end
+  end
+  local ok = pcall(EXT.rpc.run, EXT.provider({}), {
+    env = {
+      AZVICLI_PREFETCH = "1",
+      AZVICLI_PR = tostring(ID),
+      AZVICLI_ORG = ORG,
+      AZVICLI_PROJECT = PROJECT,
+      AZVICLI_REPO = env.AZVICLI_REPO or "",
+      AZVICLI_SOURCE = SOURCE,
+      AZVICLI_TARGET = TARGET,
+      AZVICLI_REPO_PATH = REPO_PATH,
+    },
+    on_exit = function(_, code)
+      done()
+      if code == 0 then EXT.check_source_sha() end
+    end,
+  })
+  if not ok then done() end
 end
 
 -- True while pulling the view out from under the user would lose something
@@ -4190,7 +4239,10 @@ EXT.check_source_sha = function()
   if SOURCE == "" or EXT.sha_inflight then return end
   EXT.sha_inflight = true
   local out = {}
-  vim.fn.jobstart(git_args("rev-parse", "origin/" .. SOURCE), {
+  -- jobstart answers <= 0 when the spawn itself failed, and then never
+  -- calls on_exit - without clearing the flag here the guard above would
+  -- latch and this check would be dead for the rest of the session.
+  local job = vim.fn.jobstart(git_args("rev-parse", "origin/" .. SOURCE), {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
@@ -4214,6 +4266,7 @@ EXT.check_source_sha = function()
       end)
     end,
   })
+  if job <= 0 then EXT.sha_inflight = false end
 end
 
 do
