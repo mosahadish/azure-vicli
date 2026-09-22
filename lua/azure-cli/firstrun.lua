@@ -25,6 +25,8 @@ local M = {}
 
 function M.ensure(reopen)
   local CONFIG = require("azure-cli.config")
+  -- setup({accounts=...}) is the config: no file needed, nothing to write.
+  if CONFIG.accounts_from_setup() then return true end
   local path = CONFIG.config_path()
   if vim.fn.filereadable(path) == 1 then return true end
 

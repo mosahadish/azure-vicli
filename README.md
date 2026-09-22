@@ -85,10 +85,21 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
   "mosahadish/azure-vicli",
   cmd = "AzureCli",
   opts = {
+    accounts = {
+      {
+        project_name = "MyProject",
+        org_url = "https://dev.azure.com/my-org",
+        pat_file = "~/.config/azure-cli/pat",   -- a file holding just the token
+        clones_dir = "~/src",
+      },
+    },
     -- keys = { diff = { next_hunk = "]h" } },  -- see Keys below; optional
   },
 }
 ```
+
+`accounts` is optional: leave it out and the plugin uses `azure-cli.yml`
+like the standalone launcher does (see [Configuration](docs/configuration.md#configuration)).
 
 `opts` (however you spell it for your plugin manager) is passed straight to
 `require("azure-cli").setup()`; leaving it out (or the whole plugin

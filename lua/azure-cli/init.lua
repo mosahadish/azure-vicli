@@ -102,7 +102,8 @@ function M.status()
   local config = require("azure-cli.config")
   local cmd = config.provider_cmd()
   st.python = cmd[1]
-  st.config = config.config_path()
+  local n = config.accounts_from_setup()
+  st.config = n and ("setup({accounts=...}) - " .. n .. " account(s)") or config.config_path()
   vim.notify(string.format(
     "azure-cli: daemon running=%s fallback=%s pid=%s\npython=%s\nconfig=%s",
     tostring(st.running), tostring(st.fallback), tostring(st.pid), st.python, st.config

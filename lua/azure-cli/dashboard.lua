@@ -264,6 +264,11 @@ end
 -- editing, so you don't have to go dig it up manually to add an account or
 -- tweak hide_ancient/clones_dir.
 local function open_config_file()
+  local notice = require("azure-cli.config").setup_accounts_notice()
+  if notice then
+    notify(notice)
+    return
+  end
   local path = config_path()
   vim.cmd("tabnew " .. vim.fn.fnameescape(path))
   vim.bo.filetype = "yaml"

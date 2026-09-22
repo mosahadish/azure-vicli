@@ -35,6 +35,29 @@ vim = {
     end,
   },
   env = {},
+  -- Just enough of vim.json.encode for setup({accounts=...})'s export:
+  -- strings, numbers, booleans, arrays (#t > 0) and objects (sorted keys).
+  json = {
+    encode = function(v)
+      local t = type(v)
+      if t == "string" then return '"' .. v:gsub('[%c"\\]', function(c) return string.format("\\u%04x", c:byte()) end) .. '"' end
+      if t == "number" or t == "boolean" then return tostring(v) end
+      if t == "table" then
+        if #v > 0 then
+          local parts = {}
+          for _, x in ipairs(v) do parts[#parts + 1] = vim.json.encode(x) end
+          return "[" .. table.concat(parts, ",") .. "]"
+        end
+        local keys = {}
+        for k in pairs(v) do keys[#keys + 1] = k end
+        table.sort(keys)
+        local parts = {}
+        for _, k in ipairs(keys) do parts[#parts + 1] = '"' .. k .. '":' .. vim.json.encode(v[k]) end
+        return "{" .. table.concat(parts, ",") .. "}"
+      end
+      return "null"
+    end,
+  },
 }
 
 local config_path = arg[1]
@@ -347,3 +370,51 @@ do
   print("ok: render_options() round-trips the defaults through setup()")
 end
 
+-- --- accounts: setup({accounts=...}) validation and the JSON export ----------
+
+do
+  vim.env = {}
+  config.setup({})
+  check("no accounts: nothing exported, accounts_from_setup() nil",
+    vim.env.AZVICLI_ACCOUNTS_JSON == nil and config.accounts_from_setup() == nil and config.setup_accounts_notice() == nil)
+
+  local good = { {
+    project_name = "P", org_url = "https://dev.azure.com/o", pat_file = "~/.config/azure-cli/pat",
+    clones_dir = "/src", hide_ancient = true,
+    work_items = { team = "T", types = { "User Story", "Bug" }, sprint_scope = "all" },
+  } }
+  config.setup({ accounts = good })
+  local exported = vim.env.AZVICLI_ACCOUNTS_JSON
+  check("accounts exported as JSON", type(exported) == "string" and exported:find('"accounts":[', 1, true) ~= nil, exported)
+  check("export carries pat_file, not a token", exported:find('"pat_file":"~/.config/azure-cli/pat"', 1, true) ~= nil, exported)
+  check("export keeps work_items.types as a list", exported:find('"types":["User Story","Bug"]', 1, true) ~= nil, exported)
+  check("accounts_from_setup() counts them", config.accounts_from_setup() == 1)
+  check("setup_accounts_notice() explains gO", (config.setup_accounts_notice() or ""):find("setup({accounts", 1, true) ~= nil)
+  check("M.get().accounts is the validated list", config.get().accounts == good)
+
+  -- a later setup() without accounts clears the export again
+  config.setup({})
+  check("setup() without accounts clears the export", vim.env.AZVICLI_ACCOUNTS_JSON == nil and config.accounts_from_setup() == nil)
+
+  local function rejects(name, accounts, needle)
+    local ok, err = pcall(config.setup, { accounts = accounts })
+    check("rejects " .. name, not ok and tostring(err):find(needle, 1, true) ~= nil, err)
+  end
+  rejects("a non-table", "x", "list of account tables")
+  rejects("an empty list", {}, "is empty")
+  rejects("a missing project_name", { { org_url = "https://x", pat = "t" } }, "project_name")
+  rejects("a missing org_url", { { project_name = "p", pat = "t" } }, "org_url")
+  rejects("an org_url without a scheme", { { project_name = "p", org_url = "dev.azure.com/o", pat = "t" } }, "https://")
+  rejects("neither pat nor pat_file", { { project_name = "p", org_url = "https://x" } }, "exactly one of")
+  rejects("both pat and pat_file", { { project_name = "p", org_url = "https://x", pat = "t", pat_file = "f" } }, "exactly one of")
+  rejects("an unknown field", { { project_name = "p", org_url = "https://x", pat = "t", token = "t" } }, "unknown field `token`")
+  rejects("a wrong type", { { project_name = "p", org_url = "https://x", pat = "t", hide_ancient = "yes" } }, "must be a boolean")
+  rejects("work_items without team", { { project_name = "p", org_url = "https://x", pat = "t", work_items = {} } }, "`team`")
+  rejects("a bad sprint_scope", { { project_name = "p", org_url = "https://x", pat = "t", work_items = { team = "T", sprint_scope = "some" } } }, "sprint_scope")
+  rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat = "t", work_items = { team = "T", types = { 1 } } } }, "list of strings")
+end
+
+if fails > 0 then
+  print(fails .. " check(s) failed")
+  os.exit(1)
+end

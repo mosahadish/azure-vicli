@@ -227,13 +227,72 @@ class AccountConfig:
     """
 
     def __init__(self, project=None, org_url=None, pat=None, hide_ancient=None, clones_dir=None,
-                 work_items=None):
+                 work_items=None, pat_file=None):
         self.project = project
         self.org_url = org_url
         self.pat = pat
+        # pat_file: a file holding nothing but the token, as an alternative
+        # to pat: - keeps the secret out of azure-cli.yml / init.lua (which
+        # people put in dotfiles repos). Read lazily by token() below.
+        self.pat_file = pat_file if isinstance(pat_file, str) and pat_file.strip() else None
+        self._token = None
         self.hide_ancient = bool(hide_ancient) if hide_ancient is not None else None
         self.clones_dir = clones_dir
         self.work_items = work_items if isinstance(work_items, dict) else None
+
+    def has_pat_source(self):
+        """True when pat: is set or pat_file: names a file - i.e. the
+        account isn't simply missing its token in the config."""
+        return bool((isinstance(self.pat, str) and self.pat.strip()) or self.pat_file)
+
+    def pat_file_path(self):
+        return os.path.expanduser(self.pat_file) if self.pat_file else None
+
+    def token(self):
+        """The PAT to send: pat: verbatim (stripped), else the first
+        non-blank content of pat_file (whitespace/newline stripped, read
+        once and cached). None when neither yields a token - callers
+        already treat "no PAT" as an error."""
+        if isinstance(self.pat, str) and self.pat.strip():
+            return self.pat.strip()
+        if self.pat_file:
+            if self._token is None:
+                try:
+                    with open(self.pat_file_path(), "r", encoding="utf-8") as fh:
+                        self._token = fh.read().strip()
+                except OSError:
+                    self._token = ""
+            return self._token or None
+        return None
+
+    def pat_file_problem(self):
+        """Why pat_file can't supply a token right now (missing, unreadable,
+        empty), or None when it can or when pat: is used instead."""
+        if isinstance(self.pat, str) and self.pat.strip():
+            return None
+        if not self.pat_file:
+            return None
+        path = self.pat_file_path()
+        if not os.path.isfile(path):
+            return "pat_file {0} does not exist - put the personal access token in it, alone on one line".format(path)
+        if not self.token():
+            return "pat_file {0} is empty or unreadable".format(path)
+        return None
+
+    def pat_file_permission_problem(self):
+        """A pat_file other users can read (group/other bits set) - a
+        warning --doctor raises the way ssh does for a loose key; nothing
+        else refuses to work over it. Windows has no such mode bits."""
+        if not self.pat_file or os.name == "nt":
+            return None
+        path = self.pat_file_path()
+        try:
+            mode = os.stat(path).st_mode
+        except OSError:
+            return None
+        if mode & 0o077:
+            return "pat_file {0} is readable by other users (mode {1:o}) - run: chmod 600 {0}".format(path, mode & 0o777)
+        return None
 
 
 class Config:
@@ -241,9 +300,36 @@ class Config:
 
     CONFIG_NAME = "azure-cli.yml"
 
+    # Plugin users can hand their accounts straight to setup({accounts=...})
+    # in init.lua instead of keeping azure-cli.yml at all; config.lua then
+    # exports them as JSON in this variable (inherited by the --serve daemon
+    # and every one-shot provider call), and it wins over the file outright.
+    ACCOUNTS_ENV = "AZVICLI_ACCOUNTS_JSON"
+
     def __init__(self):
         self.repo_path = None
         self.accounts = []
+
+    @staticmethod
+    def accounts_json():
+        """The setup({accounts=...}) JSON text, or None when the config comes
+        from azure-cli.yml (the standalone launcher, or a plugin user who
+        kept the file)."""
+        text = os.environ.get(Config.ACCOUNTS_ENV)
+        return text if text and text.strip() else None
+
+    @staticmethod
+    def source_label():
+        """Where the accounts come from, for messages: the file's path, or
+        the setup() call."""
+        if Config.accounts_json():
+            return "setup({accounts=...}) in your Neovim config"
+        return Config.path()
+
+    @staticmethod
+    def is_configured():
+        """A config source exists at all: setup({accounts}) or the file."""
+        return bool(Config.accounts_json()) or os.path.isfile(Config.path())
 
     @staticmethod
     def path():
@@ -280,6 +366,8 @@ class Config:
         identically for the top-level one-shot CLI, since main() ultimately
         does sys.exit(main()) either way.
         """
+        if Config.accounts_json():
+            return True
         p = Config.path()
         if not os.path.isfile(p):
             # stderr: the dashboards collect a failed run's stderr for the
@@ -307,7 +395,8 @@ class Config:
             return out
         for i, a in enumerate(self.accounts, 1):
             label = "account {0}{1}".format(i, " ({0})".format(a.project) if a.project else "")
-            missing = [name for name, value in (("project_name", a.project), ("org_url", a.org_url), ("pat", a.pat))
+            missing = [name for name, value in (("project_name", a.project), ("org_url", a.org_url),
+                                                ("pat", "set" if a.has_pat_source() else None))
                        if not isinstance(value, str) or not value.strip()]
             if len(missing) == 3:
                 out.append("{0}: project_name, org_url and pat are all empty - still the untouched "
@@ -316,20 +405,38 @@ class Config:
             for name in missing:
                 hint = ""
                 if name == "pat":
-                    hint = " (a personal access token with Code and Work Items read/write scopes)"
+                    hint = (" (a personal access token with Code and Work Items read/write scopes, "
+                            "or pat_file: a file holding just the token)")
                 elif name == "org_url":
                     hint = " (e.g. https://dev.azure.com/my-org)"
                 out.append("{0}: {1} is missing{2}".format(label, name, hint))
+            pat_problem = a.pat_file_problem()
+            if pat_problem:
+                out.append("{0}: {1}".format(label, pat_problem))
             if isinstance(a.org_url, str) and a.org_url.strip() and not re.match(r"^https?://", a.org_url.strip(), re.I):
                 out.append("{0}: org_url must start with https:// (got '{1}')".format(label, a.org_url.strip()))
         return out
 
     @staticmethod
     def from_config_file():
+        text = Config.accounts_json()
+        if text:
+            # stderr, so --list keeps stdout as pure NDJSON.
+            print("Loading configuration from setup({accounts=...})", file=sys.stderr)
+            return Config.from_json(text)
         p = Config.path()
-        # stderr, so --list keeps stdout as pure NDJSON.
         print("Loading configuration from: {0}".format(p), file=sys.stderr)
         return Config.from_file(p)
+
+    @staticmethod
+    def from_json(text):
+        """setup({accounts=...}) as config.lua exports it: the same keys the
+        YAML file uses ({"accounts": [{project_name, org_url, pat | pat_file,
+        hide_ancient, clones_dir, work_items: {team, ...}}], "repo_path"})."""
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("{0} must hold a JSON object".format(Config.ACCOUNTS_ENV))
+        return Config.from_dict(data)
 
     @staticmethod
     def from_file(path):
@@ -338,15 +445,21 @@ class Config:
 
     @staticmethod
     def from_string(text):
-        data = parse_yaml_subset(text)
+        return Config.from_dict(parse_yaml_subset(text))
+
+    @staticmethod
+    def from_dict(data):
         cfg = Config()
         cfg.repo_path = data.get("repo_path")
         for raw in data.get("accounts") or []:
+            if not isinstance(raw, dict):
+                continue
             cfg.accounts.append(
                 AccountConfig(
                     project=raw.get("project_name"),
                     org_url=raw.get("org_url"),
                     pat=raw.get("pat"),
+                    pat_file=raw.get("pat_file"),
                     hide_ancient=raw.get("hide_ancient"),
                     clones_dir=raw.get("clones_dir"),
                     work_items=raw.get("work_items"),
@@ -397,17 +510,22 @@ def config_problems(config):
     problems = fn() if callable(fn) else []
     if not problems:
         return False
-    print("{0} is incomplete:".format(Config.path()), file=sys.stderr)
+    print("{0} is incomplete:".format(Config.source_label()), file=sys.stderr)
     for p in problems:
         print("  - " + p, file=sys.stderr)
-    print("Edit it (gO in the dashboard opens it) - see README 'Configuration'.", file=sys.stderr)
+    if Config.accounts_json():
+        print("Fix the setup({accounts=...}) table in your Neovim config - see docs/configuration.md.", file=sys.stderr)
+    else:
+        print("Edit it (gO in the dashboard opens it) - see docs/configuration.md.", file=sys.stderr)
     return True
 
 
 def get_cached_config():
-    path = Config.path()
+    # setup({accounts=...}) wins over the file; its JSON text is the cache
+    # key (a setup() re-run with different accounts changes the text).
+    path = Config.accounts_json() or Config.path()
     try:
-        mtime = os.path.getmtime(path)
+        mtime = None if Config.accounts_json() else os.path.getmtime(path)
     except OSError:
         mtime = None
     with _config_cache_lock:
@@ -1050,7 +1168,7 @@ class AzureDevOpsPullRequestSource:
 
     @staticmethod
     def _pick_pat(accounts):
-        return next((a.pat for a in accounts if a.pat), None)
+        return next((a.token() for a in accounts if a.token()), None)
 
     # -- identity -----------------------------------------------------------
 
@@ -1475,8 +1593,9 @@ def resolve_account_pat(config, org, project):
             continue
         if want_proj and (account.project or "").lower() != want_proj:
             continue
-        if account.pat:
-            return account.pat
+        token = account.token()
+        if token:
+            return token
     return None
 
 
@@ -3169,6 +3288,7 @@ accounts:
   - project_name: # TODO: e.g. sample-project
     org_url: # TODO: e.g. https://dev.azure.com/example
     pat: # TODO: your personal access token (required - no Azure AD fallback)
+    # pat_file: ~/.config/azure-cli/pat   # instead of pat: - a file holding just the token (chmod 600)
     hide_ancient: true
 {clones_dir}
     # Optional - uncomment to enable the work-item screens (W key).
@@ -3238,8 +3358,17 @@ def doctor_checks(config_path=None):
     by --doctor (a terminal / install.sh), --doctor --json (the Neovim
     :AzureCli doctor float and :checkhealth azure-cli).
     """
-    path = config_path or Config.path()
     checks = []
+    if config_path is None and Config.accounts_json():
+        checks.append({"check": "config source", "ok": True,
+                       "detail": "setup({accounts=...}) in your Neovim config (azure-cli.yml not used)"})
+        try:
+            config = Config.from_json(Config.accounts_json())
+        except Exception as ex:  # noqa: BLE001 - reported, not raised
+            checks.append({"check": "config parses", "ok": False, "detail": "{0}".format(ex)})
+            return checks
+        return checks + _doctor_config_checks(config)
+    path = config_path or Config.path()
     if not os.path.isfile(path):
         checks.append({"check": "config file", "ok": False,
                        "detail": "{0} does not exist - open the dashboard (./azure-cli or :AzureCli) to have "
@@ -3252,12 +3381,29 @@ def doctor_checks(config_path=None):
     except Exception as ex:  # noqa: BLE001 - reported, not raised
         checks.append({"check": "config parses", "ok": False, "detail": "{0}".format(ex)})
         return checks
+    return checks + _doctor_config_checks(config)
+
+
+def _doctor_config_checks(config):
+    """The checks after a Config exists, whatever it was read from: fields,
+    pat_file health/permissions, a sign-in per organization, work items."""
+    checks = []
     problems = config.problems()
     if problems:
         checks.append({"check": "config fields", "ok": False, "detail": "; ".join(problems)})
         return checks
     checks.append({"check": "config fields", "ok": True,
                    "detail": "{0} account(s)".format(len(config.accounts))})
+
+    for a in config.accounts:
+        if not a.pat_file or (isinstance(a.pat, str) and a.pat.strip()):
+            continue
+        name = "pat_file for {0}".format(a.project or a.org_url or "?")
+        loose = a.pat_file_permission_problem()
+        if loose:
+            checks.append({"check": name, "ok": False, "detail": loose})
+        else:
+            checks.append({"check": name, "ok": True, "detail": "{0} (only you can read it)".format(a.pat_file_path())})
 
     source = AzureDevOpsPullRequestSource(config)
     for org, accounts in config.accounts_by_org():
@@ -3298,7 +3444,7 @@ def cmd_doctor(as_json=False):
         if all(c["ok"] for c in checks):
             sys.stdout.write("Everything checks out.\n")
         else:
-            sys.stdout.write("Fix the FAIL line(s) in {0} and run this again.\n".format(Config.path()))
+            sys.stdout.write("Fix the FAIL line(s) in {0} and run this again.\n".format(Config.source_label()))
     sys.stdout.flush()
     return 0 if all(c["ok"] for c in checks) else 1
 
@@ -3313,10 +3459,12 @@ def cmd_print_pat(config, org, project):
         org_matches = (account.org_url or "").rstrip("/").lower() == want_org.lower()
         project_matches = (not project) or ((account.project or "").lower() == project.lower())
         if org_matches and project_matches:
-            if not account.pat:
-                print("azure-cli --print-pat: matching account has no 'pat' configured.", file=sys.stderr)
+            token = account.token()
+            if not token:
+                print("azure-cli --print-pat: matching account has no 'pat' (or readable 'pat_file') configured.",
+                      file=sys.stderr)
                 return 1
-            sys.stdout.write(account.pat)
+            sys.stdout.write(token)
             return 0
 
     suffix = "." if not project else " and project '{0}'.".format(project)
@@ -3749,7 +3897,7 @@ def main(argv=None):
         # No config yet is not an error here: nvim opens and
         # lua/azure-cli/firstrun.lua writes the template (via --init-config)
         # and opens it for editing. Only an existing file is read.
-        config = get_cached_config() if os.path.isfile(Config.path()) else None
+        config = get_cached_config() if Config.is_configured() else None
         return launch_dashboard(config, __file__)
 
     code, out, err = dispatch(argv, dict(os.environ))

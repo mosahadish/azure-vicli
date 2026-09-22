@@ -394,6 +394,32 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: :AzureCli status shows setup({python=..., config=...})'s resolved values" "$out"
   fi
 
+  # setup({accounts=...}) smoke: a plugin install with no azure-cli.yml at
+  # all - the accounts table (with a pat_file) is exported to the provider,
+  # so the first :AzureCli opens the real dashboard buffer (not the
+  # first-run template), and the real provider resolves the token from the
+  # file for --print-pat. org_url points at a closed local port so the
+  # dashboard's own --list fails instantly instead of touching the network.
+  SMOKE_ACCT="$TMP/smoke-accounts"
+  mkdir -p "$SMOKE_ACCT/config"
+  printf 'the-token\n' > "$SMOKE_ACCT/pat"
+  chmod 600 "$SMOKE_ACCT/pat"
+  out="$(XDG_CONFIG_HOME="$SMOKE_ACCT/config" nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" \
+    -c "runtime plugin/azure-cli.lua" \
+    -c "lua require('azure-cli').setup({ accounts = { { project_name = 'P', org_url = 'http://127.0.0.1:9/', pat_file = '$SMOKE_ACCT/pat' } } })" \
+    -c "AzureCli dashboard" \
+    -c "lua assert(vim.bo.filetype == 'azurecli-dashboard', 'filetype=' .. tostring(vim.bo.filetype))" \
+    -c "lua assert(vim.fn.filereadable('$SMOKE_ACCT/config/azure-cli.yml') == 0, 'a template was written despite setup accounts')" \
+    -c "lua local argv = require('azure-cli.config').provider_cmd(); vim.list_extend(argv, { '--print-pat', '--org', 'http://127.0.0.1:9' }); local tok = vim.fn.system(argv); assert(tok == 'the-token', 'print-pat gave ' .. vim.inspect(tok))" \
+    -c "lua assert(require('azure-cli').status().config:find('setup({accounts', 1, true), 'status did not name setup()')" \
+    -c "lua print('ACCOUNTS-SMOKE-OK')" \
+    -c "qa!" 2>&1)"
+  if [[ "$out" == *ACCOUNTS-SMOKE-OK* ]]; then
+    pass "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token"
+  else
+    fail "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token" "$out"
+  fi
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua

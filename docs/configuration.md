@@ -31,7 +31,8 @@ accounts:
 | `repo_path` | top level | Optional. A single clone to use when an account has no `clones_dir`. Prefer `clones_dir`. |
 | `project_name` | account | The Azure DevOps project. |
 | `org_url` | account | Organization or collection URL. Several accounts may share one. |
-| `pat` | account | Personal access token. Required - there is no Azure AD sign-in. |
+| `pat` | account | Personal access token. Required (or `pat_file`) - there is no Azure AD sign-in. |
+| `pat_file` | account | Instead of `pat`: the path of a file holding nothing but the token (`~` expands). Keeps the secret out of a config you might commit; `chmod 600` it - `:AzureCli doctor` flags a file other users can read. |
 | `hide_ancient` | account | Drop PRs whose latest commit is older than `hide_ancient_days` (default 30 - see [setup() options](#setup-options) below, `setup({hide_ancient_days=...})`). |
 | `clones_dir` | account | Directory holding one clone per repository, named after the repo. Repos are cloned here on demand when you open a PR. |
 | `work_items` | account | Enables the [work-item screens](work-items.md#work-items) for this account: `org_url`/`project_name` become the work-item collection/project. Absent by default - no account's work items are queried until one account has this block. `team` (required) is a team under that project; `assignee` (optional) defaults to your own signed-in display name; `types` (optional, a YAML list or a plain comma-separated string) defaults to `User Story, Bug`; `states` (optional, a YAML list or a plain comma-separated string - see [Work items](work-items.md#work-items)) defaults to `[Active, New, Implemented, Resolved, Closed, Removed]`; `sprint_scope` (optional, `parent` or `all` - see [Work items](work-items.md#work-items)) defaults to `parent`. |
@@ -45,6 +46,36 @@ Only one account's `work_items:` block is ever active: the first account in
 its `project_name`. With no account configured this way and no
 `AZVICLI_WI_TEAM` override either, the work-item screens show a "no
 `work_items:` block" message instead of a PR/work-item mix-up.
+
+### Accounts in setup() instead of a file (plugin)
+
+A plugin install doesn't need `azure-cli.yml` at all: pass the same
+accounts to `setup()`, with the same field names, and no file is read or
+written (the [first-run template](#configuration) only appears when neither
+is configured). `pat_file` keeps the token out of your `init.lua`:
+
+```lua
+require("azure-cli").setup({
+  accounts = {
+    {
+      project_name = "MyProject",
+      org_url = "https://dev.azure.com/my-org",
+      pat_file = "~/.config/azure-cli/pat",   -- or pat = "..." (not recommended in dotfiles)
+      clones_dir = "~/src",
+      -- hide_ancient = true,
+      -- work_items = { team = "My Team", types = { "User Story", "Bug" } },
+    },
+  },
+})
+```
+
+`setup()` validates the table up front (a missing field, both or neither
+of `pat`/`pat_file`, an unknown key) and hands it to the provider, which
+prefers it over `azure-cli.yml` outright. `gO` then says so instead of
+opening the file, and `:AzureCli status`/`:AzureCli doctor` report
+"setup({accounts=...})" as the source. The standalone launcher has no
+`init.lua`, so it keeps using the file (its `azure-cli.lua` options file
+may carry `accounts` too, if you'd rather).
 
 ## setup() options
 

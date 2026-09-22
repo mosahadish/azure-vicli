@@ -21,7 +21,9 @@ _Part of the [azure-vicli](../README.md) docs._
 - **"Configuration does not exist"**: open the dashboard (`./azure-cli` or
   `:AzureCli`) - it writes a template at the path printed and opens it - or
   run `azure-cli --init-config` from a terminal.
-- **"No PAT available" / "no configured PAT"**: add `pat:` to the matching
+- **"pat_file ... is readable by other users"** (from `:AzureCli doctor`):
+  `chmod 600` the file - it holds your token.
+- **"No PAT available" / "no configured PAT"**: add `pat:` (or `pat_file:`) to the matching
   account. The org URL is compared case-insensitively with the trailing
   slash ignored. Every account needs one - there is no Azure AD sign-in.
 - **A PR won't open, "branch not found"**: the source branch was deleted, or
