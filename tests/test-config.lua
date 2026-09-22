@@ -402,16 +402,18 @@ do
   end
   rejects("a non-table", "x", "list of account tables")
   rejects("an empty list", {}, "is empty")
-  rejects("a missing project_name", { { org_url = "https://x", pat = "t" } }, "project_name")
-  rejects("a missing org_url", { { project_name = "p", pat = "t" } }, "org_url")
-  rejects("an org_url without a scheme", { { project_name = "p", org_url = "dev.azure.com/o", pat = "t" } }, "https://")
-  rejects("neither pat nor pat_file", { { project_name = "p", org_url = "https://x" } }, "exactly one of")
-  rejects("both pat and pat_file", { { project_name = "p", org_url = "https://x", pat = "t", pat_file = "f" } }, "exactly one of")
-  rejects("an unknown field", { { project_name = "p", org_url = "https://x", pat = "t", token = "t" } }, "unknown field `token`")
-  rejects("a wrong type", { { project_name = "p", org_url = "https://x", pat = "t", hide_ancient = "yes" } }, "must be a boolean")
-  rejects("work_items without team", { { project_name = "p", org_url = "https://x", pat = "t", work_items = {} } }, "`team`")
-  rejects("a bad sprint_scope", { { project_name = "p", org_url = "https://x", pat = "t", work_items = { team = "T", sprint_scope = "some" } } }, "sprint_scope")
-  rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat = "t", work_items = { team = "T", types = { 1 } } } }, "list of strings")
+  rejects("a missing project_name", { { org_url = "https://x", pat_file = "f" } }, "project_name")
+  rejects("a missing org_url", { { project_name = "p", pat_file = "f" } }, "org_url")
+  rejects("an org_url without a scheme", { { project_name = "p", org_url = "dev.azure.com/o", pat_file = "f" } }, "https://")
+  rejects("a missing pat_file", { { project_name = "p", org_url = "https://x" } }, "non-empty `pat_file`")
+  rejects("an empty pat_file", { { project_name = "p", org_url = "https://x", pat_file = "" } }, "non-empty `pat_file`")
+  rejects("an inline pat", { { project_name = "p", org_url = "https://x", pat = "t" } }, "pat isn't accepted")
+  rejects("an inline pat next to pat_file", { { project_name = "p", org_url = "https://x", pat = "t", pat_file = "f" } }, "pat isn't accepted")
+  rejects("an unknown field", { { project_name = "p", org_url = "https://x", pat_file = "f", token = "t" } }, "unknown field `token`")
+  rejects("a wrong type", { { project_name = "p", org_url = "https://x", pat_file = "f", hide_ancient = "yes" } }, "must be a boolean")
+  rejects("work_items without team", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = {} } }, "`team`")
+  rejects("a bad sprint_scope", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", sprint_scope = "some" } } }, "sprint_scope")
+  rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", types = { 1 } } } }, "list of strings")
 end
 
 if fails > 0 then

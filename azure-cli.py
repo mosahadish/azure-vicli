@@ -339,12 +339,10 @@ class Config:
         location the .NET build used: %APPDATA% on Windows, $XDG_CONFIG_HOME
         (else ~/.config) elsewhere.
 
-        get_cached_config()'s mtime-based reload keys off whatever this
-        returns (it calls Config.path() fresh on every request), so a
-        setup({config=...}) call that changes AZVICLI_CONFIG before the
-        --serve daemon's next request picks up the new file without
-        restarting the daemon - the same "re-read on the next request" rule
-        an edited azure-cli.yml already gets.
+        The --serve daemon resolves this once, when it loads its config at
+        start-up (see get_cached_config()), so a setup({config=...}) call
+        or an edited azure-cli.yml only reaches a daemon started after it:
+        restart Neovim.
         """
         override = os.environ.get("AZVICLI_CONFIG")
         if override:
@@ -431,11 +429,19 @@ class Config:
     @staticmethod
     def from_json(text):
         """setup({accounts=...}) as config.lua exports it: the same keys the
-        YAML file uses ({"accounts": [{project_name, org_url, pat | pat_file,
-        hide_ancient, clones_dir, work_items: {team, ...}}], "repo_path"})."""
+        YAML file uses ({"accounts": [{project_name, org_url, pat_file,
+        hide_ancient, clones_dir, work_items: {team, ...}}], "repo_path"}),
+        except `pat`: config.lua already refuses an inline token (init.lua
+        gets committed; the environment every provider child inherits is
+        no place for it either), and this refuses one too so nothing that
+        bypasses config.lua can smuggle a token in through the variable."""
         data = json.loads(text)
         if not isinstance(data, dict):
             raise ValueError("{0} must hold a JSON object".format(Config.ACCOUNTS_ENV))
+        for raw in data.get("accounts") or []:
+            if isinstance(raw, dict) and raw.get("pat") is not None:
+                raise ValueError("{0}: an inline `pat` isn't accepted for setup({{accounts=...}}) - "
+                                 "use pat_file (a file holding just the token)".format(Config.ACCOUNTS_ENV))
         return Config.from_dict(data)
 
     @staticmethod
@@ -490,15 +496,23 @@ class Config:
 # so re-parsing the YAML on every call was never a cost worth caching for.
 # --serve changes that: every request run through dispatch() (PR/work-item
 # actions, --list, ...) would otherwise re-read and re-parse azure-cli.yml
-# from disk, even though it's the same file for the whole life of the
-# daemon. get_cached_config() reads it once and reuses that Config - which
-# is never mutated after construction, so sharing it read-only across the
-# thread pool's worker threads (see PrActions/WorkItemActions.__init__,
-# which only ever read from it) needs no lock of its own - and only
-# re-parses when the file's mtime changes, so editing accounts/PATs via gO
-# takes effect on the next request without restarting the daemon.
+# from disk. The daemon instead reads its config exactly once - at
+# start-up (serve() calls get_cached_config() before its request loop),
+# or on the first request that finds one when none existed at start-up
+# (a first run whose template is still being filled in) - and reuses that
+# Config for its whole life: never re-checked, never re-read, whatever
+# happens to the file or to AZVICLI_CONFIG/AZVICLI_ACCOUNTS_JSON
+# afterwards. The Config is never mutated after construction, so sharing
+# it read-only across the thread pool's worker threads (see PrActions/
+# WorkItemActions.__init__, which only ever read from it) needs no lock of
+# its own. Nothing reloads at run time: an edited azure-cli.yml, a
+# rotated pat_file or a changed setup({config=...}) reaches the next
+# daemon only, i.e. after a Neovim restart - exactly like any other
+# setup() change. Outside --serve the cache is off (`serving` is False)
+# and every call reads the file afresh, same as before there was a daemon
+# at all.
 _config_cache_lock = threading.Lock()
-_config_cache = {"path": None, "mtime": None, "config": None}
+_config_cache = {"config": None, "serving": False}
 
 
 def config_problems(config):
@@ -521,23 +535,11 @@ def config_problems(config):
 
 
 def get_cached_config():
-    # setup({accounts=...}) wins over the file; its JSON text is the cache
-    # key (a setup() re-run with different accounts changes the text).
-    path = Config.accounts_json() or Config.path()
-    try:
-        mtime = None if Config.accounts_json() else os.path.getmtime(path)
-    except OSError:
-        mtime = None
     with _config_cache_lock:
-        stale = (
-            _config_cache["config"] is None
-            or _config_cache["path"] != path
-            or _config_cache["mtime"] != mtime
-        )
-        if stale:
+        if not _config_cache["serving"]:
+            return Config.from_config_file()
+        if _config_cache["config"] is None:
             _config_cache["config"] = Config.from_config_file()
-            _config_cache["path"] = path
-            _config_cache["mtime"] = mtime
         return _config_cache["config"]
 
 
@@ -3698,6 +3700,20 @@ def serve():
     leak onto this loop's line protocol; every diagnostic of this loop's
     own goes to stderr, never stdout.
     """
+    # The one config read of this daemon's life (see get_cached_config's
+    # header comment). Before _install_streams(), so the "Loading
+    # configuration from" line lands on the real stderr. A config that
+    # doesn't exist yet (first run) or doesn't parse is left for the first
+    # request to report through the usual validate_exists()/dispatch()
+    # path - never a reason for the daemon not to start.
+    with _config_cache_lock:
+        _config_cache["serving"] = True
+    if Config.is_configured():
+        try:
+            get_cached_config()
+        except Exception as ex:  # noqa: BLE001
+            print("azure-cli --serve: config not loaded at start-up ({0}) - "
+                  "the first request will report it".format(ex), file=sys.stderr)
     real_out, real_err = _install_streams()
     write_lock = threading.Lock()
 

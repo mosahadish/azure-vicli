@@ -52,7 +52,9 @@ its `project_name`. With no account configured this way and no
 A plugin install doesn't need `azure-cli.yml` at all: pass the same
 accounts to `setup()`, with the same field names, and no file is read or
 written (the [first-run template](#configuration) only appears when neither
-is configured). `pat_file` keeps the token out of your `init.lua`:
+is configured). The token comes from `pat_file` only - an inline `pat` is
+refused, since an `init.lua` is exactly the kind of file that ends up in a
+dotfiles repo:
 
 ```lua
 require("azure-cli").setup({
@@ -60,7 +62,7 @@ require("azure-cli").setup({
     {
       project_name = "MyProject",
       org_url = "https://dev.azure.com/my-org",
-      pat_file = "~/.config/azure-cli/pat",   -- or pat = "..." (not recommended in dotfiles)
+      pat_file = "~/.config/azure-cli/pat",   -- a file holding just the token (chmod 600)
       clones_dir = "~/src",
       -- hide_ancient = true,
       -- work_items = { team = "My Team", types = { "User Story", "Bug" } },
@@ -69,8 +71,8 @@ require("azure-cli").setup({
 })
 ```
 
-`setup()` validates the table up front (a missing field, both or neither
-of `pat`/`pat_file`, an unknown key) and hands it to the provider, which
+`setup()` validates the table up front (a missing field, a missing
+`pat_file`, an inline `pat`, an unknown key) and hands it to the provider, which
 prefers it over `azure-cli.yml` outright. `gO` then says so instead of
 opening the file, and `:AzureCli status`/`:AzureCli doctor` report
 "setup({accounts=...})" as the source. The standalone launcher has no
@@ -136,7 +138,7 @@ Optional overrides:
 | `AZVICLI_WI_ACCOUNT` | Selects which account's `work_items:` block backs the work-item screens, by `project_name`, when more than one account has one (default: the first account in `accounts:` that has one). |
 | `AZVICLI_WI_COLLECTION`, `AZVICLI_WI_PROJECT`, `AZVICLI_WI_TEAM`, `AZVICLI_WI_ASSIGNEE`, `AZVICLI_WI_TYPES` | Override the selected account's `org_url`/`project_name`/`work_items:` fields (see [Configuration](#configuration)) one at a time, without editing azure-cli.yml. |
 | `AZVICLI_PREFETCH_DIR` | Where branch-prefetch markers and the `.userid` cache are written. Default: the plugin sets this to Neovim's own cache directory (`stdpath("cache") .. "/azure-cli"`) for every provider call, so a plain `azure-cli.py` invocation with no Lua session around it (headless `--list`/`--print-pat`/...) falls back to the platform cache directory's own `azure-cli/` subfolder instead - `%LOCALAPPDATA%\azure-cli\cache` on Windows, `$XDG_CACHE_HOME/azure-cli` (default `~/.cache/azure-cli`) elsewhere. |
-| `AZVICLI_CONFIG` | Overrides the config file path entirely (`~` expanded), ahead of the platform default - see [setup() options](#setup-options)' `config`, which sets this. The `--serve` daemon re-reads it on every request (`Config.path()`), so a changed value takes effect on the daemon's next request without a restart, the same as an edited `azure-cli.yml`. |
+| `AZVICLI_CONFIG` | Overrides the config file path entirely (`~` expanded), ahead of the platform default - see [setup() options](#setup-options)' `config`, which sets this. The `--serve` daemon resolves it once, when it reads its config at start-up, and never reloads: a changed value, like an edited `azure-cli.yml`, takes effect after a Neovim restart. |
 | `AZVICLI_HIDE_ANCIENT_DAYS` | The `hide_ancient: true` threshold, in days (default 30) - see [setup() options](#setup-options)' `hide_ancient_days`, which sets this. |
 | `AZVICLI_TOASTS` | Set to `0` to disable desktop toast notifications (also toggleable per-session with `gN`). |
 | `AZVICLI_NO_DAEMON` | Set to `1` to disable the `azure-cli.py --serve` daemon for this session: every provider call (`rpc.lua`'s `M.run`) always falls back to a plain one-shot `vim.fn.jobstart`. Useful to rule the daemon in or out while debugging a provider call. |

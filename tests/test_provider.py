@@ -1078,21 +1078,46 @@ class AccountsFromSetupTests(unittest.TestCase):
     """AZVICLI_ACCOUNTS_JSON - what config.lua exports for
     setup({accounts=...}); wins over azure-cli.yml entirely."""
 
-    JSON = json.dumps({"accounts": [{"project_name": "P", "org_url": "https://dev.azure.com/o", "pat": "tok",
-                                     "clones_dir": "/src", "hide_ancient": True,
-                                     "work_items": {"team": "T", "types": ["User Story", "Bug"]}}]})
+    @staticmethod
+    def _json(td, **extra):
+        """The export for one account whose token sits in <td>/pat - the
+        only shape config.lua produces, since setup() has no inline pat."""
+        path = os.path.join(td, "pat")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("tok\n")
+        os.chmod(path, 0o600)
+        acct = {"project_name": "P", "org_url": "https://dev.azure.com/o", "pat_file": path,
+                "clones_dir": "/src", "hide_ancient": True,
+                "work_items": {"team": "T", "types": ["User Story", "Bug"]}}
+        acct.update(extra)
+        return json.dumps({"accounts": [acct]})
 
     def test_from_json_builds_the_same_config(self):
-        cfg = ac.Config.from_json(self.JSON)
-        self.assertEqual(len(cfg.accounts), 1)
-        a = cfg.accounts[0]
-        self.assertEqual((a.project, a.org_url, a.token(), a.clones_dir, a.hide_ancient), ("P", "https://dev.azure.com/o", "tok", "/src", True))
-        self.assertEqual(a.work_items["team"], "T")
-        self.assertEqual(cfg.problems(), [])
+        with tempfile.TemporaryDirectory() as td:
+            cfg = ac.Config.from_json(self._json(td))
+            self.assertEqual(len(cfg.accounts), 1)
+            a = cfg.accounts[0]
+            self.assertEqual((a.project, a.org_url, a.token(), a.clones_dir, a.hide_ancient),
+                             ("P", "https://dev.azure.com/o", "tok", "/src", True))
+            self.assertEqual(a.work_items["team"], "T")
+            self.assertEqual(cfg.problems(), [])
+
+    def test_inline_pat_is_refused(self):
+        """setup() has no inline pat - the export never carries a token, and
+        a hand-set AZVICLI_ACCOUNTS_JSON with one is refused the same way."""
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError) as cm:
+                ac.Config.from_json(self._json(td, pat="tok"))
+            self.assertIn("pat_file", str(cm.exception))
+            with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: self._json(td, pat="tok")}, clear=False):
+                checks = ac.doctor_checks()
+            self.assertEqual([c["check"] for c in checks], ["config source", "config parses"])
+            self.assertFalse(checks[1]["ok"])
+            self.assertIn("pat_file", checks[1]["detail"])
 
     def test_env_wins_over_the_file_everywhere(self):
         with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: self.JSON,
+            with mock.patch.dict(os.environ, {ac.Config.ACCOUNTS_ENV: self._json(td),
                                               "AZVICLI_CONFIG": os.path.join(td, "absent.yml")}, clear=False):
                 self.assertTrue(ac.Config.validate_exists())
                 self.assertTrue(ac.Config.is_configured())

@@ -50,10 +50,10 @@ _Part of the [azure-vicli](../README.md) docs._
   problem entirely (every provider call runs as its own one-shot process
   instead).
 - **A provider action seems to use a stale `azure-cli.yml`**: the daemon
-  only re-reads the config file when its mtime changes (checked on the next
-  request, not on a timer), so an edit through `gO` should always take
-  effect on your very next action; if it somehow doesn't, `AZVICLI_NO_DAEMON=1`
-  followed by a normal restart forces a clean re-read. If `gO` doesn't open
+  reads the config file once, when it starts, and never reloads it. An
+  edit (through `gO` or any other editor), a rotated `pat_file` or a
+  changed `setup({config=...})` takes effect after you restart Neovim,
+  not before. If `gO` doesn't open
   the file you expected, check `:AzureCli status`'s `config` line and
   `AZVICLI_CONFIG` (see [setup() options](configuration.md#setup-options)/[Environment
   variables](configuration.md#environment-variables)) - a `setup({config=...})` call

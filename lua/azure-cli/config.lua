@@ -193,12 +193,15 @@ function M.provider_cmd()
 end
 
 -- setup({accounts=...}): the plugin-mode alternative to azure-cli.yml.
--- Validated field by field (same names as the YAML file), then exported
--- as JSON in AZVICLI_ACCOUNTS_JSON for the provider (Config.from_json in
+-- Validated field by field (same names as the YAML file, minus `pat`: an
+-- init.lua lives in a dotfiles repo, so the token can only come from
+-- `pat_file`, and an inline `pat` is refused outright rather than exported
+-- into every provider process's environment), then exported as JSON in
+-- AZVICLI_ACCOUNTS_JSON for the provider (Config.from_json in
 -- azure-cli.py), which prefers it over the file outright. Returns the
 -- validated list.
 local ACCOUNT_FIELDS = {
-  project_name = "string", org_url = "string", pat = "string", pat_file = "string",
+  project_name = "string", org_url = "string", pat_file = "string",
   hide_ancient = "boolean", clones_dir = "string", work_items = "table",
 }
 local WORK_ITEM_FIELDS = {
@@ -233,12 +236,16 @@ local function validate_accounts(accounts)
     error("azure-cli.setup: `accounts` must be a list of account tables")
   end
   if #accounts == 0 then
-    error("azure-cli.setup: `accounts` is empty - add one with project_name, org_url and pat or pat_file")
+    error("azure-cli.setup: `accounts` is empty - add one with project_name, org_url and pat_file")
   end
   for i, a in ipairs(accounts) do
     local where = "accounts[" .. i .. "]"
     if type(a) ~= "table" then
       error("azure-cli.setup: " .. where .. " must be a table")
+    end
+    if a.pat ~= nil then
+      error("azure-cli.setup: " .. where .. ".pat isn't accepted - setup() lives in your Neovim config, "
+        .. "so the token goes in a file of its own: pat_file = \"~/.config/azure-cli/pat\"")
     end
     check_fields(a, ACCOUNT_FIELDS, where)
     for _, req in ipairs({ "project_name", "org_url" }) do
@@ -249,11 +256,8 @@ local function validate_accounts(accounts)
     if not a.org_url:match("^[Hh][Tt][Tt][Pp][Ss]?://") then
       error("azure-cli.setup: " .. where .. ".org_url must start with https:// (got " .. a.org_url .. ")")
     end
-    local has_pat = type(a.pat) == "string" and a.pat ~= ""
-    local has_file = type(a.pat_file) == "string" and a.pat_file ~= ""
-    if has_pat == has_file then
-      error("azure-cli.setup: " .. where .. " needs exactly one of `pat` (the token) or `pat_file` "
-        .. "(a file holding just the token)")
+    if type(a.pat_file) ~= "string" or a.pat_file == "" then
+      error("azure-cli.setup: " .. where .. " needs a non-empty `pat_file` (a file holding just the token)")
     end
     if a.work_items ~= nil then
       check_fields(a.work_items, WORK_ITEM_FIELDS, where .. ".work_items")
