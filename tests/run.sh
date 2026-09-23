@@ -448,6 +448,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" "$out"
   fi
+  if [[ "$out" == *FOLLOWUP-SMOKE-OK* ]]; then
+    pass "smoke: gu lists my comments and gA filters them there like everywhere else"
+  else
+    fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
+  fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"
 fi

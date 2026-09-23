@@ -132,5 +132,43 @@ print("== gr hits ==")
 print(hits)
 
 print("NAV-SMOKE-OK")
+
+-- gu ("follow up on my comments") and gA inside it. PR #101 has exactly one
+-- thread of mine and it is `fixed`, so the active-only filter has something
+-- real to hide: the row is listed, gA hides it, gA again brings it back.
+feed("q")
+ok = vim.wait(10000, function() return float_text() == nil end, 100)
+if not ok then return fail("q didn't close the peek\n" .. tostring(float_text())) end
+
+vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+feed("gu")
+local picker
+ok = vim.wait(20000, function()
+  picker = float_text()
+  return picker ~= nil and picker:find("throttle.py", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gu never listed my thread on throttle.py\n" .. tostring(picker)) end
+print("== gu picker ==")
+print(picker)
+
+local HIDDEN = "hidden by the active-only filter"
+feed("gA")
+ok = vim.wait(10000, function()
+  picker = float_text()
+  return picker ~= nil and picker:find(HIDDEN, 1, true) ~= nil
+end, 100)
+if not ok then return fail("gA in the gu picker didn't hide my resolved thread\n" .. tostring(picker)) end
+print("== gu picker, active-only ==")
+print(picker)
+
+feed("gA")
+ok = vim.wait(10000, function()
+  picker = float_text()
+  return picker ~= nil and picker:find("throttle.py", 1, true) ~= nil
+     and picker:find(HIDDEN, 1, true) == nil
+end, 100)
+if not ok then return fail("gA again didn't bring my thread back\n" .. tostring(picker)) end
+
+print("FOLLOWUP-SMOKE-OK")
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

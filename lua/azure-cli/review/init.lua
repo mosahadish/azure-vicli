@@ -3259,14 +3259,19 @@ EXT.rebuild_view = function(reload_files)
   end
 end
 
--- Everything review/nav.lua reads out of this file, gathered in one place.
--- A statement, not a new top-level local, and deliberately out here rather
--- than inside the closing loader block: every name mentioned there becomes
--- one more upvalue of that function, which is at LuaJIT's 60-upvalue
--- ceiling (see README's "Extending the reviewer"). nav never assigns any of
--- these back, so plain values are enough for all but files_loaded, which is
--- still false at this point in the file.
-EXT.for_nav = {
+-- Everything the review/* modules read out of this file that ctx doesn't
+-- already carry, gathered in one place. A statement, not a new top-level
+-- local, and deliberately out here rather than inside the closing loader
+-- block: every name mentioned there becomes one more upvalue of that
+-- function, which is at LuaJIT's 60-upvalue ceiling (see README's
+-- "Extending the reviewer"). The loader copies the whole table onto ctx in
+-- one loop, so adding a field here costs nothing there.
+--
+-- Plain values except where the reviewer reassigns the thing itself -
+-- files_loaded is still false at this point in the file, and active_only
+-- flips every time gA is pressed, so both are getters.
+EXT.for_modules = {
+  -- review/nav.lua
   cache_key = cache_key,
   diff_ns = diff_ns,
   OVERVIEW_MARK = OVERVIEW_MARK,
@@ -3275,6 +3280,15 @@ EXT.for_nav = {
   set_diff_winbar = set_diff_winbar,
   set_overview_winbar = set_overview_winbar,
   files_loaded = function() return files_loaded end,
+  -- The comment filters (gA's active-only, gF's ignore-texts), so a module
+  -- showing threads of its own hides exactly what every other surface
+  -- hides. passes_filters is the same predicate filtered()/the new-comment
+  -- notifier use; toggle_active_filter flips the filter for the whole
+  -- reviewer, not just the caller, which is what makes gA mean one thing
+  -- wherever it's pressed.
+  passes_filters = passes_filters,
+  active_only = function() return active_only end,
+  toggle_active_filter = toggle_active_filter,
 }
 
 -- Re-fetch PR comment threads from ADO and re-decorate every open diff buffer
@@ -3871,7 +3885,7 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- so these are plain values, not getters - except the two windows/buffers
   -- and the file list, which the reviewer reassigns over its life.
   ctx.ext = EXT
-  for k, v in pairs(EXT.for_nav) do ctx[k] = v end
+  for k, v in pairs(EXT.for_modules) do ctx[k] = v end
   ctx.overview_commits = function() return overview_commits end
 
   -- Fields review/since.lua ("changes since my last review", gi)

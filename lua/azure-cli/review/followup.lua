@@ -63,7 +63,20 @@
 -- old-side line number (a future feature comparing against the target
 -- side, say), even though classifying an "R" thread never needs to call it.
 --
+-- The comment filters apply here too: a thread the active-only filter (gA)
+-- or a gF text filter hides is hidden in this picker exactly as it is in
+-- the diff, the file list's counts and the Overview page - this was the one
+-- surface that still listed threads the rest of the reviewer was treating
+-- as not there. gA is bound inside the picker as well, and flips the
+-- reviewer's own filter rather than a private copy, so the diff and
+-- Overview behind it follow along and pressing it here means the same
+-- thing as pressing it anywhere else. Every one of my threads is classified
+-- before the picker opens and filtered at render time, so toggling the
+-- filter off in there puts rows back without re-running the since-diff.
+--
 -- Keys (list/diff/overview - see ctx.add_key's kinds): gu opens the picker.
+-- Inside it: <CR> jumps to the thread, K shows it, R replies, s sets its
+-- status, gA toggles the active-only filter, q/<Esc> close.
 
 local M = {}
 
@@ -109,6 +122,20 @@ end
 function M.preview_text(content, limit)
   limit = limit or 80
   return (content or ""):gsub("%s+", " "):sub(1, limit)
+end
+
+-- Drops the rows whose thread the reviewer's comment filters currently
+-- hide - `passes` is ctx.passes_filters, the same predicate the diff
+-- decoration, the file list's counts and the Overview page all run threads
+-- through, so "my comments" lists exactly the comments the rest of the
+-- reviewer admits exist. A row carrying no thread of its own is kept:
+-- there's nothing to filter on.
+function M.visible(rows, passes)
+  local out = {}
+  for _, r in ipairs(rows or {}) do
+    if not r.thread or passes(r.thread) then out[#out + 1] = r end
+  end
+  return out
 end
 
 -- Splits a flat list of thread entries (ctx.threads()'s three tables,
@@ -408,8 +435,30 @@ end
 -- thread, a per-row classification, a per-row side (source vs. target ref),
 -- and its own since-range hunk highlight, so this builds its own float
 -- instead (see the module comment / task's own note on this).
-local function open_picker(ctx, lines, rows_by_line, hunks_by_path, base)
+-- `kind` is the surface gu was pressed from ("list" | "diff" | "overview"),
+-- used only to resolve that surface's own active_filter key below.
+-- `anchored`/`unanchored` are every one of my threads, already classified -
+-- the picker filters them at render time rather than being handed a
+-- pre-filtered list, so toggling a comment filter in here can put rows back
+-- without re-running the since-diff.
+local function open_picker(ctx, kind, new_iterations, review_point, anchored, unanchored, hunks_by_path, base)
   followup_ns = followup_ns or vim.api.nvim_create_namespace("azure_cli_followup")
+
+  -- The reviewer's own comment filters (gA's active-only, gF's
+  -- ignore-texts) decide what shows here too: a thread hidden in the diff
+  -- and on the Overview page was still listed in this picker, which is the
+  -- one place "my comments" could disagree with every other surface about
+  -- which comments there are.
+  local lines, rows_by_line
+  local function build()
+    local shown = M.visible(anchored, ctx.passes_filters)
+    local shown_un = M.visible(unanchored, ctx.passes_filters)
+    lines, rows_by_line = M.build_lines(new_iterations, review_point, shown, shown_un)
+    if #shown == 0 and #shown_un == 0 then
+      lines[#lines + 1] = "(every comment of yours is hidden by the active-only filter)"
+    end
+  end
+  build()
 
   local total_w = math.min(vim.o.columns - 4, math.max(80, math.floor(vim.o.columns * 0.92)))
   local height = math.min(vim.o.lines - 6, math.max(16, math.floor(vim.o.lines * 0.72)))
@@ -422,9 +471,16 @@ local function open_picker(ctx, lines, rows_by_line, hunks_by_path, base)
   vim.api.nvim_buf_set_lines(lbuf, 0, -1, false, lines)
   vim.bo[lbuf].modifiable = false
   vim.bo[lbuf].buftype = "nofile"
+  -- The title carries the active-only state, the way every other surface's
+  -- winbar carries its "[active-only]" tag - otherwise toggling the filter
+  -- in here just makes rows appear and disappear with nothing saying why.
+  local function title_text()
+    if ctx.active_only() then return " Follow up on my comments \u{00B7} active only " end
+    return " Follow up on my comments "
+  end
   local ok, lwin = pcall(vim.api.nvim_open_win, lbuf, true, {
     relative = "editor", row = row0, col = col, width = list_w, height = height,
-    style = "minimal", border = "rounded", title = " Follow up on my comments ", title_pos = "left",
+    style = "minimal", border = "rounded", title = title_text(), title_pos = "left",
   })
   if not ok then
     lwin = vim.api.nvim_open_win(lbuf, true, {
@@ -468,7 +524,8 @@ local function open_picker(ctx, lines, rows_by_line, hunks_by_path, base)
     if not vim.api.nvim_win_is_valid(pwin) then return end
     if not row or not row.path then
       local buf = vim.api.nvim_create_buf(false, true)
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "(PR-level comment \u{2014} no file)" })
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false,
+        { row and "(PR-level comment \u{2014} no file)" or "(nothing selected)" })
       vim.bo[buf].modifiable = false
       vim.api.nvim_win_set_buf(pwin, buf)
       return
@@ -519,6 +576,26 @@ local function open_picker(ctx, lines, rows_by_line, hunks_by_path, base)
     vim.api.nvim_buf_set_lines(lbuf, 0, -1, false, lines)
     vim.bo[lbuf].modifiable = false
     if cur then pcall(vim.api.nvim_win_set_cursor, lwin, cur) end
+  end
+
+  -- Re-filter and re-render the whole list (a comment filter changed), as
+  -- opposed to redraw_rows above, which only re-formats the rows already
+  -- shown after a reply or a status change.
+  local function rerender()
+    if not vim.api.nvim_buf_is_valid(lbuf) then return end
+    build()
+    vim.bo[lbuf].modifiable = true
+    vim.api.nvim_buf_set_lines(lbuf, 0, -1, false, lines)
+    vim.bo[lbuf].modifiable = false
+    local first
+    for ln in pairs(rows_by_line) do
+      if not first or ln < first then first = ln end
+    end
+    if vim.api.nvim_win_is_valid(lwin) then
+      if first then pcall(vim.api.nvim_win_set_cursor, lwin, { first, 0 }) end
+      pcall(vim.api.nvim_win_set_config, lwin, { title = title_text(), title_pos = "left" })
+    end
+    preview()
   end
 
   local preview_timer
@@ -583,6 +660,16 @@ local function open_picker(ctx, lines, rows_by_line, hunks_by_path, base)
       end)
     end)
   end, kopts)
+  -- gA here is the same gA as everywhere else: it flips the reviewer's own
+  -- active-only filter, so the diff, the Overview page and the file list
+  -- behind this picker follow along and the filter still means one thing
+  -- wherever it's pressed. Resolved against the surface gu was pressed
+  -- from, so a user who rebound active_filter (or unbound it) gets that
+  -- here too instead of a hard-coded "gA".
+  require("azure-cli.keys").bind(lbuf, kind, "active_filter", function()
+    ctx.toggle_active_filter()
+    rerender()
+  end, { desc = "toggle active (unresolved) comments only" })
   vim.keymap.set("n", "q", close, kopts)
   vim.keymap.set("n", "<Esc>", close, kopts)
 
@@ -596,7 +683,9 @@ local function setup(ctx)
   -- as review/since.lua's own `finding`.
   local finding = false
 
-  local function open_followup()
+  -- `kind` is the surface the key was pressed from; it only travels this far
+  -- so the picker can resolve that surface's own active_filter key.
+  local function open_followup(kind)
     if finding then
       ctx.notify("Still checking your comments\u{2026}", vim.log.levels.WARN)
       return
@@ -637,15 +726,17 @@ local function setup(ctx)
         for _, row in ipairs(anchored) do
           row.classification = M.classify(row.side, hunks_by_path[row.path], row.lineno, 3)
         end
-        local sorted = M.sort_rows(anchored)
-        local lines, rows_by_line = M.build_lines(new_iterations, review_point, sorted, unanchored)
-        open_picker(ctx, lines, rows_by_line, hunks_by_path, base_sha)
+        -- Every one of my threads goes to the picker, classified; which of
+        -- them actually show is the picker's own call, since a comment
+        -- filter can be toggled while it's open.
+        open_picker(ctx, kind, new_iterations, review_point,
+          M.sort_rows(anchored), unanchored, hunks_by_path, base_sha)
       end)
     end)
   end
 
   for _, kind in ipairs({ "list", "diff", "overview" }) do
-    ctx.add_key(kind, "followup", open_followup,
+    ctx.add_key(kind, "followup", function() open_followup(kind) end,
       "follow up on my comments: which threads have nearby changes since my last review")
   end
 

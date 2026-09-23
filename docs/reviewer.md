@@ -247,8 +247,8 @@ normal view with a warning rather than handing git a range it can't resolve.
 ### Follow up on my comments
 
 `gu` (file list, diff pane or Overview) opens a picker of every thread YOU
-started on this PR (any status - the first comment has to be yours, a reply
-to someone else's thread doesn't count), answering "did anything land near
+started on this PR (the first comment has to be yours, a reply to someone
+else's thread doesn't count), answering "did anything land near
 what I asked about since I last reviewed?" without re-reading every file by
 hand. It reuses `gi`'s own "last review point" (your last comment, reply or
 vote) and base commit, so the two features always agree on "since when".
@@ -284,10 +284,20 @@ comment's line with any nearby since-range change highlighted:
 | `K` | View the full thread in a popup |
 | `R` | Reply to the thread |
 | `s` | Set the thread's status |
+| `gA` | Toggle the active-only filter (see below) |
 | `q` / `<Esc>` | Close |
 
 A reply or status change updates that row (replies count / status) in
-place without closing the picker. If you haven't commented on this PR at
+place without closing the picker.
+
+The comment filters apply here like everywhere else: with `gA` on, only
+your still-active threads are listed (the title says `· active only`), and
+a `gF` text filter hides matching threads here too - so this picker never
+disagrees with the diff or the Overview page about which comments exist.
+`gA` is bound inside the picker as well and flips the reviewer's own
+filter, not a private copy of it, so the diff, file list and Overview
+behind the picker follow along. Everything is classified before the picker
+opens, so toggling the filter back off is instant - nothing is re-fetched. If you haven't commented on this PR at
 all, or `gi`'s own "no last review to compare since" conditions apply (see
 above), `gu` says so instead of opening.
 
