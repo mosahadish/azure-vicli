@@ -429,11 +429,21 @@ if command -v nvim >/dev/null 2>&1; then
   # its file list. The one check that goes through rpc.lua's real daemon
   # client, the real --list/--threads parsing, the warm-all prefetch's
   # `git fetch` and the reviewer's git diff pipeline together.
+  #
+  # It then drives the code-navigation surface on the same PR (gd into
+  # throttle.py's is_locked at the PR's revision, <BS> back, gr's peek over
+  # all three references) - the reviewer's least automated surface, and the
+  # one whose helpers the other review/* modules reach through ctx.
   out="$(bash "$REPO_ROOT/tests/demo.sh" --headless --fresh --workspace "$TMP/demo-ws" 2>&1)"
   if [[ "$out" == *DEMO-SMOKE-OK* ]]; then
     pass "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer"
   else
     fail "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer" "$out"
+  fi
+  if [[ "$out" == *NAV-SMOKE-OK* ]]; then
+    pass "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference"
+  else
+    fail "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" "$out"
   fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"
