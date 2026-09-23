@@ -42,7 +42,8 @@ lua/azure-cli/
   init.lua        setup(), open_dashboard()/open_review(id)/open_workitems(), standalone flag
   config.lua      setup() defaults (incl. every surface's `keys`) + merge/validate, provider_cmd()
   keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines
-  ui.lua          shared winbar formatting (UI.winbar) + the dashboard's column-width solver (UI.layout)
+  ui.lua          shared winbar formatting (UI.winbar), the column-width solver (UI.layout), floats, highlight links
+  shell.lua       shared housekeeping: flash, config file, browser/clipboard, JSON state files, failed-job summary
   state.lua       the one shared table every surface reads/writes (list/content caches, daemon state, ...)
   migrate.lua     one-time data-file rename, M.ensure(old, new)
   cache.lua       per-PR content cache + prefetch pipeline
@@ -54,6 +55,7 @@ lua/azure-cli/
   dashboard.lua   PR dashboard
   review/
     init.lua               reviewer
+    nav.lua                 reviewer-feature module: gd/gr/gf/g-slash, the peek view
     comments.lua            reviewer-feature module: edit/delete own comments
     commits.lua             reviewer-feature module: per-commit diffs
     range.lua                reviewer-feature module: range comments
@@ -89,6 +91,7 @@ launchers, running standalone/init.lua)
                           rpc.lua      shared azure-cli.py --serve daemon client
                           keys.lua     resolves every binding above to its configured key(s)
                           ui.lua       shared winbar formatting + the dashboard's column-width solver
+                          shell.lua    flash, config file, browser/clipboard, JSON state files, job errors
                           review/comments.lua  edit/delete your own comments
                           review/commits.lua   per-commit diffs
                           review/range.lua     range comments
@@ -122,9 +125,10 @@ daemon lifecycle/fallback rules and wire protocol.
 | `standalone/init.lua` | The launcher's Neovim entry point (`nvim -u standalone/init.lua`) - stands in for a whole init.vim, so it's the one place that adds the plugin root to `'runtimepath'` by hand; sets the standalone colour palette and marks the session standalone (`azure-cli.set_standalone(true)` - dashboard.lua's quit key reads this to decide `qa!` vs closing a tab) before opening the dashboard in the current window. |
 | `plugin/azure-cli.lua` | Defines `:AzureCli` (see [Commands](commands-and-keys.md#commands)) - loaded automatically by any plugin manager; no side effects beyond the command definition. |
 | `lua/azure-cli/init.lua` | Plugin entry point: `setup()`, `open_dashboard()`/`open_review(id)`/`open_workitems()`, the standalone flag. |
-| `lua/azure-cli/config.lua` | `setup()`'s defaults and merge/validation for every option (`keys` - see [Keys](commands-and-keys.md#keys) - plus `python`/`config`/`timing`/`hide_ancient_days` - see [setup() options](configuration.md#setup-options)), plus `provider_cmd()`/`plugin_root()`/`config_path()` (resolve `azure-cli.py`'s location/interpreter and the config file path, shared by every surface below instead of each re-deriving them). |
+| `lua/azure-cli/config.lua` | `setup()`'s defaults and merge/validation for every option (`keys` - see [Keys](commands-and-keys.md#keys) - plus `python`/`config`/`timing`/`hide_ancient_days` - see [setup() options](configuration.md#setup-options)), plus `provider_cmd()`/`provider_argv(...)`/`plugin_root()`/`config_path()` (resolve `azure-cli.py`'s location/interpreter, build a job's argv, and resolve the config file path - shared by every surface below instead of each re-deriving them). |
 | `lua/azure-cli/keys.lua` | Resolves a surface+action to the user's configured key(s) and binds it (`M.bind`); renders a `?` popup line or a lone "key: hint" chip from the same resolution (`M.line`/`M.label`) so neither ever hard-codes a key name. |
-| `lua/azure-cli/ui.lua` | Shared UI building blocks with no vim dependency (`UI.winbar`/`UI.layout` - see "Pull request dashboard" and "Reviewer" below), used by every surface's winbar and by the PR dashboard's column-width solver. |
+| `lua/azure-cli/ui.lua` | Shared UI building blocks: the pure, vim-free `UI.winbar`/`UI.layout` (see "Pull request dashboard" and "Reviewer" below), plus the one floating-window builder (`UI.open_float`, sized by `UI.big_dims`), `UI.plain_window`, `UI.filter_prompt` and `UI.link_hl` (every surface's highlight groups, linked with `default = true` so a colorscheme wins). |
+| `lua/azure-cli/shell.lua` | The small housekeeping helpers every surface needs and each one used to keep a private copy of: `notify` (notify.lua's flash), `config_path`/`open_config_file` (the `gO` key), `open_url`/`yank_url` (browser and clipboard), `read_json`/`write_json` (the saved-state files under Neovim's data directory, with `migrate.lua` folded in) and `job_error` (a failed provider job's full text to `log.lua`, its one-line summary back to the caller). |
 | `lua/azure-cli/state.lua` | The one shared table every surface reads/writes - `require()` caching is what makes one table naturally shared across every requirer. |
 | `lua/azure-cli/migrate.lua` | `M.ensure(old_path, new_path)`: copies a data file's content into its new name the first time the new one doesn't exist yet, then leaves the old one alone - used by the dashboard and reviewer for their saved-state files under Neovim's data directory. |
 | `lua/azure-cli/dashboard.lua` | PR dashboard: rendering, badges, hover and warm-all prefetch, optimistic actions - runs `azure-cli.py` for every PR action/prefetch job (`PROVIDER_CMD`, from `config.lua`) through `rpc.lua`, no bash in the loop. |
@@ -135,6 +139,7 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/log.lua` | The in-session error log every provider-failure path records into (`M.record`) and shows a one-line summary from (`M.summary`); `M.open` is [`:AzureCli log`](commands-and-keys.md#commands). |
 | `lua/azure-cli/editor.lua` | The floating comment editor (see [Reviewer](reviewer.md#reviewer)'s "Comment editor") - drafts, title formatting, `@` mention translation. |
 | `lua/azure-cli/rpc.lua` | Shared client for the `azure-cli.py --serve` daemon - one daemon per Neovim session, `require()`'d by every file above; `M.run(argv, opts)` is a `vim.fn.jobstart`-compatible drop-in that routes a provider call to the daemon when it's usable and falls back to a plain job otherwise. |
+| `lua/azure-cli/review/nav.lua` | Reviewer-feature module (see "Extending the reviewer" below): code navigation without an LSP - `gd` (go to definition, ranked by `def_score`), `gr` (find references), `gf` (open this file at the PR's revision), `g/` (search the changed files), the two-float peek view and the read-only revision buffers you keep navigating from, with `<BS>` walking back one jump. Loaded **first** of the review modules: `review/{commits,followup,since}.lua` reach the peek and those buffers through the `ctx` fields filled in from its return value. |
 | `lua/azure-cli/review/comments.lua` | Reviewer-feature module (see "Extending the reviewer" below): edit/delete your own PR comments, from the K popup or the Overview page. |
 | `lua/azure-cli/review/commits.lua` | Reviewer-feature module: per-commit diffs - `gc`'s commit list, a commit's changed files, and a single commit's diff for one of them. |
 | `lua/azure-cli/review/range.lua` | Reviewer-feature module: visual-mode `c` comments on a selected range of lines instead of just one. |
@@ -183,7 +188,7 @@ the `azure-cli` launcher), twenty-one Lua unit tests under `tests/`,
 |---|---|
 | `test-split.lua` | `cache.lua`'s `split_diff`/`parse_diff` against per-file `git diff` output, over a real multi-file range of this repo's own history (`--no-renames` throughout - see the file's own header comment for why a rename's single-file vs. whole-diff hunks aren't guaranteed identical otherwise, independent of split_diff/parse_diff correctness) |
 | `test-prefetch.lua` | The prefetch pipeline end to end (caching, coalescing concurrent calls, refetch on thread-count change, the failure path, eviction, the ignore_ws `":iws"` bucket and its whitespace-only-file placeholder, a named string variant bucket and a `range` override for it - what `gi`'s "changes since my last review" uses - kept warm alongside the plain/iws ones and evicted with the rest), with a shimmed `vim.fn.jobstart` against a scratch git repo and a stub provider `--threads` |
-| `test-nav.lua` | `review/init.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
+| `test-nav.lua` | `review/nav.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
 | `test-decorate.lua` | The revision-buffer decoration line walk (extracted verbatim by pattern) against a real diff, both sides |
 | `test-worddiff.lua` | `cache.lua`'s `word_diff` pairing and token-diff (single-token change, unequal block sizes, a whole-line rewrite, a whitespace-only change, the byte-size cap) |
 | `test-notify.lua` | `notify.lua`'s toast backend selection, XML/PowerShell/AppleScript escaping, the `AZVICLI_TOASTS` opt-out (via `state.lua`, `require()`d through `LUA_PATH` - see `tests/run.sh`), and same-title rate-limit coalescing, with a shimmed `vim.fn.jobstart`/`timer_start`; also `M.flash`'s queueing (up to `MAX_FLASH` at once, a push past that evicting the oldest), an error also going through `vim.notify` unconditionally, dismiss ordering/timing against a shimmed `vim.fn.timer_start`/`timer_stop` and a fake `vim.api` window/buffer, and `setup({notifications="notify"})` turning it into a plain `vim.notify` pass-through, with a shimmed `vim.api` |
@@ -319,7 +324,7 @@ display. Re-run it after a UI change and commit the result; add a step to
 200-active-local ceiling (98+ keymap/help/winbar call sites, the whole
 reviewer's state), so every reviewer feature hangs off one table, `EXT`,
 instead of adding its own top-level `local`s, and lives in its own module
-under `review/` (`review/{comments,commits,range,batch,since,followup}.lua`)
+under `review/` (`review/{nav,comments,commits,range,batch,since,followup}.lua`)
 - each `require()`d module is a separate compiled chunk with its own
 200-local budget. To add a feature:
 

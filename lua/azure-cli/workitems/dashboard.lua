@@ -34,6 +34,9 @@ local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
+-- Shared housekeeping helpers - see shell.lua; the PR dashboard, the
+-- reviewer and this file each used to carry private copies of these.
+local SHELL = require("azure-cli.shell")
 
 local M = {}
 
@@ -42,14 +45,9 @@ function M.open()
 local env    = vim.env
 -- Data-provider argv (python azure-cli.py) every work-item fetch/action in
 -- this dashboard runs, replacing wi-list.sh/wi-detail.sh/wi-state.sh/
--- wi-edit.sh entirely.
-local PROVIDER_CMD = CONFIG.provider_cmd()
--- Appends a work-item subcommand/argv onto PROVIDER_CMD without mutating it.
-local function provider_argv(...)
-  local a = vim.list_extend({}, PROVIDER_CMD)
-  vim.list_extend(a, { ... })
-  return a
-end
+-- wi-edit.sh entirely. The builder lives in config.lua next to
+-- provider_cmd() now; this file and workitems/view.lua had the same copy.
+local provider_argv = CONFIG.provider_argv
 -- AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT overrides only: the fallback org/project
 -- for gl (link a PR) when the PR isn't in the cached PR list and isn't configured
 -- either - no hard-coded org here either. There's no local ASSIGNEE any more: ga
@@ -101,27 +99,25 @@ end
 -- Colours (termguicolors is on). Defined idempotently so re-opening this
 -- dashboard is harmless. State groups are reused by workitems/view.lua's
 -- own setup. Every group links to a standard highlight group with
--- `default = true` (see dashboard.lua's own define_hl for why), so plugin
+-- `default = true` (UI.link_hl applies that for every group), so plugin
 -- mode picks up the active colorscheme and standalone/init.lua's explicit
 -- catppuccin-mocha palette (applied after this, non-default) still wins.
-local function define_hl()
-  local function hl(name, o) vim.api.nvim_set_hl(0, name, vim.tbl_extend("force", { default = true }, o)) end
-  hl("AzureCliWiHeader",      { link = "Title" })
-  hl("AzureCliWiId",          { link = "Identifier" })
-  hl("AzureCliWiActive",      { link = "String" })
-  hl("AzureCliWiNew",         { link = "Special" })
-  hl("AzureCliWiImplemented", { link = "WarningMsg" })
-  hl("AzureCliWiResolved",    { link = "Directory" })
-  hl("AzureCliWiClosed",      { link = "Comment" })
-  hl("AzureCliWiRemoved",     { link = "ErrorMsg" })
-  hl("AzureCliWiOther",       { link = "Comment" })
-  hl("AzureCliWiDivider",     { link = "NonText" })
-  hl("AzureCliWiTabActive",   { link = "TabLineSel" })
-  hl("AzureCliWiTabInactive", { link = "TabLine" })
-  hl("AzureCliWiDate",        { link = "Comment" })
-  hl("AzureCliWiBorder",      { link = "FloatBorder" })
-end
-define_hl()
+UI.link_hl({
+  AzureCliWiHeader      = "Title",
+  AzureCliWiId          = "Identifier",
+  AzureCliWiActive      = "String",
+  AzureCliWiNew         = "Special",
+  AzureCliWiImplemented = "WarningMsg",
+  AzureCliWiResolved    = "Directory",
+  AzureCliWiClosed      = "Comment",
+  AzureCliWiRemoved     = "ErrorMsg",
+  AzureCliWiOther       = "Comment",
+  AzureCliWiDivider     = "NonText",
+  AzureCliWiTabActive   = "TabLineSel",
+  AzureCliWiTabInactive = "TabLine",
+  AzureCliWiDate        = "Comment",
+  AzureCliWiBorder      = "FloatBorder",
+})
 
 local ns = vim.api.nvim_create_namespace("azure_cli_workitems")
 
@@ -155,31 +151,12 @@ local date_row = nil          -- 1-based line of the sprint date line, for highl
 local tab_row = 1             -- 1-based line of the tab bar itself, for click hit-testing
 local content_col = 0         -- byte column where a normal row's real content starts (inside the box)
 
-local function notify(msg, level)
-  require("azure-cli.notify").flash(msg, level or vim.log.levels.INFO)
-end
+local notify = SHELL.notify
 
--- Resolve azure-cli.yml's path - delegates to config.lua's M.config_path()
--- (AZVICLI_CONFIG override, else the platform default) so gO always opens
--- exactly what the provider itself would read.
-local function config_path()
-  return CONFIG.config_path()
-end
-
--- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
-local function open_config_file()
-  local notice = require("azure-cli.config").setup_accounts_notice()
-  if notice then
-    notify(notice)
-    return
-  end
-  local path = config_path()
-  vim.cmd("tabnew " .. vim.fn.fnameescape(path))
-  vim.bo.filetype = "yaml"
-  if vim.fn.filereadable(path) == 0 then
-    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
-  end
-end
+-- gO: open azure-cli.yml in a new tab (or explain that setup({accounts=...})
+-- is what's being read instead). Shared with the PR dashboard and the
+-- reviewer, which each had this verbatim.
+local open_config_file = SHELL.open_config_file
 
 local fit = UI.fit
 
@@ -972,7 +949,10 @@ local function run_edit(it, cmd_args, describe, apply, on_success)
           undo()
           render()
         end
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        -- Full stderr (often a python traceback) to the session log, one
+        -- line here - the same treatment the reviewer's writes have always
+        -- had, and what this used to flatten into a single toast instead.
+        local msg = SHELL.job_error("work item #" .. tostring(it.id), code, err)
         notify(describe .. " #" .. it.id .. " failed: " .. msg
           .. (undo and " - change reverted." or ""), vim.log.levels.ERROR)
       end
@@ -1404,30 +1384,25 @@ local function open_pr_list()
 end
 
 -- Copy the web link of the work item under the cursor to the system clipboard.
+-- Both of these announce themselves through notify.lua's flash now, like
+-- every other key on this dashboard - they were the last two call sites
+-- still going straight to vim.notify, which bypasses the toast styling.
 local function yank_link()
   local it = current_item()
-  if not it or not it.url or it.url == "" then return end
-  vim.fn.setreg('"', it.url)
-  pcall(vim.fn.setreg, "+", it.url)
-  vim.notify("Copied link to #" .. tostring(it.id) .. ": " .. it.url)
+  if not it or not SHELL.yank_url(it.url) then return end
+  notify("Copied link to #" .. tostring(it.id) .. ": " .. it.url)
 end
 
 -- Open the work item under the cursor in the default web browser.
 local function open_browser()
   local it = current_item()
-  if not it or not it.url or it.url == "" then return end
-  local ok = pcall(vim.ui.open, it.url)
+  if not it then return end
+  local ok, why = SHELL.open_url(it.url)
   if not ok then
-    vim.fn.jobstart({ "cmd", "/c", "start", "", it.url }, { detach = true })
+    notify("Can't open #" .. tostring(it.id) .. ": " .. why, vim.log.levels.WARN)
+    return
   end
-  vim.notify("Opening #" .. tostring(it.id) .. " in browser…")
-end
-
--- Open a scratch floating window at the cursor showing the given text lines
--- (same small helper as azure-cli.lua's open_float; kept local since the two
--- dashboards don't share a require'd module).
-local function open_float(lines, opts)
-  return UI.open_float(lines, opts)
+  notify("Opening #" .. tostring(it.id) .. " in browser…")
 end
 
 -- Show this dashboard's keys in a float.
@@ -1462,7 +1437,7 @@ local WORKITEMS_HELP = {
 local function show_help()
   local now = {}
   if wi_filter ~= "" then now[#now + 1] = "[filter: " .. wi_filter .. "]" end
-  open_float(KEYS.help_lines("workitems", "Work-items dashboard keys", WORKITEMS_HELP,
+  UI.open_float(KEYS.help_lines("workitems", "Work-items dashboard keys", WORKITEMS_HELP,
     { now = now, fixed = { "  j / k       move" } }))
 end
 

@@ -215,6 +215,9 @@ echo "== 4. lua tests =="
 
 CACHE_LUA="$TMP/lua/lua/azure-cli/cache.lua"
 REVIEW_LUA="$TMP/lua/lua/azure-cli/review/init.lua"
+# Code navigation moved out of review/init.lua into its own module; test-nav.lua
+# reads def_score and its keyword tables out of that file's source.
+NAV_LUA="$TMP/lua/lua/azure-cli/review/nav.lua"
 NOTIFY_LUA="$TMP/lua/lua/azure-cli/notify.lua"
 RPC_LUA="$TMP/lua/lua/azure-cli/rpc.lua"
 EDITOR_LUA="$TMP/lua/lua/azure-cli/editor.lua"
@@ -272,8 +275,8 @@ run_lua_test() {
 
 run_lua_test test-split.lua "$REPO_ROOT" "$CACHE_LUA" "$SPLIT_RANGE"
 run_lua_test test-prefetch.lua "$REPO_ROOT" "$CACHE_LUA" "$SCRATCH" "$STUB_SCRIPT"
-run_lua_test test-nav.lua "$REPO_ROOT" "$REVIEW_LUA"
-run_lua_test test-decorate.lua "$REPO_ROOT" "$CACHE_LUA" "$REVIEW_LUA" "$SCRATCH"
+run_lua_test test-nav.lua "$REPO_ROOT" "$NAV_LUA"
+run_lua_test test-decorate.lua "$REPO_ROOT" "$CACHE_LUA" "$NAV_LUA" "$SCRATCH"
 run_lua_test test-worddiff.lua "$REPO_ROOT" "$CACHE_LUA"
 run_lua_test test-notify.lua "$REPO_ROOT" "$NOTIFY_LUA"
 run_lua_test test-rpc.lua "$REPO_ROOT" "$RPC_LUA"
@@ -429,11 +432,26 @@ if command -v nvim >/dev/null 2>&1; then
   # its file list. The one check that goes through rpc.lua's real daemon
   # client, the real --list/--threads parsing, the warm-all prefetch's
   # `git fetch` and the reviewer's git diff pipeline together.
+  #
+  # It then drives the code-navigation surface on the same PR (gd into
+  # throttle.py's is_locked at the PR's revision, <BS> back, gr's peek over
+  # all three references) - the reviewer's least automated surface, and the
+  # one whose helpers the other review/* modules reach through ctx.
   out="$(bash "$REPO_ROOT/tests/demo.sh" --headless --fresh --workspace "$TMP/demo-ws" 2>&1)"
   if [[ "$out" == *DEMO-SMOKE-OK* ]]; then
     pass "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer"
   else
     fail "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer" "$out"
+  fi
+  if [[ "$out" == *NAV-SMOKE-OK* ]]; then
+    pass "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference"
+  else
+    fail "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" "$out"
+  fi
+  if [[ "$out" == *FOLLOWUP-SMOKE-OK* ]]; then
+    pass "smoke: gu lists my comments and gA filters them there like everywhere else"
+  else
+    fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
   fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"

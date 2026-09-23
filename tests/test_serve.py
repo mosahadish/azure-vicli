@@ -342,9 +342,37 @@ class UserIdCacheAtomicWriteTests(unittest.TestCase):
             uid = actions.current_user_id()
 
             self.assertEqual(uid, "abc-123")
-            self.assertEqual(os.listdir(td), [".userid"], "no leftover .userid.<tmp> file")
-            with open(os.path.join(td, ".userid"), encoding="utf-8") as f:
+            written = os.listdir(td)
+            self.assertEqual(len(written), 1, "no leftover .userid.<tmp> file")
+            # Keyed by org, not a bare ".userid" - see _userid_cache_path.
+            self.assertTrue(written[0].startswith(".userid-"), written)
+            self.assertEqual(written[0], os.path.basename(actions._userid_cache_path()))
+            with open(os.path.join(td, written[0]), encoding="utf-8") as f:
                 self.assertEqual(f.read(), "abc-123")
+
+    def test_the_userid_cache_is_per_org(self):
+        """Two accounts in different orgs must not share one cached id: the
+        file name carries a digest of the org, so the second org resolves
+        (and caches) its own rather than reusing the first org's.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cfg = ac.Config()
+            cfg.accounts = [ac.AccountConfig(project="p", org_url="https://x", pat="tok")]
+
+            def actions_for(org, uid):
+                a = ac.PrActions(cfg, {
+                    "AZVICLI_ORG": org, "AZVICLI_PROJECT": "p",
+                    "AZVICLI_REPO": "r", "AZVICLI_PR": "1", "AZVICLI_PREFETCH_DIR": td,
+                })
+                a.pat = "tok"
+                a.fetch = lambda *args, **kw: {"authenticatedUser": {"id": uid}}
+                return a
+
+            self.assertEqual(actions_for("https://x", "abc-123").current_user_id(), "abc-123")
+            self.assertEqual(actions_for("https://other", "zzz-999").current_user_id(), "zzz-999")
+            # And each one still reads back its own from the cache.
+            self.assertEqual(actions_for("https://x", "wrong").current_user_id(), "abc-123")
+            self.assertEqual(len(os.listdir(td)), 2)
 
 
 if __name__ == "__main__":

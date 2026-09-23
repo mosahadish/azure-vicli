@@ -194,6 +194,19 @@ function M.provider_cmd()
   return { py, path }
 end
 
+-- provider_cmd() plus a subcommand and its arguments, as a fresh table:
+-- `CONFIG.provider_argv("--wi-detail", id)`. Both work-item surfaces
+-- defined this exact three-line helper locally and the PR dashboard
+-- hand-inlined `vim.list_extend({}, PROVIDER_CMD)` at five more call
+-- sites; this is that one shape, living in the module that already owns
+-- provider_cmd(). Always a new table, so no caller can mutate a shared
+-- base argv out from under another.
+function M.provider_argv(...)
+  local a = M.provider_cmd()
+  vim.list_extend(a, { ... })
+  return a
+end
+
 -- setup({accounts=...}): the plugin-mode alternative to azure-cli.yml.
 -- Validated field by field (same names as the YAML file, minus `pat`: an
 -- init.lua lives in a dotfiles repo, so the token can only come from

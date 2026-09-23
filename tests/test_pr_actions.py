@@ -423,7 +423,7 @@ class CurrentUserIdVoteTests(unittest.TestCase):
     def test_current_user_id_hits_connection_data_bare_and_caches(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions = make_actions(tmp_dir=tmp)
-            cd_url = "https://dev.azure.com/org/_apis/ConnectionData"
+            cd_url = "https://dev.azure.com/org/_apis/connectionData"
             fetch = FakeFetch(responses={cd_url: {"authenticatedUser": {"id": "uid-1"}}})
             actions.fetch = fetch
             uid = actions.current_user_id()
@@ -439,13 +439,13 @@ class CurrentUserIdVoteTests(unittest.TestCase):
     def test_current_user_id_failure_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions = make_actions(tmp_dir=tmp)
-            actions.fetch = FakeFetch(raise_for={"https://dev.azure.com/org/_apis/ConnectionData": ac.AdoHttpError(400, "x")})
+            actions.fetch = FakeFetch(raise_for={"https://dev.azure.com/org/_apis/connectionData": ac.AdoHttpError(400, "x")})
             self.assertIsNone(actions.current_user_id())
 
     def test_vote_puts_to_reviewers_uid_keyed_by_current_user(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions = make_actions(tmp_dir=tmp)
-            cd_url = "https://dev.azure.com/org/_apis/ConnectionData"
+            cd_url = "https://dev.azure.com/org/_apis/connectionData"
             fetch = FakeFetch(responses={cd_url: {"authenticatedUser": {"id": "uid-1"}}})
             actions.fetch = fetch
             rc = actions.set_vote("10")
@@ -463,7 +463,7 @@ class CurrentUserIdVoteTests(unittest.TestCase):
     def test_vote_without_resolvable_user_id_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions = make_actions(tmp_dir=tmp)
-            actions.fetch = FakeFetch(raise_for={"https://dev.azure.com/org/_apis/ConnectionData": ac.AdoHttpError(400, "x")})
+            actions.fetch = FakeFetch(raise_for={"https://dev.azure.com/org/_apis/connectionData": ac.AdoHttpError(400, "x")})
             self.assertEqual(actions.set_vote("10"), 1)
 
 
@@ -521,7 +521,7 @@ class CompleteAutoCompleteTests(unittest.TestCase):
     def test_auto_complete_on_uses_current_user_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions = make_actions(tmp_dir=tmp)
-            cd_url = "https://dev.azure.com/org/_apis/ConnectionData"
+            cd_url = "https://dev.azure.com/org/_apis/connectionData"
             fetch = FakeFetch(responses={cd_url: {"authenticatedUser": {"id": "uid-9"}}})
             actions.fetch = fetch
             rc = actions.set_auto_complete("on", "rebase", "false", "true")

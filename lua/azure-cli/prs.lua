@@ -43,6 +43,33 @@ function M.vote_glyph(v)
   return "\u{00B7}"
 end
 
+-- Seconds to add to an os.time() result to correct for os.time() having
+-- read its calendar table as LOCAL time. Measured at `epoch` itself rather
+-- than once at load, so it stays right on both sides of a DST change.
+local function utc_offset(epoch)
+  local t = os.date("!*t", epoch)
+  t.isdst = nil  -- let mktime decide DST for that date, don't force standard time
+  return os.difftime(epoch, os.time(t))
+end
+
+-- A "o"-format ISO timestamp (yyyy-MM-ddTHH:mm:ss..., always UTC - see
+-- iso_format() in azure-cli.py) as a real epoch, for sorting and age
+-- checks. 0 when it doesn't parse, so a record missing the field sorts
+-- last rather than erroring.
+--
+-- The UTC correction matters: os.time() interprets its table as local
+-- time, so feeding it UTC fields returns an epoch shifted by the machine's
+-- offset. Sorting never noticed (every value shifted alike), but the
+-- dashboard compares the result against a real os.time() to decide whether
+-- a PR is "aged", and that comparison was off by the offset.
+function M.iso_epoch(iso)
+  local y, mo, d, h, mi, s = tostring(iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+  if not y then return 0 end
+  local guess = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
+  return guess + utc_offset(guess)
+end
+
 -- Records `vote` (a number) as mine on `pr` and recomputes the derived
 -- voteRatio / reviewerSummary the way azure-cli.py builds them. Returns an
 -- undo function that restores the previous values (for a failed call).

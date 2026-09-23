@@ -4,8 +4,11 @@
 -- threads out of a synthetic flat thread list), M.parse_hunks (unified=0
 -- hunk-header parsing), M.window_overlaps/M.hunk_new_range (the "changed
 -- nearby" window check) and M.map_old_to_new (the old-side -> new-side
--- line-mapping rule), M.classify, M.format_row/M.sort_rows and
--- M.build_lines.
+-- line-mapping rule), M.classify, M.format_row/M.sort_rows,
+-- M.build_lines, M.visible (the comment-filter pass the picker runs its
+-- rows through, so gA/gF hide the same threads there as everywhere else)
+-- and M.comment_marker (the preview pane's end-of-line marker on the
+-- commented line).
 --
 -- Usage: luajit test-review-followup.lua <review/followup.lua path>
 
@@ -257,6 +260,65 @@ end
 
 check("build_lines: an unparseable review_point falls back to '?' for the date",
   M.build_lines(1, nil, {}, {})[1]:find("Since %? ") ~= nil)
+
+-- --- M.visible ---------------------------------------------------------------
+-- The picker runs its rows through the reviewer's own comment-filter
+-- predicate (ctx.passes_filters), so gA/gF hide the same threads here as
+-- everywhere else. `passes` stands in for it.
+do
+  local active_only = function(t) return t.status == "active" end
+  local rows = {
+    { path = "a.cs", thread = { id = 1, status = "active" } },
+    { path = "b.cs", thread = { id = 2, status = "fixed" } },
+    { path = "c.cs", thread = { id = 3, status = "closed" } },
+  }
+  local shown = M.visible(rows, active_only)
+  check("visible: keeps only the rows whose thread passes", #shown == 1 and shown[1].thread.id == 1)
+  check("visible: everything passes when the predicate says so",
+    #M.visible(rows, function() return true end) == 3)
+  check("visible: nothing passes when the predicate says so",
+    #M.visible(rows, function() return false end) == 0)
+  check("visible: order is preserved",
+    (function()
+      local all = M.visible(rows, function() return true end)
+      return all[1].thread.id == 1 and all[2].thread.id == 2 and all[3].thread.id == 3
+    end)())
+  check("visible: a row with no thread is always kept (nothing to filter on)",
+    #M.visible({ { path = "d.cs" } }, function() return false end) == 1)
+  check("visible: nil is a no-op", #M.visible(nil, function() return true end) == 0)
+  check("visible: the input list is not mutated", #rows == 3)
+end
+
+-- --- M.comment_marker --------------------------------------------------------
+-- The end-of-line label the preview pane puts on the commented line, so the
+-- highlight there says what it means instead of looking like one more of
+-- the since-range's own highlighted lines.
+do
+  local label, group = M.comment_marker({ lineno = 42, status = "active", replies = 0 })
+  check("comment_marker: an active thread with no replies", label == "  \u{258C} your comment [active]")
+  check("comment_marker: active uses the normal comment group", group == "AzureCliComment")
+
+  label = M.comment_marker({ lineno = 42, status = "active", replies = 1 })
+  check("comment_marker: one reply is singular", label == "  \u{258C} your comment \u{00B7} 1 reply [active]")
+
+  label = M.comment_marker({ lineno = 42, status = "active", replies = 3 })
+  check("comment_marker: several replies are plural", label == "  \u{258C} your comment \u{00B7} 3 replies [active]")
+
+  _, group = M.comment_marker({ lineno = 1, status = "fixed", replies = 0 })
+  check("comment_marker: a resolved thread is dimmed", group == "AzureCliCommentResolved")
+  _, group = M.comment_marker({ lineno = 1, status = "pending", replies = 0 })
+  check("comment_marker: pending still counts as unresolved", group == "AzureCliComment")
+  _, group = M.comment_marker({ lineno = 1, replies = 0 })
+  check("comment_marker: a missing status reads as active", group == "AzureCliComment")
+
+  label = M.comment_marker({ status = "active", replies = 0 })
+  check("comment_marker: a file-level comment says so", label == "  \u{258C} your file-level comment [active]")
+
+  label, group = M.comment_marker({ lineno = 900, status = "active", replies = 2 }, true)
+  check("comment_marker: a line past the end of the file says so rather than mislabelling the last line",
+    label == "  \u{258C} your comment is on line 900, past the end of this file at this revision")
+  check("comment_marker: the past-the-end marker is its own group", group == "AzureCliCommentStale")
+end
 
 print(fails == 0 and "test-review-followup: all cases pass" or ("test-review-followup: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end
