@@ -74,6 +74,11 @@
 -- before the picker opens and filtered at render time, so toggling the
 -- filter off in there puts rows back without re-running the since-diff.
 --
+-- The preview pane marks the commented line itself (M.comment_marker): the
+-- same "  ▌ …" end-of-line label the diff buffers carry, so the highlight
+-- there says what it means instead of blending into the since-range's own
+-- highlighted lines beside it.
+--
 -- Keys (list/diff/overview - see ctx.add_key's kinds): gu opens the picker.
 -- Inside it: <CR> jumps to the thread, K shows it, R replies, s sets its
 -- status, gA toggles the active-only filter, q/<Esc> close.
@@ -271,6 +276,38 @@ function M.format_row(row)
     row.replies or 0, (row.replies == 1) and "y" or "ies")
 end
 
+-- The end-of-line marker the preview pane puts on the commented line, as
+-- (label, highlight group). Same "  ▌ …" shape the diff buffers' own comment
+-- markers use (decorate_comments in review/init.lua), so a line carrying
+-- your comment reads the same wherever you meet it - the preview used to
+-- highlight the line and centre it with nothing at all saying what the
+-- highlight meant, which is hard to tell apart from the since-range's own
+-- highlighted lines around it.
+--
+-- `clamped` is true when row.lineno is past the end of the file at this
+-- revision (the thread outlived the line): the marker says so rather than
+-- labelling whichever line happened to be last as though the comment were
+-- there. A row with no line at all is a file-level comment, marked on line
+-- 1 - the same place decorate_comments surfaces those. Pure.
+function M.comment_marker(row, clamped)
+  local status = row.status or "active"
+  local resolved = not (status == "active" or status == "pending")
+  if clamped then
+    return string.format("  \u{258C} your comment is on line %d, past the end of this file at this revision",
+      row.lineno or 0), "AzureCliCommentStale"
+  end
+  local group = resolved and "AzureCliCommentResolved" or "AzureCliComment"
+  local replies = row.replies or 0
+  local tail = ""
+  if replies > 0 then
+    tail = string.format(" \u{00B7} %d repl%s", replies, (replies == 1) and "y" or "ies")
+  end
+  if not row.lineno then
+    return string.format("  \u{258C} your file-level comment%s [%s]", tail, status), group
+  end
+  return string.format("  \u{258C} your comment%s [%s]", tail, status), group
+end
+
 -- Sorts a copy of `rows` (anchored rows, each carrying `.classification`)
 -- changed first, then unchanged, then n/a, and within a classification by
 -- path then line number - never mutates the input list.
@@ -443,6 +480,11 @@ end
 -- without re-running the since-diff.
 local function open_picker(ctx, kind, new_iterations, review_point, anchored, unanchored, hunks_by_path, base)
   followup_ns = followup_ns or vim.api.nvim_create_namespace("azure_cli_followup")
+  -- Marker colour for a comment whose line is past the end of the file at
+  -- the previewed revision. Set up on first open, not at module level: this
+  -- file's pure half is dofile()'d without a vim at all by
+  -- tests/test-review-followup.lua. `default = true` so a colorscheme wins.
+  pcall(vim.api.nvim_set_hl, 0, "AzureCliCommentStale", { default = true, link = "WarningMsg" })
 
   -- The reviewer's own comment filters (gA's active-only, gF's
   -- ignore-texts) decide what shows here too: a thread hidden in the diff
@@ -543,12 +585,27 @@ local function open_picker(ctx, kind, new_iterations, review_point, anchored, un
       if closed or selected() ~= row or vim.api.nvim_win_get_buf(pwin) ~= b then return end
       pcall(vim.api.nvim_buf_clear_namespace, b, followup_ns, 0, -1)
       local n = vim.api.nvim_buf_line_count(b)
+      -- Mark the commented line: the cursor on it, centred, the line
+      -- highlighted, and an end-of-line label saying that is what the
+      -- highlight means. Without the label it is one highlighted line among
+      -- the since-range's own highlighted lines below.
+      local mark_line, clamped
       if row.lineno then
-        local target_line = math.max(1, math.min(row.lineno, n))
-        pcall(vim.api.nvim_win_set_cursor, pwin, { target_line, 0 })
+        mark_line = math.max(1, math.min(row.lineno, n))
+        clamped = row.lineno > n
+        pcall(vim.api.nvim_win_set_cursor, pwin, { mark_line, 0 })
         vim.api.nvim_win_call(pwin, function() vim.cmd("normal! zz") end)
-        pcall(vim.api.nvim_buf_set_extmark, b, followup_ns, target_line - 1, 0,
+        pcall(vim.api.nvim_buf_set_extmark, b, followup_ns, mark_line - 1, 0,
           { line_hl_group = "AzureCliPeekLine", priority = 300 })
+      elseif row.path then
+        -- A file-level comment anchors nowhere, so it rides on line 1, the
+        -- same place the diff buffers put theirs.
+        mark_line = 1
+      end
+      if mark_line then
+        local label, group = M.comment_marker(row, clamped)
+        pcall(vim.api.nvim_buf_set_extmark, b, followup_ns, mark_line - 1, 0,
+          { virt_text = { { label, group } }, virt_text_pos = "eol", priority = 400 })
       end
       if row.side == "R" then
         for _, h in ipairs(hunks_by_path[row.path] or {}) do

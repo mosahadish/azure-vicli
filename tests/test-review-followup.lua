@@ -5,8 +5,10 @@
 -- hunk-header parsing), M.window_overlaps/M.hunk_new_range (the "changed
 -- nearby" window check) and M.map_old_to_new (the old-side -> new-side
 -- line-mapping rule), M.classify, M.format_row/M.sort_rows,
--- M.build_lines and M.visible (the comment-filter pass the picker runs its
--- rows through, so gA/gF hide the same threads there as everywhere else).
+-- M.build_lines, M.visible (the comment-filter pass the picker runs its
+-- rows through, so gA/gF hide the same threads there as everywhere else)
+-- and M.comment_marker (the preview pane's end-of-line marker on the
+-- commented line).
 --
 -- Usage: luajit test-review-followup.lua <review/followup.lua path>
 
@@ -285,6 +287,37 @@ do
     #M.visible({ { path = "d.cs" } }, function() return false end) == 1)
   check("visible: nil is a no-op", #M.visible(nil, function() return true end) == 0)
   check("visible: the input list is not mutated", #rows == 3)
+end
+
+-- --- M.comment_marker --------------------------------------------------------
+-- The end-of-line label the preview pane puts on the commented line, so the
+-- highlight there says what it means instead of looking like one more of
+-- the since-range's own highlighted lines.
+do
+  local label, group = M.comment_marker({ lineno = 42, status = "active", replies = 0 })
+  check("comment_marker: an active thread with no replies", label == "  \u{258C} your comment [active]")
+  check("comment_marker: active uses the normal comment group", group == "AzureCliComment")
+
+  label = M.comment_marker({ lineno = 42, status = "active", replies = 1 })
+  check("comment_marker: one reply is singular", label == "  \u{258C} your comment \u{00B7} 1 reply [active]")
+
+  label = M.comment_marker({ lineno = 42, status = "active", replies = 3 })
+  check("comment_marker: several replies are plural", label == "  \u{258C} your comment \u{00B7} 3 replies [active]")
+
+  _, group = M.comment_marker({ lineno = 1, status = "fixed", replies = 0 })
+  check("comment_marker: a resolved thread is dimmed", group == "AzureCliCommentResolved")
+  _, group = M.comment_marker({ lineno = 1, status = "pending", replies = 0 })
+  check("comment_marker: pending still counts as unresolved", group == "AzureCliComment")
+  _, group = M.comment_marker({ lineno = 1, replies = 0 })
+  check("comment_marker: a missing status reads as active", group == "AzureCliComment")
+
+  label = M.comment_marker({ status = "active", replies = 0 })
+  check("comment_marker: a file-level comment says so", label == "  \u{258C} your file-level comment [active]")
+
+  label, group = M.comment_marker({ lineno = 900, status = "active", replies = 2 }, true)
+  check("comment_marker: a line past the end of the file says so rather than mislabelling the last line",
+    label == "  \u{258C} your comment is on line 900, past the end of this file at this revision")
+  check("comment_marker: the past-the-end marker is its own group", group == "AzureCliCommentStale")
 end
 
 print(fails == 0 and "test-review-followup: all cases pass" or ("test-review-followup: " .. fails .. " unexpected"))

@@ -275,7 +275,13 @@ listed at the end under "Unanchored", ungraded.
 
 The list is on the left, a preview of the file (source tip for an `R`/
 unanchored row, target tip for an `L` row) on the right, centred on the
-comment's line with any nearby since-range change highlighted:
+comment's line with any nearby since-range change highlighted. The
+commented line is labelled at its end the same way it is in a diff buffer -
+`▌ your comment · 1 reply [active]`, dimmed once the thread is resolved -
+so it reads as *your comment* rather than as one more highlighted line
+among the changed ones around it. A file-level comment is marked on line 1;
+a comment whose line no longer exists in the file at that revision says so
+instead of marking the last line as though it were there:
 
 | Key | Action |
 |---|---|

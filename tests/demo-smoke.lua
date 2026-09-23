@@ -151,6 +151,38 @@ if not ok then return fail("gu never listed my thread on throttle.py\n" .. tostr
 print("== gu picker ==")
 print(picker)
 
+-- The preview pane marks the commented line itself: the row is my thread on
+-- src/throttle.py line 4, so the marker has to land on line 4 of the
+-- previewed file, not merely somewhere in it. Virtual text isn't buffer
+-- text, so this reads the extmark rather than the rendered lines.
+local function comment_marker()
+  local ns = vim.api.nvim_get_namespaces()["azure_cli_followup"]
+  if not ns then return nil end
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then
+      local b = vim.api.nvim_win_get_buf(w)
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, ns, 0, -1, { details = true })) do
+        local vt = m[4] and m[4].virt_text
+        if vt and vt[1] and tostring(vt[1][1]):find("your comment", 1, true) then
+          return vt[1][1], m[2] + 1
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local marker, marker_line
+ok = vim.wait(15000, function()
+  marker, marker_line = comment_marker()
+  return marker ~= nil
+end, 100)
+if not ok then return fail("the gu preview never marked the commented line") end
+if marker_line ~= 4 then
+  return fail("the comment marker landed on line " .. tostring(marker_line) .. ", expected 4: " .. marker)
+end
+print("== gu preview marker == line " .. marker_line .. ": " .. marker)
+
 local HIDDEN = "hidden by the active-only filter"
 feed("gA")
 ok = vim.wait(10000, function()
