@@ -28,6 +28,7 @@ on the Lua side needs to change to consume it.
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import os
@@ -1133,6 +1134,46 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
                                 .format(full_url, ctype or "an unknown content type", e)) from e
 
 
+# ---------------------------------------------------------------------------
+# ConnectionData - the one identity lookup, shared by all three callers
+# ---------------------------------------------------------------------------
+#
+# AzureDevOpsPullRequestSource (the PR list's whoami), PrActions
+# (current_user_id, for a vote or auto-complete) and WorkItemActions (the
+# assignee default) each built this URL and dug through the response
+# themselves. The transports stay separate - each class has its own
+# swappable `fetch`/`fetch_bare` attribute that tests substitute, with
+# different signatures - but the URL and the response shape are the same
+# everywhere, so they live here.
+#
+# Always called with no api-version at all: on-prem TFS answers 400 to
+# ConnectionData *with* one (7.1 and the 6.0 retry alike), which is exactly
+# where the first live run against an on-prem instance failed. That is also
+# what review-pr.sh's bare curl call always did.
+
+
+def connection_data_url(base):
+    """The bare ConnectionData endpoint for an organization/collection URL.
+    The trailing slash is stripped: PrActions took its org straight from
+    AZVICLI_ORG and concatenated, so a configured org_url written with one
+    produced a "...//_apis/ConnectionData" that some TFS routes reject.
+    """
+    return "{0}/_apis/connectionData".format((base or "").rstrip("/"))
+
+
+def authenticated_user(resp):
+    """(id, display name) out of a ConnectionData response, as ("" , "")
+    when the response is empty or an unexpected shape - never raises, so a
+    caller can fall back to "no identity" instead of failing the whole
+    request. customDisplayName wins over providerDisplayName, matching the
+    C# build and every previous copy of this.
+    """
+    user = ((resp or {}).get("authenticatedUser")) or {}
+    uid = user.get("id")
+    name = user.get("customDisplayName") or user.get("providerDisplayName") or ""
+    return (str(uid) if uid else ""), name
+
+
 class RepoBranchCache:
     """Per-repository cache of existing "refs/heads/..." names, populated
     on demand and shared across concurrently-processed pull requests of the
@@ -1234,10 +1275,8 @@ class AzureDevOpsPullRequestSource:
     # -- identity -----------------------------------------------------------
 
     def _whoami_for_org(self, org, pat):
-        resp = self.fetch_bare(self._build_url(org, "_apis/connectionData"), pat) or {}
-        user = resp.get("authenticatedUser") or {}
-        name = user.get("customDisplayName") or user.get("providerDisplayName") or ""
-        return user.get("id"), name
+        uid, name = authenticated_user(self.fetch_bare(connection_data_url(org), pat))
+        return (uid or None), name
 
     def whoami(self, organization_url, project):
         """Mirrors AzureDevOpsPullRequestSource.WhoAmIAsync: matches an
@@ -1709,14 +1748,29 @@ class PrActions:
 
     # -- current_user_id -------------------------------------------------
 
+    def _userid_cache_path(self):
+        """Where this org's authenticated-user id is cached.
+
+        The id is per organization/collection, but this used to be a single
+        PREFETCH_DIR/.userid with nothing in the name to say which org it
+        came from - while self.org is per request (AZVICLI_ORG, set by the
+        dashboard from each PR's own record). With two configured accounts
+        the first org's id was therefore reused to vote and set
+        auto-complete on the second org's PRs, where it identifies nobody.
+        The org's digest is part of the filename now, so each gets its own;
+        a .userid left over from before is simply never read again.
+        """
+        key = (self.org or "").rstrip("/").lower().encode("utf-8")
+        return os.path.join(self.prefetch_dir, ".userid-{0}".format(hashlib.sha256(key).hexdigest()[:12]))
+
     def current_user_id(self):
-        """Resolves (and file-caches under PREFETCH_DIR/.userid, since it
+        """Resolves (and file-caches per org under PREFETCH_DIR, since it
         never changes) the authenticated user's id via the bare (no
         api-version - some on-prem TFS 400s on it) ConnectionData endpoint.
         Needed to cast a vote or set auto-complete, both keyed by reviewer
         id. Returns None on any failure - mirrors current_user_id's `|| return 1`.
         """
-        cache_path = os.path.join(self.prefetch_dir, ".userid")
+        cache_path = self._userid_cache_path()
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
                 cached = f.read().strip()
@@ -1727,13 +1781,12 @@ class PrActions:
         if not self.pat:
             return None
         try:
-            resp = self.fetch("{0}/_apis/ConnectionData".format(self.org), pat=self.pat, api_version=None)
+            resp = self.fetch(connection_data_url(self.org), pat=self.pat, api_version=None)
         except Exception:
             return None
-        uid = ((resp or {}).get("authenticatedUser") or {}).get("id")
+        uid = authenticated_user(resp)[0]
         if not uid:
             return None
-        uid = str(uid)
         try:
             os.makedirs(self.prefetch_dir, exist_ok=True)
             # Write-to-temp-then-rename: under --serve, several requests can
@@ -2496,12 +2549,10 @@ class WorkItemActions:
         if not self.pat:
             return ""
         try:
-            url = "{0}/_apis/connectionData".format((self.collection or "").rstrip("/"))
-            resp = self.fetch_bare(url, self.pat) or {}
+            resp = self.fetch_bare(connection_data_url(self.collection), self.pat)
         except Exception:
             return ""
-        user = resp.get("authenticatedUser") or {}
-        return user.get("customDisplayName") or user.get("providerDisplayName") or ""
+        return authenticated_user(resp)[1]
 
     # -- shared REST helpers ------------------------------------------------
 
