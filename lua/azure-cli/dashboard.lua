@@ -45,13 +45,19 @@ local KEYS = require("azure-cli.keys")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 local PRS = require("azure-cli.prs")
+-- Shared housekeeping helpers (flash, config file, browser/clipboard, the
+-- JSON state files, a failed job's one-line summary) - see shell.lua for
+-- what each of these used to be a private copy of here.
+local SHELL = require("azure-cli.shell")
 
 function M.open()
 
 local env    = vim.env
 local EXE    = env.AZVICLI_EXE or (CONFIG.plugin_root() .. "/azure-cli")
--- Data-provider argv (python azure-cli.py) every PR-action/prefetch job in
--- this dashboard runs, replacing review-pr.sh/$BASH entirely.
+-- Data-provider argv (python azure-cli.py). Jobs build their own with
+-- CONFIG.provider_argv(...); this is kept only to export the interpreter
+-- and script path into the environment the reviewer is launched with (see
+-- set_pr_env below).
 local PROVIDER_CMD = CONFIG.provider_cmd()
 -- Local clone used by the reviewer for diffs (per-repo mapping is a later step).
 local REPO_PATH = env.AZVICLI_REPO_PATH or ""
@@ -172,9 +178,7 @@ local DASHBOARD_ACTIONS = {
   { "quit", "quit" }, { "help", "help" },
 }
 
-local function notify(msg, level)
-  require("azure-cli.notify").flash(msg, level or vim.log.levels.INFO)
-end
+local notify = SHELL.notify
 
 -- Persistent "seen" snapshot per PR (nvim's per-user data dir, so it survives
 -- restarts): { totalThreads, myActiveThreads, mentionTotal } as of the last
@@ -188,18 +192,12 @@ local SEEN_FILE = vim.fn.stdpath("data") .. "/azure-cli-seen.json"
 -- SEEN_FILE below (migrate.lua's M.ensure) the first time it's needed, then
 -- left alone untouched.
 local OLD_SEEN_FILE = vim.fn.stdpath("data") .. "/pr-dash-seen.json"
-local function load_seen()
-  require("azure-cli.migrate").ensure(OLD_SEEN_FILE, SEEN_FILE)
-  if vim.fn.filereadable(SEEN_FILE) ~= 1 then return { prs = {} } end
-  local ok, lines = pcall(vim.fn.readfile, SEEN_FILE)
-  if not ok then return { prs = {} } end
-  local ok2, decoded = pcall(vim.json.decode, table.concat(lines, "\n"))
-  if ok2 and type(decoded) == "table" and type(decoded.prs) == "table" then return decoded end
-  return { prs = {} }
-end
-local seen = load_seen()
+local seen = SHELL.read_json(SEEN_FILE, { prs = {} }, {
+  migrate_from = OLD_SEEN_FILE,
+  validate = function(d) return type(d.prs) == "table" end,
+})
 local function save_seen()
-  pcall(vim.fn.writefile, { vim.json.encode(seen) }, SEEN_FILE)
+  SHELL.write_json(SEEN_FILE, seen)
 end
 
 -- Snapshot of pr's counts as of "now", in the shape stored in seen.prs.
@@ -253,29 +251,10 @@ local function seed_unseen(fresh_prs)
   if dirty then save_seen() end
 end
 
--- Resolve azure-cli.yml's path - delegates to config.lua's M.config_path()
--- (AZVICLI_CONFIG override, else the platform default) so gO always opens
--- exactly what the provider itself would read.
-local function config_path()
-  return CONFIG.config_path()
-end
-
--- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick
--- editing, so you don't have to go dig it up manually to add an account or
--- tweak hide_ancient/clones_dir.
-local function open_config_file()
-  local notice = require("azure-cli.config").setup_accounts_notice()
-  if notice then
-    notify(notice)
-    return
-  end
-  local path = config_path()
-  vim.cmd("tabnew " .. vim.fn.fnameescape(path))
-  vim.bo.filetype = "yaml"
-  if vim.fn.filereadable(path) == 0 then
-    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
-  end
-end
+-- gO: open azure-cli.yml in a new tab (or explain that setup({accounts=...})
+-- is what's being read instead). Shared with the work-items dashboard and
+-- the reviewer, which each had this verbatim.
+local open_config_file = SHELL.open_config_file
 
 -- Truncate a string to n display cells, adding an ellipsis when cut. n <= 0
 -- (reachable now that a scaled column, e.g. reviewer summary, can land at
@@ -392,40 +371,36 @@ end
 -- tool actually uses - standalone/init.lua's non-default catppuccin-mocha
 -- palette, applied after this, which then always wins).
 local ns = vim.api.nvim_create_namespace("azure_cli_dashboard")
-local function define_hl()
-  local function hl(name, o) vim.api.nvim_set_hl(0, name, vim.tbl_extend("force", { default = true }, o)) end
-  hl("AzureCliHeader", { link = "Title" })
-  hl("AzureCliId", { link = "Identifier" })
-  hl("AzureCliRepo", { link = "Directory" })
-  hl("AzureCliAuthor", { link = "Comment" })
-  hl("AzureCliVote", { link = "Special" })
-  hl("AzureCliThread", { link = "WarningMsg" })
-  hl("AzureCliThreadDone", { link = "String" })
-  hl("AzureCliAged", { link = "Comment" })
-  hl("AzureCliUpdated", { link = "Comment" })
-  hl("AzureCliBuildOk", { link = "String" })
-  hl("AzureCliBuildFail", { link = "ErrorMsg" })
-  hl("AzureCliBuildRun", { link = "WarningMsg" })
-  hl("AzureCliBuildExpired", { link = "WarningMsg" })
-  hl("AzureCliConflict", { link = "ErrorMsg" })
-  hl("AzureCliAutoComplete", { link = "String" })
-  hl("AzureCliUnread", { link = "ErrorMsg" })
-  hl("AzureCliMention", { link = "Special" })
-  hl("AzureCliSyncing", { link = "Title" })
-  hl("AzureCliReady", { link = "Comment" })
-  hl("AzureCliBorder", { link = "FloatBorder" })
-  hl("AzureCliColHeader", { link = "Comment" })
-  hl("AzureCliMe", { link = "Title" })
-end
-define_hl()
+UI.link_hl({
+  AzureCliHeader       = "Title",
+  AzureCliId           = "Identifier",
+  AzureCliRepo         = "Directory",
+  AzureCliAuthor       = "Comment",
+  AzureCliVote         = "Special",
+  AzureCliThread       = "WarningMsg",
+  AzureCliThreadDone   = "String",
+  AzureCliAged         = "Comment",
+  AzureCliUpdated      = "Comment",
+  AzureCliBuildOk      = "String",
+  AzureCliBuildFail    = "ErrorMsg",
+  AzureCliBuildRun     = "WarningMsg",
+  AzureCliBuildExpired = "WarningMsg",
+  AzureCliConflict     = "ErrorMsg",
+  AzureCliAutoComplete = "String",
+  AzureCliUnread       = "ErrorMsg",
+  AzureCliMention      = "Special",
+  AzureCliSyncing      = "Title",
+  AzureCliReady        = "Comment",
+  AzureCliBorder       = "FloatBorder",
+  AzureCliColHeader    = "Comment",
+  AzureCliMe           = "Title",
+})
 
--- Parse a "o"-format ISO timestamp to an epoch for sorting/age checks.
-local function iso_epoch(iso)
-  local y, mo, d, h, mi, s = tostring(iso or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-  if not y then return 0 end
-  return os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
-end
+-- Parse a "o"-format ISO timestamp to an epoch for sorting/age checks - now
+-- in prs.lua with the rest of the pure record helpers, where tests/test-prs.lua
+-- can pin its UTC handling down (it used to read the provider's UTC stamp as
+-- local time here, which sorted fine but skewed the "aged" comparison below).
+local iso_epoch = PRS.iso_epoch
 
 -- Build-validation result as a compact glyph + highlight group (blank when none).
 local function build_glyph(status)
@@ -802,19 +777,20 @@ end
 -- Copy the web link of the PR under the cursor to the system clipboard.
 local function yank_link()
   local pr = current_pr()
-  if not pr or not pr.url or pr.url == "" then return end
-  vim.fn.setreg('"', pr.url)
-  pcall(vim.fn.setreg, "+", pr.url)
+  if not pr or not SHELL.yank_url(pr.url) then return end
   notify("Copied link to #" .. tostring(pr.id) .. ": " .. pr.url)
 end
 
--- Open the PR under the cursor in the default web browser.
+-- Open the PR under the cursor in the default web browser. SHELL.open_url
+-- reports a real failure now (vim.ui.open returns its error rather than
+-- raising, so the old pcall here could never see one).
 local function open_browser()
   local pr = current_pr()
-  if not pr or not pr.url or pr.url == "" then return end
-  local ok = pcall(function() vim.ui.open(pr.url) end)
+  if not pr then return end
+  local ok, why = SHELL.open_url(pr.url)
   if not ok then
-    vim.fn.jobstart({ "cmd", "/c", "start", "", pr.url })
+    notify("Can't open #" .. tostring(pr.id) .. ": " .. why, vim.log.levels.WARN)
+    return
   end
   notify("Opening #" .. tostring(pr.id) .. " in browser…")
 end
@@ -829,16 +805,12 @@ local function open_build()
     notify("No build for #" .. tostring(pr.id) .. ".")
     return
   end
-  local ok = pcall(function() vim.ui.open(pr.buildUrl) end)
+  local ok, why = SHELL.open_url(pr.buildUrl)
   if not ok then
-    vim.fn.jobstart({ "cmd", "/c", "start", "", pr.buildUrl })
+    notify("Can't open the build for #" .. tostring(pr.id) .. ": " .. why, vim.log.levels.WARN)
+    return
   end
   notify("Opening build for #" .. tostring(pr.id) .. " in browser…")
-end
-
--- Open a scratch floating window at the cursor showing the given text lines.
-local function open_float(lines, opts)
-  return UI.open_float(lines, opts)
 end
 
 -- Show the title and description of the PR under the cursor in a float,
@@ -904,7 +876,7 @@ local function show_description()
     end
   end
 
-  open_float(lines)
+  UI.open_float(lines)
 end
 
 -- Show this dashboard's keys and the row/build badge legend in a float,
@@ -971,7 +943,7 @@ local function show_help()
     "",
     "  \u{26A0}           merge conflict     A  auto-complete is on",
   })
-  open_float(lines)
+  UI.open_float(lines)
 end
 
 -- Prompt for a text filter (title/repo/author) applied on the next render.
@@ -1168,7 +1140,7 @@ local function ensure_warm(pr, cb, allow_clone)
         end
       end, 5000)
     end
-    RPC.run(PROVIDER_CMD, {
+    RPC.run(CONFIG.provider_argv(), {
       env = vim.tbl_extend("force", pr_env(pr), { AZVICLI_PREFETCH = "1" }),
       on_exit = function(_, code)
         warming[id] = nil
@@ -1238,7 +1210,7 @@ local function prefetch_content(pr, cb)
     id = pr.id, updatedIso = pr.updatedIso,
     source = pr.source, target = pr.target, repo = path,
     totalThreads = pr.totalThreads,
-    cmd = PROVIDER_CMD, env = pr_env(pr),
+    cmd = CONFIG.provider_argv(), env = pr_env(pr),
   }, function()
     schedule_render()
     if cb then cb() end
@@ -1309,7 +1281,7 @@ local function warm_all(list)
     syncing_clone[path] = true
     set_winbar()
     schedule_render()
-    RPC.run(PROVIDER_CMD, {
+    RPC.run(CONFIG.provider_argv(), {
       env = vim.tbl_extend("force", pr_env(pr), { AZVICLI_PREFETCH = "all", AZVICLI_REPO_PATH = path }),
       on_exit = function(_, code)
         syncing_clone[path] = nil
@@ -1443,7 +1415,7 @@ local function load(silent, force)
   -- Same data --list would print via the EXE launcher, run through the
   -- provider argv directly (python azure-cli.py --list) so it's routed
   -- through the daemon like every other provider call.
-  local list_args = vim.list_extend({}, PROVIDER_CMD)
+  local list_args = CONFIG.provider_argv()
   list_args[#list_args + 1] = "--list"
   RPC.run(list_args, {
     stdout_buffered = true,
@@ -1574,7 +1546,7 @@ local function run_action(args, describe, apply)
   local undo = apply and apply(pr)
   if undo then render() end
   local out = {}
-  local job_args = vim.list_extend({}, PROVIDER_CMD)
+  local job_args = CONFIG.provider_argv()
   vim.list_extend(job_args, args)
   RPC.run(job_args, {
     detach = true,  -- finish the ADO write even if the user quits before it returns
@@ -1592,8 +1564,13 @@ local function run_action(args, describe, apply)
           undo()
           render()
         end
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), " ")
-        notify(describe .. " failed (exit " .. code .. "): " .. msg
+        -- The full text (often a multi-line python traceback) goes to the
+        -- session log and only its one-line summary is shown - the same
+        -- treatment the reviewer's own writes have always had. This used to
+        -- flatten the whole traceback into a single notify() line and keep
+        -- nothing.
+        local msg = SHELL.job_error("PR #" .. tostring(pr.id), code, out)
+        notify(describe .. " failed: " .. msg
           .. (undo and " - change reverted." or ""), vim.log.levels.ERROR)
       end
     end,
@@ -1713,7 +1690,7 @@ local function requeue_pr()
   if not pr then return end
   notify("Re-queuing build for PR #" .. pr.id .. " \u{2026}")
   local out = {}
-  local requeue_args = vim.list_extend({}, PROVIDER_CMD)
+  local requeue_args = CONFIG.provider_argv()
   vim.list_extend(requeue_args, { "--requeue", tostring(pr.id) })
   RPC.run(requeue_args, {
     detach = true,  -- finish the ADO write even if the user quits before it returns
@@ -1855,7 +1832,7 @@ end, { ["repeat"] = -1 })
 local function prefetch_work_items()
   if STATE.WI_LIST_CACHE and STATE.WI_LIST_CACHE.items then return end
   local out = {}
-  local job_args = vim.list_extend({}, PROVIDER_CMD)
+  local job_args = CONFIG.provider_argv()
   job_args[#job_args + 1] = "--wi-list"
   RPC.run(job_args, {
     stdout_buffered = true,
@@ -1888,7 +1865,7 @@ end
 
 -- Warm the provider daemon in the background right away (a cheap --ping) so
 -- the very first real request below doesn't also pay its start-up cost.
-RPC.run(vim.list_extend(vim.list_extend({}, PROVIDER_CMD), { "--ping" }), {})
+RPC.run(CONFIG.provider_argv("--ping"), {})
 
 load(false)
 prefetch_work_items()

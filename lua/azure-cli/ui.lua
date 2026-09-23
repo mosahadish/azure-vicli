@@ -30,6 +30,28 @@ function M.plain_window(win, opts)
   M.wo(win, "foldenable", false)
 end
 
+-- Define highlight groups as links to existing ones, all with
+-- { default = true } so a user's colorscheme or their own :highlight always
+-- wins. `map` is { AzureCliThing = "LinkTarget", ... }. Both dashboards
+-- carried the same nvim_set_hl/tbl_extend one-liner and their own loop over
+-- it; only the group tables actually differ.
+function M.link_hl(map)
+  for name, target in pairs(map) do
+    vim.api.nvim_set_hl(0, name, { default = true, link = target })
+  end
+end
+
+-- The shared "big float" size: roughly 70% of the columns and 65% of the
+-- lines, floored so a small window still gets something usable and capped
+-- so a very wide one doesn't produce an unreadable measure. Used by
+-- open_float's opts.big below and by the reviewer, which had its own copy
+-- of these four magic numbers.
+function M.big_dims()
+  local width = math.min(math.max(70, math.floor(vim.o.columns * 0.7)), 110)
+  local height = math.min(math.max(18, math.floor(vim.o.lines * 0.65)), 34)
+  return width, height
+end
+
 -- The plugin's one floating-window builder for read-only text (help
 -- popups, descriptions, comment threads, pickers' hosts): every surface
 -- used to carry its own copy with slightly different caps and none of
@@ -54,8 +76,7 @@ function M.open_float(lines, opts)
   local screen_h = vim.o.lines - 4
   local width, height
   if opts.big then
-    width = math.min(math.max(70, math.floor(vim.o.columns * 0.7)), 110)
-    height = math.min(math.max(18, math.floor(vim.o.lines * 0.65)), 34)
+    width, height = M.big_dims()
   else
     width = opts.min_width or 20
     for _, l in ipairs(lines) do

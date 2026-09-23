@@ -69,12 +69,12 @@ azure_cli.setup(standalone_opts())
 
 -- Standalone's colour palette. Every highlight group the dashboard/reviewer/
 -- work-items surfaces define is `default = true, link = <standard group>`
--- (see their own define_hl functions), so a plugin-mode install inherits
+-- (see their own UI.link_hl calls), so a plugin-mode install inherits
 -- the colorscheme already active in the user's session. Standalone is the
 -- one case with no colorscheme to inherit (`nvim -u` skips it entirely), so
 -- this is the one place that still wants the tool's own fixed hex palette,
 -- matching every release before this plugin restructure - applied here,
--- BEFORE open_dashboard()/etc. below ever call their own define_hl(): a
+-- BEFORE open_dashboard()/etc. below ever define their own groups: a
 -- highlight group set explicitly (no `default`, as these calls are) is
 -- never overridden by a later `default = true` call for the same group
 -- (see :h nvim_set_hl's `default` field), so setting the real colours first
@@ -82,7 +82,7 @@ azure_cli.setup(standalone_opts())
 -- is what makes them win over the standard-group links.
 local function hl(name, o) vim.api.nvim_set_hl(0, name, o) end
 local function apply_palette()
-  -- Dashboard (lua/azure-cli/dashboard.lua's define_hl).
+  -- Dashboard (lua/azure-cli/dashboard.lua's UI.link_hl call).
   hl("AzureCliHeader", { fg = "#89b4fa", bold = true })
   hl("AzureCliId", { fg = "#cba6f7" })
   hl("AzureCliRepo", { fg = "#94e2d5" })
@@ -107,7 +107,7 @@ local function apply_palette()
   hl("AzureCliMe", { fg = "#f5c2e7", bold = true })
 
   -- Work-items dashboard + detail view (workitems/{dashboard,view}.lua's
-  -- define_hl - both define the same AzureCliWi* groups).
+  -- UI.link_hl call - both define the same AzureCliWi* groups).
   hl("AzureCliWiHeader",      { fg = "#89b4fa", bold = true })
   hl("AzureCliWiId",          { fg = "#cba6f7" })
   hl("AzureCliWiActive",      { fg = "#a6e3a1", bold = true })

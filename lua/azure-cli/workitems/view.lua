@@ -29,6 +29,8 @@ local PROMPT = require("azure-cli.prompt")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
 local UI = require("azure-cli.ui")
+-- Shared housekeeping helpers - see shell.lua.
+local SHELL = require("azure-cli.shell")
 
 local M = {}
 
@@ -37,13 +39,9 @@ function M.open()
 local env    = vim.env
 -- Data-provider argv (python azure-cli.py) every work-item fetch/action in
 -- this view runs, replacing wi-detail.sh/wi-state.sh/wi-edit.sh entirely.
-local PROVIDER_CMD = CONFIG.provider_cmd()
--- Appends a work-item subcommand/argv onto PROVIDER_CMD without mutating it.
-local function provider_argv(...)
-  local a = vim.list_extend({}, PROVIDER_CMD)
-  vim.list_extend(a, { ... })
-  return a
-end
+-- The builder lives in config.lua next to provider_cmd() now; this file and
+-- workitems/dashboard.lua had the same copy.
+local provider_argv = CONFIG.provider_argv
 local ID     = env.AZVICLI_WI_ID or ""
 -- AZVICLI_WI_ASSIGNEE override only - no personal default here any more. ga
 -- (assign_item below) sends an empty submission through as-is, and azure-cli.py
@@ -63,25 +61,23 @@ vim.bo[buf].buftype = "nofile"
 vim.bo[buf].filetype = "azurecli-workitem"
 
 -- Colours (termguicolors is on); idempotent so re-opening a tab is harmless.
--- Same AzureCliWiHeader/Id/... groups workitems/dashboard.lua defines (its own
--- define_hl already ran by the time this view opens, but this file can also
+-- Same AzureCliWiHeader/Id/... groups workitems/dashboard.lua defines (its
+-- own call already ran by the time this view opens, but this file can also
 -- open standalone-ish within a fresh tab, so it defines them again itself,
--- exactly as before) - see that file's define_hl for why these link to
--- standard groups with `default = true`.
-local function define_hl()
-  local function hl(name, o) vim.api.nvim_set_hl(0, name, vim.tbl_extend("force", { default = true }, o)) end
-  hl("AzureCliWiHeader",      { link = "Title" })
-  hl("AzureCliWiId",          { link = "Identifier" })
-  hl("AzureCliWiActive",      { link = "String" })
-  hl("AzureCliWiNew",         { link = "Special" })
-  hl("AzureCliWiImplemented", { link = "WarningMsg" })
-  hl("AzureCliWiResolved",    { link = "Directory" })
-  hl("AzureCliWiClosed",      { link = "Comment" })
-  hl("AzureCliWiRemoved",     { link = "ErrorMsg" })
-  hl("AzureCliWiViewTitle",   { link = "Title" })
-  hl("AzureCliWiViewLabel",   { link = "Special" })
-end
-define_hl()
+-- exactly as before) - see UI.link_hl for why these link to standard
+-- groups with `default = true`.
+UI.link_hl({
+  AzureCliWiHeader      = "Title",
+  AzureCliWiId          = "Identifier",
+  AzureCliWiActive      = "String",
+  AzureCliWiNew         = "Special",
+  AzureCliWiImplemented = "WarningMsg",
+  AzureCliWiResolved    = "Directory",
+  AzureCliWiClosed      = "Comment",
+  AzureCliWiRemoved     = "ErrorMsg",
+  AzureCliWiViewTitle   = "Title",
+  AzureCliWiViewLabel   = "Special",
+})
 
 -- Built from the sprint list's "states" field (work_items.states:,
 -- see states.lua) - workitems/dashboard.lua always populates
@@ -98,9 +94,7 @@ local ns = vim.api.nvim_create_namespace("azure_cli_workitem")
 
 local row_link = {}  -- buffer line (1-based) -> work item id (parent/child rows)
 
-local function notify(msg, level)
-  require("azure-cli.notify").flash(msg, level or vim.log.levels.INFO)
-end
+local notify = SHELL.notify
 
 local function set_lines(lines)
   vim.bo[buf].modifiable = true
@@ -351,11 +345,8 @@ local function load(id, force)
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
       if code ~= 0 then
-        local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), "\n")
-        local LOG = require("azure-cli.log")
-        LOG.record("work item #" .. ID, raw)
-        set_lines({ "Failed to load work item #" .. ID .. " (exit " .. code .. "):",
-          LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)" })
+        set_lines({ "Failed to load work item #" .. ID .. ":",
+          SHELL.job_error("work item #" .. ID, code, err) })
         return
       end
       local body = table.concat(out, "\n")
@@ -392,7 +383,7 @@ local function apply_state(new, reason)
         load(ID, true)
         if STATE.WI_STATE_CHANGED then STATE.WI_STATE_CHANGED(ID, new) end
       else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        local msg = SHELL.job_error("work item #" .. ID, code, err)
         notify("Set #" .. ID .. " failed: " .. msg, vim.log.levels.ERROR)
       end
     end,
@@ -473,7 +464,7 @@ local function apply_field(arg_name, value, describe, dash_patch)
         load(ID, true)
         if dash_patch then dash_patch() end
       else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        local msg = SHELL.job_error("work item #" .. ID, code, err)
         notify(describe .. " #" .. ID .. " failed: " .. msg, vim.log.levels.ERROR)
       end
     end,
@@ -588,10 +579,7 @@ local function add_comment()
           for i, c in ipairs(current_data.comments) do
             if c == entry then table.remove(current_data.comments, i); break end
           end
-          local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), "\n")
-          local LOG = require("azure-cli.log")
-          LOG.record("work item #" .. ID, raw)
-          notify("Comment on #" .. ID .. " failed: " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+          notify("Comment on #" .. ID .. " failed: " .. SHELL.job_error("work item #" .. ID, code, err),
             vim.log.levels.ERROR)
         end
         render(current_data)
@@ -653,7 +641,7 @@ local function link_pr()
         STATE.WI_DETAIL_CACHE[ID] = nil
         load(ID, true)
       else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        local msg = SHELL.job_error("work item #" .. ID, code, err)
         notify("Link PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
       end
     end,
@@ -700,7 +688,7 @@ local function unlink_pr()
         STATE.WI_DETAIL_CACHE[ID] = nil
         load(ID, true)
       else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+        local msg = SHELL.job_error("work item #" .. ID, code, err)
         notify("Unlink PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
       end
     end,
@@ -709,26 +697,16 @@ local function unlink_pr()
 end
 
 local function open_browser()
-  if current_url == "" then return end
-  local ok = pcall(vim.ui.open, current_url)
-  if not ok then
-    vim.fn.jobstart({ "cmd", "/c", "start", "", current_url }, { detach = true })
+  local ok, why = SHELL.open_url(current_url)
+  if not ok and current_url ~= "" then
+    notify("Can't open #" .. ID .. ": " .. why, vim.log.levels.WARN)
   end
 end
 
 -- Copy this work item's web link to the system clipboard.
 local function yank_link()
-  if current_url == "" then return end
-  vim.fn.setreg('"', current_url)
-  pcall(vim.fn.setreg, "+", current_url)
-  vim.notify("Copied link to #" .. tostring(ID) .. ": " .. current_url)
-end
-
--- Open a scratch floating window at the cursor showing the given text lines
--- (same small helper as azure-cli.lua's and workitems/dashboard.lua's open_float; kept
--- local since this file has no require'd module to share it from).
-local function open_float(lines, opts)
-  return UI.open_float(lines, opts)
+  if not SHELL.yank_url(current_url) then return end
+  notify("Copied link to #" .. tostring(ID) .. ": " .. current_url)
 end
 
 -- Show this view's keys in a float.
@@ -754,7 +732,7 @@ local WORKITEM_VIEW_HELP = {
   { "help", "this help" },
 }
 local function show_help()
-  open_float(KEYS.help_lines("workitem_view", "Work-item detail keys", WORKITEM_VIEW_HELP,
+  UI.open_float(KEYS.help_lines("workitem_view", "Work-item detail keys", WORKITEM_VIEW_HELP,
     { fixed = { "  j / k       move" } }))
 end
 

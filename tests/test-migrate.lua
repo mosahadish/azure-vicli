@@ -1,7 +1,7 @@
 -- test-migrate.lua: pure tests for lua/azure-cli/migrate.lua's M.ensure -
 -- the one-time pre-rename ("this plugin was once called pr-dash") data-file
--- migration dashboard.lua/review/init.lua call from their load_seen()/
--- load_persistent_filters()/load_seen_threads(). Shims just enough of
+-- migration dashboard.lua and review/init.lua reach through shell.lua's
+-- read_json(..., { migrate_from = ... }). Shims just enough of
 -- vim.fn (filereadable/readfile/writefile) against a tiny in-memory fake
 -- filesystem - no real files touched, no real Neovim needed.
 --

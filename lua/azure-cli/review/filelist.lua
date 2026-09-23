@@ -171,7 +171,7 @@ local ns = vim and vim.api.nvim_create_namespace("azure_cli_filelist")
 -- review/init.lua's own pinned Overview row always occupies line 1, so this
 -- never touches it - and applies `model.hl`. AzureCliFileDir/Added/Deleted/
 -- Renamed all link to a standard group with `default = true` (see
--- dashboard.lua's define_hl for why - a real colorscheme picks these up
+-- UI.link_hl for why - a real colorscheme picks these up
 -- automatically, standalone/init.lua's explicit palette still wins there).
 function M.render(list_buf, model)
   if not vim.api.nvim_buf_is_valid(list_buf) then return end

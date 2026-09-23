@@ -257,23 +257,13 @@ local FILTERS_FILE = vim.fn.stdpath("data") .. "/azure-cli-comment-filters.json"
 -- Migrates the pre-rename data file (this plugin was once called pr-dash,
 -- see migrate.lua) into FILTERS_FILE the first time it's needed, then
 -- leaves it alone.
-local function load_persistent_filters()
-  require("azure-cli.migrate").ensure(vim.fn.stdpath("data") .. "/pr-dash-comment-filters.json", FILTERS_FILE)
-  if vim.fn.filereadable(FILTERS_FILE) ~= 1 then return {} end
-  local ok, lines = pcall(vim.fn.readfile, FILTERS_FILE)
-  if not ok then return {} end
-  local ok2, decoded = pcall(vim.json.decode, table.concat(lines, "\n"))
-  if ok2 and type(decoded) == "table" then return decoded end
-  return {}
-end
-
 -- Writes every currently-persistent filter's text to disk.
 local function save_persistent_filters(ignore_texts)
   local texts = {}
   for _, f in ipairs(ignore_texts) do
     if f.persistent then texts[#texts + 1] = f.text end
   end
-  pcall(vim.fn.writefile, { vim.json.encode(texts) }, FILTERS_FILE)
+  require("azure-cli.shell").write_json(FILTERS_FILE, texts)
 end
 
 -- Text filters: threads whose FIRST comment contains ANY of these substrings
@@ -283,7 +273,8 @@ end
 -- (add/remove multiple, tag individual ones as persistent with `p` so they
 -- survive across sessions/PRs). Each entry is { text = "...", persistent = bool }.
 local ignore_texts = {}
-for _, text in ipairs(load_persistent_filters()) do
+for _, text in ipairs(require("azure-cli.shell").read_json(FILTERS_FILE, {},
+    { migrate_from = vim.fn.stdpath("data") .. "/pr-dash-comment-filters.json" })) do
   ignore_texts[#ignore_texts + 1] = { text = text, persistent = true }
 end
 
@@ -410,34 +401,14 @@ EXT.provider = function(args)
 end
 
 
-local function notify(msg, level)
-  require("azure-cli.notify").flash(msg, level or vim.log.levels.INFO)
-end
+local notify = require("azure-cli.shell").notify
 
--- Resolve azure-cli.yml's path - delegates to config.lua's M.config_path()
--- (AZVICLI_CONFIG override, else the platform default) so gO always opens
--- exactly what the provider itself would read. No new top-level local
--- here (this file is at LuaJIT's 200-local ceiling - see README's
--- "Extending the reviewer" section): require()'d inline, same as
--- EXT.provider below.
-local function config_path()
-  return require("azure-cli.config").config_path()
-end
-
--- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick editing.
-local function open_config_file()
-  local notice = require("azure-cli.config").setup_accounts_notice()
-  if notice then
-    notify(notice)
-    return
-  end
-  local path = config_path()
-  vim.cmd("tabnew " .. vim.fn.fnameescape(path))
-  vim.bo.filetype = "yaml"
-  if vim.fn.filereadable(path) == 0 then
-    notify("azure-cli.yml doesn't exist yet — save this buffer (:w) to create it at " .. path, vim.log.levels.WARN)
-  end
-end
+-- gO: open azure-cli.yml in a new tab (or explain that setup({accounts=...})
+-- is what's being read instead). This was a verbatim copy of the two
+-- dashboards' version and cost two top-level locals - one of the things
+-- this file has least of, being at LuaJIT's 200-local ceiling (see README's
+-- "Extending the reviewer"). Reached through shell.lua now, like notify above.
+local open_config_file = require("azure-cli.shell").open_config_file
 
 -- Enable word-aware wrapping on a floating window so long comment/description
 -- text always fits inside it (wraps at word boundaries, wrapped continuation
@@ -610,16 +581,11 @@ local function notify_new_comments(events)
 end
 
 
-local function big_float_dims()
-  local width = math.min(math.max(70, math.floor(vim.o.columns * 0.7)), 110)
-  local height = math.min(math.max(18, math.floor(vim.o.lines * 0.65)), 34)
-  return width, height
-end
 
 -- Open a scratch floating window showing the given text lines. focus defaults
 -- to true; pass false to keep the cursor where it is. opts.min_width /
 -- opts.min_height set a floor so short content still gets a roomy window;
--- opts.big forces the window to the shared large size (see big_float_dims),
+-- opts.big forces the window to the shared large size (UI.big_dims),
 -- centred over the editor instead of anchored to the cursor.
 -- Returns the window id.
 local function open_float(lines, focus, opts)
@@ -673,18 +639,10 @@ local SEEN_THREADS_FILE = vim.fn.stdpath("data") .. "/azure-cli-seen-threads.jso
 -- Migrates the pre-rename data file (this plugin was once called pr-dash,
 -- see migrate.lua) into SEEN_THREADS_FILE the first time it's needed, then
 -- leaves it alone.
-local function load_seen_threads()
-  require("azure-cli.migrate").ensure(vim.fn.stdpath("data") .. "/pr-dash-seen-threads.json", SEEN_THREADS_FILE)
-  if vim.fn.filereadable(SEEN_THREADS_FILE) ~= 1 then return {} end
-  local ok, lines = pcall(vim.fn.readfile, SEEN_THREADS_FILE)
-  if not ok then return {} end
-  local ok2, decoded = pcall(vim.json.decode, table.concat(lines, "\n"))
-  if ok2 and type(decoded) == "table" then return decoded end
-  return {}
-end
-local seen_threads = load_seen_threads()
+local seen_threads = require("azure-cli.shell").read_json(SEEN_THREADS_FILE, {},
+  { migrate_from = vim.fn.stdpath("data") .. "/pr-dash-seen-threads.json" })
 local function save_seen_threads()
-  pcall(vim.fn.writefile, { vim.json.encode(seen_threads) }, SEEN_THREADS_FILE)
+  require("azure-cli.shell").write_json(SEEN_THREADS_FILE, seen_threads)
 end
 
 -- True when `t` is "new": in my scope (my own PR, or a thread I've
@@ -858,19 +816,11 @@ local function run_write(args, on_ok, on_fail)
         return
       end
       -- The full raw text (often a multi-line python traceback) goes to the
-      -- session log; every caller here only ever sees LOG.summary's one
-      -- line, with a pointer back to the rest - see log.lua's own header
-      -- comment and README's Troubleshooting. Joined with "\n" (not " " as
-      -- before), since LOG.summary's traceback detection needs real line
-      -- breaks to find the "Traceback (most recent call last):" header.
-      local raw = table.concat(vim.tbl_filter(function(x) return x ~= "" end, out), "\n")
-      local msg = "exit " .. code
-      if raw ~= "" then
-        local LOG = require("azure-cli.log")
-        LOG.record("PR #" .. ID, raw)
-        msg = msg .. ": " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)"
-      end
-      on_fail(msg)
+      -- session log; every caller here only ever sees the one-line summary,
+      -- with a pointer back to the rest - see shell.lua's job_error, which
+      -- both dashboards' write helpers share now, log.lua's own header
+      -- comment and README's Troubleshooting.
+      on_fail(require("azure-cli.shell").job_error("PR #" .. ID, code, out))
     end,
   })
 end
@@ -1400,8 +1350,8 @@ end
 -- code keeps its language syntax colours while changes stay obvious now that the
 -- +/- prefixes are stripped. Kept in its own namespace so a thread refresh
 -- (which only clears comments_ns) never wipes them. Linked to the standard
--- DiffAdd/DiffDelete/DiffText groups with `default = true` (see dashboard.lua's
--- define_hl for why), so plugin mode picks up the active colorscheme's own
+-- DiffAdd/DiffDelete/DiffText groups with `default = true` (see UI.link_hl
+-- for why), so plugin mode picks up the active colorscheme's own
 -- diff colours and standalone/init.lua's explicit palette (applied after
 -- this, non-default) still wins there.
 pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffAddBg",   { default = true, link = "DiffAdd" })

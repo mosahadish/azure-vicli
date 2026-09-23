@@ -13,9 +13,7 @@
 -- flash, since that used to be every call site's own first line.
 local M = {}
 
-local function notify(msg, level)
-  require("azure-cli.notify").flash(msg, level or vim.log.levels.INFO)
-end
+local notify = require("azure-cli.shell").notify
 
 -- M.select(opts, cb): a menu.
 --   opts.prompt   the title ("Vote on PR #123")

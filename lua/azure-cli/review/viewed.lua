@@ -14,27 +14,25 @@ local M = {}
 local FILE = nil
 local store = nil
 
+-- "" when there's no Neovim around (tests drive this module with an
+-- injected store - see M.use_store); shell.lua's read_json/write_json are
+-- no-ops in that case too, so nothing here has to guard again.
 local function path()
-  FILE = FILE or (vim.fn.stdpath("data") .. "/azure-cli-viewed.json")
+  if FILE then return FILE end
+  if not (vim and vim.fn) then return "" end
+  FILE = vim.fn.stdpath("data") .. "/azure-cli-viewed.json"
   return FILE
 end
 
 function M.load()
   if store then return store end
-  store = {}
-  if vim and vim.fn and vim.fn.filereadable(path()) == 1 then
-    local ok, lines = pcall(vim.fn.readfile, path())
-    if ok then
-      local ok2, decoded = pcall(vim.json.decode, table.concat(lines, "\n"))
-      if ok2 and type(decoded) == "table" then store = decoded end
-    end
-  end
+  store = require("azure-cli.shell").read_json(path(), {})
   return store
 end
 
 local function save()
-  if not (vim and vim.fn and store) then return end
-  pcall(vim.fn.writefile, { vim.json.encode(store) }, path())
+  if not store then return end
+  require("azure-cli.shell").write_json(path(), store)
 end
 
 -- Injects an in-memory store (tests).

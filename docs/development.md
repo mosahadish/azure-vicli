@@ -42,7 +42,8 @@ lua/azure-cli/
   init.lua        setup(), open_dashboard()/open_review(id)/open_workitems(), standalone flag
   config.lua      setup() defaults (incl. every surface's `keys`) + merge/validate, provider_cmd()
   keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines
-  ui.lua          shared winbar formatting (UI.winbar) + the dashboard's column-width solver (UI.layout)
+  ui.lua          shared winbar formatting (UI.winbar), the column-width solver (UI.layout), floats, highlight links
+  shell.lua       shared housekeeping: flash, config file, browser/clipboard, JSON state files, failed-job summary
   state.lua       the one shared table every surface reads/writes (list/content caches, daemon state, ...)
   migrate.lua     one-time data-file rename, M.ensure(old, new)
   cache.lua       per-PR content cache + prefetch pipeline
@@ -89,6 +90,7 @@ launchers, running standalone/init.lua)
                           rpc.lua      shared azure-cli.py --serve daemon client
                           keys.lua     resolves every binding above to its configured key(s)
                           ui.lua       shared winbar formatting + the dashboard's column-width solver
+                          shell.lua    flash, config file, browser/clipboard, JSON state files, job errors
                           review/comments.lua  edit/delete your own comments
                           review/commits.lua   per-commit diffs
                           review/range.lua     range comments
@@ -122,9 +124,10 @@ daemon lifecycle/fallback rules and wire protocol.
 | `standalone/init.lua` | The launcher's Neovim entry point (`nvim -u standalone/init.lua`) - stands in for a whole init.vim, so it's the one place that adds the plugin root to `'runtimepath'` by hand; sets the standalone colour palette and marks the session standalone (`azure-cli.set_standalone(true)` - dashboard.lua's quit key reads this to decide `qa!` vs closing a tab) before opening the dashboard in the current window. |
 | `plugin/azure-cli.lua` | Defines `:AzureCli` (see [Commands](commands-and-keys.md#commands)) - loaded automatically by any plugin manager; no side effects beyond the command definition. |
 | `lua/azure-cli/init.lua` | Plugin entry point: `setup()`, `open_dashboard()`/`open_review(id)`/`open_workitems()`, the standalone flag. |
-| `lua/azure-cli/config.lua` | `setup()`'s defaults and merge/validation for every option (`keys` - see [Keys](commands-and-keys.md#keys) - plus `python`/`config`/`timing`/`hide_ancient_days` - see [setup() options](configuration.md#setup-options)), plus `provider_cmd()`/`plugin_root()`/`config_path()` (resolve `azure-cli.py`'s location/interpreter and the config file path, shared by every surface below instead of each re-deriving them). |
+| `lua/azure-cli/config.lua` | `setup()`'s defaults and merge/validation for every option (`keys` - see [Keys](commands-and-keys.md#keys) - plus `python`/`config`/`timing`/`hide_ancient_days` - see [setup() options](configuration.md#setup-options)), plus `provider_cmd()`/`provider_argv(...)`/`plugin_root()`/`config_path()` (resolve `azure-cli.py`'s location/interpreter, build a job's argv, and resolve the config file path - shared by every surface below instead of each re-deriving them). |
 | `lua/azure-cli/keys.lua` | Resolves a surface+action to the user's configured key(s) and binds it (`M.bind`); renders a `?` popup line or a lone "key: hint" chip from the same resolution (`M.line`/`M.label`) so neither ever hard-codes a key name. |
-| `lua/azure-cli/ui.lua` | Shared UI building blocks with no vim dependency (`UI.winbar`/`UI.layout` - see "Pull request dashboard" and "Reviewer" below), used by every surface's winbar and by the PR dashboard's column-width solver. |
+| `lua/azure-cli/ui.lua` | Shared UI building blocks: the pure, vim-free `UI.winbar`/`UI.layout` (see "Pull request dashboard" and "Reviewer" below), plus the one floating-window builder (`UI.open_float`, sized by `UI.big_dims`), `UI.plain_window`, `UI.filter_prompt` and `UI.link_hl` (every surface's highlight groups, linked with `default = true` so a colorscheme wins). |
+| `lua/azure-cli/shell.lua` | The small housekeeping helpers every surface needs and each one used to keep a private copy of: `notify` (notify.lua's flash), `config_path`/`open_config_file` (the `gO` key), `open_url`/`yank_url` (browser and clipboard), `read_json`/`write_json` (the saved-state files under Neovim's data directory, with `migrate.lua` folded in) and `job_error` (a failed provider job's full text to `log.lua`, its one-line summary back to the caller). |
 | `lua/azure-cli/state.lua` | The one shared table every surface reads/writes - `require()` caching is what makes one table naturally shared across every requirer. |
 | `lua/azure-cli/migrate.lua` | `M.ensure(old_path, new_path)`: copies a data file's content into its new name the first time the new one doesn't exist yet, then leaves the old one alone - used by the dashboard and reviewer for their saved-state files under Neovim's data directory. |
 | `lua/azure-cli/dashboard.lua` | PR dashboard: rendering, badges, hover and warm-all prefetch, optimistic actions - runs `azure-cli.py` for every PR action/prefetch job (`PROVIDER_CMD`, from `config.lua`) through `rpc.lua`, no bash in the loop. |
