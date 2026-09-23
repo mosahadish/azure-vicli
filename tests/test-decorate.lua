@@ -1,9 +1,9 @@
 -- test-decorate.lua: extracts the revision-decoration line walk out of
--- pr-review.lua (the loop that turns a parsed diff into own-side
--- highlights plus other-side virtual lines for a revision buffer) and
--- checks it against a real diff, for both sides.
+-- lua/azure-cli/review/nav.lua (the loop that turns a parsed diff into
+-- own-side highlights plus other-side virtual lines for a revision buffer)
+-- and checks it against a real diff, for both sides.
 --
--- Usage: luajit test-decorate.lua <cache.lua path> <pr-review.lua path> <scratch repo dir>
+-- Usage: luajit test-decorate.lua <cache.lua path> <nav.lua path> <scratch repo dir>
 --
 -- f.txt in the scratch repo: tgt = {a, b}; src = {a, B, c}. So on the
 -- source side line 2 (B) and line 3 (c) are additions, with the deleted "b"
@@ -21,7 +21,7 @@ vim = {
 local M = dofile(arg[1])
 local pr_review_path = arg[2]
 local repo = arg[3]
-assert(pr_review_path and repo, "usage: luajit test-decorate.lua <cache.lua> <pr-review.lua> <scratch repo dir>")
+assert(pr_review_path and repo, "usage: luajit test-decorate.lua <cache.lua> <nav.lua> <scratch repo dir>")
 
 local src = io.open(pr_review_path):read("*a")
 local walk = src:match("(    local old, new = 0, 0\n.-    flush%(n %+ 1%)\n)")

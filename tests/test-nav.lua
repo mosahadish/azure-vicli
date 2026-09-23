@@ -1,10 +1,10 @@
 -- test-nav.lua: extracts def_score (and the tables it uses) out of
--- pr-review.lua by pattern, verbatim, and checks it on real code lines -
--- both the C# and Lua this repo is written in, plus a couple of other
--- languages the heuristic targets. Also checks git grep output parsing
--- against a real `git grep` run.
+-- lua/azure-cli/review/nav.lua by pattern, verbatim, and checks it on real
+-- code lines - both the C# and Lua this repo is written in, plus a couple
+-- of other languages the heuristic targets. Also checks git grep output
+-- parsing against a real `git grep` run.
 --
--- Usage: luajit test-nav.lua <pr-review.lua path>
+-- Usage: luajit test-nav.lua <nav.lua path>
 -- Run with cwd inside the repo (run.sh runs it from the real azure-vicli
 -- checkout, where AccountConfig exists in azure-cli.py).
 

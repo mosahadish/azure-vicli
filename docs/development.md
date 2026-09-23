@@ -55,6 +55,7 @@ lua/azure-cli/
   dashboard.lua   PR dashboard
   review/
     init.lua               reviewer
+    nav.lua                 reviewer-feature module: gd/gr/gf/g-slash, the peek view
     comments.lua            reviewer-feature module: edit/delete own comments
     commits.lua             reviewer-feature module: per-commit diffs
     range.lua                reviewer-feature module: range comments
@@ -138,6 +139,7 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/log.lua` | The in-session error log every provider-failure path records into (`M.record`) and shows a one-line summary from (`M.summary`); `M.open` is [`:AzureCli log`](commands-and-keys.md#commands). |
 | `lua/azure-cli/editor.lua` | The floating comment editor (see [Reviewer](reviewer.md#reviewer)'s "Comment editor") - drafts, title formatting, `@` mention translation. |
 | `lua/azure-cli/rpc.lua` | Shared client for the `azure-cli.py --serve` daemon - one daemon per Neovim session, `require()`'d by every file above; `M.run(argv, opts)` is a `vim.fn.jobstart`-compatible drop-in that routes a provider call to the daemon when it's usable and falls back to a plain job otherwise. |
+| `lua/azure-cli/review/nav.lua` | Reviewer-feature module (see "Extending the reviewer" below): code navigation without an LSP - `gd` (go to definition, ranked by `def_score`), `gr` (find references), `gf` (open this file at the PR's revision), `g/` (search the changed files), the two-float peek view and the read-only revision buffers you keep navigating from, with `<BS>` walking back one jump. Loaded **first** of the review modules: `review/{commits,followup,since}.lua` reach the peek and those buffers through the `ctx` fields filled in from its return value. |
 | `lua/azure-cli/review/comments.lua` | Reviewer-feature module (see "Extending the reviewer" below): edit/delete your own PR comments, from the K popup or the Overview page. |
 | `lua/azure-cli/review/commits.lua` | Reviewer-feature module: per-commit diffs - `gc`'s commit list, a commit's changed files, and a single commit's diff for one of them. |
 | `lua/azure-cli/review/range.lua` | Reviewer-feature module: visual-mode `c` comments on a selected range of lines instead of just one. |
@@ -186,7 +188,7 @@ the `azure-cli` launcher), twenty-one Lua unit tests under `tests/`,
 |---|---|
 | `test-split.lua` | `cache.lua`'s `split_diff`/`parse_diff` against per-file `git diff` output, over a real multi-file range of this repo's own history (`--no-renames` throughout - see the file's own header comment for why a rename's single-file vs. whole-diff hunks aren't guaranteed identical otherwise, independent of split_diff/parse_diff correctness) |
 | `test-prefetch.lua` | The prefetch pipeline end to end (caching, coalescing concurrent calls, refetch on thread-count change, the failure path, eviction, the ignore_ws `":iws"` bucket and its whitespace-only-file placeholder, a named string variant bucket and a `range` override for it - what `gi`'s "changes since my last review" uses - kept warm alongside the plain/iws ones and evicted with the rest), with a shimmed `vim.fn.jobstart` against a scratch git repo and a stub provider `--threads` |
-| `test-nav.lua` | `review/init.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
+| `test-nav.lua` | `review/nav.lua`'s `def_score` definition heuristic (extracted verbatim by pattern) against real code lines, and `git grep` output parsing |
 | `test-decorate.lua` | The revision-buffer decoration line walk (extracted verbatim by pattern) against a real diff, both sides |
 | `test-worddiff.lua` | `cache.lua`'s `word_diff` pairing and token-diff (single-token change, unequal block sizes, a whole-line rewrite, a whitespace-only change, the byte-size cap) |
 | `test-notify.lua` | `notify.lua`'s toast backend selection, XML/PowerShell/AppleScript escaping, the `AZVICLI_TOASTS` opt-out (via `state.lua`, `require()`d through `LUA_PATH` - see `tests/run.sh`), and same-title rate-limit coalescing, with a shimmed `vim.fn.jobstart`/`timer_start`; also `M.flash`'s queueing (up to `MAX_FLASH` at once, a push past that evicting the oldest), an error also going through `vim.notify` unconditionally, dismiss ordering/timing against a shimmed `vim.fn.timer_start`/`timer_stop` and a fake `vim.api` window/buffer, and `setup({notifications="notify"})` turning it into a plain `vim.notify` pass-through, with a shimmed `vim.api` |
@@ -322,7 +324,7 @@ display. Re-run it after a UI change and commit the result; add a step to
 200-active-local ceiling (98+ keymap/help/winbar call sites, the whole
 reviewer's state), so every reviewer feature hangs off one table, `EXT`,
 instead of adding its own top-level `local`s, and lives in its own module
-under `review/` (`review/{comments,commits,range,batch,since,followup}.lua`)
+under `review/` (`review/{nav,comments,commits,range,batch,since,followup}.lua`)
 - each `require()`d module is a separate compiled chunk with its own
 200-local budget. To add a feature:
 
