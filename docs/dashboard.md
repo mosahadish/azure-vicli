@@ -70,7 +70,7 @@ Each row carries badges to the left of the id:
 
 | Badge | Meaning |
 |---|---|
-| `●` | Unread comment or mention activity since you last opened the PR |
+| `●` | Unread comment or mention activity since you last opened the PR. On a PR you didn't author that includes one of your own threads being **resolved**, not just replied to - the threads column going `0/1` -> `1/1` is activity on your comment like any other, and `gu` in the reviewer will say whether the code near it actually moved |
 | `⇣` | Branches or content being fetched in the background right now |
 | `◆` | Fully prefetched; opens instantly |
 | `@` | An active thread mentions you; the PR also appears under Mentions |
@@ -113,8 +113,9 @@ warning when any of them argue against merging.
 
 ### Desktop notifications
 
-A new comment on a PR you authored, a reply on a thread you took part in, or
-a fresh @-mention fires an OS-level "toast" alongside the in-Neovim
+A new comment on a PR you authored, a reply on a thread you took part in,
+one of your own threads being resolved, or a fresh @-mention fires an
+OS-level "toast" alongside the in-Neovim
 `vim.notify` - so activity surfaces even when Neovim isn't the focused
 window. It uses PowerShell's WinRT toast API on Windows, `notify-send` on
 Linux, and `osascript` on macOS; a missing backend is silently a no-op. Press

@@ -33,10 +33,12 @@
 --
 -- Changed/unchanged/n/a, and the line-mapping rule: for each anchored
 -- thread on the SOURCE ("R") side, this module runs one
--- `git diff --unified=0 <base>..origin/<SOURCE> -- <path>` per distinct
--- path (async, cached per base+path at the module level below - see
+-- `git diff --unified=0 <base>..<source tip> -- <path>` per distinct
+-- path (async, cached per base+tip+path at the module level below - see
 -- hunks_cache - the same "cache by stable key, share across PRs/opens"
--- approach review/commits.lua's own per-sha caches use), parses the
+-- approach review/commits.lua's own per-sha caches use; the tip belongs in
+-- that key because a push changes the diff without changing the base),
+-- parses the
 -- "@@ -a,b +c,d @@" hunk headers out of it (M.parse_hunks) and marks the
 -- thread "changed" when any hunk's NEW-side range comes within 3 lines of
 -- the thread's own line (M.window_overlaps), else "unchanged" - a file with
@@ -89,8 +91,14 @@ local M = {}
 -- inside setup(ctx)) so, like review/commits.lua's own sha-keyed caches, it
 -- stays warm across re-opening the picker (or even a different PR - a base
 -- sha is effectively unique to the local clone) within the same session.
-local hunks_cache   = {}  -- "base\tpath" -> hunks list (M.parse_hunks' return)
-local hunks_waiters = {}  -- "base\tpath" -> { cb, ... } while a fetch is in flight
+-- The TIP is in the key, not just the base: the diff these hold is
+-- <base>..<source tip>, so a push moves its answer even though the base
+-- (the iteration at or before my last review point) usually stays put. Keyed
+-- on base alone, a picker opened after a push kept serving the pre-push
+-- hunks for the whole session - every row read "unchanged" however much the
+-- author had just changed, and only restarting nvim cleared it.
+local hunks_cache   = {}  -- "base\ttip\tpath" -> hunks list (M.parse_hunks' return)
+local hunks_waiters = {}  -- "base\ttip\tpath" -> { cb, ... } while a fetch is in flight
 
 -- The window's own extmark namespace for the since-range hunk highlight in
 -- the preview pane - created lazily (see open_picker) so requiring this
@@ -250,9 +258,43 @@ function M.classify(side, hunks, lineno, window)
   return "unchanged"
 end
 
-local CLASS_ICON  = { changed = "\u{2713}", unchanged = "\u{2013}", ["n/a"] = "?" }
-local CLASS_WORD  = { changed = "changed", unchanged = "unchanged", ["n/a"] = "n/a" }
-local CLASS_RANK  = { changed = 0, unchanged = 1, ["n/a"] = 2 }
+-- A thread status that means somebody considers the point settled. Azure
+-- DevOps' own set is active/pending/fixed/wontFix/closed/byDesign; the two
+-- open ones are named, so an unknown status reads as open rather than
+-- silently counting as resolved. Same rule M.comment_marker applies. Pure.
+function M.is_resolved(status)
+  status = status or "active"
+  return not (status == "active" or status == "pending")
+end
+
+-- The display state of an anchored row: its code-side classification,
+-- except that a resolved thread with nothing changed near it is its own
+-- state, "closed-as-is". That combination is the one worth opening the
+-- picker for - somebody marked your comment settled without the file
+-- moving - and under the classification alone it rendered as a plain
+-- "unchanged", identical to a thread still sitting open and untouched.
+-- A resolved thread that DID get a nearby change is "addressed": acted on
+-- and closed, i.e. nothing left to do, so it sorts below the open ones.
+-- Pure; `row` needs only .classification and .status.
+function M.row_state(row)
+  local c = row.classification
+  if not c then return nil end  -- unanchored: no state to show
+  if c == "n/a" then return "n/a" end
+  if M.is_resolved(row.status) then
+    return (c == "changed") and "addressed" or "closed-as-is"
+  end
+  return c
+end
+
+local CLASS_ICON  = { ["closed-as-is"] = "\u{26A0}", changed = "\u{2713}",
+  unchanged = "\u{2013}", addressed = "\u{2713}", ["n/a"] = "?" }
+local CLASS_WORD  = { ["closed-as-is"] = "closed-as-is", changed = "changed",
+  unchanged = "unchanged", addressed = "addressed", ["n/a"] = "n/a" }
+-- closed-as-is first: it's the one that needs a decision from you. Then the
+-- threads still open (changed before unchanged), then the ones already
+-- dealt with, then what can't be tracked.
+local CLASS_RANK  = { ["closed-as-is"] = 0, changed = 1, unchanged = 2,
+  addressed = 3, ["n/a"] = 4 }
 
 -- One picker row's display text: "<icon> <word>  <where>  [<status>]
 -- "<preview>"  (N replies)" - `where` is "path:line" for an anchored row,
@@ -261,8 +303,9 @@ local CLASS_RANK  = { changed = 0, unchanged = 1, ["n/a"] = 2 }
 -- is nil) gets its own icon/word ("\u{00B7}"/"unanchored") rather than one
 -- of the three tracked states.
 function M.format_row(row)
-  local icon = CLASS_ICON[row.classification] or "\u{00B7}"
-  local word = CLASS_WORD[row.classification] or "unanchored"
+  local state = M.row_state(row)
+  local icon = CLASS_ICON[state] or "\u{00B7}"
+  local word = CLASS_WORD[state] or "unanchored"
   local where
   if row.lineno then
     where = row.path .. ":" .. row.lineno
@@ -271,7 +314,7 @@ function M.format_row(row)
   else
     where = "(PR-level)"
   end
-  return string.format('%s %-9s  %-42s  [%s]  "%s"  (%d repl%s)',
+  return string.format('%s %-12s  %-42s  [%s]  "%s"  (%d repl%s)',
     icon, word, where, row.status or "?", row.preview or "",
     row.replies or 0, (row.replies == 1) and "y" or "ies")
 end
@@ -315,7 +358,7 @@ function M.sort_rows(rows)
   local out = {}
   for i, r in ipairs(rows) do out[i] = r end
   table.sort(out, function(a, b)
-    local ra, rb = CLASS_RANK[a.classification] or 9, CLASS_RANK[b.classification] or 9
+    local ra, rb = CLASS_RANK[M.row_state(a)] or 9, CLASS_RANK[M.row_state(b)] or 9
     if ra ~= rb then return ra < rb end
     if a.path ~= b.path then return (a.path or "") < (b.path or "") end
     return (a.lineno or 0) < (b.lineno or 0)
@@ -330,17 +373,22 @@ end
 -- without re-deriving it - header/blank lines are simply absent from this
 -- map). `anchored` is expected already classified and sorted (M.sort_rows).
 function M.build_lines(new_iterations, review_point, anchored, unanchored)
-  local changed_n = 0
+  local changed_n, closed_n = 0, 0
   for _, r in ipairs(anchored) do
     if r.classification == "changed" then changed_n = changed_n + 1 end
+    if M.row_state(r) == "closed-as-is" then closed_n = closed_n + 1 end
   end
   local date = (review_point and #review_point >= 10) and review_point:sub(1, 10) or "?"
-  local lines = {
-    string.format("Since %s (%d new iteration%s): %d of %d thread%s have nearby changes",
-      date, new_iterations, (new_iterations == 1) and "" or "s",
-      changed_n, #anchored, (#anchored == 1) and "" or "s"),
-    "",
-  }
+  local summary = string.format(
+    "Since %s (%d new iteration%s): %d of %d thread%s have nearby changes",
+    date, new_iterations, (new_iterations == 1) and "" or "s",
+    changed_n, #anchored, (#anchored == 1) and "" or "s")
+  -- Only when there are any: the tally above is the picker's headline and
+  -- shouldn't grow a permanent ", 0 resolved" tail.
+  if closed_n > 0 then
+    summary = summary .. string.format(", %d resolved with no change nearby", closed_n)
+  end
+  local lines = { summary, "" }
   local rows_by_line = {}
   for _, r in ipairs(anchored) do
     lines[#lines + 1] = M.format_row(r)
@@ -361,21 +409,51 @@ end
 -- ctx-dependent pieces. Defined at module level (like review/commits.lua's
 -- own buffer-building functions), taking `ctx` as an explicit argument
 -- rather than closing over it, since only functions actually CALLED at
--- require()-without-a-real-ctx time (none of these are - they're only ever
--- reached through the gu keymap setup(ctx) registers below) need to avoid
--- vim/ctx; this keeps hunks_cache/hunks_waiters usefully shared across
+-- require()-without-a-real-ctx time (in the reviewer none of these are -
+-- they're only ever reached through the gu keymap setup(ctx) registers
+-- below) need to avoid vim/ctx; M.resolve_tip/M.ensure_hunks are on M
+-- anyway so tests/test-review-followup.lua can drive the cache directly
+-- under a stub vim. This keeps hunks_cache/hunks_waiters usefully shared across
 -- however many times setup(ctx) itself runs (once per M.open() - a fresh PR
 -- review - since require() caches this module's chunk, not just the plain
 -- pure-function definitions in it).
+
+-- Resolves origin/<SOURCE> to a sha, so the hunks this module caches are
+-- keyed by the exact revision they were computed from. Read fresh on every
+-- picker open rather than taken from ctx.ext.source_sha: that field is the
+-- revision the DIFFS were built against, which lags a fetch until the
+-- reviewer's own poll notices, and a stale key here is precisely the bug
+-- this avoids. cb(tip) gets "origin/<SOURCE>" itself when rev-parse fails
+-- (branch not fetched, say) - still a usable revspec, just not cacheable.
+function M.resolve_tip(ctx, cb)
+  local fallback = "origin/" .. ctx.SOURCE
+  local out = {}
+  local job = vim.fn.jobstart(ctx.git_args("rev-parse", fallback), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function(_, code)
+      local sha = vim.trim(table.concat(out, ""))
+      vim.schedule(function()
+        cb((code == 0 and sha:match("^%x+$")) and sha or fallback)
+      end)
+    end,
+  })
+  if job <= 0 then vim.schedule(function() cb(fallback) end) end
+end
 
 -- Fetches (or joins an in-flight fetch of) the since-range hunks for `path`
 -- against `base`, calling cb(hunks) - never fails outright: a `git diff`
 -- that errors (e.g. the path didn't exist at `base`) is treated the same as
 -- "no hunks", which M.classify already reads as "unchanged", matching the
 -- spec's "file absent from the since-diff -> unchanged".
-local function ensure_hunks(ctx, base, path, cb)
-  local key = base .. "\t" .. path
-  local cached = hunks_cache[key]
+function M.ensure_hunks(ctx, base, tip, path, cb)
+  -- A tip that didn't resolve (see resolve_tip) is the branch name itself:
+  -- usable as a revspec, but not as a cache key, since it means something
+  -- different after the next fetch. Classify from a fresh diff each time
+  -- rather than remember an answer under a name that moves.
+  local cacheable = tip:match("^%x+$") ~= nil
+  local key = base .. "\t" .. tip .. "\t" .. path
+  local cached = cacheable and hunks_cache[key]
   if cached then
     cb(cached)
     return
@@ -387,13 +465,15 @@ local function ensure_hunks(ctx, base, path, cb)
   end
   hunks_waiters[key] = { cb }
   local out = {}
-  vim.fn.jobstart(ctx.git_args("diff", "--unified=0", base .. "..origin/" .. ctx.SOURCE, "--", path), {
+  -- The resolved sha, not "origin/<SOURCE>", so what lands in the cache is
+  -- exactly what the key names even if the ref moves mid-run.
+  vim.fn.jobstart(ctx.git_args("diff", "--unified=0", base .. ".." .. tip, "--", path), {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, _code)
       vim.schedule(function()
         local hunks = M.parse_hunks(out)
-        hunks_cache[key] = hunks
+        if cacheable then hunks_cache[key] = hunks end
         local cbs = hunks_waiters[key] or {}
         hunks_waiters[key] = nil
         for _, f in ipairs(cbs) do f(hunks) end
@@ -407,7 +487,7 @@ end
 -- cb(hunks_by_path) once they've all landed. A thread list with no "R"-side
 -- anchored rows at all (every one of my threads is on the target side, or
 -- there are none) skips straight to cb({}) - nothing to fetch.
-local function fetch_all_hunks(ctx, base, anchored, cb)
+local function fetch_all_hunks(ctx, base, tip, anchored, cb)
   local paths, total = {}, 0
   for _, row in ipairs(anchored) do
     if row.side == "R" and row.path and not paths[row.path] then
@@ -422,7 +502,7 @@ local function fetch_all_hunks(ctx, base, anchored, cb)
   end
   local pending = total
   for path in pairs(paths) do
-    ensure_hunks(ctx, base, path, function(hunks)
+    M.ensure_hunks(ctx, base, tip, path, function(hunks)
       hunks_by_path[path] = hunks
       pending = pending - 1
       if pending == 0 then cb(hunks_by_path) end
@@ -778,7 +858,8 @@ local function setup(ctx)
         return
       end
       local new_iterations, review_point = a, b
-      fetch_all_hunks(ctx, base_sha, anchored, function(hunks_by_path)
+      M.resolve_tip(ctx, function(tip)
+      fetch_all_hunks(ctx, base_sha, tip, anchored, function(hunks_by_path)
         finding = false
         for _, row in ipairs(anchored) do
           row.classification = M.classify(row.side, hunks_by_path[row.path], row.lineno, 3)
@@ -788,6 +869,7 @@ local function setup(ctx)
         -- filter can be toggled while it's open.
         open_picker(ctx, kind, new_iterations, review_point,
           M.sort_rows(anchored), unanchored, hunks_by_path, base_sha)
+      end)
       end)
     end)
   end
