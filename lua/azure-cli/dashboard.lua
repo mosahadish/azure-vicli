@@ -223,17 +223,29 @@ end
 -- since I last opened it) also counts, since that can happen on a PR I've
 -- neither authored nor replied on. A PR with no seen record yet (never
 -- opened, and not seeded below) is never unread.
+--
+-- myActiveThreads SHRINKING counts too, and for the same reason growth
+-- does: a thread I'm in went from active to resolved, i.e. somebody marked
+-- one of my comments settled. Watching only for growth made that the one
+-- kind of activity on my own comments the dashboard stayed silent about -
+-- the row looked untouched and the only hint was reading the threads
+-- column closely enough to notice it now said 1/1.
 local function pr_is_unread(pr)
   local rec = seen.prs[tostring(pr.id)]
   if not rec then return false end
-  local threads_grew
+  local threads_changed
   if pr.state == "Created" then
-    threads_grew = (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
+    threads_changed = (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
   else
-    threads_grew = (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (rec.myActiveThreads or 0)
+    -- Growth keeps its original baseline handling (an unknown -1 in the
+    -- record reads as 0); the shrink half needs a baseline it can trust,
+    -- since "fewer than we never knew" says nothing.
+    threads_changed = (pr.myActiveThreads or -1) >= 0
+      and (pr.myActiveThreads > (rec.myActiveThreads or 0)
+        or ((rec.myActiveThreads or -1) >= 0 and pr.myActiveThreads < rec.myActiveThreads))
   end
   local mentions_grew = (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (rec.mentionTotal or 0)
-  return threads_grew or mentions_grew
+  return threads_changed or mentions_grew
 end
 
 -- Seeds a "seen" record at current counts for any PR that doesn't have one
@@ -1346,7 +1358,7 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   local prev_by_id = {}
   for _, p in ipairs(prev_prs) do prev_by_id[p.id] = p end
 
-  local mine_events, thread_events, mention_events = {}, {}, {}
+  local mine_events, thread_events, mention_events, resolved_events = {}, {}, {}, {}
   for _, pr in ipairs(fresh_prs) do
     local old = prev_by_id[pr.id]
     if old then
@@ -1358,6 +1370,12 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
       else
         if (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (old.myActiveThreads or -1) then
           thread_events[#thread_events + 1] = pr
+        -- A drop is a thread of mine somebody resolved. Worth its own line:
+        -- "resolved" doesn't mean "fixed", and gu in the reviewer will say
+        -- whether the code near it actually moved.
+        elseif (old.myActiveThreads or -1) >= 0 and (pr.myActiveThreads or -1) >= 0
+          and pr.myActiveThreads < old.myActiveThreads then
+          resolved_events[#resolved_events + 1] = pr
         end
       end
       if (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (old.mentionTotal or -1) then
@@ -1373,6 +1391,10 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   for _, pr in ipairs(thread_events) do
     notify("New reply on your thread in PR #" .. pr.id .. ": " .. (pr.title or ""))
     NOTIFY.toast("PR #" .. pr.id, "New reply on your thread")
+  end
+  for _, pr in ipairs(resolved_events) do
+    notify("Your thread was resolved in PR #" .. pr.id .. ": " .. (pr.title or ""))
+    NOTIFY.toast("PR #" .. pr.id, "Your thread was resolved")
   end
   for _, pr in ipairs(mention_events) do
     notify("New mention in PR #" .. pr.id .. ": " .. (pr.title or ""))

@@ -50,7 +50,7 @@ local maps_by_buf, paths_by_buf = ctx.maps_by_buf, ctx.paths_by_buf
 local mark_current_file = ctx.mark_current_file
 local set_diff_winbar, set_overview_winbar = ctx.set_diff_winbar, ctx.set_overview_winbar
 local resize_list = ctx.resize_list
-local cache_key = ctx.cache_key
+local cache_key = ctx.cache_key  -- a getter: re-keyed on a push, see for_modules
 local diff_ns = ctx.diff_ns
 local OVERVIEW_MARK = ctx.OVERVIEW_MARK
 local HELP_NOTE_NAV = ctx.HELP_NOTE_NAV
@@ -161,7 +161,7 @@ local setup_nav_keymaps  -- below (needs the nav functions)
 local function decorate_revision(buf)
   local meta = nav_meta[buf]
   if not meta or not meta.loaded then return end
-  local pr_files = CACHE.files(cache_key)
+  local pr_files = CACHE.files(cache_key())
   if not pr_files or not vim.tbl_contains(pr_files, meta.path) then return end
   ensure_diff_content(meta.path, function(lines, map)
     if not vim.api.nvim_buf_is_valid(buf) then return end

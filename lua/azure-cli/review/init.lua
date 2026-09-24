@@ -3272,7 +3272,12 @@ end
 -- flips every time gA is pressed, so both are getters.
 EXT.for_modules = {
   -- review/nav.lua
-  cache_key = cache_key,
+  -- A getter, not the value: EXT.reload_after_push re-keys this local so a
+  -- push invalidates the files/diffs/commits buckets, and a copy taken here
+  -- (at load time, before any push) would go on naming the pre-push bucket
+  -- for the rest of the session - which left nav's revision buffers
+  -- undecorated for every file the push touched until nvim was restarted.
+  cache_key = function() return cache_key end,
   diff_ns = diff_ns,
   OVERVIEW_MARK = OVERVIEW_MARK,
   HELP_NOTE_NAV = HELP_NOTE_NAV,
@@ -3456,6 +3461,20 @@ EXT.check_new_push = function()
       local list = decoded.value or decoded
       if type(list) ~= "table" then return end
       local n = #list
+      -- Whether the clone actually HAS the newest iteration's commit is a
+      -- separate question from whether the iteration count grew, and it's
+      -- the one that decides if the diff on screen is real. The count is a
+      -- session-relative signal: it only says "a push happened while this
+      -- view was open", so on the first poll (no baseline yet) it can say
+      -- nothing at all - which left a reviewer opened against a clone that
+      -- was already behind showing a stale diff, with gu reporting
+      -- "unchanged" for threads the author had since touched, until the
+      -- dashboard's own timer happened to fetch. Asking git directly holds
+      -- at open, and also catches a force-push that replaced an iteration
+      -- without adding one.
+      local newest = list[n]
+      local tip = newest and newest.sourceRefCommit and newest.sourceRefCommit.commitId
+      if type(tip) == "string" and tip ~= "" then EXT.ensure_commit_local(tip) end
       if EXT.iteration_count == nil then
         EXT.iteration_count = n
         return
@@ -3469,6 +3488,33 @@ EXT.check_new_push = function()
         if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
         vim.schedule(EXT.fetch_new_commits)
       end
+    end,
+  })
+end
+
+-- Fetches when `sha` (the newest iteration's source commit, per ADO) isn't
+-- in the local clone yet - the "is what I'm looking at actually current?"
+-- check, run on every --iterations reply including the first. `git cat-file
+-- -e <sha>^{commit}` is a local object lookup, so this costs nothing when
+-- the clone is already up to date, which is the normal case.
+EXT.fetch_tried_for = nil  -- the last missing sha a fetch was started for
+EXT.ensure_commit_local = function(sha)
+  if REPO_PATH == "" or EXT.fetch_inflight then return end
+  if sha == EXT.fetch_tried_for then return end
+  vim.fn.jobstart(git_args("cat-file", "-e", sha .. "^{commit}"), {
+    on_exit = function(_, code)
+      if code == 0 then return end  -- already here; nothing to fetch
+      vim.schedule(function()
+        -- At most one attempt per distinct missing sha. A clone that can't
+        -- reach this commit at all (offline, no remote, a force-pushed ref
+        -- the server has since dropped) would otherwise start a fetch on
+        -- every poll for as long as the view stayed open; the next push
+        -- brings a new sha and so a fresh attempt, and the dashboard's own
+        -- warm cycle keeps trying independently of this either way.
+        if sha == EXT.fetch_tried_for then return end
+        EXT.fetch_tried_for = sha
+        EXT.fetch_new_commits()
+      end)
     end,
   })
 end
