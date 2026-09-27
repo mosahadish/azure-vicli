@@ -82,10 +82,13 @@ local DEFAULT_KEYS = {
   },
 }
 
--- Key actions that used to exist, and why they went: setup() warns about
--- one instead of failing on it as an unknown action.
+-- Key actions that used to exist: their old default and why they went.
+-- setup() skips one instead of failing on it as an unknown action - quietly
+-- when it's still the old default (:AzureCli options writes every key out,
+-- so a generated azure-cli.lua has it without anyone having set it), with a
+-- warning when it was remapped, since that binding is gone.
 local REMOVED_KEYS = {
-  ["dashboard.auto_complete"] = "auto-complete is a checkbox in gm's dialog now",
+  ["dashboard.auto_complete"] = { default = "ga", why = "auto-complete is a checkbox in gm's dialog now" },
 }
 
 -- setup({timing=...}) tunables - each replaces one hard-coded constant a UI
@@ -318,8 +321,10 @@ local function merge_keys(base, overrides)
       for action, keyspec in pairs(actions) do
         local gone = REMOVED_KEYS[surface .. "." .. tostring(action)]
         if gone then
-          vim.notify("azure-cli.setup: keys." .. surface .. "." .. action .. " no longer exists (" .. gone
-            .. ") - remove it from your setup()", vim.log.levels.WARN)
+          if not vim.deep_equal(keyspec, gone.default) then
+            vim.notify("azure-cli.setup: keys." .. surface .. "." .. action .. " no longer exists (" .. gone.why
+              .. ") - remove it from your setup()", vim.log.levels.WARN)
+          end
         elseif merged[surface][action] == nil then
           error("azure-cli.setup: unknown key action '" .. surface .. "." .. tostring(action) .. "'")
         else
