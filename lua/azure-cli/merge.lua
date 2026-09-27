@@ -1,6 +1,7 @@
 -- lua/azure-cli/merge.lua: the "complete PR" dialog shared by the PR
 -- dashboard's gm and the reviewer's gm - pick a merge type, toggle
--- "complete associated work items" / "delete source branch", see the
+-- "complete associated work items" / "delete source branch" / "auto-complete
+-- when policies pass" (instead of completing now), see the
 -- build state, unresolved thread count and votes (with a warning when any
 -- of them argue against merging), then confirm. The dialog itself is
 -- M.dialog; everything it renders comes from the pure helpers above it
@@ -17,13 +18,14 @@ M.MERGE_TYPES = {
 }
 
 -- Which dialog row holds what, so <Space> on a row knows what to toggle.
-M.ROW = { merge = 4, work_items = 5, delete_branch = 6 }
+M.ROW = { merge = 4, work_items = 5, delete_branch = 6, auto = 7 }
 
 -- <Space> on `row`: flips the checkbox there (or cycles the merge type on
 -- its row). Returns true when the state changed, false on any other row.
 function M.toggle(st, row)
   if row == M.ROW.work_items then st.work_items = not st.work_items
   elseif row == M.ROW.delete_branch then st.delete_branch = not st.delete_branch
+  elseif row == M.ROW.auto then st.auto = not st.auto
   elseif row == M.ROW.merge then st.merge = st.merge % #M.MERGE_TYPES + 1
   else return false end
   return true
@@ -47,10 +49,12 @@ end
 
 -- What should give pause before merging: a build that isn't green, a merge
 -- conflict, threads nobody has resolved. `spec` is the table M.dialog takes.
-function M.warnings(spec)
+-- With `auto` (setting auto-complete rather than completing now) a build
+-- that isn't green yet is no warning: waiting for it is the point.
+function M.warnings(spec, auto)
   local w = {}
   local b = spec.build_label
-  if b and not b:find("\u{2713}", 1, true) then w[#w + 1] = b end
+  if b and not auto and not b:find("\u{2713}", 1, true) then w[#w + 1] = b end
   if spec.conflict then w[#w + 1] = "merge conflict" end
   local n = spec.unresolved
   if type(n) == "number" and n > 0 then
@@ -60,7 +64,8 @@ function M.warnings(spec)
 end
 
 -- The dialog's lines for `spec` and the current toggle state `st`
--- ({ merge = index into MERGE_TYPES, work_items = bool, delete_branch = bool }).
+-- ({ merge = index into MERGE_TYPES, work_items = bool, delete_branch = bool,
+-- auto = bool }).
 function M.lines(spec, st)
   local rule = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
     .. "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
@@ -78,43 +83,62 @@ function M.lines(spec, st)
     (st.work_items and "[x]" or "[ ]") .. " Complete associated work items",
     (st.delete_branch and "[x]" or "[ ]") .. " Delete source branch"
       .. (source ~= "" and (" (" .. source .. ")") or ""),
+    (st.auto and "[x]" or "[ ]") .. " Auto-complete when policies pass"
+      .. (spec.auto_on and (" (on" .. ((spec.auto_by or "") ~= "" and (", set by " .. spec.auto_by) or "") .. ")") or ""),
     rule,
     "Build: " .. (blabel and blabel:gsub("^build ", "") or "none") .. "   Threads: "
       .. (type(unresolved) == "number" and tostring(unresolved) or "?") .. " unresolved   Votes: "
       .. (spec.vote_ratio or "?"),
   }
-  local warnings = M.warnings(spec)
+  local warnings = M.warnings(spec, st.auto)
   if #warnings > 0 then
-    lines[#lines + 1] = "\u{26A0} " .. table.concat(warnings, ", ") .. " - merge anyway?"
+    lines[#lines + 1] = "\u{26A0} " .. table.concat(warnings, ", ")
+      .. (st.auto and " - set auto-complete anyway?" or " - merge anyway?")
   end
   lines[#lines + 1] = rule
-  lines[#lines + 1] = "<Space>: toggle   m: merge type   <CR>: complete   q: cancel"
+  lines[#lines + 1] = "<Space>: toggle   m: merge type   <CR>: "
+    .. (st.auto and "set auto-complete" or "complete")
+    .. (spec.auto_on and "   x: cancel auto-complete" or "") .. "   q: close"
   return lines
 end
 
 -- Open the dialog for `spec` = { id, title, source, target, build_label,
--- conflict, unresolved, vote_ratio } (only `id` is required; `unresolved`
--- is a number, or nil when unknown). The cursor starts on the first
--- checkbox; <Space> toggles the checkbox under it (and cycles the merge
--- type on its row), `m` cycles the merge type from anywhere, <CR>
--- completes. `on_confirm(merge_type, delete_branch, work_items)` runs after
--- the window has closed; cancelling runs nothing.
+-- conflict, unresolved, vote_ratio, auto_on, auto_by, on_auto_off } (only
+-- `id` is required; `unresolved` is a number, or nil when unknown;
+-- `auto_on`/`auto_by` say auto-complete is already set, and by whom). The
+-- cursor starts on the first checkbox; <Space> toggles the checkbox under
+-- it (and cycles the merge type on its row), `m` cycles the merge type
+-- from anywhere, <CR> completes - or, with the auto-complete box checked
+-- (it starts checked when `auto_on`), sets auto-complete with those
+-- options. `on_confirm(merge_type, delete_branch, work_items, auto)` runs
+-- after the window has closed; cancelling runs nothing. When `auto_on`,
+-- `x` closes the dialog and runs `spec.on_auto_off()` to cancel it.
 function M.dialog(spec, on_confirm)
-  local st = { merge = 1, work_items = true, delete_branch = true }
+  local st = { merge = 1, work_items = true, delete_branch = true, auto = spec.auto_on and true or false }
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
+  local win
+
+  -- Sized for the wider of both auto states, so checking the box doesn't
+  -- push the hint line past the border; the height follows the line count
+  -- (the build warning comes and goes with it).
+  local width = 20
+  for _, auto in ipairs({ false, true }) do
+    local probe = { merge = st.merge, work_items = st.work_items, delete_branch = st.delete_branch, auto = auto }
+    for _, l in ipairs(M.lines(spec, probe)) do width = math.max(width, vim.fn.strdisplaywidth(l)) end
+  end
 
   local function draw()
+    local lines = M.lines(spec, st)
     vim.bo[buf].modifiable = true
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, M.lines(spec, st))
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
+    if win and vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_set_height(win, #lines) end
   end
   draw()
 
   local lines = M.lines(spec, st)
-  local width = 20
-  for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l)) end
-  local win = vim.api.nvim_open_win(buf, true, {
+  win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
     row = math.floor((vim.o.lines - #lines) / 2),
     col = math.floor((vim.o.columns - width) / 2),
@@ -142,8 +166,14 @@ function M.dialog(spec, on_confirm)
   vim.keymap.set("n", "<CR>", function()
     local mt = M.MERGE_TYPES[st.merge]
     if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
-    on_confirm(mt, st.delete_branch, st.work_items)
+    on_confirm(mt, st.delete_branch, st.work_items, st.auto)
   end, kopts)
+  if spec.auto_on and spec.on_auto_off then
+    vim.keymap.set("n", "x", function()
+      if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+      spec.on_auto_off()
+    end, kopts)
+  end
 end
 
 return M

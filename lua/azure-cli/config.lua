@@ -16,7 +16,7 @@ local M = {}
 local DEFAULT_KEYS = {
   dashboard = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
-    filter = "/", vote = "gv", complete = "gm", auto_complete = "ga",
+    filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = "za", expand_all = "zR", collapse_all = "zM",
@@ -80,6 +80,15 @@ local DEFAULT_KEYS = {
     unlink_pr = "gL", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?",
   },
+}
+
+-- Key actions that used to exist: their old default and why they went.
+-- setup() skips one instead of failing on it as an unknown action - quietly
+-- when it's still the old default (:AzureCli options writes every key out,
+-- so a generated azure-cli.lua has it without anyone having set it), with a
+-- warning when it was remapped, since that binding is gone.
+local REMOVED_KEYS = {
+  ["dashboard.auto_complete"] = { default = "ga", why = "auto-complete is a checkbox in gm's dialog now" },
 }
 
 -- setup({timing=...}) tunables - each replaces one hard-coded constant a UI
@@ -310,10 +319,17 @@ local function merge_keys(base, overrides)
         error("azure-cli.setup: `keys." .. tostring(surface) .. "` must be a table of action -> key")
       end
       for action, keyspec in pairs(actions) do
-        if merged[surface][action] == nil then
+        local gone = REMOVED_KEYS[surface .. "." .. tostring(action)]
+        if gone then
+          if not vim.deep_equal(keyspec, gone.default) then
+            vim.notify("azure-cli.setup: keys." .. surface .. "." .. action .. " no longer exists (" .. gone.why
+              .. ") - remove it from your setup()", vim.log.levels.WARN)
+          end
+        elseif merged[surface][action] == nil then
           error("azure-cli.setup: unknown key action '" .. surface .. "." .. tostring(action) .. "'")
+        else
+          merged[surface][action] = keyspec
         end
-        merged[surface][action] = keyspec
       end
     end
   end

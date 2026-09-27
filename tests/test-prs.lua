@@ -49,5 +49,20 @@ check("iso_epoch: nil is 0", P.iso_epoch(nil) == 0)
 -- Ordering is what the dashboard's section sort relies on.
 check("iso_epoch: orders", P.iso_epoch("2026-09-23T12:00:01Z") > P.iso_epoch("2026-09-23T12:00:00Z"))
 
+-- drop_completed: a PR completed this session stays off a fresh list that
+-- still has it active (ADO merges asynchronously), is forgotten once the
+-- server stops listing it, and comes back after the grace period.
+local done = {}
+P.mark_completed(done, 7, 1000)
+local ids = function(l) local t = {} for _, p in ipairs(l) do t[#t + 1] = tostring(p.id) end return table.concat(t, ",") end
+check("drop_completed: hidden while still listed", ids(P.drop_completed(done, { { id = 7 }, { id = 8 } }, 1005)) == "8")
+check("drop_completed: kept while still listed", done["7"] == 1000)
+check("drop_completed: forgotten once gone", ids(P.drop_completed(done, { { id = 8 } }, 1010)) == "8" and done["7"] == nil)
+P.mark_completed(done, "7", 1000)
+check("drop_completed: back after grace", ids(P.drop_completed(done, { { id = 7 } }, 1000 + P.COMPLETED_GRACE)) == "7" and done["7"] == nil)
+local unmark = P.mark_completed(done, 9, 1000)
+unmark()
+check("mark_completed: undo unmarks", done["9"] == nil)
+
 print(fails == 0 and "test-prs: all cases pass" or ("test-prs: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

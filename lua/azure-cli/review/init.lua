@@ -1829,7 +1829,8 @@ end
 
 -- Complete (merge) the PR: the shared dialog (lua/azure-cli/merge.lua -
 -- the dashboard's gm opens the same one) with this reviewer's live thread
--- counts, then --complete with what was picked.
+-- counts, then --complete with what was picked - or --auto-complete, when
+-- its auto-complete box was checked (or x cancelled it).
 local function complete_pr()
   local rec = current_pr_record()
   local unresolved = 0
@@ -1842,6 +1843,34 @@ local function complete_pr()
   for _, list in pairs(file_threads_by_path) do count(list) end
   count(general_threads)
 
+  -- --auto-complete on/off; on success the shared record (and so this
+  -- winbar's [auto-complete] tag and the dashboard's A badge) follows.
+  local function set_auto(on, args)
+    local what = on and "Setting auto-complete on" or "Cancelling auto-complete on"
+    notify(what .. " PR #" .. ID .. "...")
+    local out = {}
+    EXT.rpc.run(EXT.provider(args), {
+      detach = true,
+      stdout_buffered = true,
+      stderr_buffered = true,
+      on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+      on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
+      on_exit = function(_, code)
+        local LOG = require("azure-cli.log")
+        if code ~= 0 then
+          local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
+          LOG.record("PR #" .. ID .. " auto-complete", raw)
+          notify("Auto-complete failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+            vim.log.levels.ERROR)
+          return
+        end
+        if rec then rec.autoComplete, rec.autoCompleteSetBy = on, on and (rec.myName or "") or "" end
+        notify(what .. " PR #" .. ID .. ": done.")
+        if set_list_winbar then pcall(set_list_winbar) end
+      end,
+    })
+  end
+
   require("azure-cli.merge").dialog({
     id = ID,
     title = rec and rec.title or "",
@@ -1851,7 +1880,14 @@ local function complete_pr()
     conflict = merge_conflict_label() ~= nil,
     unresolved = unresolved,
     vote_ratio = rec and rec.voteRatio or nil,
-  }, function(mt, delete_branch, work_items)
+    auto_on = rec and rec.autoComplete and true or false,
+    auto_by = rec and rec.autoCompleteSetBy or "",
+    on_auto_off = function() set_auto(false, { "--auto-complete", "off" }) end,
+  }, function(mt, delete_branch, work_items, auto)
+    if auto then
+      set_auto(true, { "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) })
+      return
+    end
     notify("Completing PR #" .. ID .. " (" .. mt.label .. ")...")
     local out = {}
     EXT.rpc.run(EXT.provider({
@@ -1869,12 +1905,15 @@ local function complete_pr()
           -- It's gone from the active list: drop it from the dashboard's
           -- cache and close this reviewer rather than leaving it open on a
           -- PR that no longer exists.
+          -- Marked completed too: the dashboard's next --list can still
+          -- see it active while ADO runs the merge (prs.lua's drop_completed).
           local cache = STATE.PR_LIST_CACHE
           if cache and cache.prs then
             for i, p in ipairs(cache.prs) do
               if tostring(p.id) == tostring(ID) then table.remove(cache.prs, i) break end
             end
           end
+          require("azure-cli.prs").mark_completed(STATE.PR_COMPLETED, ID, os.time())
           vim.schedule(function() leave(true) end)
         else
           local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
@@ -3272,7 +3311,12 @@ end
 -- flips every time gA is pressed, so both are getters.
 EXT.for_modules = {
   -- review/nav.lua
-  cache_key = cache_key,
+  -- A getter, not the value: EXT.reload_after_push re-keys this local so a
+  -- push invalidates the files/diffs/commits buckets, and a copy taken here
+  -- (at load time, before any push) would go on naming the pre-push bucket
+  -- for the rest of the session - which left nav's revision buffers
+  -- undecorated for every file the push touched until nvim was restarted.
+  cache_key = function() return cache_key end,
   diff_ns = diff_ns,
   OVERVIEW_MARK = OVERVIEW_MARK,
   HELP_NOTE_NAV = HELP_NOTE_NAV,
@@ -3456,6 +3500,20 @@ EXT.check_new_push = function()
       local list = decoded.value or decoded
       if type(list) ~= "table" then return end
       local n = #list
+      -- Whether the clone actually HAS the newest iteration's commit is a
+      -- separate question from whether the iteration count grew, and it's
+      -- the one that decides if the diff on screen is real. The count is a
+      -- session-relative signal: it only says "a push happened while this
+      -- view was open", so on the first poll (no baseline yet) it can say
+      -- nothing at all - which left a reviewer opened against a clone that
+      -- was already behind showing a stale diff, with gu reporting
+      -- "unchanged" for threads the author had since touched, until the
+      -- dashboard's own timer happened to fetch. Asking git directly holds
+      -- at open, and also catches a force-push that replaced an iteration
+      -- without adding one.
+      local newest = list[n]
+      local tip = newest and newest.sourceRefCommit and newest.sourceRefCommit.commitId
+      if type(tip) == "string" and tip ~= "" then EXT.ensure_commit_local(tip) end
       if EXT.iteration_count == nil then
         EXT.iteration_count = n
         return
@@ -3469,6 +3527,33 @@ EXT.check_new_push = function()
         if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
         vim.schedule(EXT.fetch_new_commits)
       end
+    end,
+  })
+end
+
+-- Fetches when `sha` (the newest iteration's source commit, per ADO) isn't
+-- in the local clone yet - the "is what I'm looking at actually current?"
+-- check, run on every --iterations reply including the first. `git cat-file
+-- -e <sha>^{commit}` is a local object lookup, so this costs nothing when
+-- the clone is already up to date, which is the normal case.
+EXT.fetch_tried_for = nil  -- the last missing sha a fetch was started for
+EXT.ensure_commit_local = function(sha)
+  if REPO_PATH == "" or EXT.fetch_inflight then return end
+  if sha == EXT.fetch_tried_for then return end
+  vim.fn.jobstart(git_args("cat-file", "-e", sha .. "^{commit}"), {
+    on_exit = function(_, code)
+      if code == 0 then return end  -- already here; nothing to fetch
+      vim.schedule(function()
+        -- At most one attempt per distinct missing sha. A clone that can't
+        -- reach this commit at all (offline, no remote, a force-pushed ref
+        -- the server has since dropped) would otherwise start a fetch on
+        -- every poll for as long as the view stayed open; the next push
+        -- brings a new sha and so a fresh attempt, and the dashboard's own
+        -- warm cycle keeps trying independently of this either way.
+        if sha == EXT.fetch_tried_for then return end
+        EXT.fetch_tried_for = sha
+        EXT.fetch_new_commits()
+      end)
     end,
   })
 end

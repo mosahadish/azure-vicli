@@ -228,6 +228,63 @@ do
   check("sort_rows: doesn't mutate the input list order", rows[1].path == "b.cs")
 end
 
+-- --- M.is_resolved / M.row_state ------------------------------------------------------
+--
+-- The gap this closes: a thread somebody resolved without the file moving
+-- used to render as a plain "unchanged" - indistinguishable from one still
+-- open and untouched - so "my comment was closed and nothing was fixed"
+-- was invisible in the one picker meant to answer exactly that.
+
+check("is_resolved: active is open", M.is_resolved("active") == false)
+check("is_resolved: pending is open", M.is_resolved("pending") == false)
+check("is_resolved: a missing status reads as open", M.is_resolved(nil) == false)
+check("is_resolved: fixed is resolved", M.is_resolved("fixed") == true)
+check("is_resolved: closed is resolved", M.is_resolved("closed") == true)
+check("is_resolved: wontFix is resolved", M.is_resolved("wontFix") == true)
+
+check("row_state: open + unchanged stays unchanged",
+  M.row_state({ classification = "unchanged", status = "active" }) == "unchanged")
+check("row_state: open + changed stays changed",
+  M.row_state({ classification = "changed", status = "active" }) == "changed")
+check("row_state: resolved with nothing changed nearby is closed-as-is",
+  M.row_state({ classification = "unchanged", status = "closed" }) == "closed-as-is")
+check("row_state: resolved after a nearby change is addressed",
+  M.row_state({ classification = "changed", status = "fixed" }) == "addressed")
+check("row_state: a target-side row stays n/a whatever its status",
+  M.row_state({ classification = "n/a", status = "closed" }) == "n/a")
+check("row_state: an unanchored row has no state",
+  M.row_state({ status = "closed" }) == nil)
+
+check("format_row: a closed-as-is row says so rather than 'unchanged'",
+  M.format_row({ classification = "unchanged", path = "a.cs", lineno = 3, status = "closed",
+    preview = "x", replies = 0 }):find("closed-as-is", 1, true) ~= nil)
+
+do
+  local rows = {
+    { classification = "changed", path = "b.cs", lineno = 1, status = "active" },
+    { classification = "changed", path = "c.cs", lineno = 1, status = "fixed" },
+    { classification = "unchanged", path = "d.cs", lineno = 1, status = "active" },
+    { classification = "unchanged", path = "a.cs", lineno = 1, status = "closed" },
+  }
+  local sorted = M.sort_rows(rows)
+  check("sort_rows: closed-as-is outranks even a changed row", sorted[1].path == "a.cs")
+  check("sort_rows: then the threads still open, changed first",
+    sorted[2].path == "b.cs" and sorted[3].path == "d.cs")
+  check("sort_rows: an addressed thread sorts last, there being nothing to do",
+    sorted[4].path == "c.cs")
+end
+
+do
+  local anchored = {
+    { classification = "unchanged", path = "a.cs", lineno = 2, status = "closed", preview = "x", replies = 0 },
+    { classification = "unchanged", path = "b.cs", lineno = 1, status = "active", preview = "y", replies = 0 },
+  }
+  local lines = M.build_lines(0, "2024-03-15T10:00:00Z", anchored, {})
+  check("build_lines: the summary counts threads resolved with no nearby change",
+    lines[1] == "Since 2024-03-15 (0 new iterations): 0 of 2 threads have nearby changes"
+      .. ", 1 resolved with no change nearby")
+end
+
 -- --- M.build_lines -------------------------------------------------------------------
 
 do
@@ -318,6 +375,89 @@ do
   check("comment_marker: a line past the end of the file says so rather than mislabelling the last line",
     label == "  \u{258C} your comment is on line 900, past the end of this file at this revision")
   check("comment_marker: the past-the-end marker is its own group", group == "AzureCliCommentStale")
+end
+
+-- --- M.ensure_hunks / M.resolve_tip -----------------------------------------
+--
+-- The two ctx-dependent pieces the cache hangs off. They need a `vim`, but
+-- only jobstart/list_extend/schedule/trim, so a stub is enough to pin the
+-- thing that actually broke live: the since-diff is
+-- <base>..<source tip>, so its answer moves whenever the author pushes,
+-- and caching it under the base alone made a picker opened after a push go
+-- on reporting the pre-push hunks - every row "unchanged" - for the rest of
+-- the nvim session.
+
+do
+  local runs = {}          -- every argv jobstart was handed
+  local next_stdout = {}   -- lines the next job "prints"
+  local next_code = 0
+  _G.vim = {
+    fn = { jobstart = function(argv, o)
+      runs[#runs + 1] = argv
+      local out = next_stdout
+      next_stdout = {}
+      if o.on_stdout then o.on_stdout(0, out) end
+      o.on_exit(0, next_code)
+      return 1
+    end },
+    list_extend = function(dst, src)
+      for _, v in ipairs(src) do dst[#dst + 1] = v end
+      return dst
+    end,
+    schedule = function(f) f() end,
+    trim = function(s2) return (s2:gsub("^%s+", ""):gsub("%s+$", "")) end,
+  }
+
+  local ctx = {
+    SOURCE = "feature",
+    git_args = function(...) return { "git", ... } end,
+  }
+
+  -- resolve_tip: a sha on success, the branch name when rev-parse fails.
+  local got
+  next_stdout = { "abc123def456", "" }
+  M.resolve_tip(ctx, function(t) got = t end)
+  check("resolve_tip: rev-parse output is the tip", got == "abc123def456")
+  check("resolve_tip: asks git for origin/<SOURCE>",
+    runs[#runs][2] == "rev-parse" and runs[#runs][3] == "origin/feature")
+
+  next_code, next_stdout = 128, { "" }
+  M.resolve_tip(ctx, function(t) got = t end)
+  next_code = 0
+  check("resolve_tip: a failed rev-parse falls back to the ref name", got == "origin/feature")
+
+  -- ensure_hunks: the diff runs against the resolved tip, and the cache is
+  -- keyed by it - the regression this whole section exists for.
+  runs = {}
+  next_stdout = { "@@ -1,0 +5,2 @@" }
+  local hunks
+  M.ensure_hunks(ctx, "base1", "aaa111", "a.lua", function(h) hunks = h end)
+  check("ensure_hunks: parses the diff it ran", #hunks == 1 and hunks[1].new_start == 5)
+  check("ensure_hunks: diffs <base>..<tip>, not a moving ref name",
+    runs[1][4] == "base1..aaa111")
+
+  local n_before = #runs
+  M.ensure_hunks(ctx, "base1", "aaa111", "a.lua", function(h) hunks = h end)
+  check("ensure_hunks: same base+tip+path is served from the cache", #runs == n_before)
+
+  next_stdout = { "@@ -1,0 +40,3 @@" }
+  M.ensure_hunks(ctx, "base1", "bbb222", "a.lua", function(h) hunks = h end)
+  check("ensure_hunks: a new tip on the same base re-runs the diff", #runs == n_before + 1)
+  check("ensure_hunks: and yields the new tip's hunks, not the cached ones",
+    #hunks == 1 and hunks[1].new_start == 40)
+
+  -- A tip that never resolved is a ref name, which means something else
+  -- after the next fetch: usable as a revspec, never as a cache key.
+  runs = {}
+  next_stdout = { "@@ -1,0 +7,1 @@" }
+  M.ensure_hunks(ctx, "base1", "origin/feature", "b.lua", function(h) hunks = h end)
+  next_stdout = { "@@ -1,0 +9,1 @@" }
+  M.ensure_hunks(ctx, "base1", "origin/feature", "b.lua", function(h) hunks = h end)
+  check("ensure_hunks: an unresolved tip is never cached", #runs == 2)
+  check("ensure_hunks: so its second answer is the fresh one",
+    #hunks == 1 and hunks[1].new_start == 9)
+
+  _G.vim = nil
 end
 
 print(fails == 0 and "test-review-followup: all cases pass" or ("test-review-followup: " .. fails .. " unexpected"))

@@ -52,8 +52,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gb` | Open the PR's build in the browser |
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
-| `gm` | Complete (merge) - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items and delete the source branch, and the build/threads/votes summary |
-| `ga` | Toggle auto-complete |
+| `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
 | `gr` | Re-queue build validation |
 | `za` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
@@ -70,7 +69,7 @@ Each row carries badges to the left of the id:
 
 | Badge | Meaning |
 |---|---|
-| `●` | Unread comment or mention activity since you last opened the PR |
+| `●` | Unread comment or mention activity since you last opened the PR. On a PR you didn't author that includes one of your own threads being **resolved**, not just replied to - the threads column going `0/1` -> `1/1` is activity on your comment like any other, and `gu` in the reviewer will say whether the code near it actually moved |
 | `⇣` | Branches or content being fetched in the background right now |
 | `◆` | Fully prefetched; opens instantly |
 | `@` | An active thread mentions you; the PR also appears under Mentions |
@@ -108,13 +107,15 @@ dressing.nvim draws it when installed; the current value is marked
 `(current)`. Completing a PR opens a small dialog instead (see
 [Reviewer](reviewer.md#reviewer)'s `gm`): the merge type, whether the linked
 work items are completed and the source branch deleted (both on by
-default), and the build state, unresolved thread count and votes, with a
-warning when any of them argue against merging.
+default), whether to set auto-complete instead of completing now, and the
+build state, unresolved thread count and votes, with a warning when any of
+them argue against merging.
 
 ### Desktop notifications
 
-A new comment on a PR you authored, a reply on a thread you took part in, or
-a fresh @-mention fires an OS-level "toast" alongside the in-Neovim
+A new comment on a PR you authored, a reply on a thread you took part in,
+one of your own threads being resolved, or a fresh @-mention fires an
+OS-level "toast" alongside the in-Neovim
 `vim.notify` - so activity surfaces even when Neovim isn't the focused
 window. It uses PowerShell's WinRT toast API on Windows, `notify-send` on
 Linux, and `osascript` on macOS; a missing backend is silently a no-op. Press

@@ -131,7 +131,11 @@ merging. In the dialog `<Space>` toggles the checkbox under the cursor:
 completing the linked work items (on by default - Azure DevOps moves each
 one to its next state, as the web UI's "Complete associated work items"
 does) and deleting the source branch; `m` (or `<Space>` on its row) cycles
-the merge type; `<CR>` completes. The dashboard's `gm`
+the merge type; `<CR>` completes. Checking "Auto-complete when policies
+pass" makes `<CR>` set auto-complete with those options instead - ADO then
+completes the PR once its build and required reviewers pass; the box
+starts checked when auto-complete is already on, and `x` cancels it. The
+dashboard's `gm`
 opens the same dialog. On success the reviewer closes. `gv` marks your current vote and
 confirms a Reject, and the Overview's Votes line updates at once. `q` asks
 before closing when batch-review items are queued or comment drafts are
@@ -253,14 +257,15 @@ what I asked about since I last reviewed?" without re-reading every file by
 hand. It reuses `gi`'s own "last review point" (your last comment, reply or
 vote) and base commit, so the two features always agree on "since when".
 
-Each row is tagged `✔ changed`, `– unchanged` or `? n/a`, then the file:line,
-status and the first 80 characters of your comment, then how many replies
-it has:
+Each row is tagged with its state, then the file:line, status and the first
+80 characters of your comment, then how many replies it has:
 
 ```
-✔ changed    src/Foo.cs:42       [active]   "did we handle the null case here?"  (1 reply)
-– unchanged  src/Bar.cs:10       [active]   "typo: recieve -> receive"           (0 replies)
-? n/a        src/Baz.cs:5        [fixed]    "this branch looks dead"             (2 replies)
+⚠ closed-as-is src/Qux.cs:7        [closed]   "this leaks the handle"              (0 replies)
+✔ changed      src/Foo.cs:42       [active]   "did we handle the null case here?"  (1 reply)
+– unchanged    src/Bar.cs:10       [active]   "typo: recieve -> receive"           (0 replies)
+✔ addressed    src/Qim.cs:3        [fixed]    "extract this into a helper"         (1 reply)
+? n/a          src/Baz.cs:5        [fixed]    "this branch looks dead"             (2 replies)
 ```
 
 A thread on the source side (`R`) is `changed` when a `git diff --unified=0`
@@ -272,6 +277,20 @@ line) is always `n/a` - its line has no meaningful position in the
 since-range's diff, the same reason `gi` itself hides `L` comments. A
 file-level or PR-level comment of yours (not anchored to a line at all) is
 listed at the end under "Unanchored", ungraded.
+
+The thread's own status crosses with that: a **resolved** thread (anything
+but `active`/`pending`) reads `addressed` when something did change nearby
+and **`closed-as-is`** when nothing did - somebody marked your comment
+settled without the file moving. That is the row worth opening the picker
+for, so it sorts above everything else and the summary line counts it
+("… 0 of 3 threads have nearby changes, 1 resolved with no change nearby").
+Resolving is not the same as fixing, and this is where the difference
+shows; `addressed` rows sort last, there being nothing left to do.
+
+The picker re-resolves `origin/<source>` every time it opens and keys its
+cached diffs on that commit, so a push that lands while you have the
+reviewer open changes what the rows say on the next `gu` - it never serves
+a classification computed against an older tip.
 
 The list is on the left, a preview of the file (source tip for an `R`/
 unanchored row, target tip for an `L` row) on the right, centred on the

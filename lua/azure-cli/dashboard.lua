@@ -9,8 +9,7 @@
 --   j/k         move
 --   <CR>        open the PR under the cursor in the reviewer
 --   gv          cast a vote on the PR under the cursor
---   gm          complete (merge) the PR under the cursor
---   ga          toggle auto-complete on the PR under the cursor
+--   gm          complete (merge) or set/cancel auto-complete on the PR under the cursor
 --   gr          re-queue build validation for the PR under the cursor
 --   gN          toggle desktop notifications for this session
 --   r           refresh the list
@@ -171,7 +170,7 @@ local DASHBOARD_ACTIONS = {
   { "toggle_section", "toggle section" }, { "expand_all", "expand all" }, { "collapse_all", "collapse all" },
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
-  { "vote", "vote" }, { "complete", "complete" }, { "auto_complete", "auto-complete" },
+  { "vote", "vote" }, { "complete", "complete / auto-complete" },
   { "requeue_build", "re-queue build" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
@@ -223,17 +222,29 @@ end
 -- since I last opened it) also counts, since that can happen on a PR I've
 -- neither authored nor replied on. A PR with no seen record yet (never
 -- opened, and not seeded below) is never unread.
+--
+-- myActiveThreads SHRINKING counts too, and for the same reason growth
+-- does: a thread I'm in went from active to resolved, i.e. somebody marked
+-- one of my comments settled. Watching only for growth made that the one
+-- kind of activity on my own comments the dashboard stayed silent about -
+-- the row looked untouched and the only hint was reading the threads
+-- column closely enough to notice it now said 1/1.
 local function pr_is_unread(pr)
   local rec = seen.prs[tostring(pr.id)]
   if not rec then return false end
-  local threads_grew
+  local threads_changed
   if pr.state == "Created" then
-    threads_grew = (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
+    threads_changed = (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
   else
-    threads_grew = (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (rec.myActiveThreads or 0)
+    -- Growth keeps its original baseline handling (an unknown -1 in the
+    -- record reads as 0); the shrink half needs a baseline it can trust,
+    -- since "fewer than we never knew" says nothing.
+    threads_changed = (pr.myActiveThreads or -1) >= 0
+      and (pr.myActiveThreads > (rec.myActiveThreads or 0)
+        or ((rec.myActiveThreads or -1) >= 0 and pr.myActiveThreads < rec.myActiveThreads))
   end
   local mentions_grew = (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (rec.mentionTotal or 0)
-  return threads_grew or mentions_grew
+  return threads_changed or mentions_grew
 end
 
 -- Seeds a "seen" record at current counts for any PR that doesn't have one
@@ -891,8 +902,7 @@ local DASHBOARD_HELP_DESCS = {
   open_build = "open the PR's build in the browser",
   filter = "filter as you type by id, title, repo or author (Esc clears)",
   vote = "vote",
-  complete = "complete (merge)",
-  auto_complete = "toggle auto-complete",
+  complete = "complete (merge), or set/cancel auto-complete",
   requeue_build = "re-queue build validation",
   toggle_section = "toggle collapse on the section header under the cursor",
   expand_all = "expand every section",
@@ -1346,7 +1356,7 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   local prev_by_id = {}
   for _, p in ipairs(prev_prs) do prev_by_id[p.id] = p end
 
-  local mine_events, thread_events, mention_events = {}, {}, {}
+  local mine_events, thread_events, mention_events, resolved_events = {}, {}, {}, {}
   for _, pr in ipairs(fresh_prs) do
     local old = prev_by_id[pr.id]
     if old then
@@ -1358,6 +1368,12 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
       else
         if (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (old.myActiveThreads or -1) then
           thread_events[#thread_events + 1] = pr
+        -- A drop is a thread of mine somebody resolved. Worth its own line:
+        -- "resolved" doesn't mean "fixed", and gu in the reviewer will say
+        -- whether the code near it actually moved.
+        elseif (old.myActiveThreads or -1) >= 0 and (pr.myActiveThreads or -1) >= 0
+          and pr.myActiveThreads < old.myActiveThreads then
+          resolved_events[#resolved_events + 1] = pr
         end
       end
       if (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (old.mentionTotal or -1) then
@@ -1373,6 +1389,10 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   for _, pr in ipairs(thread_events) do
     notify("New reply on your thread in PR #" .. pr.id .. ": " .. (pr.title or ""))
     NOTIFY.toast("PR #" .. pr.id, "New reply on your thread")
+  end
+  for _, pr in ipairs(resolved_events) do
+    notify("Your thread was resolved in PR #" .. pr.id .. ": " .. (pr.title or ""))
+    NOTIFY.toast("PR #" .. pr.id, "Your thread was resolved")
   end
   for _, pr in ipairs(mention_events) do
     notify("New mention in PR #" .. pr.id .. ": " .. (pr.title or ""))
@@ -1452,6 +1472,8 @@ local function load(silent, force)
           end
         end
       end
+      -- A PR completed a moment ago can still list as active while ADO runs the merge.
+      fresh = PRS.drop_completed(STATE.PR_COMPLETED, fresh, os.time())
       if prev_prs then
         notify_new_pr_comments(prev_prs, fresh)
       end
@@ -1610,13 +1632,21 @@ end
 local MERGE = require("azure-cli.merge")
 local MERGE_TYPES = MERGE.MERGE_TYPES
 
--- Complete (merge) the PR under the cursor: the same dialog the reviewer's
--- gm opens (lua/azure-cli/merge.lua) - merge type, work-item/branch toggles,
--- build/threads/votes with a warning when they argue against merging - fed
--- from the row's own --list record.
+-- Complete (merge) the PR under the cursor, or set/cancel auto-complete on
+-- it: the same dialog the reviewer's gm opens (lua/azure-cli/merge.lua) -
+-- merge type, work-item/branch/auto-complete toggles, build/threads/votes
+-- with a warning when they argue against merging - fed from the row's own
+-- --list record.
 local function complete_pr()
   local pr = current_pr()
   if not pr then return end
+  local function set_auto(args, describe, on)
+    run_action(args, describe, function(p)
+      local was, by = p.autoComplete, p.autoCompleteSetBy
+      p.autoComplete, p.autoCompleteSetBy = on, on and (p.myName or "") or ""
+      return function() p.autoComplete, p.autoCompleteSetBy = was, by end
+    end)
+  end
   MERGE.dialog({
     id = pr.id,
     title = pr.title,
@@ -1626,8 +1656,18 @@ local function complete_pr()
     conflict = pr.mergeConflict and true or false,
     unresolved = (type(pr.activeThreads) == "number" and pr.activeThreads >= 0) and pr.activeThreads or nil,
     vote_ratio = pr.voteRatio,
-  }, function(mt, delete_branch, work_items)
+    auto_on = pr.autoComplete and true or false,
+    auto_by = pr.autoCompleteSetBy,
+    on_auto_off = function() set_auto({ "--auto-complete", "off" }, "Cancelling auto-complete on", false) end,
+  }, function(mt, delete_branch, work_items, auto)
+    if auto then
+      set_auto({ "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) },
+        "Setting auto-complete on", true)
+      return
+    end
     -- Optimistically drop the row: a completed PR leaves the active list.
+    -- Marked completed up front, so neither a poll already in flight nor
+    -- the refresh after the call (both can still see it active) brings it back.
     run_action({ "--complete", mt.key, tostring(delete_branch), tostring(work_items) }, "Completing", function(p)
       local at
       for i, x in ipairs(prs) do
@@ -1635,52 +1675,12 @@ local function complete_pr()
       end
       if not at then return nil end
       table.remove(prs, at)
-      return function() table.insert(prs, math.min(at, #prs + 1), p) end
-    end)
-  end)
-end
-
--- Toggle "complete automatically when requirements are met" (auto-complete)
--- on the PR under the cursor, mirroring the web UI's completion-dialog
--- checkbox. When already on, offers to cancel it; otherwise prompts for a
--- merge strategy the same way gm/complete_pr does.
-local function toggle_auto_complete()
-  local pr = current_pr()
-  if not pr then return end
-  local function set_on(mt)
-    -- Defaults: delete source branch + transition work items (like the web UI).
-    run_action({ "--auto-complete", "on", mt.key, "true", "true" }, "Setting auto-complete on", function(p)
-      local was, by = p.autoComplete, p.autoCompleteSetBy
-      p.autoComplete, p.autoCompleteSetBy = true, p.myName or ""
-      return function() p.autoComplete, p.autoCompleteSetBy = was, by end
-    end)
-  end
-  if pr.autoComplete then
-    -- Already on: offer to turn it off, or to change the merge strategy in
-    -- one step (used to take a cancel and a re-set).
-    local items = { { label = "Cancel auto-complete", off = true } }
-    for _, o in ipairs(MERGE_TYPES) do items[#items + 1] = { label = "Change strategy: " .. o.label, mt = o } end
-    PROMPT.select({
-      prompt = "PR #" .. pr.id .. " has auto-complete on" ..
-        (pr.autoCompleteSetBy ~= "" and (" (by " .. pr.autoCompleteSetBy .. ")") or ""),
-      items = items,
-    }, function(choice)
-      if not choice then return end
-      if choice.off then
-        run_action({ "--auto-complete", "off" }, "Cancelling auto-complete on", function(p)
-          local was, by = p.autoComplete, p.autoCompleteSetBy
-          p.autoComplete, p.autoCompleteSetBy = false, ""
-          return function() p.autoComplete, p.autoCompleteSetBy = was, by end
-        end)
-      else
-        set_on(choice.mt)
+      local unmark = PRS.mark_completed(STATE.PR_COMPLETED, p.id, os.time())
+      return function()
+        unmark()
+        table.insert(prs, math.min(at, #prs + 1), p)
       end
     end)
-    return
-  end
-
-  PROMPT.select({ prompt = "Auto-complete PR #" .. pr.id .. " with", items = MERGE_TYPES }, function(mt)
-    if mt then set_on(mt) end
   end)
 end
 
@@ -1732,8 +1732,7 @@ KEYS.bind(buf, "dashboard", "description", show_description, { desc = "show the 
 KEYS.bind(buf, "dashboard", "open_build", open_build, { desc = "open the PR's build in the browser" })
 KEYS.bind(buf, "dashboard", "filter", set_filter, { desc = "filter by title, repo or author" })
 KEYS.bind(buf, "dashboard", "vote", vote_pr, { desc = "vote" })
-KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge)" })
-KEYS.bind(buf, "dashboard", "auto_complete", toggle_auto_complete, { desc = "toggle auto-complete" })
+KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge), or set/cancel auto-complete" })
 KEYS.bind(buf, "dashboard", "requeue_build", requeue_pr, { desc = "re-queue build validation" })
 KEYS.bind(buf, "dashboard", "toggle_section", toggle_section, { desc = "toggle collapse on the section header under the cursor" })
 KEYS.bind(buf, "dashboard", "expand_all", expand_all, { desc = "expand every section" })
