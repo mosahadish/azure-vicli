@@ -1869,12 +1869,15 @@ local function complete_pr()
           -- It's gone from the active list: drop it from the dashboard's
           -- cache and close this reviewer rather than leaving it open on a
           -- PR that no longer exists.
+          -- Marked completed too: the dashboard's next --list can still
+          -- see it active while ADO runs the merge (prs.lua's drop_completed).
           local cache = STATE.PR_LIST_CACHE
           if cache and cache.prs then
             for i, p in ipairs(cache.prs) do
               if tostring(p.id) == tostring(ID) then table.remove(cache.prs, i) break end
             end
           end
+          require("azure-cli.prs").mark_completed(STATE.PR_COMPLETED, ID, os.time())
           vim.schedule(function() leave(true) end)
         else
           local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")

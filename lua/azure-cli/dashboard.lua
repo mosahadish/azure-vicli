@@ -1474,6 +1474,8 @@ local function load(silent, force)
           end
         end
       end
+      -- A PR completed a moment ago can still list as active while ADO runs the merge.
+      fresh = PRS.drop_completed(STATE.PR_COMPLETED, fresh, os.time())
       if prev_prs then
         notify_new_pr_comments(prev_prs, fresh)
       end
@@ -1650,6 +1652,8 @@ local function complete_pr()
     vote_ratio = pr.voteRatio,
   }, function(mt, delete_branch, work_items)
     -- Optimistically drop the row: a completed PR leaves the active list.
+    -- Marked completed up front, so neither a poll already in flight nor
+    -- the refresh after the call (both can still see it active) brings it back.
     run_action({ "--complete", mt.key, tostring(delete_branch), tostring(work_items) }, "Completing", function(p)
       local at
       for i, x in ipairs(prs) do
@@ -1657,7 +1661,11 @@ local function complete_pr()
       end
       if not at then return nil end
       table.remove(prs, at)
-      return function() table.insert(prs, math.min(at, #prs + 1), p) end
+      local unmark = PRS.mark_completed(STATE.PR_COMPLETED, p.id, os.time())
+      return function()
+        unmark()
+        table.insert(prs, math.min(at, #prs + 1), p)
+      end
     end)
   end)
 end

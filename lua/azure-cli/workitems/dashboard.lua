@@ -1552,6 +1552,7 @@ local function prefetch_prs()
           if ok and type(rec) == "table" then prs[#prs + 1] = rec end
         end
       end
+      prs = require("azure-cli.prs").drop_completed(STATE.PR_COMPLETED, prs, os.time())
       STATE.PR_LIST_CACHE = { prs = prs, ts = os.time() }
     end,
   })

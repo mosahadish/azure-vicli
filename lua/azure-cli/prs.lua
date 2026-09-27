@@ -98,4 +98,34 @@ function M.apply_my_vote(pr, vote)
   end
 end
 
+-- PRs completed from this session: `done` maps id (string) -> the os.time()
+-- it was completed at (STATE.PR_COMPLETED). ADO completes a PR
+-- asynchronously - for a few seconds after the PATCH (longer on a busy
+-- on-prem server) the PR still lists as active while the merge runs, so the
+-- refresh gm triggers put the row straight back on the dashboard.
+-- drop_completed filters such ids out of a fresh --list until the server
+-- stops returning them (which also forgets them), or COMPLETED_GRACE
+-- seconds pass - a merge that failed server-side leaves the PR active, and
+-- it should reappear rather than stay hidden for the session.
+M.COMPLETED_GRACE = 300
+
+function M.mark_completed(done, id, now)
+  done[tostring(id)] = now
+  return function() done[tostring(id)] = nil end
+end
+
+function M.drop_completed(done, list, now)
+  local listed, kept = {}, {}
+  for _, p in ipairs(list) do
+    local id = tostring(p.id)
+    local at = done[id]
+    if at then listed[id] = true end
+    if not (at and now - at < M.COMPLETED_GRACE) then kept[#kept + 1] = p end
+  end
+  for id, at in pairs(done) do
+    if not listed[id] or now - at >= M.COMPLETED_GRACE then done[id] = nil end
+  end
+  return kept
+end
+
 return M

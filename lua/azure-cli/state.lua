@@ -23,6 +23,7 @@ local M = {}
 
 -- PR dashboard / reviewer
 M.PR_LIST_CACHE = nil               -- { prs, ts }
+M.PR_COMPLETED = {}                 -- PR id -> os.time() completed this session (prs.lua's drop_completed)
 M.PR_CURRENT = nil                  -- metadata for the PR currently being opened
 M.PR_REFRESH_TIMER = nil                -- dashboard's periodic-refresh timer id
 M.whoami = nil                       -- "org|project" -> { id, displayName }
