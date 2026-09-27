@@ -131,7 +131,11 @@ merging. In the dialog `<Space>` toggles the checkbox under the cursor:
 completing the linked work items (on by default - Azure DevOps moves each
 one to its next state, as the web UI's "Complete associated work items"
 does) and deleting the source branch; `m` (or `<Space>` on its row) cycles
-the merge type; `<CR>` completes. The dashboard's `gm`
+the merge type; `<CR>` completes. Checking "Auto-complete when policies
+pass" makes `<CR>` set auto-complete with those options instead - ADO then
+completes the PR once its build and required reviewers pass; the box
+starts checked when auto-complete is already on, and `x` cancels it. The
+dashboard's `gm`
 opens the same dialog. On success the reviewer closes. `gv` marks your current vote and
 confirms a Reject, and the Overview's Votes line updates at once. `q` asks
 before closing when batch-review items are queued or comment drafts are

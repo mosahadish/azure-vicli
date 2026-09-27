@@ -1829,7 +1829,8 @@ end
 
 -- Complete (merge) the PR: the shared dialog (lua/azure-cli/merge.lua -
 -- the dashboard's gm opens the same one) with this reviewer's live thread
--- counts, then --complete with what was picked.
+-- counts, then --complete with what was picked - or --auto-complete, when
+-- its auto-complete box was checked (or x cancelled it).
 local function complete_pr()
   local rec = current_pr_record()
   local unresolved = 0
@@ -1842,6 +1843,34 @@ local function complete_pr()
   for _, list in pairs(file_threads_by_path) do count(list) end
   count(general_threads)
 
+  -- --auto-complete on/off; on success the shared record (and so this
+  -- winbar's [auto-complete] tag and the dashboard's A badge) follows.
+  local function set_auto(on, args)
+    local what = on and "Setting auto-complete on" or "Cancelling auto-complete on"
+    notify(what .. " PR #" .. ID .. "...")
+    local out = {}
+    EXT.rpc.run(EXT.provider(args), {
+      detach = true,
+      stdout_buffered = true,
+      stderr_buffered = true,
+      on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+      on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
+      on_exit = function(_, code)
+        local LOG = require("azure-cli.log")
+        if code ~= 0 then
+          local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
+          LOG.record("PR #" .. ID .. " auto-complete", raw)
+          notify("Auto-complete failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+            vim.log.levels.ERROR)
+          return
+        end
+        if rec then rec.autoComplete, rec.autoCompleteSetBy = on, on and (rec.myName or "") or "" end
+        notify(what .. " PR #" .. ID .. ": done.")
+        if set_list_winbar then pcall(set_list_winbar) end
+      end,
+    })
+  end
+
   require("azure-cli.merge").dialog({
     id = ID,
     title = rec and rec.title or "",
@@ -1851,7 +1880,14 @@ local function complete_pr()
     conflict = merge_conflict_label() ~= nil,
     unresolved = unresolved,
     vote_ratio = rec and rec.voteRatio or nil,
-  }, function(mt, delete_branch, work_items)
+    auto_on = rec and rec.autoComplete and true or false,
+    auto_by = rec and rec.autoCompleteSetBy or "",
+    on_auto_off = function() set_auto(false, { "--auto-complete", "off" }) end,
+  }, function(mt, delete_branch, work_items, auto)
+    if auto then
+      set_auto(true, { "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) })
+      return
+    end
     notify("Completing PR #" .. ID .. " (" .. mt.label .. ")...")
     local out = {}
     EXT.rpc.run(EXT.provider({

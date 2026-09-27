@@ -52,8 +52,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gb` | Open the PR's build in the browser |
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
-| `gm` | Complete (merge) - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items and delete the source branch, and the build/threads/votes summary |
-| `ga` | Toggle auto-complete |
+| `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
 | `gr` | Re-queue build validation |
 | `za` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
@@ -108,8 +107,9 @@ dressing.nvim draws it when installed; the current value is marked
 `(current)`. Completing a PR opens a small dialog instead (see
 [Reviewer](reviewer.md#reviewer)'s `gm`): the merge type, whether the linked
 work items are completed and the source branch deleted (both on by
-default), and the build state, unresolved thread count and votes, with a
-warning when any of them argue against merging.
+default), whether to set auto-complete instead of completing now, and the
+build state, unresolved thread count and votes, with a warning when any of
+them argue against merging.
 
 ### Desktop notifications
 

@@ -16,7 +16,7 @@ local M = {}
 local DEFAULT_KEYS = {
   dashboard = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
-    filter = "/", vote = "gv", complete = "gm", auto_complete = "ga",
+    filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = "za", expand_all = "zR", collapse_all = "zM",
@@ -80,6 +80,12 @@ local DEFAULT_KEYS = {
     unlink_pr = "gL", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?",
   },
+}
+
+-- Key actions that used to exist, and why they went: setup() warns about
+-- one instead of failing on it as an unknown action.
+local REMOVED_KEYS = {
+  ["dashboard.auto_complete"] = "auto-complete is a checkbox in gm's dialog now",
 }
 
 -- setup({timing=...}) tunables - each replaces one hard-coded constant a UI
@@ -310,10 +316,15 @@ local function merge_keys(base, overrides)
         error("azure-cli.setup: `keys." .. tostring(surface) .. "` must be a table of action -> key")
       end
       for action, keyspec in pairs(actions) do
-        if merged[surface][action] == nil then
+        local gone = REMOVED_KEYS[surface .. "." .. tostring(action)]
+        if gone then
+          vim.notify("azure-cli.setup: keys." .. surface .. "." .. action .. " no longer exists (" .. gone
+            .. ") - remove it from your setup()", vim.log.levels.WARN)
+        elseif merged[surface][action] == nil then
           error("azure-cli.setup: unknown key action '" .. surface .. "." .. tostring(action) .. "'")
+        else
+          merged[surface][action] = keyspec
         end
-        merged[surface][action] = keyspec
       end
     end
   end

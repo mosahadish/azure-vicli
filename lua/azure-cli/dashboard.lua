@@ -9,8 +9,7 @@
 --   j/k         move
 --   <CR>        open the PR under the cursor in the reviewer
 --   gv          cast a vote on the PR under the cursor
---   gm          complete (merge) the PR under the cursor
---   ga          toggle auto-complete on the PR under the cursor
+--   gm          complete (merge) or set/cancel auto-complete on the PR under the cursor
 --   gr          re-queue build validation for the PR under the cursor
 --   gN          toggle desktop notifications for this session
 --   r           refresh the list
@@ -171,7 +170,7 @@ local DASHBOARD_ACTIONS = {
   { "toggle_section", "toggle section" }, { "expand_all", "expand all" }, { "collapse_all", "collapse all" },
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
-  { "vote", "vote" }, { "complete", "complete" }, { "auto_complete", "auto-complete" },
+  { "vote", "vote" }, { "complete", "complete / auto-complete" },
   { "requeue_build", "re-queue build" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
@@ -903,8 +902,7 @@ local DASHBOARD_HELP_DESCS = {
   open_build = "open the PR's build in the browser",
   filter = "filter as you type by id, title, repo or author (Esc clears)",
   vote = "vote",
-  complete = "complete (merge)",
-  auto_complete = "toggle auto-complete",
+  complete = "complete (merge), or set/cancel auto-complete",
   requeue_build = "re-queue build validation",
   toggle_section = "toggle collapse on the section header under the cursor",
   expand_all = "expand every section",
@@ -1634,13 +1632,21 @@ end
 local MERGE = require("azure-cli.merge")
 local MERGE_TYPES = MERGE.MERGE_TYPES
 
--- Complete (merge) the PR under the cursor: the same dialog the reviewer's
--- gm opens (lua/azure-cli/merge.lua) - merge type, work-item/branch toggles,
--- build/threads/votes with a warning when they argue against merging - fed
--- from the row's own --list record.
+-- Complete (merge) the PR under the cursor, or set/cancel auto-complete on
+-- it: the same dialog the reviewer's gm opens (lua/azure-cli/merge.lua) -
+-- merge type, work-item/branch/auto-complete toggles, build/threads/votes
+-- with a warning when they argue against merging - fed from the row's own
+-- --list record.
 local function complete_pr()
   local pr = current_pr()
   if not pr then return end
+  local function set_auto(args, describe, on)
+    run_action(args, describe, function(p)
+      local was, by = p.autoComplete, p.autoCompleteSetBy
+      p.autoComplete, p.autoCompleteSetBy = on, on and (p.myName or "") or ""
+      return function() p.autoComplete, p.autoCompleteSetBy = was, by end
+    end)
+  end
   MERGE.dialog({
     id = pr.id,
     title = pr.title,
@@ -1650,7 +1656,15 @@ local function complete_pr()
     conflict = pr.mergeConflict and true or false,
     unresolved = (type(pr.activeThreads) == "number" and pr.activeThreads >= 0) and pr.activeThreads or nil,
     vote_ratio = pr.voteRatio,
-  }, function(mt, delete_branch, work_items)
+    auto_on = pr.autoComplete and true or false,
+    auto_by = pr.autoCompleteSetBy,
+    on_auto_off = function() set_auto({ "--auto-complete", "off" }, "Cancelling auto-complete on", false) end,
+  }, function(mt, delete_branch, work_items, auto)
+    if auto then
+      set_auto({ "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) },
+        "Setting auto-complete on", true)
+      return
+    end
     -- Optimistically drop the row: a completed PR leaves the active list.
     -- Marked completed up front, so neither a poll already in flight nor
     -- the refresh after the call (both can still see it active) brings it back.
@@ -1667,50 +1681,6 @@ local function complete_pr()
         table.insert(prs, math.min(at, #prs + 1), p)
       end
     end)
-  end)
-end
-
--- Toggle "complete automatically when requirements are met" (auto-complete)
--- on the PR under the cursor, mirroring the web UI's completion-dialog
--- checkbox. When already on, offers to cancel it; otherwise prompts for a
--- merge strategy the same way gm/complete_pr does.
-local function toggle_auto_complete()
-  local pr = current_pr()
-  if not pr then return end
-  local function set_on(mt)
-    -- Defaults: delete source branch + transition work items (like the web UI).
-    run_action({ "--auto-complete", "on", mt.key, "true", "true" }, "Setting auto-complete on", function(p)
-      local was, by = p.autoComplete, p.autoCompleteSetBy
-      p.autoComplete, p.autoCompleteSetBy = true, p.myName or ""
-      return function() p.autoComplete, p.autoCompleteSetBy = was, by end
-    end)
-  end
-  if pr.autoComplete then
-    -- Already on: offer to turn it off, or to change the merge strategy in
-    -- one step (used to take a cancel and a re-set).
-    local items = { { label = "Cancel auto-complete", off = true } }
-    for _, o in ipairs(MERGE_TYPES) do items[#items + 1] = { label = "Change strategy: " .. o.label, mt = o } end
-    PROMPT.select({
-      prompt = "PR #" .. pr.id .. " has auto-complete on" ..
-        (pr.autoCompleteSetBy ~= "" and (" (by " .. pr.autoCompleteSetBy .. ")") or ""),
-      items = items,
-    }, function(choice)
-      if not choice then return end
-      if choice.off then
-        run_action({ "--auto-complete", "off" }, "Cancelling auto-complete on", function(p)
-          local was, by = p.autoComplete, p.autoCompleteSetBy
-          p.autoComplete, p.autoCompleteSetBy = false, ""
-          return function() p.autoComplete, p.autoCompleteSetBy = was, by end
-        end)
-      else
-        set_on(choice.mt)
-      end
-    end)
-    return
-  end
-
-  PROMPT.select({ prompt = "Auto-complete PR #" .. pr.id .. " with", items = MERGE_TYPES }, function(mt)
-    if mt then set_on(mt) end
   end)
 end
 
@@ -1762,8 +1732,7 @@ KEYS.bind(buf, "dashboard", "description", show_description, { desc = "show the 
 KEYS.bind(buf, "dashboard", "open_build", open_build, { desc = "open the PR's build in the browser" })
 KEYS.bind(buf, "dashboard", "filter", set_filter, { desc = "filter by title, repo or author" })
 KEYS.bind(buf, "dashboard", "vote", vote_pr, { desc = "vote" })
-KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge)" })
-KEYS.bind(buf, "dashboard", "auto_complete", toggle_auto_complete, { desc = "toggle auto-complete" })
+KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge), or set/cancel auto-complete" })
 KEYS.bind(buf, "dashboard", "requeue_build", requeue_pr, { desc = "re-queue build validation" })
 KEYS.bind(buf, "dashboard", "toggle_section", toggle_section, { desc = "toggle collapse on the section header under the cursor" })
 KEYS.bind(buf, "dashboard", "expand_all", expand_all, { desc = "expand every section" })

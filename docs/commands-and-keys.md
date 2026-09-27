@@ -66,7 +66,6 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
-| `auto_complete` | `ga` |
 | `browser` | `o` |
 | `collapse_all` | `zM` |
 | `complete` | `gm` |
