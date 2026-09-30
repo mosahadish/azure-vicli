@@ -298,6 +298,21 @@ do
   config.setup({})
 end
 
+-- --- row_numbers: default, override, validation -----------------------------
+
+do
+  check("row_numbers: default is relative", config.get().row_numbers == "relative")
+  config.setup({ row_numbers = false })
+  check("row_numbers: false turns them off", config.get().row_numbers == false)
+  config.setup({ row_numbers = "absolute" })
+  check("row_numbers: absolute", config.get().row_numbers == "absolute")
+  local ok, err = pcall(config.setup, { row_numbers = true })
+  check("row_numbers: anything else errors clearly",
+    not ok and tostring(err):find("row_numbers", 1, true) ~= nil, err)
+  config.setup({})
+  check("row_numbers: setup({}) resets to relative", config.get().row_numbers == "relative")
+end
+
 -- --- collapsed_sections: default, override, validation ----------------------
 
 do

@@ -147,9 +147,16 @@ local DEFAULT_NOTIFICATIONS = "float"
 -- resetting to this default every time).
 local DEFAULT_COLLAPSED_SECTIONS = { "SignedOff", "Drafts" }
 
+-- setup({row_numbers=...}) - the PR and work-items dashboards' line
+-- numbers (ui.lua's M.row_numbers): "relative" numbers each row by its
+-- distance from the cursor, so 5j/5k jumps straight to it; "absolute"
+-- plain line numbers; false none.
+local DEFAULT_ROW_NUMBERS = "relative"
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
+  row_numbers = DEFAULT_ROW_NUMBERS,
 }
 
 local resolved = nil  -- set by M.setup(); M.get() falls back to DEFAULTS until then
@@ -390,6 +397,10 @@ function M.setup(opts)
   if opts.notifications ~= nil and opts.notifications ~= "float" and opts.notifications ~= "notify" then
     error("azure-cli.setup: `notifications` must be \"float\" or \"notify\"")
   end
+  if opts.row_numbers ~= nil and opts.row_numbers ~= "relative" and opts.row_numbers ~= "absolute"
+      and opts.row_numbers ~= false then
+    error("azure-cli.setup: `row_numbers` must be \"relative\", \"absolute\" or false")
+  end
   local collapsed_sections = DEFAULTS.collapsed_sections
   if opts.collapsed_sections ~= nil then
     if type(opts.collapsed_sections) ~= "table" then
@@ -420,6 +431,7 @@ function M.setup(opts)
     hide_ancient_days = opts.hide_ancient_days or DEFAULTS.hide_ancient_days,
     notifications = opts.notifications or DEFAULTS.notifications,
     collapsed_sections = collapsed_sections,
+    row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
   }
   -- cached_prs/threads_ttl_seconds apply straight to cache.lua's own
   -- M.MAX_PRS/M.THREADS_TTL fields, which every read site there already
@@ -518,6 +530,8 @@ function M.render_options()
   w("  -- Dashboard sections that start collapsed (Mentions, Actionable, Waiting,")
   w("  -- SignedOff, Drafts, Created).")
   w("  collapsed_sections = " .. lua_literal(DEFAULTS.collapsed_sections) .. ",")
+  w("  -- Dashboard line numbers: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
+  w("  row_numbers = " .. lua_literal(DEFAULTS.row_numbers) .. ",")
   w("  -- python = \"/path/to/python\",       -- interpreter for azure-cli.py (default: python3, else python)")
   w("  -- config = \"~/other/azure-cli.yml\",  -- a different config file")
   w("}")

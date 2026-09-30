@@ -452,7 +452,7 @@ local function box_and_center(lines, spans, win)
   end
   content_width = math.max(content_width, 1)
   local box_width = content_width + 4
-  local win_width = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win)) or vim.o.columns
+  local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local win_height = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_height(win)) or vim.o.lines
   local pad_h = math.max(0, math.floor((win_width - box_width) / 2))
   local hprefix = string.rep(" ", pad_h)
@@ -670,7 +670,7 @@ local function render()
   -- Solve the scaling columns' widths against the window once per render
   -- (see SCALING_COLUMNS/ROW_FIXED_WIDTH above and lua/azure-cli/ui.lua's
   -- UI.layout) and hand the result to every row this render builds.
-  local win_width = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win)) or vim.o.columns
+  local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local layout = UI.layout(SCALING_COLUMNS, math.max(0, win_width - 8 - ROW_FIXED_WIDTH))
   layout_narrow = layout.narrow
   local widths = layout.widths
@@ -1719,6 +1719,7 @@ win = vim.api.nvim_get_current_win()
 -- Window-local only: a plugin-mode user's own 'number'/'signcolumn' must
 -- survive a visit here (these used to be set on vim.o and never restored).
 UI.plain_window(win, { cursorline = true })
+UI.row_numbers(win)
 set_winbar()
 
 -- Every binding below goes through KEYS.bind (lua/azure-cli/keys.lua)

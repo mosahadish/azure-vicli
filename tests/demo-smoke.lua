@@ -35,6 +35,23 @@ if not ok then return fail("the dashboard never listed the fake PRs #101 and #20
 print("== dashboard ==")
 print(text(dash))
 
+-- Relative line numbers (5j/5k), with the box centred inside what the
+-- number gutter leaves - no row wider than the text area.
+local function numbered_and_fits(b, what)
+  local w = vim.fn.bufwinid(b)
+  if not (vim.wo[w].number and vim.wo[w].relativenumber) then
+    return fail(what .. " has no relative line numbers")
+  end
+  local room = require("azure-cli.ui").text_width(w)
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+    if vim.fn.strdisplaywidth(l) > room then
+      return fail(what .. "'s box is wider than its text area (" .. room .. "): " .. l)
+    end
+  end
+  return true
+end
+if not numbered_and_fits(dash, "the PR dashboard") then return end
+
 require("azure-cli").open_review(101)
 local files
 ok = vim.wait(20000, function()
@@ -209,6 +226,9 @@ print("FOLLOWUP-SMOKE-OK")
 -- To Do -> In Progress, and #3013 could move back from Done but stays
 -- unchecked. Checking "also set children" and applying must move exactly
 -- #3001 and #3012.
+-- Wide enough for the work-items box (~104 cells) plus the number gutter,
+-- so the fit check below is about the gutter, not the headless 80 columns.
+vim.o.columns = 140
 require("azure-cli").open_workitems()
 local wis
 ok = vim.wait(15000, function()
@@ -216,6 +236,8 @@ ok = vim.wait(15000, function()
   return wis ~= nil and text(wis):find("#3001", 1, true) ~= nil
 end, 100)
 if not ok then return fail("the work-items dashboard never listed #3001", wis) end
+if not numbered_and_fits(wis, "the work-items dashboard") then return end
+print("ROWNUM-SMOKE-OK")
 
 -- T: the tree view puts #3001's tasks (alice's, so not in my list) under it.
 vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))

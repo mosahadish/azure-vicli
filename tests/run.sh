@@ -457,6 +457,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
   fi
+  if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
+    pass "smoke: both dashboards show relative line numbers and their box fits beside them"
+  else
+    fail "smoke: both dashboards show relative line numbers and their box fits beside them" "$out"
+  fi
   if [[ "$out" == *TREE-SMOKE-OK* ]]; then
     pass "smoke: T shows each work item's children under it"
   else

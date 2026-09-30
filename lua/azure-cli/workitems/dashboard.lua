@@ -179,7 +179,7 @@ local function build_tabbar()
   for i, sp in ipairs(sprints) do
     segs[i] = tab_seg(sp.label or ("S" .. i), i == active_index)
   end
-  local width = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win))
+  local width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win))
     or vim.o.columns or 80
   width = width - 6  -- leave room for the ‹ › overflow markers
   local lo, hi = active_index, active_index
@@ -470,7 +470,7 @@ local function render()
   end
   content_width = math.max(content_width, 1)
   local box_width = content_width + 4
-  local win_width = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win)) or vim.o.columns
+  local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local win_height = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_height(win)) or vim.o.lines
   local pad_h = math.max(0, math.floor((win_width - box_width) / 2))
   local hprefix = string.rep(" ", pad_h)
@@ -1464,6 +1464,7 @@ vim.bo[buf].filetype = "azurecli-workitems"
 vim.api.nvim_set_current_buf(buf)
 win = vim.api.nvim_get_current_win()
 UI.plain_window(win, { cursorline = true })
+UI.row_numbers(win)
 set_wi_winbar()
 
 KEYS.bind(buf, "workitems", "open", open_item, { desc = "open the item: parent, children, description" })

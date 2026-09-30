@@ -30,6 +30,23 @@ function M.plain_window(win, opts)
   M.wo(win, "foldenable", false)
 end
 
+-- The dashboards' line numbers, per setup({row_numbers=...}): "relative"
+-- (the default) numbers every row by its distance from the cursor, so 5j
+-- or 5k lands on it, with the cursor row's own number; "absolute" plain
+-- line numbers; false none.
+function M.row_numbers(win)
+  local mode = require("azure-cli.config").get().row_numbers
+  M.wo(win, "number", mode ~= false)
+  M.wo(win, "relativenumber", mode == "relative")
+end
+
+-- `win`'s text width: its width less the number/sign/fold gutter, which
+-- is what a centred layout has to fit into.
+function M.text_width(win)
+  local info = vim.fn.getwininfo(win)[1]
+  return vim.api.nvim_win_get_width(win) - ((info and info.textoff) or 0)
+end
+
 -- Define highlight groups as links to existing ones, all with
 -- { default = true } so a user's colorscheme or their own :highlight always
 -- wins. `map` is { AzureCliThing = "LinkTarget", ... }. Both dashboards
