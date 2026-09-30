@@ -175,7 +175,8 @@ function M.lines(spec, st)
   elseif #kids == 0 then
     add("No children")
   else
-    add((st.all and "[x]" or "[ ]") .. " Also set children (" .. M.selected(st) .. " of " .. #kids .. ")",
+    add((st.all and "[x]" or "[ ]") .. (spec.batch and " Also set the other selected items (" or " Also set children (")
+      .. M.selected(st) .. " of " .. #kids .. ")",
       { kind = "all" })
     for i, k in ipairs(kids) do
       local head = "    " .. string.rep("  ", (k.depth or 1) - 1)
@@ -346,10 +347,12 @@ local function set_one(id, new, reason, cb)
 end
 
 -- Set `id` to `new` (with `reason`, "" = ADO's default), then - only once
--- that succeeded - each of `kids` ({id, target}) to its own target with its
--- type's default reason. A child that fails is reported on its own; the
--- parent's change stands.
-function M.apply(id, new, reason, kids)
+-- that succeeded - each of `kids` ({id, target, same}) to its own target:
+-- with the same reason when `same` (a selected item of the same type going
+-- to the same state), else its type's default reason. One that fails is
+-- reported on its own; the first item's change stands. `batch` words the
+-- messages for a visual selection instead of children.
+function M.apply(id, new, reason, kids, batch)
   local notify = require("azure-cli.shell").notify
   local suffix = (reason and reason ~= "") and (" (" .. reason .. ")") or ""
   notify("Setting #" .. id .. " \u{2192} " .. new .. suffix .. " \u{2026}")
@@ -361,10 +364,14 @@ function M.apply(id, new, reason, kids)
     notify("#" .. id .. " is now " .. new .. suffix .. ".")
     if #kids == 0 then return end
     local left, done, failed = #kids, 0, {}
-    notify("Setting " .. #kids .. " child" .. (#kids == 1 and "" or "ren") .. " of #" .. id .. " \u{2026}")
+    local function what(n)
+      if batch then return n .. " more item" .. (n == 1 and "" or "s") end
+      return n .. " child" .. (n == 1 and "" or "ren") .. " of #" .. id
+    end
+    notify("Setting " .. what(#kids) .. " \u{2026}")
     for _, k in ipairs(kids) do
       local kid_id = tostring(k.id)
-      set_one(kid_id, k.target, "", function(kok, kmsg)
+      set_one(kid_id, k.target, k.same and reason or "", function(kok, kmsg)
         if kok then
           done = done + 1
         else
@@ -376,9 +383,9 @@ function M.apply(id, new, reason, kids)
         -- The parent's detail lists its children's states: reload it too.
         refresh(id)
         if #failed == 0 then
-          notify("Set " .. done .. " child" .. (done == 1 and "" or "ren") .. " of #" .. id .. ".")
+          notify("Set " .. what(done) .. ".")
         else
-          notify("Set " .. done .. " of " .. #kids .. " children of #" .. id .. "; #"
+          notify("Set " .. done .. " of " .. what(#kids) .. "; #"
             .. table.concat(failed, ", #") .. " failed.", vim.log.levels.WARN)
         end
       end)
@@ -393,10 +400,16 @@ end
 -- Open gs's popup for `item` = { id, type, state, title }. Fetches the
 -- item's transitions first (nothing to show without them), then fills the
 -- reason and the children in as they arrive.
-function M.open(item)
+--
+-- With `others` (the rest of a visual selection), the popup sets them
+-- instead of children: `item` picks the state and reason, and each other
+-- item is mapped onto it the way a child is (same state, else same
+-- category), checked from the start since you selected it.
+function M.open(item, others)
   local notify = require("azure-cli.shell").notify
   local spec = {
     id = tostring(item.id or ""), type = item.type or "", state = item.state or "", title = item.title or "",
+    batch = others and #others > 0 or false, others = others,
   }
   if spec.id == "" then return end
   if not M.transitions_cached(spec.type, spec.state) then
@@ -470,7 +483,13 @@ function M._popup(spec, states)
         k.on = M.default_on(k.target, k.cur_cat, k.target_cat)
       end
     end
-    if M.selected(st) == 0 then st.all = false end
+    if spec.batch then
+      -- Selected on purpose: every item that can move starts checked.
+      for _, k in ipairs(st.kids) do if not k.pending then k.on = k.target ~= nil end end
+      st.all = M.selected(st) > 0
+    elseif M.selected(st) == 0 then
+      st.all = false
+    end
   end
 
   local function load_reasons()
@@ -536,10 +555,14 @@ function M._popup(spec, states)
       draw()
     end)
   end
-  DETAIL.descendants({ spec.id }, nil, function(list)
-    if list then return got_kids(M.tree_order(spec.id, list)) end
-    DETAIL.fetch(spec.id, function(data) got_kids(data and data.children or nil) end)
-  end)
+  if spec.batch then
+    got_kids(spec.others)
+  else
+    DETAIL.descendants({ spec.id }, nil, function(list)
+      if list then return got_kids(M.tree_order(spec.id, list)) end
+      DETAIL.fetch(spec.id, function(data) got_kids(data and data.children or nil) end)
+    end)
+  end
 
   local function close()
     closed = true
@@ -577,18 +600,20 @@ function M._popup(spec, states)
     local kids = {}
     if st.all then
       for _, k in ipairs(st.kids or {}) do
-        if k.on and k.target then kids[#kids + 1] = { id = k.id, target = k.target } end
+        if k.on and k.target then
+          kids[#kids + 1] = { id = k.id, target = k.target, same = spec.batch and k.type == spec.type and k.target == new }
+        end
       end
     end
     local opt = st.ropts and st.ropts[st.ri]
     close()
     if opt and opt.other then
       require("azure-cli.prompt").input({ prompt = "Reason:", allow_empty = true }, function(r)
-        if r ~= nil then M.apply(spec.id, new, r, kids) end
+        if r ~= nil then M.apply(spec.id, new, r, kids, spec.batch) end
       end)
       return
     end
-    M.apply(spec.id, new, opt and opt.reason or "", kids)
+    M.apply(spec.id, new, opt and opt.reason or "", kids, spec.batch)
   end
 
   local kopts = { buffer = buf, silent = true, nowait = true }

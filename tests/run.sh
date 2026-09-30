@@ -472,6 +472,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: the dashboard marks linked PRs and the item view lists them with title and status" "$out"
   fi
+  if [[ "$out" == *SELECTION-SMOKE-OK* ]]; then
+    pass "smoke: gs on a visual selection maps the other items onto the first one's state"
+  else
+    fail "smoke: gs on a visual selection maps the other items onto the first one's state" "$out"
+  fi
   if [[ "$out" == *GS-SMOKE-OK* ]]; then
     pass "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones"
   else

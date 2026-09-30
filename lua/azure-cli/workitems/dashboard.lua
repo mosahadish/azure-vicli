@@ -9,7 +9,8 @@
 -- Keys
 --   j/k    move
 --   <CR>   open the work item under the cursor (parent/children/description)
---   gs     change the item's state (a popup; can set its children too)
+--   gs     change the item's state (a popup; can set its children too) -
+--          on a visual selection, every selected item's
 --   T      tree view: each item's children indented under it
 --   n      new work item: type, title, and parent (if the cursor is on one)
 --   ga     assign the item under the cursor
@@ -931,6 +932,24 @@ local function set_state()
   if it then STATE_DIALOG.open(it) end
 end
 
+-- gs on a visual selection: every item in it, the first one choosing the
+-- state (see state_dialog.lua's M.open `others`).
+local function set_state_selection()
+  local a, b = vim.fn.line("v"), vim.fn.line(".")
+  if a > b then a, b = b, a end
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  local picked, seen = {}, {}
+  for l = a, b do
+    local it = row_item[l]
+    if it and not seen[tostring(it.id)] then
+      seen[tostring(it.id)] = true
+      picked[#picked + 1] = it
+    end
+  end
+  if #picked == 0 then return end
+  STATE_DIALOG.open(picked[1], vim.list_slice(picked, 2))
+end
+
 -- Run a --wi-edit "set" call for a work item, optimistically. Mirrors
 -- azure-cli.lua's run_action: apply(it) mutates the record right away and
 -- returns an undo function; on failure that undo runs and the error is
@@ -1572,7 +1591,7 @@ local WORKITEMS_HELP = {
   { "goto_sprint_n", "jump to sprint n (prefix with a count)" },
   { "click", "click a tab in the tab bar to jump straight to that sprint" },
   "This item",
-  { "state", "change the item's state (a popup; can set its children too)" },
+  { "state", "change the item's state (a popup; can set its children too; on a visual selection: all of them)" },
   { "assign", "assign the item under the cursor" },
   { "priority", "set the item's priority" },
   { "edit_title", "edit the item's title" },
@@ -1608,6 +1627,7 @@ set_wi_winbar()
 
 KEYS.bind(buf, "workitems", "open", open_item, { desc = "open the item: parent, children, description" })
 KEYS.bind(buf, "workitems", "state", set_state, { desc = "change the item's state" })
+KEYS.bind(buf, "workitems", "state", set_state_selection, { mode = "x", desc = "change the selected items' state" })
 KEYS.bind(buf, "workitems", "new", new_item, { desc = "new work item" })
 KEYS.bind(buf, "workitems", "assign", assign_item, { desc = "assign the item under the cursor" })
 KEYS.bind(buf, "workitems", "priority", set_priority, { desc = "set the item's priority" })

@@ -383,6 +383,44 @@ ok = vim.wait(10000, function()
 end, 100)
 if not ok then return fail("the tree still shows #3012's old state", wis) end
 
+-- gs on a visual selection (#3003, a Resolved story, down to #3002, a New
+-- bug): #3003 picks the state; #3002 can't reach Closed (the first state),
+-- so the box starts off; cycling to Active maps and checks #3002 too.
+local function row_of(id)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+    if l:find("#" .. id .. " ", 1, true) then return i end
+  end
+end
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+local r1, r2 = row_of(3003), row_of(3002)
+vim.api.nvim_win_set_cursor(0, { r1, 0 })
+feed("V" .. (r2 - r1) .. "jgs")
+ok = vim.wait(15000, function()
+  popup = float_text()
+  return popup ~= nil and popup:find("#3002 Bug  New  (no matching state)", 1, true) ~= nil
+end, 100)
+if not ok then return fail("visual gs didn't list #3002 as another selected item\n" .. tostring(popup)) end
+if not popup:find("[ ] Also set the other selected items (0 of 1)", 1, true) then
+  return fail("visual gs's box should be off while #3002 can't move\n" .. popup)
+end
+pbuf = vim.api.nvim_get_current_buf()
+for i, l in ipairs(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false)) do
+  if l:find("^State:") then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+end
+feed("l")
+ok = vim.wait(10000, function()
+  popup = float_text()
+  return popup:find("[x] Also set the other selected items (1 of 1)", 1, true) ~= nil
+    and popup:find("[x] #3002 Bug  New \u{2192} Active", 1, true) ~= nil
+end, 100)
+if not ok then return fail("cycling to Active didn't check #3002\n" .. tostring(popup)) end
+print("== visual gs popup ==")
+print(popup)
+feed("<CR>")
+ok = vim.wait(15000, function() return wi_state("3003") == "Active" and wi_state("3002") == "Active" end, 200)
+if not ok then return fail("visual gs set " .. wi_state("3003") .. ", " .. wi_state("3002")) end
+print("SELECTION-SMOKE-OK")
+
 -- Linked PRs: #3001's row carries !101, and its detail view lists the PR
 -- with its title, status and branches.
 local row3001

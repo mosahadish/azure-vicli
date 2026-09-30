@@ -108,6 +108,13 @@ Children that would move backwards (a Done task when the story goes back
 to Active) or that were removed start unchecked, but `<Space>` on a child
 checks it. `<Space>` on a child while the box is off picks just that child.
 
+**Several items at once:** select rows with `V` and press `gs`. The first
+selected item chooses the state and reason; every other selected item is
+listed under "Also set the other selected items" with the state it would
+move to, mapped the same way as children below, and starts checked. One of
+the same type going to the same state gets the same reason; the rest get
+their type's default.
+
 `<CR>` sets the item first and, only if that succeeds, its checked children,
 each with its type's default reason. A child that fails is reported on its
 own; the item's change stands. Grandchildren are included too, indented
