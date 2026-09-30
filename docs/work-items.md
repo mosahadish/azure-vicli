@@ -25,7 +25,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gi` | Move the item to another sprint of the quarter |
 | `gl` | Link a pull request to the item under the cursor |
 | `T` | Tree view: everything under each item indented beneath it (remembered) |
-| `za` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
+| `za` or `<Space>` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
 | `gR` | Open a pull request linked to the item (a picker when there are several) |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
@@ -62,7 +62,7 @@ item whose parent is also in the list moves under that parent instead of
 having its own row. Every key works on a child row too (`gs`, `<CR>`, `ga`,
 ...). The filter keeps a parent when it or anything under it matches.
 
-`za` folds or unfolds the children of the item under the cursor (▾ open,
+`za` (or `<Space>`) folds or unfolds the children of the item under the cursor (▾ open,
 ▸ folded); on a child row it folds that child's parent and moves to it.
 `zR` unfolds everything and `zM` folds everything. `T` again turns the tree
 off. Whether it's on is remembered between sessions.

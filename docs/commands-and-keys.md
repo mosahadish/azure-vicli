@@ -84,7 +84,7 @@ paste the output here after changing a default.
 | `refresh` | `r` |
 | `requeue_build` | `gr` |
 | `toasts` | `gN` |
-| `toggle_section` | `za` |
+| `toggle_section` | `za` / `<Space>` |
 | `vote` | `gv` |
 | `workitems` | `W` |
 
@@ -233,7 +233,7 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `state` | `gs` |
-| `toggle_fold` | `za` |
+| `toggle_fold` | `za` / `<Space>` |
 | `tree` | `T` |
 | `unlink_pr` | `gL` |
 

@@ -19,7 +19,7 @@ local DEFAULT_KEYS = {
     filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", toasts = "gN", help = "?", quit = "q",
-    toggle_section = "za", expand_all = "zR", collapse_all = "zM",
+    toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
   },
   -- Reviewer file list.
@@ -72,7 +72,7 @@ local DEFAULT_KEYS = {
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
     copy_link = "gy", config = "gO", help = "?", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
-    toggle_fold = "za", expand_all = "zR", collapse_all = "zM",
+    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
   },
   -- Work-item detail view.
   workitem_view = {

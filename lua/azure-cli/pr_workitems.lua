@@ -1,6 +1,7 @@
 -- lua/azure-cli/pr_workitems.lua: the work items linked to a pull request -
 -- the "#3001" badge on a PR dashboard row and gW (PR dashboard and
--- reviewer), which opens one in the work-item detail view. The way back
+-- reviewer), a popup of them from which <CR> opens one in the work-item
+-- detail view and gs changes its state. The way back
 -- from a PR to its items, next to the work-items side's gR
 -- (workitems/linked_prs.lua).
 --
@@ -8,7 +9,7 @@
 -- PR id for a few minutes (linking an item doesn't touch the PR's own
 -- updated time, so that alone can't tell a stale entry).
 --
--- The pure half (M.label, M.describe) runs under plain luajit for
+-- The pure half (M.label, M.describe, M.popup_line) runs under plain luajit for
 -- tests/test-pr-workitems.lua.
 local M = {}
 
@@ -78,10 +79,29 @@ function M.open_item(id)
   require("azure-cli.workitems.view").open()
 end
 
--- gW: fetch PR `pr_id`'s linked items and open one - straight away when
--- there's one, from a picker when there are more.
+-- The popup's line for one item: "#3001  [Active]  User Story  Throttle…  · Jordan Doe".
+function M.popup_line(w)
+  local s = "  " .. M.describe(w)
+  if w.assignedTo and w.assignedTo ~= "" then s = s .. "  \u{00B7} " .. w.assignedTo end
+  return s
+end
+
+-- Keep cached lists in step with a state change made anywhere (gs, here or
+-- on the work-items side).
+function M.patch_state(id, new)
+  for _, c in pairs(require("azure-cli.state").PR_WORKITEMS) do
+    for _, w in ipairs(c.list or {}) do
+      if tostring(w.id) == tostring(id) then w.state = new end
+    end
+  end
+end
+
+-- gW: a popup of PR `pr_id`'s linked work items - state, type, title and
+-- assignee each - where <CR> opens one in the detail view and gs changes
+-- its state.
 function M.choose(pr_id, env)
   local notify = require("azure-cli.shell").notify
+  if not M.cached(pr_id) then notify("Reading PR #" .. tostring(pr_id) .. "'s work items \u{2026}") end
   M.fetch(pr_id, env, function(list, err)
     vim.schedule(function()
       if not list then
@@ -92,13 +112,46 @@ function M.choose(pr_id, env)
         notify("No work items linked to PR #" .. tostring(pr_id) .. ".")
         return
       end
-      if #list == 1 then return M.open_item(list[1].id) end
-      local items = {}
-      for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), id = w.id } end
-      require("azure-cli.prompt").select({ prompt = "Open a work item linked to PR #" .. tostring(pr_id), items = items },
-        function(choice)
-          if choice then M.open_item(choice.id) end
-        end)
+      local lines, row = {}, {}
+      for _, w in ipairs(list) do
+        lines[#lines + 1] = M.popup_line(w)
+        row[#lines] = w
+      end
+      local UI = require("azure-cli.ui")
+      local win, buf = UI.open_float(lines, {
+        title = "Work items linked to PR #" .. tostring(pr_id),
+        footer = "<CR> open \u{00B7} gs state",
+        min_width = 50,
+      })
+      if not win then return end
+      UI.wo(win, "cursorline", true)
+      UI.wo(win, "wrap", false)
+      local ns = vim.api.nvim_create_namespace("azure_cli_pr_workitems")
+      for i, l in ipairs(lines) do
+        local s, e = l:find("#%d+")
+        if s then vim.api.nvim_buf_add_highlight(buf, ns, "Identifier", i - 1, s - 1, e) end
+        local bs, be = l:find("%[.-%]")
+        if bs then vim.api.nvim_buf_add_highlight(buf, ns, "Special", i - 1, bs - 1, be) end
+      end
+      local function current()
+        return row[vim.api.nvim_win_get_cursor(win)[1]]
+      end
+      local function close()
+        if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+      end
+      local kopts = { buffer = buf, silent = true, nowait = true }
+      vim.keymap.set("n", "<CR>", function()
+        local w = current()
+        if not w then return end
+        close()
+        M.open_item(w.id)
+      end, kopts)
+      vim.keymap.set("n", "gs", function()
+        local w = current()
+        if not w then return end
+        close()
+        require("azure-cli.workitems.state_dialog").open(w)
+      end, kopts)
     end)
   end)
 end

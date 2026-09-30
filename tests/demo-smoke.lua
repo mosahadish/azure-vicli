@@ -23,6 +23,20 @@ local function fail(why, buf)
   vim.cmd("qa!")
 end
 
+-- Every open floating window's text, joined - the peek view is two floats
+-- side by side (the hit list, and the file at that revision previewed next
+-- to it), so a check for "the hits are showing" has to look at all of them.
+local function float_text()
+  local parts = {}
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then
+      parts[#parts + 1] = text(vim.api.nvim_win_get_buf(w))
+    end
+  end
+  if #parts == 0 then return nil end
+  return table.concat(parts, "\n")
+end
+
 local function feed(keys)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
 end
@@ -105,16 +119,43 @@ if not ok then return fail("PR #101's row never showed its linked work item #300
 vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
 vim.api.nvim_win_set_cursor(0, { prrow, 0 })
 local dash_tab = vim.api.nvim_get_current_tabpage()
+-- gW: a popup listing it with its state, type, title and assignee; <CR> on
+-- it opens the detail view in a new tab.
 feed("gW")
+local wpop
+ok = vim.wait(15000, function()
+  wpop = float_text()
+  return wpop ~= nil and wpop:find("#3001  [Active]  User Story  Throttle repeated login failures", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gW on PR #101 didn't pop up its work item #3001\n" .. tostring(wpop)) end
+print("== gW popup ==")
+print(wpop)
+feed("<CR>")
 local wview
 ok = vim.wait(15000, function()
   wview = find_buf("azurecli-workitem")
   return wview ~= nil and text(wview):find("#3001", 1, true) ~= nil
 end, 100)
-if not ok then return fail("gW on PR #101 didn't open work item #3001") end
+if not ok then return fail("<CR> in gW's popup didn't open work item #3001") end
 vim.cmd("tabclose")
 vim.api.nvim_set_current_tabpage(dash_tab)
 print("PRWI-SMOKE-OK")
+
+-- <Space> folds like za: a PR dashboard section collapses and comes back.
+local function header_row(b, pat)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+    if l:find(pat, 1, true) then return i, l end
+  end
+end
+vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
+vim.api.nvim_win_set_cursor(0, { header_row(dash, "\u{2500}\u{2500} Waiting for author"), 0 })
+feed("<Space>")
+local _, hl = header_row(dash, "\u{2500}\u{2500} Waiting for author")
+if not hl:find("(collapsed)", 1, true) then return fail("<Space> didn't collapse the Waiting section: " .. hl) end
+vim.api.nvim_win_set_cursor(0, { header_row(dash, "\u{2500}\u{2500} Waiting for author"), 0 })
+feed("<Space>")
+_, hl = header_row(dash, "\u{2500}\u{2500} Waiting for author")
+if hl:find("(collapsed)", 1, true) then return fail("<Space> again didn't expand the Waiting section: " .. hl) end
 
 require("azure-cli").open_review(101)
 local files
@@ -128,10 +169,16 @@ if not ok then return fail("the reviewer never listed PR #101's files", files) e
 print("== reviewer file list (PR #101) ==")
 print(text(files))
 
--- gW in the reviewer opens the PR's linked work item too.
+-- gW in the reviewer: the same popup, and <CR> opens the item.
 local review_tab = vim.api.nvim_get_current_tabpage()
 vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
 feed("gW")
+ok = vim.wait(15000, function()
+  local p = float_text()
+  return p ~= nil and p:find("#3001  [Active]", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gW in the reviewer didn't pop up #3001\n" .. tostring(float_text())) end
+feed("<CR>")
 local rview
 ok = vim.wait(15000, function()
   rview = find_buf("azurecli-workitem")
@@ -148,19 +195,6 @@ print("REVIEW-WI-SMOKE-OK")
 -- it from src/auth.py, so `gd` on that call has a real definition to find
 -- in another file, through a real `git grep` over the fake clone.
 
--- Every open floating window's text, joined - the peek view is two floats
--- side by side (the hit list, and the file at that revision previewed next
--- to it), so a check for "the hits are showing" has to look at all of them.
-local function float_text()
-  local parts = {}
-  for _, w in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_get_config(w).relative ~= "" then
-      parts[#parts + 1] = text(vim.api.nvim_win_get_buf(w))
-    end
-  end
-  if #parts == 0 then return nil end
-  return table.concat(parts, "\n")
-end
 
 -- Open auth.py's diff from the file list, the way <CR> does.
 local row
@@ -369,6 +403,11 @@ feed("zM")
 if text(wis):find("#3011", 1, true) then return fail("zM left children showing", wis) end
 feed("zR")
 if not text(wis):find("#3014", 1, true) then return fail("zR didn't unfold everything", wis) end
+goto_row(3001)
+feed("<Space>")
+if text(wis):find("#3011", 1, true) then return fail("<Space> didn't fold #3001 like za", wis) end
+feed("<Space>")
+if not text(wis):find("#3011", 1, true) then return fail("<Space> again didn't unfold #3001", wis) end
 print("TREE-SMOKE-OK")
 local wrow
 for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do

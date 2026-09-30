@@ -337,6 +337,7 @@ local function set_one(id, new, reason, cb)
       if code == 0 then
         local STATE = require("azure-cli.state")
         if STATE.WI_STATE_CHANGED then STATE.WI_STATE_CHANGED(id, new) end
+        require("azure-cli.pr_workitems").patch_state(id, new)
         refresh(id)
         cb(true)
       else

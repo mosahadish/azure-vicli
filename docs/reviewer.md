@@ -53,7 +53,7 @@ File list:
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
 | `gv` / `gm` | Vote / complete |
-| `gW` | Open a work item linked to this PR in the work-item detail view |
+| `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state) |
 | `gc` | Open the PR's commit list |
 | `gB` | Toggle batch review for this PR |
 | `gQ` | Show the queued batch-review items |
