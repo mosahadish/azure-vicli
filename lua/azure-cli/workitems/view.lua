@@ -533,10 +533,12 @@ local function unlink_pr()
     notify("No linked pull requests on #" .. ID .. ".", vim.log.levels.WARN)
     return
   end
-  PROMPT.select({ prompt = "Unlink PR from #" .. ID, items = prs,
-    format = function(p) return "!" .. tostring(p.id) .. (p.title and p.title ~= "" and ("  " .. p.title) or "") end },
-    function(p)
-  if p then LINKED_PRS.unlink(ID, p.id, current_item) end
+  local items = {}
+  for _, p in ipairs(prs) do
+    items[#items + 1] = { label = "!" .. tostring(p.id) .. (p.title and p.title ~= "" and ("  " .. p.title) or ""), pr = p }
+  end
+  UI.pick_popup({ title = "Unlink a PR from #" .. ID, items = items, action = "unlink" }, function(choice)
+    LINKED_PRS.unlink(ID, choice.pr.id, current_item)
   end)
 end
 

@@ -18,9 +18,9 @@ local function setup(ctx)
   for _, kind in ipairs({ "list", "diff", "overview" }) do
     ctx.add_key(kind, "open_workitem", function() PW().choose(pr_record(ctx), nil, true) end,
       "the work items linked to this PR (<CR> open, gs state, gl link, gL unlink)")
-    ctx.add_key(kind, "link_workitem", function() PW().link_item(pr_record(ctx)) end,
+    ctx.add_key(kind, "link_workitem", function() PW().link_item(pr_record(ctx), true) end,
       "link a work item to this PR")
-    ctx.add_key(kind, "unlink_workitem", function() PW().unlink_item(pr_record(ctx), nil) end,
+    ctx.add_key(kind, "unlink_workitem", function() PW().unlink_item(pr_record(ctx), nil, true) end,
       "unlink a work item from this PR")
   end
   return M

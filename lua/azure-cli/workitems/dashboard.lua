@@ -1172,8 +1172,7 @@ local function pick_pr(prompt, cb)
     return
   end
   items[#items + 1] = { label = "(type a PR id\u{2026})", typed = true }
-  PROMPT.select({ prompt = prompt, items = items }, function(choice)
-    if not choice then return end
+  UI.pick_popup({ title = prompt, items = items, action = "link" }, function(choice)
     if choice.typed then typed() else cb(choice.id) end
   end)
 end
@@ -1222,10 +1221,12 @@ local function unlink_pr_item()
       notify("No linked pull requests on #" .. id .. ".", vim.log.levels.WARN)
       return
     end
-    PROMPT.select({ prompt = "Unlink PR from #" .. id, items = prs,
-      format = function(p) return "!" .. tostring(p.id) .. ((p.title and p.title ~= "") and ("  " .. p.title) or "") end },
-      function(p)
-      if p then LINKED_PRS.unlink(id, p.id, it) end
+    local items = {}
+    for _, p in ipairs(prs) do
+      items[#items + 1] = { label = "!" .. tostring(p.id) .. ((p.title and p.title ~= "") and ("  " .. p.title) or ""), pr = p }
+    end
+    UI.pick_popup({ title = "Unlink a PR from #" .. id, items = items, action = "unlink" }, function(choice)
+      LINKED_PRS.unlink(id, choice.pr.id, it)
     end)
   end)
 end

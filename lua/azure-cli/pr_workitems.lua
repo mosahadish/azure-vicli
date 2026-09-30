@@ -131,8 +131,9 @@ local function candidates(pr_id, cb)
 end
 
 -- gl (PR side): link a work item to `pr` ({id, org, project, repo}) - one of
--- my sprint's items from a picker, or any id typed in.
-function M.link_item(pr)
+-- my sprint's items from a popup, or any id typed in. `center` puts the
+-- popup mid-screen (the reviewer) instead of at the cursor.
+function M.link_item(pr, center)
   local notify = require("azure-cli.shell").notify
   local PROMPT = require("azure-cli.prompt")
   candidates(pr.id, function(list)
@@ -140,8 +141,8 @@ function M.link_item(pr)
       local items = {}
       for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), w = w } end
       items[#items + 1] = { label = "(other\u{2026} type a work item id)", other = true }
-      PROMPT.select({ prompt = "Link a work item to PR #" .. tostring(pr.id), items = items }, function(choice)
-        if not choice then return end
+      require("azure-cli.ui").pick_popup({ title = "Link a work item to PR #" .. tostring(pr.id), items = items,
+        action = "link", center = center }, function(choice)
         local function go(w)
           require("azure-cli.workitems.linked_prs").link(w.id, pr.id, w,
             { org = pr.org, project = pr.project, repo = pr.repo })
@@ -161,8 +162,8 @@ function M.link_item(pr)
   end)
 end
 
--- gL (PR side): unlink one of `pr`'s linked work items, from a picker.
-function M.unlink_item(pr, env)
+-- gL (PR side): unlink one of `pr`'s linked work items, from a popup.
+function M.unlink_item(pr, env, center)
   local notify = require("azure-cli.shell").notify
   M.fetch(pr.id, env, function(list)
     vim.schedule(function()
@@ -172,10 +173,10 @@ function M.unlink_item(pr, env)
       end
       local items = {}
       for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), w = w } end
-      require("azure-cli.prompt").select({ prompt = "Unlink a work item from PR #" .. tostring(pr.id), items = items },
-        function(choice)
-          if choice then require("azure-cli.workitems.linked_prs").unlink(choice.w.id, pr.id, choice.w) end
-        end)
+      require("azure-cli.ui").pick_popup({ title = "Unlink a work item from PR #" .. tostring(pr.id), items = items,
+        action = "unlink", center = center }, function(choice)
+        require("azure-cli.workitems.linked_prs").unlink(choice.w.id, pr.id, choice.w)
+      end)
     end)
   end)
 end
@@ -242,7 +243,7 @@ function M.choose(pr, env, center)
       end, kopts)
       vim.keymap.set("n", "gl", function()
         close()
-        M.link_item(pr)
+        M.link_item(pr, center)
       end, kopts)
       vim.keymap.set("n", "gL", function()
         local w = current()
