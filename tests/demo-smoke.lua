@@ -202,5 +202,63 @@ end, 100)
 if not ok then return fail("gA again didn't bring my thread back\n" .. tostring(picker)) end
 
 print("FOLLOWUP-SMOKE-OK")
+
+-- gs on the work-items dashboard: the popup for story #3001 lists its three
+-- tasks, mapped onto the Task workflow by category. Its first reachable
+-- state (Implemented) is InProgress, so #3011 is already there, #3012 moves
+-- To Do -> In Progress, and #3013 could move back from Done but stays
+-- unchecked. Checking "also set children" and applying must move exactly
+-- #3001 and #3012.
+require("azure-cli").open_workitems()
+local wis
+ok = vim.wait(15000, function()
+  wis = find_buf("azurecli-workitems")
+  return wis ~= nil and text(wis):find("#3001", 1, true) ~= nil
+end, 100)
+if not ok then return fail("the work-items dashboard never listed #3001", wis) end
+local wrow
+for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+  if l:find("#3001", 1, true) then wrow = i break end
+end
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+vim.api.nvim_win_set_cursor(0, { wrow, 0 })
+feed("gs")
+local popup
+ok = vim.wait(15000, function()
+  popup = float_text()
+  return popup ~= nil and popup:find("#3012 Task  To Do \u{2192} In Progress", 1, true) ~= nil
+    and popup:find("#3013 Task  Done \u{2192} In Progress", 1, true) ~= nil
+    and popup:find("#3011 Task  In Progress  (already In Progress)", 1, true) ~= nil
+    and popup:find("Reason:  \u{2039}", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gs's popup never mapped #3001's tasks\n" .. tostring(popup)) end
+print("== gs popup ==")
+print(popup)
+if not popup:find("[ ] Also set children (1 of 3)", 1, true) then
+  return fail("the children box should start unchecked with only #3012 picked\n" .. popup)
+end
+local pbuf = vim.api.nvim_get_current_buf()
+for i, l in ipairs(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false)) do
+  if l:find("Also set children", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+end
+feed("<Space>")
+if not float_text():find("[x] Also set children (1 of 3)", 1, true) then
+  return fail("<Space> didn't check the children box\n" .. float_text())
+end
+feed("<CR>")
+local function wi_state(id)
+  local out = vim.fn.system(require("azure-cli.config").provider_argv("--wi-detail", id))
+  local okj, data = pcall(vim.json.decode, out)
+  return okj and type(data) == "table" and data.item and data.item.state or out
+end
+local got
+ok = vim.wait(15000, function()
+  got = { wi_state("3001"), wi_state("3011"), wi_state("3012"), wi_state("3013") }
+  return got[1] == "Implemented" and got[3] == "In Progress"
+end, 200)
+if not ok or got[2] ~= "In Progress" or got[4] ~= "Done" then
+  return fail("gs set the wrong states: " .. table.concat(got, ", "))
+end
+print("GS-SMOKE-OK")
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

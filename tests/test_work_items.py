@@ -849,6 +849,26 @@ class WiStateTransitionsReasonsTests(unittest.TestCase):
         self.assertIn("HTTP 404 GET: not found", buf.getvalue())
         self.assertNotIn(url, buf.getvalue())  # state-style has no URL
 
+    def test_states_prints_name_and_category_in_workflow_order(self):
+        actions = make_actions()
+        url = "https://dev.azure.com/example-org/ExampleProject/_apis/wit/workitemtypes/Task"
+        resp = {"states": [{"name": "To Do", "category": "Proposed"}, {"name": "Done", "category": "Completed"},
+                           {"name": "Legacy"}, {"category": "Removed"}]}
+        actions.fetch = FakeFetch(responses={url: resp})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_state(["states", "Task"])
+        self.assertEqual(rc, 0)
+        # No category (an older server) prints the bare name; no name is skipped.
+        self.assertEqual(buf.getvalue().splitlines(), ["To Do\tProposed", "Done\tCompleted", "Legacy"])
+
+    def test_states_needs_type(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch()
+        with mock.patch("sys.stderr", StringIO()):
+            rc = actions.cmd_wi_state(["states", ""])
+        self.assertEqual(rc, 1)
+
     def test_reasons_ranked_by_frequency_then_alpha(self):
         actions = make_actions()
         wiql_url = "https://dev.azure.com/example-org/ExampleProject/_apis/wit/wiql?$top=200"

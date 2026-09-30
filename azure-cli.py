@@ -2909,10 +2909,12 @@ class WorkItemActions:
             return self._wi_transitions(a2, a3)
         if cmd == "reasons":
             return self._wi_reasons(a2, a3)
+        if cmd == "states":
+            return self._wi_states(a2)
         if cmd == "set":
             return self._wi_set_state(a2, a3, a4)
         print("usage: --wi-state transitions <type> <currentState> | "
-              "reasons <type> <toState> | set <id> <newState> [reason]", file=sys.stderr)
+              "reasons <type> <toState> | states <type> | set <id> <newState> [reason]", file=sys.stderr)
         return 1
 
     def _wi_transitions(self, wtype, cur):
@@ -2931,6 +2933,28 @@ class WorkItemActions:
             if to and to != cur and to not in seen:
                 seen.add(to)
                 print(to)
+        return 0
+
+    def _wi_states(self, wtype):
+        """One "name<TAB>category" line per state of `wtype`, in workflow
+        order. The category (Proposed/InProgress/Resolved/Completed/Removed)
+        is how gs maps a parent's new state onto children of another type,
+        whose state names differ; a server too old to report it prints the
+        bare name and the Lua side falls back to matching names only."""
+        if not wtype:
+            print("ERROR: states needs <type>", file=sys.stderr)
+            return 1
+        url = "{0}/{1}/_apis/wit/workitemtypes/{2}".format(self.collection, self.project, urllib.parse.quote(wtype))
+        try:
+            d = self._get(url)
+        except AdoHttpError as e:
+            return self._state_style_error(e, "GET")
+        for st in (d.get("states") or []):
+            name = st.get("name") if isinstance(st, dict) else None
+            if not name:
+                continue
+            cat = st.get("category") or ""
+            print(name + ("\t" + cat if cat else ""))
         return 0
 
     def _wi_reasons(self, wtype, state):

@@ -79,6 +79,20 @@ WI_TRANSITIONS = {
     "Closed": ["Active"],
     "Removed": ["New"],
 }
+# Tasks follow their own (Scrum-style) workflow, so a story's state names
+# don't exist on its tasks - what gs's "also set children" maps across by
+# state category.
+WI_TASK_TRANSITIONS = {
+    "To Do": ["In Progress", "Done", "Removed"],
+    "In Progress": ["Done", "To Do", "Removed"],
+    "Done": ["In Progress", "To Do"],
+    "Removed": ["To Do"],
+}
+WI_STATES = {
+    "Task": [("To Do", "Proposed"), ("In Progress", "InProgress"), ("Done", "Completed"), ("Removed", "Removed")],
+    None: [("New", "Proposed"), ("Active", "InProgress"), ("Implemented", "InProgress"),
+           ("Resolved", "Resolved"), ("Closed", "Completed"), ("Removed", "Removed")],
+}
 WI_REASONS = {
     "Active": ["Implementation started", "Work started"],
     "Resolved": ["Code complete and unit tests pass", "Fixed"],
@@ -268,6 +282,17 @@ WI_FIXTURES = [
     {"id": 2999, "type": "Feature", "state": "Active", "title": "Account hardening",
      "assignedTo": "alice", "priority": 1, "tags": "security", "parentId": None, "sprint": None,
      "description": "Parent feature for the security stories.", "prs": [], "comments": []},
+    # #3001's tasks: alice's, so they stay off my dashboard like real tasks
+    # under a story usually do (the dashboard lists stories and bugs).
+    {"id": 3011, "type": "Task", "state": "In Progress", "title": "Count failed logins per account",
+     "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
+    {"id": 3012, "type": "Task", "state": "To Do", "title": "Tests for the lockout window",
+     "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
+    {"id": 3013, "type": "Task", "state": "Done", "title": "Design the lockout rule",
+     "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
 ]
 
 
@@ -954,8 +979,15 @@ class Fake:
             if not a2:
                 print("ERROR: transitions needs <type>", file=sys.stderr)
                 return 1
-            for to in WI_TRANSITIONS.get(a3, []):
+            for to in (WI_TASK_TRANSITIONS if a2 == "Task" else WI_TRANSITIONS).get(a3, []):
                 print(to)
+            return 0
+        if cmd == "states":
+            if not a2:
+                print("ERROR: states needs <type>", file=sys.stderr)
+                return 1
+            for name, cat in WI_STATES.get(a2) or WI_STATES[None]:
+                print(name + "\t" + cat)
             return 0
         if cmd == "reasons":
             if not a2 or not a3:
@@ -978,7 +1010,7 @@ class Fake:
             self.ws.save(self.state)
             print(a3)
             return 0
-        print("usage: --wi-state transitions <type> <currentState> | reasons <type> <toState> | "
+        print("usage: --wi-state transitions <type> <currentState> | reasons <type> <toState> | states <type> | "
               "set <id> <newState> [reason]", file=sys.stderr)
         return 1
 

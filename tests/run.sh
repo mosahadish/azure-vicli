@@ -14,7 +14,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The twenty-one Lua unit tests below it in this directory, against a
+#   4. The twenty-seven Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed provider --threads.
 #   5. `python3 -m unittest` over tests/test_*.py - unit tests for
 #      azure-cli.py (the YAML-subset config parser, PR classification,
@@ -239,6 +239,7 @@ VIEWED_LUA="$TMP/lua/lua/azure-cli/review/viewed.lua"
 FILELIST_LUA="$TMP/lua/lua/azure-cli/review/filelist.lua"
 MIGRATE_LUA="$TMP/lua/lua/azure-cli/migrate.lua"
 STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
+STATE_DIALOG_LUA="$TMP/lua/lua/azure-cli/workitems/state_dialog.lua"
 
 # test-split.lua wants a real, multi-file range - use this repo's own
 # history rather than the tiny scratch repo above. When there is nothing
@@ -296,6 +297,7 @@ run_lua_test test-ui.lua "$REPO_ROOT" "$UI_LUA"
 run_lua_test test-prompt.lua "$REPO_ROOT" "$PROMPT_LUA"
 run_lua_test test-prs.lua "$REPO_ROOT" "$PRS_LUA"
 run_lua_test test-merge.lua "$REPO_ROOT" "$MERGE_LUA"
+run_lua_test test-state-dialog.lua "$REPO_ROOT" "$STATE_DIALOG_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
@@ -452,6 +454,11 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gu lists my comments and gA filters them there like everywhere else"
   else
     fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
+  fi
+  if [[ "$out" == *GS-SMOKE-OK* ]]; then
+    pass "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones"
+  else
+    fail "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" "$out"
   fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"

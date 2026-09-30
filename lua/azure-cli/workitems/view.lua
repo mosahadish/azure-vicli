@@ -8,7 +8,7 @@
 --
 -- Keys
 --   <CR>   on a parent/child line: open that work item here
---   gs     change the state of this work item
+--   gs     change this item's state (a popup; can set its children too)
 --   ga     assign this work item
 --   gp     set this work item's priority
 --   ge     edit this work item's title
@@ -28,6 +28,7 @@ local RPC = require("azure-cli.rpc")
 local PROMPT = require("azure-cli.prompt")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
+local STATE_DIALOG = require("azure-cli.workitems.state_dialog")
 local UI = require("azure-cli.ui")
 -- Shared housekeeping helpers - see shell.lua.
 local SHELL = require("azure-cli.shell")
@@ -244,65 +245,12 @@ STATE.WI_DETAIL_CACHE = STATE.WI_DETAIL_CACHE or {}
 -- Registry so the dashboard can trigger a live reload of an open detail tab
 -- (keyed by work item id) after it commits a state change.
 STATE.WI_VIEW_RELOAD = STATE.WI_VIEW_RELOAD or {}
--- Workflow metadata caches shared with workitems/dashboard.lua (keyed by "type\0state"),
--- so the state/reason pickers are instant when the dashboard already warmed them.
-STATE.WI_TRANS_CACHE = STATE.WI_TRANS_CACHE or {}
-STATE.WI_REASON_CACHE = STATE.WI_REASON_CACHE or {}
-local META_TTL = 600
 local prev_reg_id = nil
 local CACHE_TTL = 30
 
--- Fetch a cached metadata list (transitions/reasons) for a (type, state),
--- invoking cb(list) when ready; instant on a fresh cache hit, coalesced when
--- concurrent. cb is optional (prefetch = no cb).
-local meta_inflight = {}
-local function fetch_meta(cache, subcmd, wtype, state, cb)
-  local key = wtype .. "\0" .. state
-  local c = cache[key]
-  if c and (os.time() - c.ts) < META_TTL then
-    if cb then cb(c.list) end
-    return
-  end
-  local ikey = subcmd .. "\0" .. key
-  if meta_inflight[ikey] then
-    if cb then table.insert(meta_inflight[ikey], cb) end
-    return
-  end
-  meta_inflight[ikey] = cb and { cb } or {}
-  local out = {}
-  RPC.run(provider_argv("--wi-state", subcmd, wtype, state), {
-    stdout_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      local list = vim.tbl_filter(function(s) return s ~= "" end, out)
-      if code == 0 then cache[key] = { list = list, ts = os.time() } end
-      local cbs = meta_inflight[ikey]
-      meta_inflight[ikey] = nil
-      for _, f in ipairs(cbs or {}) do pcall(f, list) end
-    end,
-  })
-end
-
-local function fetch_transitions(wtype, cur, cb)
-  fetch_meta(STATE.WI_TRANS_CACHE, "transitions", wtype, cur, cb)
-end
-
-local function fetch_reasons(wtype, new, cb)
-  fetch_meta(STATE.WI_REASON_CACHE, "reasons", wtype, new, cb)
-end
-
-local function meta_cached(cache, wtype, state)
-  local c = cache[wtype .. "\0" .. state]
-  return c and (os.time() - c.ts) < META_TTL
-end
-
--- Warm the state/reason caches for the current item so 'gs' is instant here too.
+-- Warm the workflow caches for the current item so 'gs' is instant here too.
 local function prefetch_state_meta()
-  local wtype, state = current_item.type or "", current_item.state or ""
-  if wtype == "" or state == "" then return end
-  fetch_transitions(wtype, state, function(targets)
-    for _, t in ipairs(targets or {}) do fetch_reasons(wtype, t) end
-  end)
+  STATE_DIALOG.prewarm(current_item.type or "", current_item.state or "")
 end
 
 local function apply(body)
@@ -362,90 +310,16 @@ local function open_linked()
   if id then load(id) end
 end
 
--- Commit a new state (and optional reason) for this work item, then refresh
--- this view and the dashboard.
-local function apply_state(new, reason)
-  if ID == "" then return end
-  local suffix = (reason and reason ~= "") and (" (" .. reason .. ")") or ""
-  notify("Setting #" .. ID .. " \u{2192} " .. new .. suffix .. " \u{2026}")
-  local cmd = provider_argv("--wi-state", "set", ID, new)
-  if reason and reason ~= "" then cmd[#cmd + 1] = reason end
-  local err = {}
-  RPC.run(cmd, {
-    detach = true,  -- finish the ADO write even if the user quits before it returns
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("#" .. ID .. " is now " .. new .. suffix .. ".")
-        STATE.WI_DETAIL_CACHE[ID] = nil
-        load(ID, true)
-        if STATE.WI_STATE_CHANGED then STATE.WI_STATE_CHANGED(ID, new) end
-      else
-        local msg = SHELL.job_error("work item #" .. ID, code, err)
-        notify("Set #" .. ID .. " failed: " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
-end
-
--- Prompt for the reason to record with a transition into `new`, then call
--- cb(reason). Offers the reasons actually accepted for that state, plus a
--- default (let ADO pick) and a free-text option. cb("") means "use default".
-local function pick_reason(new, cb)
-  local wtype = current_item.type or ""
-  if not meta_cached(STATE.WI_REASON_CACHE, wtype, new) then
-    notify("Fetching reasons \u{2026}")
-  end
-  fetch_reasons(wtype, new, function(reasons)
-    vim.schedule(function()
-      if #reasons <= 1 then
-        cb("")
-        return
-      end
-      local items = {}
-      for _, r in ipairs(reasons) do items[#items + 1] = { label = r, reason = r } end
-      items[#items + 1] = { label = "(default reason)", reason = "" }
-      items[#items + 1] = { label = "(other\u{2026} type a reason)", other = true }
-      PROMPT.select({ prompt = "Reason for #" .. ID .. " \u{2192} " .. new, items = items }, function(choice)
-        if not choice then return end
-        if choice.other then
-          PROMPT.input({ prompt = "Reason:", allow_empty = true }, function(r)
-            if r ~= nil then cb(r) end
-          end)
-          return
-        end
-        cb(choice.reason)
-      end)
-    end)
-  end)
-end
-
--- Change the state of this work item, offering only states reachable from its
--- current state (per the ADO workflow transitions), then a reason.
+-- gs: the state popup (workitems/state_dialog.lua, shared with the
+-- dashboard). Its write reloads this tab through STATE.WI_VIEW_RELOAD.
 local function set_state()
   if ID == "" then return end
-  local wtype, cur = current_item.type or "", current_item.state or ""
-  if not meta_cached(STATE.WI_TRANS_CACHE, wtype, cur) then
-    notify("Fetching states for #" .. ID .. " \u{2026}")
-  end
-  fetch_transitions(wtype, cur, function(states)
-    if #states == 0 then
-      notify("No transitions for #" .. ID .. ".", vim.log.levels.WARN)
-      return
-    end
-    vim.schedule(function()
-      PROMPT.select({ prompt = "Set #" .. ID .. " (" .. cur .. " \u{2192})", items = states }, function(new)
-        if not new then return end
-        pick_reason(new, function(reason) apply_state(new, reason) end)
-      end)
-    end)
-  end)
+  local it = vim.tbl_extend("force", {}, current_item, { id = ID })
+  STATE_DIALOG.open(it)
 end
 
 -- Commit a single-field --wi-edit "set" for this work item, then refresh
--- this view (the way apply_state does) and, when given, reconcile the
+-- this view (the way gs's write does) and, when given, reconcile the
 -- dashboard's cached record via dash_patch (best-effort: no-op if the
 -- dashboard globals were never installed in this session).
 local function apply_field(arg_name, value, describe, dash_patch)
@@ -716,7 +590,7 @@ local WORKITEM_VIEW_HELP = {
   "Navigate",
   { "open", "on a parent/child line: open that work item here" },
   "This item",
-  { "state", "change the state of this work item" },
+  { "state", "change this item's state (a popup; can set its children too)" },
   { "assign", "assign this work item" },
   { "priority", "set this work item's priority" },
   { "edit_title", "edit this work item's title" },

@@ -17,7 +17,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | Key | Action |
 |---|---|
 | `<CR>` | Open the item: parent, children, description |
-| `gs` | Change the item's state, with the allowed transitions and reasons |
+| `gs` | Change the item's state in a popup, optionally for its children too (see below) |
 | `n` | New work item: type, title, and parent (if the cursor is on one) |
 | `ga` | Assign the item under the cursor (empty input = assign to me) |
 | `gp` | Set the item's priority (1-4) |
@@ -35,6 +35,44 @@ row immediately and are reverted with an error if the call fails, the same
 optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
 sprint's list instead.
+
+### Changing state (`gs`)
+
+`gs` opens a popup, from the list or the detail view:
+
+```
+Set #3001  User Story · Active
+  Throttle repeated login failures
+
+State:   ‹ Implemented ›   (1/4)
+Reason:  ‹ (default reason) ›
+
+[ ] Also set children (1 of 3)
+    [ ] #3011 Task  In Progress  (already In Progress)  Count failed logins per account
+    [ ] #3012 Task  To Do → In Progress  Tests for the lockout window
+    [ ] #3013 Task  Done → In Progress  Design the lockout rule
+
+<Space>/l, h: cycle or toggle   <CR>: apply   q: close
+```
+
+`State` offers only the states the item's workflow allows from its current
+one, and `Reason` the reasons ADO has recorded for that transition (plus
+the default and a free-text choice). Move the cursor to a row and cycle it
+with `<Space>`/`l` (forward) or `h` (back).
+
+"Also set children" starts unchecked. Children are often another type with
+their own state names (a Task has no "Resolved"), so each child is mapped
+by the state's category (Proposed, In Progress, Resolved, Completed,
+Removed): the same state if that child can move to it, otherwise the state
+in the same category it can move to. A child already there, or with no
+state in that category, is listed with the reason and can't be checked.
+Children that would move backwards (a Done task when the story goes back
+to Active) or that were removed start unchecked, but `<Space>` on a child
+checks it. `<Space>` on a child while the box is off picks just that child.
+
+`<CR>` sets the item first and, only if that succeeds, its checked children,
+each with its type's default reason. A child that fails is reported on its
+own; the item's change stands. Only direct children are included.
 
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
