@@ -2,13 +2,13 @@
 -- and overview) - open a work item linked to the PR under review, through
 -- pr_workitems.lua, the same helper the PR dashboard's gW uses. The
 -- reviewer's process env already names the PR (see dashboard.lua's
--- set_pr_env), so no env is passed.
+-- set_pr_env), so no env is passed. The popup opens mid-screen here.
 local M = {}
 
 local function setup(ctx)
   for _, kind in ipairs({ "list", "diff", "overview" }) do
     ctx.add_key(kind, "open_workitem", function()
-      require("azure-cli.pr_workitems").choose(ctx.ID, nil)
+      require("azure-cli.pr_workitems").choose(ctx.ID, nil, true)
     end, "open a work item linked to this PR")
   end
   return M

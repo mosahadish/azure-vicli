@@ -131,6 +131,8 @@ end
 --   lines           the text
 --   opts.focus      false keeps the cursor where it is (default: focus it)
 --   opts.big        the shared large centred size (comment threads)
+--   opts.center     sized to fit like the default, but centred on the
+--                   screen instead of opening at the cursor
 --   opts.title      border title
 --   opts.min_width / opts.min_height
 --   opts.footer     extra footer text; the close hint (and a scroll hint
@@ -164,7 +166,7 @@ function M.open_float(lines, opts)
   vim.bo[buf].buftype = "nofile"
 
   local cfg = { width = width, height = height, style = "minimal", border = "rounded" }
-  if opts.big then
+  if opts.big or opts.center then
     cfg.relative = "editor"
     cfg.row = math.floor((vim.o.lines - height) / 2)
     cfg.col = math.floor((vim.o.columns - width) / 2)

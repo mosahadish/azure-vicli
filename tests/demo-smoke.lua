@@ -130,6 +130,10 @@ end, 100)
 if not ok then return fail("gW on PR #101 didn't pop up its work item #3001\n" .. tostring(wpop)) end
 print("== gW popup ==")
 print(wpop)
+-- At the cursor, not centred (nvim reports a cursor float as "win").
+if vim.api.nvim_win_get_config(0).relative == "editor" then
+  return fail("the PR dashboard's gW popup should open at the cursor, not mid-screen")
+end
 feed("<CR>")
 local wview
 ok = vim.wait(15000, function()
@@ -178,6 +182,14 @@ ok = vim.wait(15000, function()
   return p ~= nil and p:find("#3001  [Active]", 1, true) ~= nil
 end, 100)
 if not ok then return fail("gW in the reviewer didn't pop up #3001\n" .. tostring(float_text())) end
+-- ...in the middle of the screen, not at the cursor.
+do
+  local c = vim.api.nvim_win_get_config(0)
+  local mid_col = math.floor((vim.o.columns - c.width) / 2)
+  if c.relative ~= "editor" or math.abs(c.col - mid_col) > 1 then
+    return fail("the reviewer's gW popup isn't centred: " .. vim.inspect({ c.relative, c.col, mid_col }))
+  end
+end
 feed("<CR>")
 local rview
 ok = vim.wait(15000, function()

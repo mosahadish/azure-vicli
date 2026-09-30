@@ -98,8 +98,9 @@ end
 
 -- gW: a popup of PR `pr_id`'s linked work items - state, type, title and
 -- assignee each - where <CR> opens one in the detail view and gs changes
--- its state.
-function M.choose(pr_id, env)
+-- its state. At the cursor by default; `center` puts it mid-screen (the
+-- reviewer, whose cursor can be anywhere in a split).
+function M.choose(pr_id, env, center)
   local notify = require("azure-cli.shell").notify
   if not M.cached(pr_id) then notify("Reading PR #" .. tostring(pr_id) .. "'s work items \u{2026}") end
   M.fetch(pr_id, env, function(list, err)
@@ -122,6 +123,7 @@ function M.choose(pr_id, env)
         title = "Work items linked to PR #" .. tostring(pr_id),
         footer = "<CR> open \u{00B7} gs state",
         min_width = 50,
+        center = center,
       })
       if not win then return end
       UI.wo(win, "cursorline", true)
