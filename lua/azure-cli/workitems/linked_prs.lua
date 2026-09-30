@@ -127,4 +127,127 @@ function M.choose(prs, item_id)
     end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Linking and unlinking (gl/gL here, and gl/gL on the PR side)
+-- ---------------------------------------------------------------------------
+
+local function same(a, b) return tostring(a) == tostring(b) end
+
+-- Everything that shows a link between work item `item_id` and PR `pr_id`
+-- picks up that it was just made (`linked`) or removed: the work-items
+-- dashboard's cached records (list and tree - their "!101" marker), the PR
+-- dashboard's cached work items for that PR (its "#3001" badge and gW), and
+-- an open detail tab for the item; both dashboards redraw. `item` is the
+-- work item's record when the caller has it, for the PR side's entry.
+function M.link_changed(item_id, pr_id, linked, item)
+  local STATE = require("azure-cli.state")
+  local function patch(rec)
+    if not rec or not same(rec.id, item_id) then return end
+    local list = {}
+    for _, p in ipairs(rec.pullRequests or {}) do
+      if not same(p.id, pr_id) then list[#list + 1] = p end
+    end
+    if linked then list[#list + 1] = { id = tonumber(pr_id) or pr_id } end
+    rec.pullRequests = list
+  end
+  for _, c in pairs(STATE.WI_SPRINT_ITEMS or {}) do
+    for _, r in ipairs(c.items or {}) do patch(r) end
+  end
+  for _, by_id in pairs(STATE.WI_TREE_KIDS or {}) do
+    for _, r in pairs(by_id) do patch(r) end
+  end
+  local c = STATE.PR_WORKITEMS and STATE.PR_WORKITEMS[tostring(pr_id)]
+  if c then
+    local list = {}
+    for _, w in ipairs(c.list or {}) do
+      if not same(w.id, item_id) then list[#list + 1] = w end
+    end
+    if linked then
+      item = item or {}
+      list[#list + 1] = { id = tonumber(item_id) or item_id, type = item.type, state = item.state,
+        title = item.title, assignedTo = item.assignedTo }
+    end
+    c.list = list
+  end
+  STATE.WI_DETAIL_CACHE[tostring(item_id)] = nil
+  if STATE.WI_ITEM_CHANGED then STATE.WI_ITEM_CHANGED(item_id, {}) end
+  local reload = STATE.WI_VIEW_RELOAD and STATE.WI_VIEW_RELOAD[tostring(item_id)]
+  if reload then vim.schedule(reload) end
+  if STATE.PR_DASHBOARD_RENDER then vim.schedule(STATE.PR_DASHBOARD_RENDER) end
+end
+
+-- Link PR `pr_id` to work item `item_id` (`item`: its record, optional).
+-- `where` = { org, project, repo } when the caller knows the PR's home (the
+-- PR side does); otherwise it comes from the PR dashboard's list, or the
+-- repository is asked for and the work-item account's collection/project
+-- (AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT) fill the rest.
+function M.link(item_id, pr_id, item, where)
+  local SHELL = require("azure-cli.shell")
+  local notify = SHELL.notify
+  item_id, pr_id = tostring(item_id), tostring(pr_id)
+  if not pr_id:match("^%d+$") then
+    notify("PR id must be numeric.", vim.log.levels.WARN)
+    return
+  end
+  local org, project, repo
+  if where then
+    org, project, repo = where.org, where.project, where.repo
+  else
+    local rec = M.listed(pr_id)
+    if rec then org, project, repo = rec.org, rec.project, rec.repo end
+  end
+  local function go()
+    notify("Linking PR !" .. pr_id .. " to #" .. item_id .. " \u{2026}")
+    local err = {}
+    require("azure-cli.rpc").run(require("azure-cli.config").provider_argv(
+      "--wi-edit", "link-pr", item_id, org or "", project or "", repo or "", pr_id), {
+      detach = true,  -- finish the ADO write even if the user quits before it returns
+      stdout_buffered = true,
+      stderr_buffered = true,
+      on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+      on_exit = function(_, code)
+        if code == 0 then
+          notify("Linked PR !" .. pr_id .. " to #" .. item_id .. ".")
+          M.link_changed(item_id, pr_id, true, item)
+        else
+          notify("Link PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item #" .. item_id, code, err),
+            vim.log.levels.ERROR)
+        end
+      end,
+    })
+  end
+  if repo and repo ~= "" then return go() end
+  require("azure-cli.prompt").input({ prompt = "Repository name:" }, function(name)
+    if name == nil then return end
+    repo = name
+    org = (org and org ~= "") and org or (vim.env.AZVICLI_WI_COLLECTION or "")
+    project = (project and project ~= "") and project or (vim.env.AZVICLI_WI_PROJECT or "")
+    go()
+  end)
+end
+
+-- Unlink PR `pr_id` from work item `item_id`.
+function M.unlink(item_id, pr_id, item)
+  local SHELL = require("azure-cli.shell")
+  local notify = SHELL.notify
+  item_id, pr_id = tostring(item_id), tostring(pr_id)
+  notify("Unlinking PR !" .. pr_id .. " from #" .. item_id .. " \u{2026}")
+  local err = {}
+  require("azure-cli.rpc").run(require("azure-cli.config").provider_argv("--wi-edit", "unlink-pr", item_id, pr_id), {
+    detach = true,  -- finish the ADO write even if the user quits before it returns
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      if code == 0 then
+        notify("Unlinked PR !" .. pr_id .. " from #" .. item_id .. ".")
+        M.link_changed(item_id, pr_id, false, item)
+      else
+        notify("Unlink PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item #" .. item_id, code, err),
+          vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
 return M

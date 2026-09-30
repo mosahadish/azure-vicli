@@ -549,5 +549,64 @@ end, 100)
 if not ok then return fail("gR didn't open !101 in the reviewer (current ft: " .. vim.bo.filetype .. ")") end
 print("PRS-SMOKE-OK")
 print("GS-SMOKE-OK")
+
+-- Linking updates both dashboards at once, from either side. The pickers
+-- go through vim.ui.select, which would block headless nvim: stub it to
+-- pick the entry whose text contains `want`.
+local real_select = vim.ui.select
+local function pick(want)
+  vim.ui.select = function(items, o, cb)
+    for i, it in ipairs(items) do
+      if o.format_item(it):find(want, 1, true) then return cb(it, i) end
+    end
+    cb(nil)
+  end
+end
+local function row_text(b, id)
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+    if l:find("#" .. id .. " ", 1, true) then return l end
+  end
+  return ""
+end
+local function both(what, cond)
+  if not vim.wait(15000, cond, 100) then
+    return fail(what .. "\nwork items #3002: " .. row_text(wis, 3002) .. "\nPR #102: " .. row_text(dash, 102)
+      .. "\nPR #104: " .. row_text(dash, 104) .. "\nwork items #3001: " .. row_text(wis, 3001))
+  end
+  return true
+end
+local function at_row(b, id)
+  vim.cmd("tab sbuffer " .. b)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+    if l:find("#" .. id .. " ", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) return end
+  end
+end
+
+-- gl on the work-items dashboard: PR !102 onto #3002 (which has !104).
+at_row(wis, 3002)
+pick("102")
+feed("gl")
+if not both("gl on #3002 didn't show PR !102 on both dashboards", function()
+  return row_text(wis, 3002):find("!104 +1", 1, true) and row_text(dash, 102):find("#3003 +1", 1, true)
+end) then return end
+
+-- gL on the PR dashboard: unlink #3002 from PR #102 again.
+at_row(dash, 102)
+pick("#3002")
+feed("gL")
+if not both("gL on PR #102 didn't drop #3002 from both dashboards", function()
+  return not row_text(wis, 3002):find("+1", 1, true) and not row_text(dash, 102):find("+1", 1, true)
+    and row_text(dash, 102):find("#3003", 1, true)
+end) then return end
+
+-- gl on the PR dashboard: link #3001 to PR #104 (whose item is #3002).
+at_row(dash, 104)
+pick("#3001")
+feed("gl")
+if not both("gl on PR #104 didn't show #3001 on both dashboards", function()
+  return row_text(dash, 104):find("#3002 +1", 1, true) and row_text(wis, 3001):find("!101 +1", 1, true)
+end) then return end
+vim.ui.select = real_select
+print("LINK-SMOKE-OK")
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

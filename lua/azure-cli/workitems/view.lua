@@ -53,11 +53,8 @@ local ID     = env.AZVICLI_WI_ID or ""
 -- only the optimistic-comment author label below (add_comment), which falls back
 -- to the generic "Me" when no override is set, since it's never sent to the server.
 local ASSIGNEE = env.AZVICLI_WI_ASSIGNEE or ""
--- Fallback org/project for gl (link a PR) when the PR isn't in the dashboard's
--- cached PR list: only the AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT overrides -
--- no hard-coded org here either.
-local COLLECTION = env.AZVICLI_WI_COLLECTION or ""
-local PROJECT = env.AZVICLI_WI_PROJECT or ""
+-- gl's fallback org/project for a PR the PR list doesn't know is
+-- workitems/linked_prs.lua's M.link now.
 
 local buf = vim.api.nvim_get_current_buf()
 vim.bo[buf].buftype = "nofile"
@@ -520,53 +517,10 @@ local function link_pr()
       if t ~= nil then cb((t:gsub("^!", ""))) end
     end)
   end
+  -- linked_prs.lua links it and updates every screen showing the link
+  -- (this tab reloads through STATE.WI_VIEW_RELOAD).
   ask(function(pr_id)
-  if pr_id == nil then return end
-  if not pr_id:match("^%d+$") then
-    notify("PR id must be numeric.", vim.log.levels.WARN)
-    return
-  end
-  local org, project, repo
-  local cache = STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs
-  if cache then
-    for _, pr in ipairs(cache) do
-      if tostring(pr.id) == pr_id then
-        org, project, repo = pr.org, pr.project, pr.repo
-        break
-      end
-    end
-  end
-  local function go()
-  notify("Linking PR !" .. pr_id .. " to #" .. ID .. " \u{2026}")
-  local err = {}
-  RPC.run(provider_argv("--wi-edit", "link-pr", ID, org, project, repo, pr_id), {
-    detach = true,  -- finish the ADO write even if the user quits before it returns
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("Linked PR !" .. pr_id .. " to #" .. ID .. ".")
-        STATE.WI_DETAIL_CACHE[ID] = nil
-        load(ID, true)
-      else
-        local msg = SHELL.job_error("work item #" .. ID, code, err)
-        notify("Link PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
-  end
-  if repo then
-    go()
-    return
-  end
-  PROMPT.input({ prompt = "Repository name:" }, function(name)
-    if name == nil then return end
-    repo = name
-    org = org or COLLECTION
-    project = project or PROJECT
-    go()
-  end)
+    if pr_id ~= nil then LINKED_PRS.link(ID, pr_id, current_item) end
   end)
 end
 
@@ -582,26 +536,7 @@ local function unlink_pr()
   PROMPT.select({ prompt = "Unlink PR from #" .. ID, items = prs,
     format = function(p) return "!" .. tostring(p.id) .. (p.title and p.title ~= "" and ("  " .. p.title) or "") end },
     function(p)
-  if not p then return end
-  local pr_id = tostring(p.id)
-  notify("Unlinking PR !" .. pr_id .. " from #" .. ID .. " \u{2026}")
-  local err = {}
-  RPC.run(provider_argv("--wi-edit", "unlink-pr", ID, pr_id), {
-    detach = true,  -- finish the ADO write even if the user quits before it returns
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("Unlinked PR !" .. pr_id .. " from #" .. ID .. ".")
-        STATE.WI_DETAIL_CACHE[ID] = nil
-        load(ID, true)
-      else
-        local msg = SHELL.job_error("work item #" .. ID, code, err)
-        notify("Unlink PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  if p then LINKED_PRS.unlink(ID, p.id, current_item) end
   end)
 end
 

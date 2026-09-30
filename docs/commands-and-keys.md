@@ -77,6 +77,7 @@ paste the output here after changing a default.
 | `first_pr` | `gg` |
 | `help` | `?` |
 | `last_pr` | `G` |
+| `link_workitem` | `gl` |
 | `open` | `<CR>` |
 | `open_build` | `gb` |
 | `open_workitem` | `gW` |
@@ -85,6 +86,7 @@ paste the output here after changing a default.
 | `requeue_build` | `gr` |
 | `toasts` | `gN` |
 | `toggle_section` | `za` / `<Space>` |
+| `unlink_workitem` | `gL` |
 | `vote` | `gv` |
 | `workitems` | `W` |
 
@@ -105,6 +107,7 @@ paste the output here after changing a default.
 | `followup` | `gu` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
+| `link_workitem` | `gl` |
 | `next_file_with_comments` | `]C` |
 | `next_unviewed` | `]m` |
 | `open` | `<CR>` |
@@ -118,6 +121,7 @@ paste the output here after changing a default.
 | `search` | `g/` |
 | `since` | `gi` |
 | `toggle_viewed` | `m` |
+| `unlink_workitem` | `gL` |
 | `vote` | `gv` |
 
 #### diff
@@ -142,6 +146,7 @@ paste the output here after changing a default.
 | `goto_definition` | `gd` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
+| `link_workitem` | `gl` |
 | `next_comment` | `]C` |
 | `next_hunk` | `]c` |
 | `next_unviewed` | `]m` |
@@ -158,6 +163,7 @@ paste the output here after changing a default.
 | `since` | `gi` |
 | `status` | `s` |
 | `toggle_viewed` | `m` |
+| `unlink_workitem` | `gL` |
 | `view_comments` | `K` |
 | `vote` | `gv` |
 
@@ -179,6 +185,7 @@ paste the output here after changing a default.
 | `followup` | `gu` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
+| `link_workitem` | `gl` |
 | `next_comment` | `]C` |
 | `open_commit` | `<CR>` |
 | `open_workitem` | `gW` |
@@ -190,6 +197,7 @@ paste the output here after changing a default.
 | `search` | `g/` |
 | `since` | `gi` |
 | `status` | `s` |
+| `unlink_workitem` | `gL` |
 | `vote` | `gv` |
 
 #### nav

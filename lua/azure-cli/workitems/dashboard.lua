@@ -54,14 +54,12 @@ local env    = vim.env
 -- wi-edit.sh entirely. The builder lives in config.lua next to
 -- provider_cmd() now; this file and workitems/view.lua had the same copy.
 local provider_argv = CONFIG.provider_argv
--- AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT overrides only: the fallback org/project
--- for gl (link a PR) when the PR isn't in the cached PR list and isn't configured
--- either - no hard-coded org here either. There's no local ASSIGNEE any more: ga
--- (assign_item below) sends an empty submission through as-is, and azure-cli.py
--- resolves that to the real "me" (work_items: assignee: from config, or the
--- signed-in user) itself - see WorkItemActions.assignee/_wi_set_field.
-local COLLECTION = env.AZVICLI_WI_COLLECTION or ""
-local PROJECT = env.AZVICLI_WI_PROJECT or ""
+-- There's no local ASSIGNEE any more: ga (assign_item below) sends an empty
+-- submission through as-is, and azure-cli.py resolves that to the real "me"
+-- (work_items: assignee: from config, or the signed-in user) itself - see
+-- WorkItemActions.assignee/_wi_set_field. gl's fallback org/project for a PR
+-- the PR list doesn't know (AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT) is
+-- workitems/linked_prs.lua's M.link now.
 
 -- Detail cache shared with workitems/view.lua (same nvim session): id -> {body, ts}.
 -- Prefetching the item under the cursor lets the detail tab open instantly.
@@ -1185,52 +1183,9 @@ local function link_pr_item()
   local it = current_item()
   if not it then return end
   local id = tostring(it.id)
+  -- linked_prs.lua links it and updates every screen showing the link.
   pick_pr("Link a pull request to #" .. id, function(pr_id)
-  if pr_id == nil then return end
-  if not pr_id:match("^%d+$") then
-    notify("PR id must be numeric.", vim.log.levels.WARN)
-    return
-  end
-  local org, project, repo
-  local cache = STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs
-  if cache then
-    for _, pr in ipairs(cache) do
-      if tostring(pr.id) == pr_id then
-        org, project, repo = pr.org, pr.project, pr.repo
-        break
-      end
-    end
-  end
-  local function go()
-  notify("Linking PR !" .. pr_id .. " to #" .. id .. " \u{2026}")
-  local err = {}
-  RPC.run(provider_argv("--wi-edit", "link-pr", id, org, project, repo, pr_id), {
-    detach = true,  -- finish the ADO write even if the user quits before it returns
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("Linked PR !" .. pr_id .. " to #" .. id .. ".")
-        nudge_detail(id)
-      else
-        local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
-        notify("Link PR !" .. pr_id .. " failed: " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
-  end
-  if repo then
-    go()
-    return
-  end
-  PROMPT.input({ prompt = "Repository name:" }, function(name)
-    if name == nil then return end
-    repo = name
-    org = org or COLLECTION
-    project = project or PROJECT
-    go()
-  end)
+    if pr_id ~= nil then LINKED_PRS.link(id, pr_id, it) end
   end)
 end
 
@@ -1270,25 +1225,7 @@ local function unlink_pr_item()
     PROMPT.select({ prompt = "Unlink PR from #" .. id, items = prs,
       format = function(p) return "!" .. tostring(p.id) .. ((p.title and p.title ~= "") and ("  " .. p.title) or "") end },
       function(p)
-      if not p then return end
-      local pr_id = tostring(p.id)
-      notify("Unlinking PR !" .. pr_id .. " from #" .. id .. " \u{2026}")
-      local err = {}
-      RPC.run(provider_argv("--wi-edit", "unlink-pr", id, pr_id), {
-        detach = true, stdout_buffered = true, stderr_buffered = true,
-        on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-        on_exit = function(_, code)
-          if code == 0 then
-            notify("Unlinked PR !" .. pr_id .. " from #" .. id .. ".")
-            nudge_detail(id)
-          else
-            local LOG = require("azure-cli.log")
-            local raw = table.concat(err, "\n")
-            LOG.record("work item #" .. id, raw)
-            notify("Unlink PR !" .. pr_id .. " failed: " .. LOG.summary(raw, 60) .. "  (:AzureCli log)", vim.log.levels.ERROR)
-          end
-        end,
-      })
+      if p then LINKED_PRS.unlink(id, p.id, it) end
     end)
   end)
 end

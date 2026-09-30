@@ -1,7 +1,8 @@
 -- lua/azure-cli/pr_workitems.lua: the work items linked to a pull request -
--- the "#3001" badge on a PR dashboard row and gW (PR dashboard and
+-- the "#3001" badge on a PR dashboard row, gW (PR dashboard and
 -- reviewer), a popup of them from which <CR> opens one in the work-item
--- detail view and gs changes its state. The way back
+-- detail view and gs changes its state, and gl/gL, which link and unlink
+-- one from the PR side. The way back
 -- from a PR to its items, next to the work-items side's gR
 -- (workitems/linked_prs.lua).
 --
@@ -96,12 +97,97 @@ function M.patch_state(id, new)
   end
 end
 
--- gW: a popup of PR `pr_id`'s linked work items - state, type, title and
--- assignee each - where <CR> opens one in the detail view and gs changes
--- its state. At the cursor by default; `center` puts it mid-screen (the
--- reviewer, whose cursor can be anywhere in a split).
-function M.choose(pr_id, env, center)
+-- Work items to offer when linking one to PR `pr_id`: every sprint the
+-- work-items dashboard has cached, minus the ones already linked; cb(list).
+-- When nothing is cached yet (that dashboard was never opened this
+-- session), the current sprint's items are read first.
+local function candidates(pr_id, cb)
+  local STATE = require("azure-cli.state")
+  local linked, seen, out = {}, {}, {}
+  for _, w in ipairs(M.cached(pr_id) or {}) do linked[tostring(w.id)] = true end
+  local function add(r)
+    local id = tostring(r.id)
+    if not seen[id] and not linked[id] then
+      seen[id] = true
+      out[#out + 1] = r
+    end
+  end
+  for _, c in pairs(STATE.WI_SPRINT_ITEMS or {}) do
+    for _, r in ipairs(c.items or {}) do add(r) end
+  end
+  if #out > 0 then return cb(out) end
+  local lines = {}
+  require("azure-cli.rpc").run(require("azure-cli.config").provider_argv("--wi-list", "current"), {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(lines, d) end end,
+    on_exit = function()
+      for _, line in ipairs(lines) do
+        local ok, rec = pcall(vim.json.decode, line)
+        if ok and type(rec) == "table" and rec.id and not rec._meta then add(rec) end
+      end
+      cb(out)
+    end,
+  })
+end
+
+-- gl (PR side): link a work item to `pr` ({id, org, project, repo}) - one of
+-- my sprint's items from a picker, or any id typed in.
+function M.link_item(pr)
   local notify = require("azure-cli.shell").notify
+  local PROMPT = require("azure-cli.prompt")
+  candidates(pr.id, function(list)
+    vim.schedule(function()
+      local items = {}
+      for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), w = w } end
+      items[#items + 1] = { label = "(other\u{2026} type a work item id)", other = true }
+      PROMPT.select({ prompt = "Link a work item to PR #" .. tostring(pr.id), items = items }, function(choice)
+        if not choice then return end
+        local function go(w)
+          require("azure-cli.workitems.linked_prs").link(w.id, pr.id, w,
+            { org = pr.org, project = pr.project, repo = pr.repo })
+        end
+        if not choice.other then return go(choice.w) end
+        PROMPT.input({ prompt = "Work item id:" }, function(t)
+          if t == nil then return end
+          t = t:gsub("^#", "")
+          if not t:match("^%d+$") then
+            notify("Work item id must be numeric.", vim.log.levels.WARN)
+            return
+          end
+          go({ id = tonumber(t) })
+        end)
+      end)
+    end)
+  end)
+end
+
+-- gL (PR side): unlink one of `pr`'s linked work items, from a picker.
+function M.unlink_item(pr, env)
+  local notify = require("azure-cli.shell").notify
+  M.fetch(pr.id, env, function(list)
+    vim.schedule(function()
+      if not list or #list == 0 then
+        notify("No work items linked to PR #" .. tostring(pr.id) .. ".")
+        return
+      end
+      local items = {}
+      for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), w = w } end
+      require("azure-cli.prompt").select({ prompt = "Unlink a work item from PR #" .. tostring(pr.id), items = items },
+        function(choice)
+          if choice then require("azure-cli.workitems.linked_prs").unlink(choice.w.id, pr.id, choice.w) end
+        end)
+    end)
+  end)
+end
+
+-- gW: a popup of `pr`'s ({id, org, project, repo}) linked work items -
+-- state, type, title and assignee each - where <CR> opens one in the
+-- detail view, gs changes its state, gl links another and gL unlinks the
+-- one under the cursor. At the cursor by default; `center` puts it
+-- mid-screen (the reviewer, whose cursor can be anywhere in a split).
+function M.choose(pr, env, center)
+  local notify = require("azure-cli.shell").notify
+  local pr_id = pr.id
   if not M.cached(pr_id) then notify("Reading PR #" .. tostring(pr_id) .. "'s work items \u{2026}") end
   M.fetch(pr_id, env, function(list, err)
     vim.schedule(function()
@@ -110,7 +196,7 @@ function M.choose(pr_id, env, center)
         return
       end
       if #list == 0 then
-        notify("No work items linked to PR #" .. tostring(pr_id) .. ".")
+        notify("No work items linked to PR #" .. tostring(pr_id) .. " - gl links one.")
         return
       end
       local lines, row = {}, {}
@@ -121,7 +207,7 @@ function M.choose(pr_id, env, center)
       local UI = require("azure-cli.ui")
       local win, buf = UI.open_float(lines, {
         title = "Work items linked to PR #" .. tostring(pr_id),
-        footer = "<CR> open \u{00B7} gs state",
+        footer = "<CR> open \u{00B7} gs state \u{00B7} gl link \u{00B7} gL unlink",
         min_width = 50,
         center = center,
       })
@@ -153,6 +239,16 @@ function M.choose(pr_id, env, center)
         if not w then return end
         close()
         require("azure-cli.workitems.state_dialog").open(w)
+      end, kopts)
+      vim.keymap.set("n", "gl", function()
+        close()
+        M.link_item(pr)
+      end, kopts)
+      vim.keymap.set("n", "gL", function()
+        local w = current()
+        if not w then return end
+        close()
+        require("azure-cli.workitems.linked_prs").unlink(w.id, pr_id, w)
       end, kopts)
     end)
   end)

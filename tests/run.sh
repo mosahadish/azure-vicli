@@ -464,6 +464,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer" "$out"
   fi
+  if [[ "$out" == *LINK-SMOKE-OK* ]]; then
+    pass "smoke: linking/unlinking from either dashboard updates both at once"
+  else
+    fail "smoke: linking/unlinking from either dashboard updates both at once" "$out"
+  fi
   if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
     pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"
   else
