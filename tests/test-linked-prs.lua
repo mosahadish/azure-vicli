@@ -28,5 +28,15 @@ check("lines: unread PR is just its id", #l == 1 and l[1] == "  !9", l[1])
 l = LP.lines({ id = 9, status = "abandoned", title = "t", repo = "r", source = "a", target = "b" })
 check("lines: no author", l[2] == "           r  a \u{2192} b", l[2])
 
+local row = "  #3001 [Active] revert !101 now     P1 !101 1h"
+local s, e = LP.marker_range(row, "!101")
+check("marker_range: the column's copy, not the title's", s and s > 30 and row:sub(s, e) == "!101"
+  and row:sub(s - 3, s - 1) == "P1 ", tostring(s))
+check("marker_range: absent", LP.marker_range("no marker", "!101") == nil)
+check("marker_range: empty marker", LP.marker_range("!101", "") == nil)
+check("marker_group: not in the PR list", LP.marker_group(nil) == "AzureCliWiPr")
+check("marker_group: active", LP.marker_group({ isDraft = false }) == "AzureCliWiPrActive")
+check("marker_group: draft", LP.marker_group({ isDraft = true }) == "AzureCliWiPrDraft")
+
 print(fails == 0 and "ALL OK" or (fails .. " FAILED"))
 os.exit(fails == 0 and 0 or 1)

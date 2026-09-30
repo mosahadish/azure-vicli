@@ -80,7 +80,6 @@ UI.link_hl({
   AzureCliWiRemoved     = "ErrorMsg",
   AzureCliWiViewTitle   = "Title",
   AzureCliWiViewLabel   = "Special",
-  AzureCliWiPr          = "Constant",
   AzureCliWiOther       = "Comment",
 })
 
@@ -248,7 +247,7 @@ local function render(data)
       if bs and wi_built.hl[state] then add(wi_built.hl[state], lnum, bs - 1, be) end
       if row_pr[i] then
         local ps, pe = line:find("^  !%d+")
-        if ps then add("AzureCliWiPr", lnum, 2, pe) end
+        if ps then add("AzureCliWiId", lnum, 2, pe) end
         local ss, se, st = line:find("^  !%d+%s+(%a+)")
         if ss then add(PR_STATUS_HL[st] or "AzureCliWiOther", lnum, se - #st, se) end
       end

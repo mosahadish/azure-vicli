@@ -20,6 +20,28 @@ function M.marker(prs)
   return s
 end
 
+-- Byte range (1-based, inclusive) of the marker `mark` in `line`: its last
+-- occurrence, since the marker column comes after the title and a title can
+-- contain the same "!123" text itself. nil when absent.
+function M.marker_range(line, mark)
+  if not mark or mark == "" then return nil end
+  local s, e, from = nil, nil, 1
+  while true do
+    local a, b = line:find(mark, from, true)
+    if not a then return s, e end
+    s, e, from = a, b, a + 1
+  end
+end
+
+-- Highlight group for a row's marker, from its first PR's record in the
+-- PR dashboard's list (`rec`, nil when that list doesn't have it): draft,
+-- active, or AzureCliWiPr (dim) for a PR the list doesn't know - completed,
+-- abandoned, or one you're not on.
+function M.marker_group(rec)
+  if not rec then return "AzureCliWiPr" end
+  return rec.isDraft and "AzureCliWiPrDraft" or "AzureCliWiPrActive"
+end
+
 -- "draft" for an active draft, else ADO's status ("active", "completed",
 -- "abandoned"); "" when the detail couldn't read the PR.
 function M.status(pr)
@@ -39,7 +61,7 @@ function M.lines(pr)
 end
 
 -- The PR dashboard's record for `id`, when its list has one.
-local function listed(id)
+function M.listed(id)
   local cache = require("azure-cli.state").PR_LIST_CACHE
   for _, p in ipairs((cache and cache.prs) or {}) do
     if tostring(p.id) == tostring(id) then return p end
@@ -52,7 +74,7 @@ end
 -- detail first when `pr` has no url yet (the dashboard's ids-only records).
 function M.open(pr, item_id)
   local notify = require("azure-cli.shell").notify
-  if listed(pr.id) then
+  if M.listed(pr.id) then
     require("azure-cli").open_review(pr.id)
     return
   end
@@ -91,7 +113,7 @@ function M.choose(prs, item_id)
   if #prs == 1 then return M.open(prs[1], item_id) end
   local items = {}
   for _, p in ipairs(prs) do
-    local rec = listed(p.id)
+    local rec = M.listed(p.id)
     local title = p.title or (rec and rec.title) or ""
     local status = M.status(p)
     items[#items + 1] = {

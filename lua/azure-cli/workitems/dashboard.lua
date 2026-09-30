@@ -112,7 +112,9 @@ UI.link_hl({
   AzureCliWiTabInactive = "TabLine",
   AzureCliWiDate        = "Comment",
   AzureCliWiBorder      = "FloatBorder",
-  AzureCliWiPr          = "Constant",
+  AzureCliWiPr          = "Comment",
+  AzureCliWiPrActive    = "Constant",
+  AzureCliWiPrDraft     = "Special",
 })
 
 local ns = vim.api.nvim_create_namespace("azure_cli_workitems")
@@ -561,8 +563,13 @@ local function render()
       if bs then
         vim.api.nvim_buf_add_highlight(buf, ns, wi_built.hl[state] or "AzureCliWiOther", lnum, bs - 1, be)
       end
-      local ps, pe = line:find("!%d+[ +%d]*", be or 1)
-      if ps then vim.api.nvim_buf_add_highlight(buf, ns, "AzureCliWiPr", lnum, ps - 1, pe) end
+      local rit = row_item[i]
+      local prs = rit and rit.pullRequests
+      local ps, pe = LINKED_PRS.marker_range(line, LINKED_PRS.marker(prs))
+      if ps then
+        vim.api.nvim_buf_add_highlight(buf, ns, LINKED_PRS.marker_group(LINKED_PRS.listed(prs[1].id)),
+          lnum, ps - 1, pe)
+      end
     end
   end
 
