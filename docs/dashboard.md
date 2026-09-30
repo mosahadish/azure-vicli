@@ -60,6 +60,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gN` | Toggle desktop notifications for this session |
 | `gO` | Open the config file |
 | `r` | Refresh |
+| `gW` | Open a work item linked to the PR in the work-item detail view (a picker when there are several). A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `W` | Switch to the work-items dashboard |
 | `q` | Quit |
 

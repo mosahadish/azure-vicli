@@ -550,11 +550,52 @@ class CompleteAutoCompleteTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class WorkItemsTests(unittest.TestCase):
+    REFS = "https://dev.azure.com/org/proj/_apis/git/repositories/myrepo/pullRequests/42/workitems"
+    BATCH = "https://dev.azure.com/org/_apis/wit/workitemsbatch"
+
+    def test_lists_linked_items_with_state_and_title(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch(responses={
+            self.REFS: {"value": [{"id": "3001", "url": "x"}, {"id": "7"}]},
+            self.BATCH: {"value": [
+                {"id": 3001, "fields": {"System.WorkItemType": "User Story", "System.State": "Active",
+                                        "System.Title": "Throttle", "System.AssignedTo": {"displayName": "Me"}}},
+                {"id": 7, "fields": {"System.WorkItemType": "Bug", "System.State": "New", "System.Title": "b"}},
+            ]},
+        })
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.fetch_work_items()
+        self.assertEqual(rc, 0)
+        recs = [json.loads(ln) for ln in buf.getvalue().splitlines()]
+        self.assertEqual([(r["id"], r["type"], r["state"], r["title"]) for r in recs],
+                         [(3001, "User Story", "Active", "Throttle"), (7, "Bug", "New", "b")])
+        self.assertEqual(actions.fetch.calls[1]["data"]["ids"], [3001, 7])
+
+    def test_failed_batch_still_lists_the_ids(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch(responses={self.REFS: {"value": [{"id": "5"}]}},
+                                  raise_for={self.BATCH: ac.AdoHttpError(403, self.BATCH, b"no")})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.fetch_work_items()
+        self.assertEqual((rc, buf.getvalue().strip()), (0, '{"id": 5}'))
+
+    def test_no_links_prints_nothing(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch(responses={self.REFS: {"value": []}})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.fetch_work_items()
+        self.assertEqual((rc, buf.getvalue()), (0, ""))
+
+
 class CmdPrActionDispatchTests(unittest.TestCase):
     def test_pr_action_flags_membership(self):
         for flag in ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
                      "--reply", "--status", "--vote", "--complete", "--auto-complete",
-                     "--edit-comment", "--delete-comment"):
+                     "--edit-comment", "--delete-comment", "--work-items"):
             self.assertIn(flag, ac.PR_ACTION_FLAGS)
 
     def test_missing_required_env_var_fails_before_touching_config(self):

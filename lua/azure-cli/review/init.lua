@@ -4075,6 +4075,7 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- re-running the --threads/--iterations/`git cat-file` sequence itself.
   ctx.fetch_since_base = EXT.since_mod.fetch_base
   EXT.followup = require("azure-cli.review.followup")(ctx)
+  EXT.workitems = require("azure-cli.review.workitems")(ctx)
 
   -- File-list access for code defined before `files`/`open_file` exist
   -- (jump_change's cross-file stepping - ]c/]C crossing from the last/first

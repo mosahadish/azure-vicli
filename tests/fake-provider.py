@@ -807,6 +807,14 @@ class Fake:
         print("Comment {0} (thread {1}) updated.".format(cid, tid))
         return 0
 
+    def cmd_work_items(self):
+        pid = self.pr_id()
+        for w in self.state["workitems"]:
+            if pid.isdigit() and int(pid) in w.get("prs", []):
+                print(json.dumps({k: w[k] for k in ("id", "type", "state", "title", "assignedTo")},
+                                 ensure_ascii=False))
+        return 0
+
     def cmd_vote(self, rest):
         if not self.need_pr():
             return 1
@@ -1174,6 +1182,7 @@ def dispatch(ws, argv, env):
         "--edit-comment": lambda: f.cmd_edit_comment(rest),
         "--delete-comment": lambda: f.cmd_edit_comment(rest, delete=True),
         "--vote": lambda: f.cmd_vote(rest),
+        "--work-items": lambda: f.cmd_work_items(),
         "--complete": lambda: f.cmd_complete(rest),
         "--auto-complete": lambda: f.cmd_auto_complete(rest),
         "--requeue": lambda: f.cmd_requeue(rest),

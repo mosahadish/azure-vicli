@@ -44,6 +44,7 @@ local KEYS = require("azure-cli.keys")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 local PRS = require("azure-cli.prs")
+local PR_WORKITEMS = require("azure-cli.pr_workitems")
 -- Shared housekeeping helpers (flash, config file, browser/clipboard, the
 -- JSON state files, a failed job's one-line summary) - see shell.lua for
 -- what each of these used to be a private copy of here.
@@ -171,7 +172,7 @@ local DASHBOARD_ACTIONS = {
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
   { "vote", "vote" }, { "complete", "complete / auto-complete" },
-  { "requeue_build", "re-queue build" },
+  { "requeue_build", "re-queue build" }, { "open_workitem", "open a linked work item" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
@@ -403,6 +404,7 @@ UI.link_hl({
   AzureCliSyncing      = "Title",
   AzureCliReady        = "Comment",
   AzureCliBorder       = "FloatBorder",
+  AzureCliWorkItem     = "Identifier",
   AzureCliColHeader    = "Comment",
   AzureCliMe           = "Title",
 })
@@ -496,6 +498,7 @@ end
 -- to stay clear of the build column's own \u{2713}/\u{2717}/\u{21BB}/\u{25CF}.
 -- Assigned once the warm/prefetch bookkeeping it reads exists (below).
 local pr_sync_state
+local warm_workitems  -- reads listed PRs' linked work items (assigned below)
 
 -- Appends one PR's row to `lines`/`spans`/`row_pr`. Used for both a PR's
 -- normal state section and the Mentions section below - the same record can
@@ -539,7 +542,16 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(" ")
   seg(fit(pr.autoComplete and "A" or "", 1), "AzureCliAutoComplete")
   seg(" ")
-  seg(fit(pr.title, widths.title))
+  -- Its linked work items, once pr_workitems.lua has read them: "#3001".
+  local wi = PR_WORKITEMS.label(PR_WORKITEMS.cached(pr.id))
+  local title_w = widths.title
+  if wi ~= "" and title_w > #wi + 8 then
+    seg(fit(pr.title, title_w - #wi - 2))
+    seg("  ")
+    seg(wi, "AzureCliWorkItem")
+  else
+    seg(fit(pr.title, title_w))
+  end
   seg(" ")
   seg(fit(pr.repo or "", widths.repo), "AzureCliRepo")
   if widths.author then
@@ -1493,8 +1505,45 @@ local function load(silent, force)
       STATE.PR_LIST_CACHE = { prs = fresh, ts = os.time() }
       render()
       warm_all(fresh)
+      warm_workitems(fresh)
     end,
   })
+end
+
+-- Read the linked work items of every listed PR not cached yet, one at a
+-- time in the background, re-rendering as each arrives (render is
+-- change-aware), for the rows' "#3001" badges.
+local workitems_running = false
+warm_workitems = function(list)
+  if workitems_running then return end
+  local todo = {}
+  for _, pr in ipairs(list or {}) do
+    if not PR_WORKITEMS.cached(pr.id) then todo[#todo + 1] = pr end
+  end
+  if #todo == 0 then return end
+  workitems_running = true
+  local i = 0
+  local function next_one()
+    i = i + 1
+    local pr = todo[i]
+    if not pr then
+      workitems_running = false
+      return
+    end
+    PR_WORKITEMS.fetch(pr.id, pr_env(pr), function()
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
+        next_one()
+      end)
+    end)
+  end
+  next_one()
+end
+
+-- gW: open a work item linked to the PR under the cursor.
+local function open_linked_workitem()
+  local pr = current_pr()
+  if pr then PR_WORKITEMS.choose(pr.id, pr_env(pr)) end
 end
 
 -- Set the AZVICLI_* process env the reviewer (and its provider calls) read.
@@ -1768,6 +1817,7 @@ local function jump_edge_pr(last)
 end
 KEYS.bind(buf, "dashboard", "first_pr", function() jump_edge_pr(false) end, { desc = "jump to the first PR" })
 KEYS.bind(buf, "dashboard", "last_pr", function() jump_edge_pr(true) end, { desc = "jump to the last PR" })
+KEYS.bind(buf, "dashboard", "open_workitem", open_linked_workitem, { desc = "open a work item linked to this PR" })
 KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.workitems.dashboard").open()
 end, { desc = "switch to the work-items dashboard" })

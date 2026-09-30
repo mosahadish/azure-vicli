@@ -1619,7 +1619,7 @@ class AzureDevOpsPullRequestSource:
 PR_ACTION_FLAGS = (
     "--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
-    "--edit-comment", "--delete-comment",
+    "--edit-comment", "--delete-comment", "--work-items",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -1816,6 +1816,41 @@ class PrActions:
 
     def fetch_iterations(self):
         return self._fetch_raw_list(self._pr_url("/iterations"), "fetch_iterations")
+
+    def fetch_work_items(self):
+        """--work-items: the work items linked to this PR, one NDJSON line
+        each ({id, type, state, title, assignedTo}) - the PR dashboard's and
+        the reviewer's way back to them. A batch read that fails still lists
+        the linked ids ({id})."""
+        try:
+            refs = self.fetch(self._pr_url("/workitems"), pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("fetch_work_items: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        except Exception as e:
+            print("fetch_work_items: {0}".format(e), file=sys.stderr)
+            return 1
+        ids = []
+        for r in ((refs or {}).get("value") or []):
+            try:
+                ids.append(int(r.get("id")))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return 0
+        try:
+            b = self.fetch("{0}/_apis/wit/workitemsbatch".format(self.org), method="POST", pat=self.pat,
+                           api_version="6.0", data={"ids": ids, "fields": [
+                               "System.Id", "System.WorkItemType", "System.State", "System.Title",
+                               "System.AssignedTo"]})
+            recs = [_wi_summary(wi) for wi in ((b or {}).get("value") or [])]
+        except Exception:
+            recs = []
+        if not recs:
+            recs = [{"id": i} for i in ids]
+        for rec in recs:
+            print(json.dumps(rec, ensure_ascii=False))
+        return 0
 
     def _fetch_raw_list(self, url, label):
         try:
@@ -2152,6 +2187,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.fetch_threads()
     if flag == "--iterations":
         return actions.fetch_iterations()
+    if flag == "--work-items":
+        return actions.fetch_work_items()
     if flag == "--reply":
         return actions.post_reply(arg(0), arg(1))
     if flag == "--status":

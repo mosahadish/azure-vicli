@@ -20,7 +20,7 @@ local DEFAULT_KEYS = {
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = "za", expand_all = "zR", collapse_all = "zM",
-    first_pr = "gg", last_pr = "G",
+    first_pr = "gg", last_pr = "G", open_workitem = "gW",
   },
   -- Reviewer file list.
   list = {
@@ -30,7 +30,7 @@ local DEFAULT_KEYS = {
     next_file_with_comments = "]C", prev_file_with_comments = "[C",
     resize_less = "<", resize_more = ">", comment_file = "C", help = "?",
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
-    since = "gi", followup = "gu",
+    since = "gi", followup = "gu", open_workitem = "gW",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
   },
   -- Reviewer diff pane.
@@ -45,7 +45,7 @@ local DEFAULT_KEYS = {
     find_references = "gr", open_file = "gf", search = "g/",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
-    batch_submit = "gS", since = "gi", followup = "gu",
+    batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
   },
   -- Reviewer Overview page.
@@ -56,7 +56,7 @@ local DEFAULT_KEYS = {
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
-    batch_submit = "gS", since = "gi", followup = "gu",
+    batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
   },
   -- Code-navigation peek/revision buffers.
   nav = {

@@ -14,7 +14,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The twenty-eight Lua unit tests below it in this directory, against a
+#   4. The twenty-nine Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed provider --threads.
 #   5. `python3 -m unittest` over tests/test_*.py - unit tests for
 #      azure-cli.py (the YAML-subset config parser, PR classification,
@@ -241,6 +241,7 @@ MIGRATE_LUA="$TMP/lua/lua/azure-cli/migrate.lua"
 STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
 STATE_DIALOG_LUA="$TMP/lua/lua/azure-cli/workitems/state_dialog.lua"
 LINKED_PRS_LUA="$TMP/lua/lua/azure-cli/workitems/linked_prs.lua"
+PR_WORKITEMS_LUA="$TMP/lua/lua/azure-cli/pr_workitems.lua"
 
 # test-split.lua wants a real, multi-file range - use this repo's own
 # history rather than the tiny scratch repo above. When there is nothing
@@ -300,6 +301,7 @@ run_lua_test test-prs.lua "$REPO_ROOT" "$PRS_LUA"
 run_lua_test test-merge.lua "$REPO_ROOT" "$MERGE_LUA"
 run_lua_test test-state-dialog.lua "$REPO_ROOT" "$STATE_DIALOG_LUA"
 run_lua_test test-linked-prs.lua "$REPO_ROOT" "$LINKED_PRS_LUA"
+run_lua_test test-pr-workitems.lua "$REPO_ROOT" "$PR_WORKITEMS_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
@@ -456,6 +458,11 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gu lists my comments and gA filters them there like everywhere else"
   else
     fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
+  fi
+  if [[ "$out" == *PRWI-SMOKE-OK* && "$out" == *REVIEW-WI-SMOKE-OK* ]]; then
+    pass "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer"
+  else
+    fail "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer" "$out"
   fi
   if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
     pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"

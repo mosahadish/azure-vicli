@@ -93,6 +93,29 @@ local function numbered_and_fits(b, what)
 end
 if not numbered_and_fits(dash, "the PR dashboard") then return end
 
+-- PR #101's row gets its linked work item (#3001) once the background read
+-- lands, and gW on it opens #3001's detail view in a new tab.
+local prrow
+ok = vim.wait(15000, function()
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("#101 ", 1, true) and l:find("#3001", 1, true) then prrow = i return true end
+  end
+end, 100)
+if not ok then return fail("PR #101's row never showed its linked work item #3001", dash) end
+vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
+vim.api.nvim_win_set_cursor(0, { prrow, 0 })
+local dash_tab = vim.api.nvim_get_current_tabpage()
+feed("gW")
+local wview
+ok = vim.wait(15000, function()
+  wview = find_buf("azurecli-workitem")
+  return wview ~= nil and text(wview):find("#3001", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gW on PR #101 didn't open work item #3001") end
+vim.cmd("tabclose")
+vim.api.nvim_set_current_tabpage(dash_tab)
+print("PRWI-SMOKE-OK")
+
 require("azure-cli").open_review(101)
 local files
 ok = vim.wait(20000, function()
@@ -104,6 +127,20 @@ end, 100)
 if not ok then return fail("the reviewer never listed PR #101's files", files) end
 print("== reviewer file list (PR #101) ==")
 print(text(files))
+
+-- gW in the reviewer opens the PR's linked work item too.
+local review_tab = vim.api.nvim_get_current_tabpage()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+feed("gW")
+local rview
+ok = vim.wait(15000, function()
+  rview = find_buf("azurecli-workitem")
+  return rview ~= nil and vim.api.nvim_get_current_tabpage() ~= review_tab and text(rview):find("#3001", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gW in the reviewer didn't open work item #3001") end
+vim.cmd("tabclose")
+vim.api.nvim_set_current_tabpage(review_tab)
+print("REVIEW-WI-SMOKE-OK")
 
 -- Code navigation (gd/gr/gf and the peek view) - the reviewer's least
 -- automated surface, and the one whose helpers other review/* modules
