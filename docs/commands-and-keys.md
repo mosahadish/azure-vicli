@@ -209,9 +209,11 @@ paste the output here after changing a default.
 | `assign` | `ga` |
 | `browser` | `o` |
 | `click` | `<LeftMouse>` |
+| `collapse_all` | `zM` |
 | `config` | `gO` |
 | `copy_link` | `gy` |
 | `edit_title` | `ge` |
+| `expand_all` | `zR` |
 | `filter` | `/` |
 | `goto_sprint_n` | `gt` |
 | `help` | `?` |
@@ -227,6 +229,7 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `state` | `gs` |
+| `toggle_fold` | `za` |
 | `tree` | `T` |
 | `unlink_pr` | `gL` |
 

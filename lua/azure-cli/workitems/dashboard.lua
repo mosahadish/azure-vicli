@@ -36,6 +36,7 @@ local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
 local STATE_DIALOG = require("azure-cli.workitems.state_dialog")
 local LINKED_PRS = require("azure-cli.workitems.linked_prs")
+local DETAIL = require("azure-cli.workitems.detail")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 -- Shared housekeeping helpers - see shell.lua; the PR dashboard, the
@@ -141,13 +142,23 @@ local function item_matches(it, q)
   end
   return false
 end
--- Tree view (T): each item with its children indented under it - in
--- STATE like the filter, so it survives a P/W swap. Children that aren't
--- in the list themselves (usually Tasks, often someone else's) are fetched
--- by id while it's on, into STATE.WI_TREE_KIDS (id -> list record).
-local wi_tree = STATE.wi_tree or false
+-- Tree view (T): each item with everything under it indented beneath -
+-- remembered across sessions in stdpath("data")/azure-cli-workitems.json.
+-- What's under the listed items (usually Tasks, often someone else's) is
+-- fetched after every list load either way, since the progress column
+-- ("2/3 done") needs it too: STATE.WI_TREE_KIDS[sprint path] = { id ->
+-- list record with parentId }. za/zR/zM fold parents (STATE.wi_tree_folded,
+-- id -> true, for the session).
+local UI_STATE_FILE = vim.fn.stdpath("data") .. "/azure-cli-workitems.json"
+if STATE.wi_tree == nil then
+  STATE.wi_tree = SHELL.read_json(UI_STATE_FILE, {}).tree == true
+end
+local wi_tree = STATE.wi_tree
 local tree_kids = STATE.WI_TREE_KIDS
-local load_children           -- forward decl: fetches the tree's children
+STATE.wi_tree_folded = STATE.wi_tree_folded or {}
+local folded = STATE.wi_tree_folded
+local focus_id                -- render() lands the cursor here once (za on a child)
+local load_children           -- forward decl: fetches what's under the listed items
 local prefetch_state_meta     -- forward decl: warms state/reason caches
 local prefetch_neighbors      -- forward decl: warms adjacent sprints' items
 local loading = false         -- true while a fetch for the active tab is in flight
@@ -295,8 +306,9 @@ local function render()
   -- Remember which item the cursor is on (by id, not raw row number) before
   -- we rebuild everything below, since the box's vertical centring means row
   -- numbers shift whenever the window is resized or the row count changes.
-  local prev_item_id
-  if win and vim.api.nvim_win_is_valid(win) then
+  local prev_item_id = focus_id
+  focus_id = nil
+  if not prev_item_id and win and vim.api.nvim_win_is_valid(win) then
     local ok, cur = pcall(vim.api.nvim_win_get_cursor, win)
     if ok then
       local prev_it = row_item[cur[1]]
@@ -325,11 +337,12 @@ local function render()
     by_type[sec.key] = {}
     order[#order + 1] = sec
   end
-  -- Tree view: an item whose parent is listed too goes under that parent
-  -- instead of into its own section; kids_of[id] is everything under an
-  -- item (those, plus its fetched children that aren't listed).
+  -- kids_of[id]: an item's direct children - listed items whose parent is
+  -- listed too, plus the fetched ones under it - for the progress column
+  -- and the tree. nested[id]: a listed item the tree shows under its
+  -- listed parent instead of in its own section.
   local kids_of, nested = {}, {}
-  if wi_tree then
+  do
     local listed = {}
     for _, it in ipairs(items) do listed[tostring(it.id)] = true end
     local function add_kid(pid, k)
@@ -339,14 +352,20 @@ local function render()
     for _, it in ipairs(items) do
       local id, p = tostring(it.id), it.parentId and tostring(it.parentId)
       if p and p ~= id and listed[p] then
-        nested[id] = true
+        if wi_tree then nested[id] = true end
         add_kid(p, it)
       end
-      for _, cid in ipairs(it.childIds or {}) do
-        cid = tostring(cid)
-        if not listed[cid] and tree_kids[cid] then add_kid(id, tree_kids[cid]) end
-      end
     end
+    local sp = sprints[active_index]
+    for id, rec in pairs((sp and tree_kids[sp.path]) or {}) do
+      if not listed[id] and rec.parentId then add_kid(tostring(rec.parentId), rec) end
+    end
+  end
+  -- "2/3 done" for an item with children (Removed ones don't count).
+  local function progress_text(it)
+    local done, total = STATE_DIALOG.progress(kids_of[tostring(it.id)], STATE_DIALOG.cached_categories)
+    if total == 0 then return "", false end
+    return done .. "/" .. total .. " done", done == total
   end
   -- Shown when it matches the filter or (in the tree) anything under it does.
   local function shows(it, q, depth)
@@ -383,13 +402,23 @@ local function render()
     end)
   end
 
-  -- The linked-PR column ("!101", "!101 +2"): as wide as its widest
-  -- marker, and absent when no listed item has a PR.
-  local pr_w = 0
-  for _, it in ipairs(items) do pr_w = math.max(pr_w, #LINKED_PRS.marker(it.pullRequests)) end
+  -- The linked-PR ("!101", "!101 +2") and progress ("2/3 done") columns:
+  -- each as wide as its widest entry, and absent when no listed item has one.
+  local pr_w, prog_w = 0, 0
+  for _, it in ipairs(items) do
+    pr_w = math.max(pr_w, #LINKED_PRS.marker(it.pullRequests))
+    prog_w = math.max(prog_w, #progress_text(it))
+  end
   local function pr_col(it)
-    if pr_w == 0 then return "" end
-    return string.format("%-" .. pr_w .. "s ", LINKED_PRS.marker(it.pullRequests))
+    local s = ""
+    if prog_w > 0 then s = string.format("%-" .. prog_w .. "s ", progress_text(it)) end
+    if pr_w > 0 then s = s .. string.format("%-" .. pr_w .. "s ", LINKED_PRS.marker(it.pullRequests)) end
+    return s
+  end
+  -- The tree's fold glyph in front of an item with children: ▸ folded, ▾ open.
+  local function fold_glyph(it)
+    if not (wi_tree and kids_of[tostring(it.id)]) then return " " end
+    return folded[tostring(it.id)] and "\u{25B8}" or "\u{25BE}"
   end
 
   -- The tree's rows under `it`, one indent per level. A child from the
@@ -397,7 +426,7 @@ local function render()
   -- who it's assigned to instead, since that's rarely me.
   local function emit_kids(it, depth)
     local kids = kids_of[tostring(it.id)]
-    if not kids or depth > 5 then return end
+    if not kids or depth > 8 or folded[tostring(it.id)] then return end
     sort_items(kids)
     for i, k in ipairs(kids) do
       local right
@@ -405,12 +434,12 @@ local function render()
         right = (type(k.priority) == "number" and ("P" .. k.priority) or "  ") .. " " .. pr_col(k)
           .. (k.changedHuman or "")
       else
-        local pm = LINKED_PRS.marker(k.pullRequests)
-        right = (pm ~= "" and (pm .. "  ") or "")
+        local pg, pm = progress_text(k), LINKED_PRS.marker(k.pullRequests)
+        right = (pg ~= "" and (pg .. "  ") or "") .. (pm ~= "" and (pm .. "  ") or "")
           .. ((k.assignedTo and k.assignedTo ~= "") and k.assignedTo or "unassigned")
       end
-      lines[#lines + 1] = string.format("  %s%s #%-6s %-13s %s %s",
-        string.rep("  ", depth - 1), i == #kids and "\u{2514}" or "\u{251C}",
+      lines[#lines + 1] = string.format("  %s%s%s#%-6s %-13s %s %s",
+        string.rep("  ", depth - 1), i == #kids and "\u{2514}" or "\u{251C}", fold_glyph(k),
         tostring(k.id), "[" .. (k.state or "") .. "]", fit(k.title, 58 - 2 * (depth - 1)), right)
       row_item[#lines] = k
       emit_kids(k, depth + 1)
@@ -433,7 +462,8 @@ local function render()
         prev_state = it.state
         local pri = type(it.priority) == "number" and ("P" .. it.priority) or "  "
         local row = string.format(
-          "  #%-7s %-13s %s %-4s %s%s",
+          " %s#%-7s %-13s %s %-4s %s%s",
+          fold_glyph(it),
           tostring(it.id),
           "[" .. (it.state or "") .. "]",
           fit(it.title, 60),
@@ -564,6 +594,13 @@ local function render()
         vim.api.nvim_buf_add_highlight(buf, ns, wi_built.hl[state] or "AzureCliWiOther", lnum, bs - 1, be)
       end
       local rit = row_item[i]
+      local pg, all_done = "", false
+      if rit then pg, all_done = progress_text(rit) end
+      local gs_, ge_ = LINKED_PRS.marker_range(line, pg)
+      if gs_ then
+        vim.api.nvim_buf_add_highlight(buf, ns, all_done and "AzureCliWiResolved" or "AzureCliWiDate",
+          lnum, gs_ - 1, ge_)
+      end
       local prs = rit and rit.pullRequests
       local ps, pe = LINKED_PRS.marker_range(line, LINKED_PRS.marker(prs))
       if ps then
@@ -855,7 +892,7 @@ function STATE.WI_ITEM_CHANGED(id, fields)
   end
   patch(items)
   for _, c in pairs(WI_SPRINT_ITEMS or {}) do patch(c.items) end
-  patch({ tree_kids[id] })
+  for _, by_id in pairs(tree_kids) do patch({ by_id[id] }) end
   if WI_DETAIL_CACHE then WI_DETAIL_CACHE[id] = nil end
   if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
@@ -1374,52 +1411,132 @@ local function open_browser()
   notify("Opening #" .. tostring(it.id) .. " in browser…")
 end
 
--- The tree's children: every listed item's childIds that aren't listed
--- themselves, in one --wi-list ids call - all of them after a fresh list
--- (their states move too), only the missing ones otherwise. A call asked
--- for while one is running runs again after it.
+-- Everything under the active sprint's listed items (workitems/detail.lua's
+-- descendants: one recursive query, or their direct children on a server
+-- that won't run it), then the state categories of every type found, for
+-- the progress column. `all` refetches (after a fresh list); otherwise only
+-- a sprint with nothing cached yet is fetched. A call asked for while one
+-- is running runs again after it.
 local kids_inflight, kids_again = false, nil
 load_children = function(all)
-  if not wi_tree then return end
+  local sp = sprints[active_index]
+  if not sp then return end
+  local path = sp.path
   if kids_inflight then
     kids_again = kids_again or all
     return
   end
-  local listed, want, seen = {}, {}, {}
-  for _, it in ipairs(items) do listed[tostring(it.id)] = true end
+  if not all and tree_kids[path] then return end
+  local ids, direct, listed = {}, {}, {}
+  for _, it in ipairs(items) do
+    listed[tostring(it.id)] = true
+    ids[#ids + 1] = tostring(it.id)
+  end
   for _, it in ipairs(items) do
     for _, cid in ipairs(it.childIds or {}) do
-      cid = tostring(cid)
-      if not listed[cid] and not seen[cid] and (all or not tree_kids[cid]) then
-        seen[cid] = true
-        want[#want + 1] = cid
-      end
+      if not listed[tostring(cid)] then direct[#direct + 1] = tostring(cid) end
     end
   end
-  if #want == 0 then return end
+  if #ids == 0 then
+    tree_kids[path] = {}
+    return
+  end
   kids_inflight = true
-  local out, err = {}, {}
-  RPC.run(provider_argv("--wi-list", "ids", table.concat(want, ",")), {
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
+  DETAIL.descendants(ids, direct, function(list, err)
+    vim.schedule(function()
       kids_inflight = false
-      if code ~= 0 then
-        notify("Couldn't load the children: " .. SHELL.job_error("work item children", code, err),
-          vim.log.levels.WARN)
-      else
-        for _, rec in ipairs(parse_items(out)) do tree_kids[tostring(rec.id)] = rec end
+      local function redraw()
         if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
+      end
+      if list then
+        local by_id, types = {}, {}
+        for _, rec in ipairs(list) do
+          by_id[tostring(rec.id)] = rec
+          types[rec.type or ""] = true
+        end
+        tree_kids[path] = by_id
+        for t in pairs(types) do
+          STATE_DIALOG.fetch_categories(t, function() vim.schedule(redraw) end)
+        end
+        redraw()
+      else
+        notify("Couldn't load what's under the work items: " .. tostring(err), vim.log.levels.WARN)
       end
       if kids_again ~= nil then
         local again = kids_again
         kids_again = nil
         load_children(again)
       end
-    end,
-  })
+    end)
+  end)
+end
+
+-- za: fold or unfold the item under the cursor's children in the tree; on
+-- a child row, fold its parent and land on it. zR unfolds everything, zM
+-- folds every item that has children.
+local function toggle_fold()
+  if not wi_tree then
+    notify("Folding is for the tree view - T turns it on.")
+    return
+  end
+  local it = current_item()
+  if not it then return end
+  local id = tostring(it.id)
+  local has_kids = false
+  local sp = sprints[active_index]
+  for _, rec in pairs((sp and tree_kids[sp.path]) or {}) do
+    if tostring(rec.parentId) == id then has_kids = true break end
+  end
+  for _, o in ipairs(items) do
+    if tostring(o.parentId) == id then has_kids = true break end
+  end
+  if has_kids then
+    folded[id] = (not folded[id]) or nil
+    focus_id = it.id
+  elseif it.parentId then
+    folded[tostring(it.parentId)] = true
+    focus_id = tonumber(it.parentId) or it.parentId
+  else
+    return
+  end
+  render()
+end
+
+local function fold_all(fold)
+  if not wi_tree then
+    notify("Folding is for the tree view - T turns it on.")
+    return
+  end
+  local it = current_item()
+  if fold then
+    local sp = sprints[active_index]
+    for _, rec in pairs((sp and tree_kids[sp.path]) or {}) do
+      if rec.parentId then folded[tostring(rec.parentId)] = true end
+    end
+    for _, o in ipairs(items) do
+      if o.parentId then folded[tostring(o.parentId)] = true end
+    end
+    -- The cursor's row may be folded away: land on its top-level item.
+    if it then
+      local top = it
+      for _ = 1, 10 do
+        local up
+        for _, o in ipairs(items) do
+          if top.parentId and tostring(o.id) == tostring(top.parentId) then up = o end
+        end
+        for _, rec in pairs((sp and tree_kids[sp.path]) or {}) do
+          if top.parentId and tostring(rec.id) == tostring(top.parentId) then up = rec end
+        end
+        if not up then break end
+        top = up
+      end
+      focus_id = top.id
+    end
+  else
+    for k in pairs(folded) do folded[k] = nil end
+    if it then focus_id = it.id end
+  end
+  render()
 end
 
 -- gR: open a pull request linked to the item under the cursor.
@@ -1428,10 +1545,13 @@ local function open_linked_pr()
   if it then LINKED_PRS.choose(it.pullRequests, it.id) end
 end
 
--- T: flip the tree view.
+-- T: flip the tree view, and remember it for next time.
 local function toggle_tree()
   wi_tree = not wi_tree
   STATE.wi_tree = wi_tree
+  local saved = SHELL.read_json(UI_STATE_FILE, {})
+  saved.tree = wi_tree
+  SHELL.write_json(UI_STATE_FILE, saved)
   render()
   load_children(false)
 end
@@ -1443,7 +1563,10 @@ local WORKITEMS_HELP = {
   "Navigate",
   { "open", "open the item: parent, children, description" },
   { "filter", "filter by id, title, state or assignee (Esc clears)" },
-  { "tree", "tree view: each item's children under it" },
+  { "tree", "tree view: everything under each item, indented (remembered)" },
+  { "toggle_fold", "tree: fold/unfold the item's children (on a child: fold its parent)" },
+  { "expand_all", "tree: unfold everything" },
+  { "collapse_all", "tree: fold everything" },
   { "prev_sprint", "previous sprint" },
   { "next_sprint", "next sprint" },
   { "goto_sprint_n", "jump to sprint n (prefix with a count)" },
@@ -1493,6 +1616,9 @@ KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the 
 KEYS.bind(buf, "workitems", "link_pr", link_pr_item, { desc = "link a pull request to the item under the cursor" })
 KEYS.bind(buf, "workitems", "unlink_pr", unlink_pr_item, { desc = "unlink a pull request from the item under the cursor" })
 KEYS.bind(buf, "workitems", "open_pr", open_linked_pr, { desc = "open a linked pull request" })
+KEYS.bind(buf, "workitems", "toggle_fold", toggle_fold, { desc = "fold/unfold the item's children" })
+KEYS.bind(buf, "workitems", "expand_all", function() fold_all(false) end, { desc = "unfold everything" })
+KEYS.bind(buf, "workitems", "collapse_all", function() fold_all(true) end, { desc = "fold everything" })
 KEYS.bind(buf, "workitems", "tree", toggle_tree, { desc = "tree view: each item's children under it" })
 KEYS.bind(buf, "workitems", "filter", set_wi_filter, { desc = "filter by id, title, state or assignee" })
 KEYS.bind(buf, "workitems", "browser", open_browser, { desc = "open in the browser" })

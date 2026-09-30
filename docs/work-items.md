@@ -24,7 +24,8 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `ge` | Edit the item's title |
 | `gi` | Move the item to another sprint of the quarter |
 | `gl` | Link a pull request to the item under the cursor |
-| `T` | Tree view: each item's children indented under it |
+| `T` | Tree view: everything under each item indented beneath it (remembered) |
+| `za` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
 | `gR` | Open a pull request linked to the item (a picker when there are several) |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
@@ -40,24 +41,38 @@ sprint's list instead.
 
 ### Tree view (`T`)
 
-`T` shows each item's children indented under it, the way the Azure DevOps
-taskboard groups tasks under their story:
+`T` shows everything under each item indented beneath it (children, their
+children, and so on), the way the Azure DevOps taskboard groups tasks under
+their story:
 
 ```
 ── User Stories (2) ──
-  #3001    [Active]      Throttle repeated login failures      P1   1h ago
-  ├ #3011   [In Progress] Count failed logins per account      Alice Andersson
-  ├ #3013   [Done]        Design the lockout rule              Alice Andersson
-  └ #3012   [To Do]       Tests for the lockout window         Alice Andersson
+ ▾#3001    [Active]      Throttle repeated login failures   P1   1/3 done !101 1h ago
+  ├ #3011   [In Progress] Count failed logins per account   Alice Andersson
+  ├ #3013   [Done]        Design the lockout rule           Alice Andersson
+  └▾#3012   [To Do]       Tests for the lockout window      0/1 done  Alice Andersson
+    └ #3014   [To Do]       Cover the sixth attempt         Bob Brown
 ```
 
-Children are fetched whatever their type or assignee, so a story's tasks
-show even when someone else has them; those rows show the assignee in place
-of the priority and age. An item whose parent is also in the list moves
-under that parent instead of having its own row. Every key works on a child
-row too (`gs`, `<CR>`, `ga`, ...). The filter keeps a parent when it or any
-of its children match. `T` again turns it off; the setting lasts for the
-session.
+Everything under an item is fetched whatever its type or assignee, in one
+recursive query, so a story's tasks show even when someone else has them;
+those rows show the assignee in place of the priority and age. (On a server
+that won't run the recursive query, only direct children are shown.) An
+item whose parent is also in the list moves under that parent instead of
+having its own row. Every key works on a child row too (`gs`, `<CR>`, `ga`,
+...). The filter keeps a parent when it or anything under it matches.
+
+`za` folds or unfolds the children of the item under the cursor (▾ open,
+▸ folded); on a child row it folds that child's parent and moves to it.
+`zR` unfolds everything and `zM` folds everything. `T` again turns the tree
+off. Whether it's on is remembered between sessions.
+
+### Progress
+
+An item with children shows how many are finished, e.g. `1/3 done`, with
+or without the tree. A child counts as done when its state is in the
+Completed category (Done, Closed); removed children aren't counted. The
+count turns green once everything is done.
 
 ### Changing state (`gs`)
 
@@ -95,7 +110,8 @@ checks it. `<Space>` on a child while the box is off picks just that child.
 
 `<CR>` sets the item first and, only if that succeeds, its checked children,
 each with its type's default reason. A child that fails is reported on its
-own; the item's change stands. Only direct children are included.
+own; the item's change stands. Grandchildren are included too, indented
+under their parent, and mapped the same way.
 
 ### Linked pull requests
 

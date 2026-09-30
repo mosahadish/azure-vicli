@@ -2658,8 +2658,8 @@ class WorkItemActions:
         return self._get(url)
 
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids, got '{0}'".format(select),
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select),
                   file=sys.stderr)
             return 1
         if select == "items" and not item_path:
@@ -2667,6 +2667,8 @@ class WorkItemActions:
             return 1
         if select == "ids":
             return self._wi_list_ids(item_path)
+        if select == "tree":
+            return self._wi_list_tree(item_path)
 
         if select == "sprints":
             return self._wi_list_sprints()
@@ -2768,6 +2770,38 @@ class WorkItemActions:
         if not ids:
             print("ERROR: 'ids' needs a comma-separated list of work item ids", file=sys.stderr)
             return 1
+        return self._wi_print_records(ids)
+
+    def _wi_list_tree(self, ids_arg):
+        """--wi-list tree 1,2,3: everything under those items - children,
+        their children and so on - as list records (each with its parentId),
+        in one recursive WIQL link query plus the batch read. The roots
+        themselves aren't printed."""
+        roots = [int(x) for x in (ids_arg or "").split(",") if x.strip().isdigit()]
+        if not roots:
+            print("ERROR: 'tree' needs a comma-separated list of work item ids", file=sys.stderr)
+            return 1
+        wiql = {"query": (
+            "SELECT [System.Id] FROM WorkItemLinks\\n"
+            "WHERE ([Source].[System.Id] IN ({0}))\\n"
+            "  AND ([System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward')\\n"
+            "MODE (Recursive)"
+        ).format(",".join(str(r) for r in roots))}
+        try:
+            resp = self._post("{0}/{1}/_apis/wit/wiql".format(self.collection, self.project), wiql)
+        except AdoHttpError as e:
+            return self._list_style_error(e, "POST")
+        seen, ids = set(roots), []
+        for rel in ((resp or {}).get("workItemRelations") or []):
+            target = (rel.get("target") or {}).get("id")
+            if rel.get("source") and isinstance(target, int) and target not in seen:
+                seen.add(target)
+                ids.append(target)
+        if not ids:
+            return 0
+        return self._wi_print_records(ids)
+
+    def _wi_print_records(self, ids):
         batch_url = "{0}/_apis/wit/workitemsbatch".format(self.collection)
         for i in range(0, len(ids), 200):
             try:

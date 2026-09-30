@@ -102,6 +102,33 @@ check("lines: pending child", lines[10] == "    [ ] #3013 Task  Done \u{2026}  D
 
 check("toggle_all: no children", SD.toggle_all({ kids = {} }) == false)
 
+-- tree_order: parents before their children, depth set, strays dropped.
+local ordered = SD.tree_order("1", {
+  { id = 12, parentId = 1 }, { id = 30, parentId = 12 }, { id = 11, parentId = 1 }, { id = 99, parentId = 77 },
+})
+local shape = {}
+for _, r in ipairs(ordered) do shape[#shape + 1] = r.id .. ":" .. r.depth end
+check("tree_order: depth-first by id", table.concat(shape, " ") == "11:1 12:1 30:2", table.concat(shape, " "))
+
+-- A grandchild's popup row is indented one more step.
+st = { states = { { label = "Closed" } }, si = 1, ri = 1, all = true, kids = {
+  { id = "12", type = "Task", state = "To Do", title = "a", target = "Done", on = true, depth = 1 },
+  { id = "30", type = "Task", state = "To Do", title = "b", target = "Done", on = true, depth = 2 },
+} }
+lines = SD.lines(spec, st)
+check("lines: grandchild indented", lines[9] == "      [x] #30 Task  To Do \u{2192} Done  b", lines[9])
+
+-- progress: Completed counts as done, Removed doesn't count; names stand in
+-- for a type whose categories aren't known.
+local cats = function(t) return t == "Task" and TASK or nil end
+local d, tot = SD.progress({
+  { type = "Task", state = "Done" }, { type = "Task", state = "In Progress" }, { type = "Task", state = "Removed" },
+  { type = "Bug", state = "Closed" }, { type = "Bug", state = "Active" },
+}, cats)
+check("progress: done/total", d == 2 and tot == 4, d .. "/" .. tot)
+d, tot = SD.progress({}, cats)
+check("progress: no children", d == 0 and tot == 0)
+
 local long = { id = 1, type = "Bug", state = "New", title = string.rep("\u{00E9}", 70) }
 lines = SD.lines(long, { states = { { label = "Active" } }, si = 1, ri = 1 })
 check("lines: long title cut on a character", lines[2] == "  " .. string.rep("\u{00E9}", 60) .. "\u{2026}", #lines[2])

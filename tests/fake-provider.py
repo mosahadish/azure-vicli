@@ -293,6 +293,10 @@ WI_FIXTURES = [
     {"id": 3013, "type": "Task", "state": "Done", "title": "Design the lockout rule",
      "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
      "description": "", "prs": [], "comments": []},
+    # A grandchild: #3012's own sub-task.
+    {"id": 3014, "type": "Task", "state": "To Do", "title": "Cover the sixth attempt",
+     "assignedTo": "bob", "priority": 3, "tags": "", "parentId": 3012, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
 ]
 
 
@@ -931,9 +935,23 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select), file=sys.stderr)
             return 1
+        if select == "tree":
+            roots = [int(x) for x in item_path.split(",") if x.strip().isdigit()]
+            if not roots:
+                print("ERROR: 'tree' needs a comma-separated list of work item ids", file=sys.stderr)
+                return 1
+            seen, queue = set(roots), list(roots)
+            while queue:
+                pid = queue.pop(0)
+                for x in self.state["workitems"]:
+                    if x.get("parentId") == pid and x["id"] not in seen:
+                        seen.add(x["id"])
+                        queue.append(x["id"])
+                        print(json.dumps(self.wi_list_record(x), ensure_ascii=False))
+            return 0
         if select == "ids":
             want = [x.strip() for x in item_path.split(",") if x.strip()]
             if not want:

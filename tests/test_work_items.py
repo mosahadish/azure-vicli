@@ -466,6 +466,37 @@ class WiListTests(unittest.TestCase):
         self.assertEqual([c["url"] for c in fetch.calls], [BATCH_URL])
         self.assertEqual(fetch.calls[0]["data"], {"ids": [7, 8], "$expand": "relations"})
 
+    def test_tree_reads_every_descendant_through_one_recursive_query(self):
+        actions = make_actions()
+        wiql_resp = {"workItemRelations": [
+            {"source": None, "target": {"id": 1}},
+            {"source": {"id": 1}, "target": {"id": 5}},
+            {"source": {"id": 5}, "target": {"id": 9}},
+            {"source": {"id": 1}, "target": {"id": 5}},  # listed twice: read once
+        ]}
+        rec = lambda i, p: {"id": i, "fields": {"System.WorkItemType": "Task", "System.State": "To Do",  # noqa: E731
+                                               "System.Title": "t", "System.Parent": p}, "relations": []}
+        fetch = FakeFetch(responses={WIQL_URL: wiql_resp, BATCH_URL: {"value": [rec(5, 1), rec(9, 5)]}})
+        actions.fetch = fetch
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_list("tree", "1")
+        self.assertEqual(rc, 0)
+        recs = [json.loads(ln) for ln in buf.getvalue().splitlines()]
+        self.assertEqual([(r["id"], r["parentId"]) for r in recs], [(5, 1), (9, 5)])
+        query = fetch.calls[0]["data"]["query"]
+        self.assertIn("[Source].[System.Id] IN (1)", query)
+        self.assertIn("MODE (Recursive)", query)
+        self.assertEqual(fetch.calls[1]["data"]["ids"], [5, 9])
+
+    def test_tree_with_nothing_under_prints_nothing(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch(responses={WIQL_URL: {"workItemRelations": [{"source": None, "target": {"id": 1}}]}})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_list("tree", "1")
+        self.assertEqual((rc, buf.getvalue()), (0, ""))
+
     def test_ids_without_ids_is_rejected(self):
         actions = make_actions()
         actions.fetch = FakeFetch()

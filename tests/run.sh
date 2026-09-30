@@ -463,9 +463,9 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: both dashboards number their rows relatively inside the box, following the cursor" "$out"
   fi
   if [[ "$out" == *TREE-SMOKE-OK* ]]; then
-    pass "smoke: T shows each work item's children under it"
+    pass "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them"
   else
-    fail "smoke: T shows each work item's children under it" "$out"
+    fail "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them" "$out"
   fi
   if [[ "$out" == *PRS-SMOKE-OK* ]]; then
     pass "smoke: the dashboard marks linked PRs and the item view lists them with title and status"

@@ -72,6 +72,7 @@ local DEFAULT_KEYS = {
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
     copy_link = "gy", config = "gO", help = "?", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
+    toggle_fold = "za", expand_all = "zR", collapse_all = "zM",
   },
   -- Work-item detail view.
   workitem_view = {

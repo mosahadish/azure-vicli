@@ -277,23 +277,61 @@ if not ok then return fail("the work-items dashboard never listed #3001", wis) e
 if not numbered_and_fits(wis, "the work-items dashboard") then return end
 print("ROWNUM-SMOKE-OK")
 
--- T: the tree view puts #3001's tasks (alice's, so not in my list) under it.
+-- The progress column counts #3001's tasks even with the tree off.
+ok = vim.wait(15000, function() return text(wis):find("1/3 done", 1, true) ~= nil end, 100)
+if not ok then return fail("#3001's row never showed 1/3 done", wis) end
+
+-- T: the tree view puts #3001's tasks (alice's, so not in my list) under
+-- it, and #3012's own sub-task (#3014) under that.
 vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
 feed("T")
 ok = vim.wait(15000, function()
   local t = text(wis)
-  return t:find("#3001", 1, true) ~= nil
+  return t:find("\u{25BE}#3001", 1, true) ~= nil
     and t:find("\u{251C} #3011 +%[In Progress%]") ~= nil
-    and t:find("\u{2514} #3012 +%[To Do%]") ~= nil
+    and t:find("\u{2514}\u{25BE}#3012 +%[To Do%]") ~= nil
+    and t:find("  \u{2514} #3014 +%[To Do%]") ~= nil
     and t:find("Alice Andersson", 1, true) ~= nil
 end, 100)
-if not ok then return fail("T never showed #3001's tasks under it", wis) end
+if not ok then return fail("T never showed #3001's tasks and #3012's sub-task under it", wis) end
 local t = text(wis)
-if t:find("#3001", 1, true) > t:find("#3011", 1, true) then
-  return fail("the tree listed #3001's task before #3001", wis)
+if t:find("#3001", 1, true) > t:find("#3011", 1, true) or t:find("#3012", 1, true) > t:find("#3014", 1, true) then
+  return fail("the tree listed a child before its parent", wis)
 end
 print("== work items, tree view ==")
 print(t)
+local saved = vim.fn.readfile(vim.fn.stdpath("data") .. "/azure-cli-workitems.json")
+if not table.concat(saved, ""):find('"tree":%s*true') then
+  return fail("T wasn't remembered: " .. table.concat(saved, ""))
+end
+
+-- za on #3001 folds its children away (▸) and back; zM/zR fold everything.
+local function goto_row(id)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+    if l:find("#" .. id .. " ", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) return true end
+  end
+end
+goto_row(3001)
+feed("za")
+t = text(wis)
+if not (t:find("\u{25B8}#3001", 1, true) and not t:find("#3011", 1, true)) then
+  return fail("za didn't fold #3001's children", wis)
+end
+feed("za")
+if not text(wis):find("#3014", 1, true) then return fail("za again didn't unfold #3001", wis) end
+goto_row(3014)
+feed("za")
+t = text(wis)
+if not (t:find("\u{2514}\u{25B8}#3012", 1, true) and not t:find("#3014", 1, true)) then
+  return fail("za on #3014 didn't fold its parent #3012", wis)
+end
+if not vim.api.nvim_get_current_line():find("#3012", 1, true) then
+  return fail("za on a child didn't land on its parent: " .. vim.api.nvim_get_current_line())
+end
+feed("zM")
+if text(wis):find("#3011", 1, true) then return fail("zM left children showing", wis) end
+feed("zR")
+if not text(wis):find("#3014", 1, true) then return fail("zR didn't unfold everything", wis) end
 print("TREE-SMOKE-OK")
 local wrow
 for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
@@ -313,15 +351,16 @@ end, 100)
 if not ok then return fail("gs's popup never mapped #3001's tasks\n" .. tostring(popup)) end
 print("== gs popup ==")
 print(popup)
-if not popup:find("[ ] Also set children (1 of 3)", 1, true) then
-  return fail("the children box should start unchecked with only #3012 picked\n" .. popup)
+if not (popup:find("[ ] Also set children (2 of 4)", 1, true)
+    and popup:find("      [ ] #3014 Task  To Do \u{2192} In Progress", 1, true)) then
+  return fail("the children box should start unchecked with #3012 and its sub-task #3014 picked\n" .. popup)
 end
 local pbuf = vim.api.nvim_get_current_buf()
 for i, l in ipairs(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false)) do
   if l:find("Also set children", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
 end
 feed("<Space>")
-if not float_text():find("[x] Also set children (1 of 3)", 1, true) then
+if not float_text():find("[x] Also set children (2 of 4)", 1, true) then
   return fail("<Space> didn't check the children box\n" .. float_text())
 end
 feed("<CR>")
@@ -332,8 +371,8 @@ local function wi_state(id)
 end
 local got
 ok = vim.wait(15000, function()
-  got = { wi_state("3001"), wi_state("3011"), wi_state("3012"), wi_state("3013") }
-  return got[1] == "Implemented" and got[3] == "In Progress"
+  got = { wi_state("3001"), wi_state("3011"), wi_state("3012"), wi_state("3013"), wi_state("3014") }
+  return got[1] == "Implemented" and got[3] == "In Progress" and got[5] == "In Progress"
 end, 200)
 if not ok or got[2] ~= "In Progress" or got[4] ~= "Done" then
   return fail("gs set the wrong states: " .. table.concat(got, ", "))

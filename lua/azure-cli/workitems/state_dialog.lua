@@ -93,6 +93,56 @@ local function cycler(list, i)
   return s
 end
 
+-- `records` (list records carrying parentId, everything under `root`) in
+-- tree order - each child right after its parent, depth-first by id - with
+-- `depth` set (1 = a direct child). Records not reachable from `root` are
+-- dropped.
+function M.tree_order(root, records)
+  local under = {}
+  for _, r in ipairs(records or {}) do
+    local p = tostring(r.parentId or "")
+    under[p] = under[p] or {}
+    table.insert(under[p], r)
+  end
+  local out, seen = {}, {}
+  local function walk(id, depth)
+    local kids = under[tostring(id)] or {}
+    table.sort(kids, function(a, b) return (tonumber(a.id) or 0) < (tonumber(b.id) or 0) end)
+    for _, r in ipairs(kids) do
+      if not seen[tostring(r.id)] then
+        seen[tostring(r.id)] = true
+        r.depth = depth
+        out[#out + 1] = r
+        walk(r.id, depth + 1)
+      end
+    end
+  end
+  walk(root, 1)
+  return out
+end
+
+-- Work finished under an item: (done, total) over `kids` (its direct
+-- children), where done is the Completed category and a Removed child
+-- doesn't count at all. `cats_of(type)` gives a type's state -> category
+-- map, or nil when it isn't known yet; then the usual names stand in
+-- (Done/Closed/Completed, Removed).
+local DONE_NAMES = { Done = true, Closed = true, Completed = true }
+function M.progress(kids, cats_of)
+  local done, total = 0, 0
+  for _, k in ipairs(kids or {}) do
+    local cats = cats_of and cats_of(k.type or "")
+    local cat = cats and cats[k.state or ""]
+    if cat == nil then
+      cat = (k.state == "Removed" and "Removed") or (DONE_NAMES[k.state or ""] and "Completed") or ""
+    end
+    if cat ~= "Removed" then
+      total = total + 1
+      if cat == "Completed" then done = done + 1 end
+    end
+  end
+  return done, total
+end
+
 -- How many children would be set if "also set children" were on.
 function M.selected(st)
   local n = 0
@@ -128,7 +178,8 @@ function M.lines(spec, st)
     add((st.all and "[x]" or "[ ]") .. " Also set children (" .. M.selected(st) .. " of " .. #kids .. ")",
       { kind = "all" })
     for i, k in ipairs(kids) do
-      local head = "    " .. ((st.all and k.on and k.target) and "[x]" or "[ ]")
+      local head = "    " .. string.rep("  ", (k.depth or 1) - 1)
+        .. ((st.all and k.on and k.target) and "[x]" or "[ ]")
         .. " #" .. tostring(k.id) .. " " .. (k.type or "") .. "  " .. (k.state or "")
       local tail
       if k.pending then
@@ -231,6 +282,19 @@ function M.fetch_categories(wtype, cb)
     end
     cb(cats)
   end)
+end
+
+-- A type's state -> category map when it's already cached, else nil (no
+-- fetch) - for renders that can't wait on one.
+function M.cached_categories(wtype)
+  local c = require("azure-cli.state").WI_STATES_CACHE[(wtype or "") .. "\0"]
+  if not (c and c.list) then return nil end
+  local cats = {}
+  for _, line in ipairs(c.list) do
+    local name, cat = line:match("^(.-)\t(.*)$")
+    if name then cats[name] = cat end
+  end
+  return cats
 end
 
 function M.transitions_cached(wtype, state)
@@ -445,12 +509,16 @@ function M._popup(spec, states)
     parent_cats = cats
     redraw_later()
   end)
-  require("azure-cli.workitems.detail").fetch(spec.id, function(data)
+  -- Everything under the item, grandchildren included (one recursive
+  -- query); the detail's direct children when the server won't run it.
+  local DETAIL = require("azure-cli.workitems.detail")
+  local function got_kids(list)
     vim.schedule(function()
       if closed then return end
       st.kids = {}
-      for _, c in ipairs((data and data.children) or {}) do
-        local k = { id = tostring(c.id), type = c.type or "", state = c.state or "", title = c.title or "" }
+      for _, c in ipairs(list or {}) do
+        local k = { id = tostring(c.id), type = c.type or "", state = c.state or "", title = c.title or "",
+          depth = c.depth or 1 }
         st.kids[#st.kids + 1] = k
         M.fetch_transitions(k.type, k.state, function(list)
           kid_trans[k.id] = list
@@ -463,10 +531,14 @@ function M._popup(spec, states)
           end)
         end
       end
-      if not data then notify("Couldn't load #" .. spec.id .. "'s children.", vim.log.levels.WARN) end
+      if not list then notify("Couldn't load #" .. spec.id .. "'s children.", vim.log.levels.WARN) end
       remap()
       draw()
     end)
+  end
+  DETAIL.descendants({ spec.id }, nil, function(list)
+    if list then return got_kids(M.tree_order(spec.id, list)) end
+    DETAIL.fetch(spec.id, function(data) got_kids(data and data.children or nil) end)
   end)
 
   local function close()
