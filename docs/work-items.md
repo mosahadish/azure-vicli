@@ -141,6 +141,8 @@ PR's details. Otherwise, for example a completed PR or one you're not on, it
 opens in the browser. A PR the server won't return (deleted, or no access)
 is still listed, by its id alone.
 
+Linking works from either side, each through a popup picker (`<CR>` picks, `q` closes): `gl`/`gL` here link and unlink a PR on the item, and `gl`/`gL` on the PR dashboard or in the reviewer link and unlink a work item on the PR. Either way both dashboards, and an open detail view, show the change straight away.
+
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
 detail on success), `o` opens the browser, `<BS>` returns to the list, and

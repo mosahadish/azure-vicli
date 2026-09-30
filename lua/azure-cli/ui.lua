@@ -101,6 +101,36 @@ function M.text_width(win)
   return vim.api.nvim_win_get_width(win) - ((info and info.textoff) or 0)
 end
 
+-- A popup picker, like gW's: `opts.items` ({label, ...}) one per line in
+-- a float with the cursor line highlighted; <CR> closes it and calls
+-- cb(item) with the one under the cursor, q/<Esc> just close it.
+-- opts.title, opts.action (the footer's "<CR> <action>", default "pick"),
+-- opts.center (mid-screen instead of at the cursor). "#123"/"!123" ids and
+-- "[State]" tokens are coloured.
+function M.pick_popup(opts, cb)
+  local items = opts.items or {}
+  local lines = {}
+  for i, it in ipairs(items) do lines[i] = "  " .. tostring(it.label or "") end
+  local win, buf = M.open_float(lines, {
+    title = opts.title, footer = "<CR> " .. (opts.action or "pick"), min_width = 50, center = opts.center,
+  })
+  if not win then return end
+  M.wo(win, "cursorline", true)
+  M.wo(win, "wrap", false)
+  local ns = vim.api.nvim_create_namespace("azure_cli_pick_popup")
+  for i, l in ipairs(lines) do
+    local s, e = l:find("[#!]%d+")
+    if s then vim.api.nvim_buf_add_highlight(buf, ns, "Identifier", i - 1, s - 1, e) end
+    local bs, be = l:find("%[.-%]")
+    if bs then vim.api.nvim_buf_add_highlight(buf, ns, "Special", i - 1, bs - 1, be) end
+  end
+  vim.keymap.set("n", "<CR>", function()
+    local it = items[vim.api.nvim_win_get_cursor(win)[1]]
+    if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+    if it then cb(it) end
+  end, { buffer = buf, silent = true, nowait = true })
+end
+
 -- Define highlight groups as links to existing ones, all with
 -- { default = true } so a user's colorscheme or their own :highlight always
 -- wins. `map` is { AzureCliThing = "LinkTarget", ... }. Both dashboards

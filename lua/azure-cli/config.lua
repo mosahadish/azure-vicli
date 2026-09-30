@@ -21,6 +21,7 @@ local DEFAULT_KEYS = {
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
+    link_workitem = "gl", unlink_workitem = "gL",
   },
   -- Reviewer file list.
   list = {
@@ -31,6 +32,7 @@ local DEFAULT_KEYS = {
     resize_less = "<", resize_more = ">", comment_file = "C", help = "?",
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
+    link_workitem = "gl", unlink_workitem = "gL",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
   },
   -- Reviewer diff pane.
@@ -46,6 +48,7 @@ local DEFAULT_KEYS = {
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
+    link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
   },
   -- Reviewer Overview page.
@@ -57,6 +60,7 @@ local DEFAULT_KEYS = {
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
+    link_workitem = "gl", unlink_workitem = "gL",
   },
   -- Code-navigation peek/revision buffers.
   nav = {

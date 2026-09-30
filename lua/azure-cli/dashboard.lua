@@ -172,7 +172,8 @@ local DASHBOARD_ACTIONS = {
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
   { "vote", "vote" }, { "complete", "complete / auto-complete" },
-  { "requeue_build", "re-queue build" }, { "open_workitem", "open a linked work item" },
+  { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
+  { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
@@ -1540,10 +1541,23 @@ warm_workitems = function(list)
   next_one()
 end
 
--- gW: open a work item linked to the PR under the cursor.
+-- gW: pop up the work items linked to the PR under the cursor; gl/gL
+-- link and unlink one from here (pr_workitems.lua).
 local function open_linked_workitem()
   local pr = current_pr()
-  if pr then PR_WORKITEMS.choose(pr.id, pr_env(pr)) end
+  if pr then PR_WORKITEMS.choose(pr, pr_env(pr)) end
+end
+local function link_workitem()
+  local pr = current_pr()
+  if pr then PR_WORKITEMS.link_item(pr) end
+end
+local function unlink_workitem()
+  local pr = current_pr()
+  if pr then PR_WORKITEMS.unlink_item(pr, pr_env(pr)) end
+end
+-- Other screens (a link made from the work-items side) redraw this one.
+STATE.PR_DASHBOARD_RENDER = function()
+  if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
 
 -- Set the AZVICLI_* process env the reviewer (and its provider calls) read.
@@ -1817,7 +1831,9 @@ local function jump_edge_pr(last)
 end
 KEYS.bind(buf, "dashboard", "first_pr", function() jump_edge_pr(false) end, { desc = "jump to the first PR" })
 KEYS.bind(buf, "dashboard", "last_pr", function() jump_edge_pr(true) end, { desc = "jump to the last PR" })
-KEYS.bind(buf, "dashboard", "open_workitem", open_linked_workitem, { desc = "open a work item linked to this PR" })
+KEYS.bind(buf, "dashboard", "open_workitem", open_linked_workitem, { desc = "the work items linked to this PR" })
+KEYS.bind(buf, "dashboard", "link_workitem", link_workitem, { desc = "link a work item to this PR" })
+KEYS.bind(buf, "dashboard", "unlink_workitem", unlink_workitem, { desc = "unlink a work item from this PR" })
 KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.workitems.dashboard").open()
 end, { desc = "switch to the work-items dashboard" })
