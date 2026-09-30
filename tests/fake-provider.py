@@ -900,7 +900,9 @@ class Fake:
     def wi_list_record(self, w):
         return {"id": w["id"], "type": w["type"], "state": w["state"], "title": w["title"],
                 "assignedTo": w["assignedTo"], "priority": w.get("priority"), "tags": w.get("tags", ""),
-                "parentId": w.get("parentId"), "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
+                "parentId": w.get("parentId"),
+                "childIds": [x["id"] for x in self.state["workitems"] if x.get("parentId") == w["id"]],
+                "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
                 "url": "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])}
 
     def sprint_meta(self, timeframe):
@@ -920,9 +922,19 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members"):
-            print("ERROR: selector must be current|next|sprints|items|members, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids, got '{0}'".format(select), file=sys.stderr)
             return 1
+        if select == "ids":
+            want = [x.strip() for x in item_path.split(",") if x.strip()]
+            if not want:
+                print("ERROR: 'ids' needs a comma-separated list of work item ids", file=sys.stderr)
+                return 1
+            for wid in want:
+                w = self.wi(wid)
+                if w is not None:
+                    print(json.dumps(self.wi_list_record(w), ensure_ascii=False))
+            return 0
         if select == "sprints":
             sprints = self.state["sprints"]
             ci = next(i for i, s in enumerate(sprints) if s["timeframe"] == "current") + 1

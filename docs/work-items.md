@@ -24,6 +24,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `ge` | Edit the item's title |
 | `gi` | Move the item to another sprint of the quarter |
 | `gl` | Link a pull request to the item under the cursor |
+| `T` | Tree view: each item's children indented under it |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
@@ -35,6 +36,27 @@ row immediately and are reverted with an error if the call fails, the same
 optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
 sprint's list instead.
+
+### Tree view (`T`)
+
+`T` shows each item's children indented under it, the way the Azure DevOps
+taskboard groups tasks under their story:
+
+```
+── User Stories (2) ──
+  #3001    [Active]      Throttle repeated login failures      P1   1h ago
+  ├ #3011   [In Progress] Count failed logins per account      Alice Andersson
+  ├ #3013   [Done]        Design the lockout rule              Alice Andersson
+  └ #3012   [To Do]       Tests for the lockout window         Alice Andersson
+```
+
+Children are fetched whatever their type or assignee, so a story's tasks
+show even when someone else has them; those rows show the assignee in place
+of the priority and age. An item whose parent is also in the list moves
+under that parent instead of having its own row. Every key works on a child
+row too (`gs`, `<CR>`, `ga`, ...). The filter keeps a parent when it or any
+of its children match. `T` again turns it off; the setting lasts for the
+session.
 
 ### Changing state (`gs`)
 

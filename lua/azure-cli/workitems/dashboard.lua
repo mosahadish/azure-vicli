@@ -10,6 +10,7 @@
 --   j/k    move
 --   <CR>   open the work item under the cursor (parent/children/description)
 --   gs     change the item's state (a popup; can set its children too)
+--   T      tree view: each item's children indented under it
 --   n      new work item: type, title, and parent (if the cursor is on one)
 --   ga     assign the item under the cursor
 --   gp     set the item's priority
@@ -135,6 +136,13 @@ local function item_matches(it, q)
   end
   return false
 end
+-- Tree view (T): each item with its children indented under it - in
+-- STATE like the filter, so it survives a P/W swap. Children that aren't
+-- in the list themselves (usually Tasks, often someone else's) are fetched
+-- by id while it's on, into STATE.WI_TREE_KIDS (id -> list record).
+local wi_tree = STATE.wi_tree or false
+local tree_kids = STATE.WI_TREE_KIDS
+local load_children           -- forward decl: fetches the tree's children
 local prefetch_state_meta     -- forward decl: warms state/reason caches
 local prefetch_neighbors      -- forward decl: warms adjacent sprints' items
 local loading = false         -- true while a fetch for the active tab is in flight
@@ -272,6 +280,7 @@ local function set_wi_winbar()
   local tags = {}
   if loading then tags[#tags + 1] = "[loading\u{2026}]" end
   if wi_filter ~= "" then tags[#tags + 1] = "[filter: " .. wi_filter .. "]" end
+  if wi_tree then tags[#tags + 1] = "[tree]" end
   pcall(function()
     UI.wo(win, "winbar", UI.winbar(parts, tags))
   end)
@@ -311,12 +320,43 @@ local function render()
     by_type[sec.key] = {}
     order[#order + 1] = sec
   end
+  -- Tree view: an item whose parent is listed too goes under that parent
+  -- instead of into its own section; kids_of[id] is everything under an
+  -- item (those, plus its fetched children that aren't listed).
+  local kids_of, nested = {}, {}
+  if wi_tree then
+    local listed = {}
+    for _, it in ipairs(items) do listed[tostring(it.id)] = true end
+    local function add_kid(pid, k)
+      kids_of[pid] = kids_of[pid] or {}
+      table.insert(kids_of[pid], k)
+    end
+    for _, it in ipairs(items) do
+      local id, p = tostring(it.id), it.parentId and tostring(it.parentId)
+      if p and p ~= id and listed[p] then
+        nested[id] = true
+        add_kid(p, it)
+      end
+      for _, cid in ipairs(it.childIds or {}) do
+        cid = tostring(cid)
+        if not listed[cid] and tree_kids[cid] then add_kid(id, tree_kids[cid]) end
+      end
+    end
+  end
+  -- Shown when it matches the filter or (in the tree) anything under it does.
+  local function shows(it, q, depth)
+    if q == "" or item_matches(it, q) then return true end
+    if depth > 5 then return false end
+    for _, k in ipairs(kids_of[tostring(it.id)] or {}) do
+      if shows(k, q, depth + 1) then return true end
+    end
+    return false
+  end
+
   local other = {}
-  local shown = 0
   local flc = wi_filter:lower()
   for _, it in ipairs(items) do
-    if flc == "" or item_matches(it, flc) then
-      shown = shown + 1
+    if not nested[tostring(it.id)] and shows(it, flc, 0) then
       if by_type[it.type] then
         table.insert(by_type[it.type], it)
       else
@@ -336,6 +376,28 @@ local function render()
       if ra ~= rb then return ra < rb end
       return (a.id or 0) > (b.id or 0)
     end)
+  end
+
+  -- The tree's rows under `it`, one indent per level. A child from the
+  -- list keeps its priority and age; a fetched one (usually a Task) shows
+  -- who it's assigned to instead, since that's rarely me.
+  local function emit_kids(it, depth)
+    local kids = kids_of[tostring(it.id)]
+    if not kids or depth > 5 then return end
+    sort_items(kids)
+    for i, k in ipairs(kids) do
+      local right
+      if nested[tostring(k.id)] then
+        right = (type(k.priority) == "number" and ("P" .. k.priority) or "  ") .. " " .. (k.changedHuman or "")
+      else
+        right = (k.assignedTo and k.assignedTo ~= "") and k.assignedTo or "unassigned"
+      end
+      lines[#lines + 1] = string.format("  %s%s #%-6s %-13s %s %s",
+        string.rep("  ", depth - 1), i == #kids and "\u{2514}" or "\u{251C}",
+        tostring(k.id), "[" .. (k.state or "") .. "]", fit(k.title, 58 - 2 * (depth - 1)), right)
+      row_item[#lines] = k
+      emit_kids(k, depth + 1)
+    end
   end
 
   for _, sec in ipairs(order) do
@@ -363,6 +425,7 @@ local function render()
         )
         lines[#lines + 1] = row
         row_item[#lines] = it
+        if wi_tree then emit_kids(it, 1) end
       end
     end
   end
@@ -554,6 +617,7 @@ local function load(silent, force)
     loading = false
     render()
     if prefetch_state_meta then prefetch_state_meta() end
+    load_children(false)
   elseif not silent then
     loading = true
     items = {}
@@ -598,6 +662,7 @@ local function load(silent, force)
         loading = false
         render()
         if prefetch_state_meta then prefetch_state_meta() end
+        load_children(true)
       end
     end,
   })
@@ -755,6 +820,7 @@ function STATE.WI_ITEM_CHANGED(id, fields)
   end
   patch(items)
   for _, c in pairs(WI_SPRINT_ITEMS or {}) do patch(c.items) end
+  patch({ tree_kids[id] })
   if WI_DETAIL_CACHE then WI_DETAIL_CACHE[id] = nil end
   if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
@@ -1273,6 +1339,62 @@ local function open_browser()
   notify("Opening #" .. tostring(it.id) .. " in browser…")
 end
 
+-- The tree's children: every listed item's childIds that aren't listed
+-- themselves, in one --wi-list ids call - all of them after a fresh list
+-- (their states move too), only the missing ones otherwise. A call asked
+-- for while one is running runs again after it.
+local kids_inflight, kids_again = false, nil
+load_children = function(all)
+  if not wi_tree then return end
+  if kids_inflight then
+    kids_again = kids_again or all
+    return
+  end
+  local listed, want, seen = {}, {}, {}
+  for _, it in ipairs(items) do listed[tostring(it.id)] = true end
+  for _, it in ipairs(items) do
+    for _, cid in ipairs(it.childIds or {}) do
+      cid = tostring(cid)
+      if not listed[cid] and not seen[cid] and (all or not tree_kids[cid]) then
+        seen[cid] = true
+        want[#want + 1] = cid
+      end
+    end
+  end
+  if #want == 0 then return end
+  kids_inflight = true
+  local out, err = {}, {}
+  RPC.run(provider_argv("--wi-list", "ids", table.concat(want, ",")), {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      kids_inflight = false
+      if code ~= 0 then
+        notify("Couldn't load the children: " .. SHELL.job_error("work item children", code, err),
+          vim.log.levels.WARN)
+      else
+        for _, rec in ipairs(parse_items(out)) do tree_kids[tostring(rec.id)] = rec end
+        if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
+      end
+      if kids_again ~= nil then
+        local again = kids_again
+        kids_again = nil
+        load_children(again)
+      end
+    end,
+  })
+end
+
+-- T: flip the tree view.
+local function toggle_tree()
+  wi_tree = not wi_tree
+  STATE.wi_tree = wi_tree
+  render()
+  load_children(false)
+end
+
 -- Show this dashboard's keys in a float.
 -- Ordered { action, desc } pairs for the `?` popup - real key(s) resolved
 -- through KEYS every time (see keys.lua's M.line), never hard-coded.
@@ -1280,6 +1402,7 @@ local WORKITEMS_HELP = {
   "Navigate",
   { "open", "open the item: parent, children, description" },
   { "filter", "filter by id, title, state or assignee (Esc clears)" },
+  { "tree", "tree view: each item's children under it" },
   { "prev_sprint", "previous sprint" },
   { "next_sprint", "next sprint" },
   { "goto_sprint_n", "jump to sprint n (prefix with a count)" },
@@ -1305,6 +1428,7 @@ local WORKITEMS_HELP = {
 local function show_help()
   local now = {}
   if wi_filter ~= "" then now[#now + 1] = "[filter: " .. wi_filter .. "]" end
+  if wi_tree then now[#now + 1] = "[tree]" end
   UI.open_float(KEYS.help_lines("workitems", "Work-items dashboard keys", WORKITEMS_HELP,
     { now = now, fixed = { "  j / k       move" } }))
 end
@@ -1326,6 +1450,7 @@ KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the item's 
 KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the item to another sprint" })
 KEYS.bind(buf, "workitems", "link_pr", link_pr_item, { desc = "link a pull request to the item under the cursor" })
 KEYS.bind(buf, "workitems", "unlink_pr", unlink_pr_item, { desc = "unlink a pull request from the item under the cursor" })
+KEYS.bind(buf, "workitems", "tree", toggle_tree, { desc = "tree view: each item's children under it" })
 KEYS.bind(buf, "workitems", "filter", set_wi_filter, { desc = "filter by id, title, state or assignee" })
 KEYS.bind(buf, "workitems", "browser", open_browser, { desc = "open in the browser" })
 KEYS.bind(buf, "workitems", "refresh", function() load(false, true) end, { desc = "refresh" })

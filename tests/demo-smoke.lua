@@ -216,6 +216,25 @@ ok = vim.wait(15000, function()
   return wis ~= nil and text(wis):find("#3001", 1, true) ~= nil
 end, 100)
 if not ok then return fail("the work-items dashboard never listed #3001", wis) end
+
+-- T: the tree view puts #3001's tasks (alice's, so not in my list) under it.
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+feed("T")
+ok = vim.wait(15000, function()
+  local t = text(wis)
+  return t:find("#3001", 1, true) ~= nil
+    and t:find("\u{251C} #3011 +%[In Progress%]") ~= nil
+    and t:find("\u{2514} #3012 +%[To Do%]") ~= nil
+    and t:find("Alice Andersson", 1, true) ~= nil
+end, 100)
+if not ok then return fail("T never showed #3001's tasks under it", wis) end
+local t = text(wis)
+if t:find("#3001", 1, true) > t:find("#3011", 1, true) then
+  return fail("the tree listed #3001's task before #3001", wis)
+end
+print("== work items, tree view ==")
+print(t)
+print("TREE-SMOKE-OK")
 local wrow
 for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
   if l:find("#3001", 1, true) then wrow = i break end
@@ -259,6 +278,11 @@ end, 200)
 if not ok or got[2] ~= "In Progress" or got[4] ~= "Done" then
   return fail("gs set the wrong states: " .. table.concat(got, ", "))
 end
+-- The tree picks the child's new state up without a refresh.
+ok = vim.wait(10000, function()
+  return text(wis):find("#3012 +%[In Progress%]") ~= nil
+end, 100)
+if not ok then return fail("the tree still shows #3012's old state", wis) end
 print("GS-SMOKE-OK")
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

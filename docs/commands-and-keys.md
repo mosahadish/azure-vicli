@@ -226,6 +226,7 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `state` | `gs` |
+| `tree` | `T` |
 | `unlink_pr` | `gL` |
 
 #### workitem_view

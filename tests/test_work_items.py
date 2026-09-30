@@ -440,6 +440,38 @@ class WiListTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("selector must be current|next|sprints|items", buf.getvalue())
 
+    def test_ids_lists_those_items_with_parent_and_children(self):
+        actions = make_actions()
+        batch_resp = {"value": [{
+            "id": 7,
+            "fields": {"System.WorkItemType": "Task", "System.State": "To Do", "System.Title": "t",
+                       "System.AssignedTo": {"displayName": "Alice"}, "System.ChangedDate": ""},
+            "relations": [
+                {"rel": "System.LinkTypes.Hierarchy-Reverse", "url": "x/_apis/wit/workItems/3"},
+                {"rel": "System.LinkTypes.Hierarchy-Forward", "url": "x/_apis/wit/workItems/8"},
+                {"rel": "System.LinkTypes.Hierarchy-Forward", "url": "x/_apis/wit/workItems/9"},
+                {"rel": "ArtifactLink", "url": "vstfs:///Git/PullRequestId/p%2Fr%2F1"},
+            ],
+        }]}
+        fetch = FakeFetch(responses={BATCH_URL: batch_resp})
+        actions.fetch = fetch
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_list("ids", "7, 8,x")
+        self.assertEqual(rc, 0)
+        rec = json.loads(buf.getvalue().splitlines()[0])
+        self.assertEqual((rec["id"], rec["parentId"], rec["childIds"]), (7, 3, [8, 9]))
+        # No WIQL, no assignee or sprint filter: just the ids asked for.
+        self.assertEqual([c["url"] for c in fetch.calls], [BATCH_URL])
+        self.assertEqual(fetch.calls[0]["data"], {"ids": [7, 8], "$expand": "relations"})
+
+    def test_ids_without_ids_is_rejected(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch()
+        with mock.patch("sys.stderr", StringIO()):
+            rc = actions.cmd_wi_list("ids", "")
+        self.assertEqual(rc, 1)
+
     def test_items_without_path_is_rejected(self):
         actions = make_actions()
         actions.fetch = FakeFetch()

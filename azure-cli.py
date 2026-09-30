@@ -2376,13 +2376,17 @@ def _wi_list_record(wi, collection, project):
     """One --wi-list NDJSON line - mirrors wi-list.sh's per-item `rec` dict."""
     f = wi.get("fields") or {}
     parent = f.get("System.Parent")
+    rel_parent, child_ids = None, []
+    for rel in (wi.get("relations") or []):
+        m = re.search(r"/workItems/(\d+)$", rel.get("url", ""))
+        if not m:
+            continue
+        if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse" and rel_parent is None:
+            rel_parent = int(m.group(1))
+        elif rel.get("rel") == "System.LinkTypes.Hierarchy-Forward":
+            child_ids.append(int(m.group(1)))
     if not isinstance(parent, int):
-        for rel in (wi.get("relations") or []):
-            if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse":
-                m = re.search(r"/workItems/(\d+)$", rel.get("url", ""))
-                if m:
-                    parent = int(m.group(1))
-                    break
+        parent = rel_parent
     changed = str(f.get("System.ChangedDate", ""))
     return {
         "id": wi.get("id"),
@@ -2393,6 +2397,8 @@ def _wi_list_record(wi, collection, project):
         "priority": f.get("Microsoft.VSTS.Common.Priority"),
         "tags": str(f.get("System.Tags", "") or ""),
         "parentId": parent if isinstance(parent, int) else None,
+        # The dashboard's tree view (T) fetches these with --wi-list ids.
+        "childIds": child_ids,
         "changedIso": changed,
         "changedHuman": _wi_human(changed),
         "url": "{0}/{1}/_workitems/edit/{2}".format(collection, project, wi.get("id")),
@@ -2620,13 +2626,15 @@ class WorkItemActions:
         return self._get(url)
 
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members"):
-            print("ERROR: selector must be current|next|sprints|items|members, got '{0}'".format(select),
+        if select not in ("current", "next", "sprints", "items", "members", "ids"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids, got '{0}'".format(select),
                   file=sys.stderr)
             return 1
         if select == "items" and not item_path:
             print("ERROR: 'items' needs an iteration path", file=sys.stderr)
             return 1
+        if select == "ids":
+            return self._wi_list_ids(item_path)
 
         if select == "sprints":
             return self._wi_list_sprints()
@@ -2715,6 +2723,23 @@ class WorkItemActions:
             chunk = ids[i:i + 200]
             try:
                 r = self._post(batch_url, {"ids": chunk, "$expand": "relations"})
+            except AdoHttpError as e:
+                return self._list_style_error(e, "POST")
+            for wi in ((r or {}).get("value") or []):
+                print(json.dumps(_wi_list_record(wi, self.collection, self.project), ensure_ascii=False))
+        return 0
+
+    def _wi_list_ids(self, ids_arg):
+        """--wi-list ids 1,2,3: those items as list records, whoever they're
+        assigned to and whatever their type - the tree view's children."""
+        ids = [int(x) for x in (ids_arg or "").split(",") if x.strip().isdigit()]
+        if not ids:
+            print("ERROR: 'ids' needs a comma-separated list of work item ids", file=sys.stderr)
+            return 1
+        batch_url = "{0}/_apis/wit/workitemsbatch".format(self.collection)
+        for i in range(0, len(ids), 200):
+            try:
+                r = self._post(batch_url, {"ids": ids[i:i + 200], "$expand": "relations"})
             except AdoHttpError as e:
                 return self._list_style_error(e, "POST")
             for wi in ((r or {}).get("value") or []):

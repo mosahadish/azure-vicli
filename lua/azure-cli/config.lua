@@ -71,7 +71,7 @@ local DEFAULT_KEYS = {
     refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
     copy_link = "gy", config = "gO", help = "?", quit = "q",
-    filter = "/", unlink_pr = "gL",
+    filter = "/", unlink_pr = "gL", tree = "T",
   },
   -- Work-item detail view.
   workitem_view = {

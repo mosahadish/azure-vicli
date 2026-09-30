@@ -455,6 +455,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
   fi
+  if [[ "$out" == *TREE-SMOKE-OK* ]]; then
+    pass "smoke: T shows each work item's children under it"
+  else
+    fail "smoke: T shows each work item's children under it" "$out"
+  fi
   if [[ "$out" == *GS-SMOKE-OK* ]]; then
     pass "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones"
   else
