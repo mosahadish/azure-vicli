@@ -220,6 +220,7 @@ paste the output here after changing a default.
 | `new` | `n` |
 | `next_sprint` | `]` / `<Tab>` |
 | `open` | `<CR>` |
+| `open_pr` | `gR` |
 | `pr_list` | `P` |
 | `prev_sprint` | `[` / `<S-Tab>` |
 | `priority` | `gp` |
@@ -243,6 +244,7 @@ paste the output here after changing a default.
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
 | `open` | `<CR>` |
+| `open_pr` | `gR` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |

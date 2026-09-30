@@ -21,7 +21,6 @@
 local M = {}
 
 M.META_TTL = 600    -- workflow metadata rarely changes
-M.DETAIL_TTL = 30   -- same freshness the detail prefetch uses
 
 M.DEFAULT_REASON = "(default reason)"
 M.OTHER_REASON = "(other\u{2026} type a reason)"
@@ -249,32 +248,6 @@ function M.prewarm(wtype, state)
   M.fetch_categories(wtype, function() end)
 end
 
--- cb(data) with an item's --wi-detail JSON (nil on failure), from the
--- detail cache the dashboard's prefetch and the view share when fresh.
-local function fetch_detail(id, cb)
-  local STATE = require("azure-cli.state")
-  local c = STATE.WI_DETAIL_CACHE[id]
-  local function decode(body)
-    local ok, data = pcall(vim.json.decode, body)
-    return ok and type(data) == "table" and data or nil
-  end
-  if c and (os.time() - c.ts) < M.DETAIL_TTL then
-    local data = decode(c.body)
-    if data then return cb(data) end
-  end
-  local out = {}
-  require("azure-cli.rpc").run(require("azure-cli.config").provider_argv("--wi-detail", id), {
-    stdout_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      if code ~= 0 then return cb(nil) end
-      local body = table.concat(out, "\n")
-      STATE.WI_DETAIL_CACHE[id] = { body = body, ts = os.time() }
-      cb(decode(body))
-    end,
-  })
-end
-
 -- Whatever shows `id` picks up its new state: the dashboard's record and
 -- any open detail tab (which also drops the stale detail cache entry).
 local function refresh(id)
@@ -472,7 +445,7 @@ function M._popup(spec, states)
     parent_cats = cats
     redraw_later()
   end)
-  fetch_detail(spec.id, function(data)
+  require("azure-cli.workitems.detail").fetch(spec.id, function(data)
     vim.schedule(function()
       if closed then return end
       st.kids = {}

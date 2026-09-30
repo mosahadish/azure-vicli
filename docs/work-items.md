@@ -25,6 +25,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gi` | Move the item to another sprint of the quarter |
 | `gl` | Link a pull request to the item under the cursor |
 | `T` | Tree view: each item's children indented under it |
+| `gR` | Open a pull request linked to the item (a picker when there are several) |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
@@ -96,11 +97,32 @@ checks it. `<Space>` on a child while the box is off picks just that child.
 each with its type's default reason. A child that fails is reported on its
 own; the item's change stands. Only direct children are included.
 
+### Linked pull requests
+
+A row with linked pull requests shows them after its priority: `!101`, or
+`!101 +2` when there are more. The detail view lists each one under **Pull
+Requests** with its status (active, draft, completed, abandoned), title,
+repository, branches and author:
+
+```
+Pull Requests (1)
+─────────────────
+  !101    active     Throttle failed logins
+           widgets  feature/login-throttle → main  ·  Alice Andersson
+```
+
+`gR` opens a linked PR, from the list or the detail view (`<CR>` on one of
+those lines in the detail view does the same). It opens in the reviewer when
+the PR dashboard's list has that PR, which is where the reviewer gets the
+PR's details. Otherwise, for example a completed PR or one you're not on, it
+opens in the browser. A PR the server won't return (deleted, or no access)
+is still listed, by its id alone.
+
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
 detail on success), `o` opens the browser, `<BS>` returns to the list, and
-`?` shows its keys. It also shows the item's discussion and any linked pull
-requests: `gc` posts a comment (shown at once, tagged "(sending…)" until the
+`?` shows its keys. It also shows the item's discussion and linked pull
+requests (above): `gc` posts a comment (shown at once, tagged "(sending…)" until the
 server confirms), `gl` links a pull request by id - resolving its org,
 project and repository from the PR dashboard's cache when it's known there,
 otherwise prompting for the repository name - and `gL` unlinks one, picked

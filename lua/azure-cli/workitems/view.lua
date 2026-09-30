@@ -7,7 +7,8 @@
 -- are navigable with <CR>.
 --
 -- Keys
---   <CR>   on a parent/child line: open that work item here
+--   <CR>   on a parent/child line: open that work item here; on a PR: open it
+--   gR     open a linked pull request (in the reviewer, else the browser)
 --   gs     change this item's state (a popup; can set its children too)
 --   ga     assign this work item
 --   gp     set this work item's priority
@@ -29,6 +30,7 @@ local PROMPT = require("azure-cli.prompt")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
 local STATE_DIALOG = require("azure-cli.workitems.state_dialog")
+local LINKED_PRS = require("azure-cli.workitems.linked_prs")
 local UI = require("azure-cli.ui")
 -- Shared housekeeping helpers - see shell.lua.
 local SHELL = require("azure-cli.shell")
@@ -78,6 +80,8 @@ UI.link_hl({
   AzureCliWiRemoved     = "ErrorMsg",
   AzureCliWiViewTitle   = "Title",
   AzureCliWiViewLabel   = "Special",
+  AzureCliWiPr          = "Constant",
+  AzureCliWiOther       = "Comment",
 })
 
 -- Built from the sprint list's "states" field (work_items.states:,
@@ -89,11 +93,17 @@ local wi_built = STATES.build(STATE.WI_SPRINTS_CACHE and STATE.WI_SPRINTS_CACHE.
 local KNOWN_LABEL = {
   Parent = true, Children = true, Assigned = true, Priority = true,
   Created = true, Changed = true, Reason = true, Area = true,
-  Iteration = true, Tags = true, URL = true, PRs = true,
+  Iteration = true, Tags = true, URL = true,
 }
 local ns = vim.api.nvim_create_namespace("azure_cli_workitem")
+-- A linked PR's status word, coloured like the work-item states it echoes.
+local PR_STATUS_HL = {
+  active = "AzureCliWiActive", draft = "AzureCliWiNew",
+  completed = "AzureCliWiClosed", abandoned = "AzureCliWiRemoved",
+}
 
 local row_link = {}  -- buffer line (1-based) -> work item id (parent/child rows)
+local row_pr = {}    -- buffer line (1-based) -> linked PR (Pull Requests rows)
 
 local notify = SHELL.notify
 
@@ -129,6 +139,7 @@ local function render(data)
   local it = data.item or {}
   local lines = {}
   row_link = {}
+  row_pr = {}
 
   lines[#lines + 1] = string.format("#%s  %s  [%s]",
     tostring(it.id or "?"), it.type or "", it.state or "")
@@ -171,9 +182,16 @@ local function render(data)
   lines[#lines + 1] = "URL:       " .. (it.url or "")
   local prs = it.pullRequests or {}
   if #prs > 0 then
-    local pr_ids = {}
-    for _, p in ipairs(prs) do pr_ids[#pr_ids + 1] = "!" .. tostring(p.id) end
-    lines[#lines + 1] = "PRs:" .. string.rep(" ", 11 - 4) .. table.concat(pr_ids, ", ")
+    local pr_title = "Pull Requests (" .. #prs .. ")"
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = pr_title
+    lines[#lines + 1] = string.rep("─", #pr_title)
+    for _, p in ipairs(prs) do
+      for _, l in ipairs(LINKED_PRS.lines(p)) do
+        lines[#lines + 1] = l
+        row_pr[#lines] = p
+      end
+    end
   end
 
   add_block(lines, "Description", it.description, true)
@@ -228,6 +246,12 @@ local function render(data)
       if s then add("AzureCliWiId", lnum, s - 1, e) end
       local bs, be, state = line:find("%[(.-)%]")
       if bs and wi_built.hl[state] then add(wi_built.hl[state], lnum, bs - 1, be) end
+      if row_pr[i] then
+        local ps, pe = line:find("^  !%d+")
+        if ps then add("AzureCliWiPr", lnum, 2, pe) end
+        local ss, se, st = line:find("^  !%d+%s+(%a+)")
+        if ss then add(PR_STATUS_HL[st] or "AzureCliWiOther", lnum, se - #st, se) end
+      end
     end
   end
 
@@ -304,10 +328,22 @@ local function load(id, force)
   })
 end
 
+-- <CR>: a parent/child line opens that item here; a Pull Requests line
+-- opens that PR (in the reviewer, or the browser - see linked_prs.lua).
 local function open_linked()
   local line = vim.api.nvim_win_get_cursor(0)[1]
   local id = row_link[line]
-  if id then load(id) end
+  if id then return load(id) end
+  local pr = row_pr[line]
+  if pr then LINKED_PRS.open(pr, ID) end
+end
+
+-- gR: open a linked PR - the one under the cursor, else pick one.
+local function open_linked_pr()
+  if ID == "" then return end
+  local pr = row_pr[vim.api.nvim_win_get_cursor(0)[1]]
+  if pr then return LINKED_PRS.open(pr, ID) end
+  LINKED_PRS.choose(current_item.pullRequests, ID)
 end
 
 -- gs: the state popup (workitems/state_dialog.lua, shared with the
@@ -588,7 +624,7 @@ end
 -- through KEYS every time (see keys.lua's M.line), never hard-coded.
 local WORKITEM_VIEW_HELP = {
   "Navigate",
-  { "open", "on a parent/child line: open that work item here" },
+  { "open", "on a parent/child line: open that work item here; on a PR: open the PR" },
   "This item",
   { "state", "change this item's state (a popup; can set its children too)" },
   { "assign", "assign this work item" },
@@ -598,6 +634,7 @@ local WORKITEM_VIEW_HELP = {
   { "comment", "add a discussion comment" },
   { "link_pr", "link a pull request" },
   { "unlink_pr", "unlink a pull request" },
+  { "open_pr", "open a linked pull request (reviewer, or browser if it isn't in your PR list)" },
   { "browser", "open this work item in the browser" },
   { "copy_link", "copy this work item's link" },
   "Session",
@@ -630,6 +667,7 @@ KEYS.bind(buf, "workitem_view", "move_sprint", move_sprint_item, { desc = "move 
 KEYS.bind(buf, "workitem_view", "comment", add_comment, { desc = "add a discussion comment" })
 KEYS.bind(buf, "workitem_view", "link_pr", link_pr, { desc = "link a pull request" })
 KEYS.bind(buf, "workitem_view", "unlink_pr", unlink_pr, { desc = "unlink a pull request" })
+KEYS.bind(buf, "workitem_view", "open_pr", open_linked_pr, { desc = "open a linked pull request" })
 KEYS.bind(buf, "workitem_view", "browser", open_browser, { desc = "open this work item in the browser" })
 KEYS.bind(buf, "workitem_view", "copy_link", yank_link, { desc = "copy this work item's link" })
 KEYS.bind(buf, "workitem_view", "refresh", function() if ID ~= "" then load(ID, true) end end, { desc = "refresh" })

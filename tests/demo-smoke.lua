@@ -283,6 +283,46 @@ ok = vim.wait(10000, function()
   return text(wis):find("#3012 +%[In Progress%]") ~= nil
 end, 100)
 if not ok then return fail("the tree still shows #3012's old state", wis) end
+
+-- Linked PRs: #3001's row carries !101, and its detail view lists the PR
+-- with its title, status and branches.
+local row3001
+for _, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+  if l:find("#3001 ", 1, true) then row3001 = l break end
+end
+if not (row3001 and row3001:find("!101", 1, true)) then
+  return fail("#3001's row doesn't show its linked PR: " .. tostring(row3001), wis)
+end
+for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+  if l:find("#3001 ", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+end
+feed("<CR>")
+local view
+ok = vim.wait(15000, function()
+  view = find_buf("azurecli-workitem")
+  return view ~= nil and text(view):find("Pull Requests (1)", 1, true) ~= nil
+end, 100)
+if not ok then return fail("#3001's detail view never listed its pull requests", view) end
+local vt = text(view)
+if not (vt:find("  !101    active     Throttle failed logins", 1, true)
+    and vt:find("widgets  feature/login-throttle \u{2192} main  \u{00B7}  Alice Andersson", 1, true)) then
+  return fail("the detail view's PR block is wrong", view)
+end
+print("== detail view, Pull Requests ==")
+print(vt:match("Pull Requests.-\n\n") or vt)
+-- gR from the detail view opens !101 in the reviewer (it's in the PR list).
+local before = vim.api.nvim_get_current_tabpage()
+feed("gR")
+ok = vim.wait(15000, function()
+  if vim.api.nvim_get_current_tabpage() == before then return false end
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.bo[b].filetype == "azurecli-files" and text(b):find("throttle.py", 1, true) then return true end
+  end
+  return false
+end, 100)
+if not ok then return fail("gR didn't open !101 in the reviewer (current ft: " .. vim.bo.filetype .. ")") end
+print("PRS-SMOKE-OK")
 print("GS-SMOKE-OK")
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

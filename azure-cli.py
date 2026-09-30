@@ -2397,6 +2397,7 @@ def _wi_list_record(wi, collection, project):
         "priority": f.get("Microsoft.VSTS.Common.Priority"),
         "tags": str(f.get("System.Tags", "") or ""),
         "parentId": parent if isinstance(parent, int) else None,
+        "pullRequests": _wi_pr_ids_from_relations(wi.get("relations")),
         # The dashboard's tree view (T) fetches these with --wi-list ids.
         "childIds": child_ids,
         "changedIso": changed,
@@ -2423,6 +2424,12 @@ def _wi_pr_ids_from_relations(relations):
     segment after the final %2F/%2f or plain "/" is the PR id) - mirrors
     wi-detail.sh's pr_ids_from_relations() exactly.
     """
+    return [{"id": pid} for _, _, pid in _wi_pr_refs_from_relations(relations)]
+
+
+def _wi_pr_refs_from_relations(relations):
+    """(projectGuid, repoGuid, prId) per linked pull request; either guid is
+    "" when the artifact URL doesn't carry it."""
     out = []
     for rel in (relations or []):
         if rel.get("rel") != "ArtifactLink":
@@ -2431,8 +2438,33 @@ def _wi_pr_ids_from_relations(relations):
         if not url.startswith("vstfs:///Git/PullRequestId/"):
             continue
         m = re.search(r"(?:%2[Ff]|/)([0-9]+)$", url)
-        if m:
-            out.append({"id": int(m.group(1))})
+        if not m:
+            continue
+        parts = re.split(r"%2[Ff]|/", url[len("vstfs:///Git/PullRequestId/"):])
+        proj, repo = (parts[0], parts[1]) if len(parts) == 3 else ("", "")
+        out.append((proj, repo, int(m.group(1))))
+    return out
+
+
+def _wi_pr_summary(pid, pr, collection):
+    """A linked PR for --wi-detail from its GET pullrequests/{id} response:
+    enough for the detail view's Pull Requests block and to open it."""
+    repo = pr.get("repository") or {}
+    proj = (repo.get("project") or {}).get("name", "")
+    strip = lambda ref: re.sub(r"^refs/heads/", "", ref or "")  # noqa: E731
+    out = {
+        "id": pid,
+        "title": re.sub(r"\s+", " ", str(pr.get("title", "")).strip()),
+        "status": str(pr.get("status", "")),
+        "isDraft": bool(pr.get("isDraft")),
+        "repo": repo.get("name", ""),
+        "source": strip(pr.get("sourceRefName")),
+        "target": strip(pr.get("targetRefName")),
+        "author": _wi_assigned_str(pr.get("createdBy", "")),
+    }
+    if proj and out["repo"]:
+        out["url"] = "{0}/{1}/_git/{2}/pullrequest/{3}".format(
+            collection, urllib.parse.quote(proj), urllib.parse.quote(out["repo"]), pid)
     return out
 
 
@@ -2875,7 +2907,7 @@ class WorkItemActions:
             "acceptanceCriteria": html_to_text(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")),
             "reproSteps": html_to_text(f.get("Microsoft.VSTS.TCM.ReproSteps", "")),
             "url": "{0}/{1}/_workitems/edit/{2}".format(self.collection, self.project, full.get("id")),
-            "pullRequests": _wi_pr_ids_from_relations(full.get("relations")),
+            "pullRequests": self._wi_linked_prs(full.get("relations")),
         }
 
         try:
@@ -2892,6 +2924,27 @@ class WorkItemActions:
         }
         print(json.dumps(out, ensure_ascii=False))
         return 0
+
+    def _wi_linked_prs(self, relations):
+        """The item's linked PRs with their title/status/branches, one GET
+        each on the repo route (api-version 6.0, like every PR call here).
+        A PR that can't be read - deleted, no access, an older server - is
+        still listed, by id alone."""
+        out = []
+        for proj, repo, pid in _wi_pr_refs_from_relations(relations):
+            if not (proj and repo):
+                out.append({"id": pid})
+                continue
+            url = "{0}/{1}/_apis/git/repositories/{2}/pullrequests/{3}".format(self.collection, proj, repo, pid)
+            try:
+                pr = self._get(url, api_version="6.0")
+            except (AdoHttpError, AdoTransportError):
+                pr = None
+            if isinstance(pr, dict) and pr.get("title") is not None:
+                out.append(_wi_pr_summary(pid, pr, self.collection))
+            else:
+                out.append({"id": pid})
+        return out
 
     def _fetch_comments(self, wid):
         """GET .../workItems/{id}/comments, oldest first. Older on-prem TFS

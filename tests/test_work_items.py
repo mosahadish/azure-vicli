@@ -461,6 +461,7 @@ class WiListTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         rec = json.loads(buf.getvalue().splitlines()[0])
         self.assertEqual((rec["id"], rec["parentId"], rec["childIds"]), (7, 3, [8, 9]))
+        self.assertEqual(rec["pullRequests"], [{"id": 1}])
         # No WIQL, no assignee or sprint filter: just the ids asked for.
         self.assertEqual([c["url"] for c in fetch.calls], [BATCH_URL])
         self.assertEqual(fetch.calls[0]["data"], {"ids": [7, 8], "$expand": "relations"})
@@ -781,6 +782,36 @@ class WiDetailTests(unittest.TestCase):
 
         batch_call = next(c for c in fetch.calls if c["url"] == BATCH_URL)
         self.assertEqual(sorted(batch_call["data"]["ids"]), [10, 20])
+
+    def test_linked_prs_carry_title_status_and_branches(self):
+        actions = make_actions()
+        item_url = "https://dev.azure.com/example-org/_apis/wit/workitems/8?$expand=all"
+        pr_url = "https://dev.azure.com/example-org/pg/_apis/git/repositories/rg/pullrequests/31"
+        gone_url = "https://dev.azure.com/example-org/pg/_apis/git/repositories/rg/pullrequests/32"
+        full = {"id": 8, "fields": {"System.WorkItemType": "Bug", "System.State": "New", "System.Title": "t"},
+                "relations": [
+                    {"rel": "ArtifactLink", "url": "vstfs:///Git/PullRequestId/pg%2Frg%2F31"},
+                    {"rel": "ArtifactLink", "url": "vstfs:///Git/PullRequestId/pg%2Frg%2F32"},
+                ]}
+        pr = {"pullRequestId": 31, "title": "Fix  it", "status": "completed", "isDraft": False,
+              "sourceRefName": "refs/heads/fix/x", "targetRefName": "refs/heads/main",
+              "createdBy": {"displayName": "Alice"},
+              "repository": {"name": "widgets", "project": {"name": "Example Project"}}}
+        fetch = FakeFetch(responses={item_url: full, pr_url: pr},
+                          raise_for={gone_url: ac.AdoHttpError(404, gone_url, b"gone")})
+        actions.fetch = fetch
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_detail("8")
+        self.assertEqual(rc, 0)
+        prs = json.loads(buf.getvalue().strip())["item"]["pullRequests"]
+        self.assertEqual(prs[0], {
+            "id": 31, "title": "Fix it", "status": "completed", "isDraft": False, "repo": "widgets",
+            "source": "fix/x", "target": "main", "author": "Alice",
+            "url": "https://dev.azure.com/example-org/Example%20Project/_git/widgets/pullrequest/31"})
+        # A PR that can't be read stays listed by id.
+        self.assertEqual(prs[1], {"id": 32})
+        self.assertEqual(next(c for c in fetch.calls if c["url"] == pr_url)["api_version"], "6.0")
 
     def test_comments_404_degrades_to_empty_list(self):
         actions = make_actions()

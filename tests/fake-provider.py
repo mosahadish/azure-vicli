@@ -897,10 +897,19 @@ class Fake:
     def wi(self, wid):
         return next((w for w in self.state["workitems"] if str(w["id"]) == str(wid)), None)
 
+    def linked_pr(self, pid):
+        pr = next((p for p in self.state["prs"] if str(p["id"]) == str(pid)), None)
+        if pr is None:
+            return {"id": pid}
+        return {"id": pr["id"], "title": pr["title"], "isDraft": pr["isDraft"], "repo": pr["repo"],
+                "status": "completed" if pr.get("completed") else "active",
+                "source": pr["source"], "target": pr["target"], "author": PEOPLE[pr["author"]]["displayName"],
+                "url": "{0}/{1}/_git/{2}/pullrequest/{3}".format(ORG, PROJECT, pr["repo"], pr["id"])}
+
     def wi_list_record(self, w):
         return {"id": w["id"], "type": w["type"], "state": w["state"], "title": w["title"],
                 "assignedTo": w["assignedTo"], "priority": w.get("priority"), "tags": w.get("tags", ""),
-                "parentId": w.get("parentId"),
+                "parentId": w.get("parentId"), "pullRequests": [{"id": p} for p in w.get("prs", [])],
                 "childIds": [x["id"] for x in self.state["workitems"] if x.get("parentId") == w["id"]],
                 "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
                 "url": "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])}
@@ -976,7 +985,7 @@ class Fake:
                                           "changedDate", "priority", "areaPath", "iterationPath", "tags", "reason",
                                           "description", "acceptanceCriteria", "reproSteps")}
         item["url"] = "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])
-        item["pullRequests"] = [{"id": p} for p in w.get("prs", [])]
+        item["pullRequests"] = [self.linked_pr(p) for p in w.get("prs", [])]
         parent = self.wi(w["parentId"]) if w.get("parentId") else None
         children = [x for x in self.state["workitems"] if x.get("parentId") == w["id"]]
         print(json.dumps({"item": item, "parent": summary(parent) if parent else None,

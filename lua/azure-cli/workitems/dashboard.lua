@@ -17,6 +17,7 @@
 --   ge     edit the item's title
 --   gi     move the item to another sprint of the quarter
 --   gl     link a pull request to the item under the cursor
+--   gR     open a linked pull request (in the reviewer, else the browser)
 --   [ ]    jump to the previous / next sprint in the quarter (also <S-Tab>/<Tab>)
 --   {n}gt  jump to sprint n (1-based, like vim's tab gt); gt with no count = next
 --   click  click a tab in the tab bar to jump straight to that sprint
@@ -34,6 +35,7 @@ local RPC = require("azure-cli.rpc")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
 local STATE_DIALOG = require("azure-cli.workitems.state_dialog")
+local LINKED_PRS = require("azure-cli.workitems.linked_prs")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 -- Shared housekeeping helpers - see shell.lua; the PR dashboard, the
@@ -110,6 +112,7 @@ UI.link_hl({
   AzureCliWiTabInactive = "TabLine",
   AzureCliWiDate        = "Comment",
   AzureCliWiBorder      = "FloatBorder",
+  AzureCliWiPr          = "Constant",
 })
 
 local ns = vim.api.nvim_create_namespace("azure_cli_workitems")
@@ -378,6 +381,15 @@ local function render()
     end)
   end
 
+  -- The linked-PR column ("!101", "!101 +2"): as wide as its widest
+  -- marker, and absent when no listed item has a PR.
+  local pr_w = 0
+  for _, it in ipairs(items) do pr_w = math.max(pr_w, #LINKED_PRS.marker(it.pullRequests)) end
+  local function pr_col(it)
+    if pr_w == 0 then return "" end
+    return string.format("%-" .. pr_w .. "s ", LINKED_PRS.marker(it.pullRequests))
+  end
+
   -- The tree's rows under `it`, one indent per level. A child from the
   -- list keeps its priority and age; a fetched one (usually a Task) shows
   -- who it's assigned to instead, since that's rarely me.
@@ -388,9 +400,12 @@ local function render()
     for i, k in ipairs(kids) do
       local right
       if nested[tostring(k.id)] then
-        right = (type(k.priority) == "number" and ("P" .. k.priority) or "  ") .. " " .. (k.changedHuman or "")
+        right = (type(k.priority) == "number" and ("P" .. k.priority) or "  ") .. " " .. pr_col(k)
+          .. (k.changedHuman or "")
       else
-        right = (k.assignedTo and k.assignedTo ~= "") and k.assignedTo or "unassigned"
+        local pm = LINKED_PRS.marker(k.pullRequests)
+        right = (pm ~= "" and (pm .. "  ") or "")
+          .. ((k.assignedTo and k.assignedTo ~= "") and k.assignedTo or "unassigned")
       end
       lines[#lines + 1] = string.format("  %s%s #%-6s %-13s %s %s",
         string.rep("  ", depth - 1), i == #kids and "\u{2514}" or "\u{251C}",
@@ -416,11 +431,12 @@ local function render()
         prev_state = it.state
         local pri = type(it.priority) == "number" and ("P" .. it.priority) or "  "
         local row = string.format(
-          "  #%-7s %-13s %s %-4s %s",
+          "  #%-7s %-13s %s %-4s %s%s",
           tostring(it.id),
           "[" .. (it.state or "") .. "]",
           fit(it.title, 60),
           pri,
+          pr_col(it),
           it.changedHuman or ""
         )
         lines[#lines + 1] = row
@@ -536,6 +552,8 @@ local function render()
       if bs then
         vim.api.nvim_buf_add_highlight(buf, ns, wi_built.hl[state] or "AzureCliWiOther", lnum, bs - 1, be)
       end
+      local ps, pe = line:find("!%d+[ +%d]*", be or 1)
+      if ps then vim.api.nvim_buf_add_highlight(buf, ns, "AzureCliWiPr", lnum, ps - 1, pe) end
     end
   end
 
@@ -1387,6 +1405,12 @@ load_children = function(all)
   })
 end
 
+-- gR: open a pull request linked to the item under the cursor.
+local function open_linked_pr()
+  local it = current_item()
+  if it then LINKED_PRS.choose(it.pullRequests, it.id) end
+end
+
 -- T: flip the tree view.
 local function toggle_tree()
   wi_tree = not wi_tree
@@ -1414,6 +1438,7 @@ local WORKITEMS_HELP = {
   { "edit_title", "edit the item's title" },
   { "move_sprint", "move the item to another sprint of the quarter" },
   { "link_pr", "link a pull request to the item under the cursor" },
+  { "open_pr", "open a linked pull request (reviewer, or browser if it isn't in your PR list)" },
   { "unlink_pr", "unlink a pull request from the item under the cursor" },
   { "copy_link", "copy the item's link" },
   { "browser", "open in the browser" },
@@ -1450,6 +1475,7 @@ KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the item's 
 KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the item to another sprint" })
 KEYS.bind(buf, "workitems", "link_pr", link_pr_item, { desc = "link a pull request to the item under the cursor" })
 KEYS.bind(buf, "workitems", "unlink_pr", unlink_pr_item, { desc = "unlink a pull request from the item under the cursor" })
+KEYS.bind(buf, "workitems", "open_pr", open_linked_pr, { desc = "open a linked pull request" })
 KEYS.bind(buf, "workitems", "tree", toggle_tree, { desc = "tree view: each item's children under it" })
 KEYS.bind(buf, "workitems", "filter", set_wi_filter, { desc = "filter by id, title, state or assignee" })
 KEYS.bind(buf, "workitems", "browser", open_browser, { desc = "open in the browser" })

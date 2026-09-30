@@ -71,13 +71,13 @@ local DEFAULT_KEYS = {
     refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
     copy_link = "gy", config = "gO", help = "?", quit = "q",
-    filter = "/", unlink_pr = "gL", tree = "T",
+    filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
   },
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
     edit_title = "ge", move_sprint = "gi", comment = "gc", link_pr = "gl",
-    unlink_pr = "gL", browser = "o", copy_link = "gy", refresh = "r",
+    unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?",
   },
 }
