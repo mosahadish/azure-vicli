@@ -23,6 +23,10 @@ local function fail(why, buf)
   vim.cmd("qa!")
 end
 
+local function feed(keys)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+end
+
 vim.cmd("AzureCli dashboard")
 local dash = find_buf("azurecli-dashboard")
 if not dash then return fail("no dashboard buffer") end
@@ -35,13 +39,50 @@ if not ok then return fail("the dashboard never listed the fake PRs #101 and #20
 print("== dashboard ==")
 print(text(dash))
 
--- Relative line numbers (5j/5k), with the box centred inside what the
--- number gutter leaves - no row wider than the text area.
+-- Relative row numbers inside the box (5j/5k): the cursor row shows its
+-- own line number, the row below it "1", and they follow the cursor.
+local function number_at(b, lnum0)
+  local ns = vim.api.nvim_get_namespaces()["azure_cli_row_numbers"]
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, ns or -1, { lnum0, 0 }, { lnum0, -1 }, { details = true })) do
+    local vt = m[4].virt_text
+    if vt and vt[1] then return vim.trim(vt[1][1]), m[3] end
+  end
+  return nil
+end
 local function numbered_and_fits(b, what)
   local w = vim.fn.bufwinid(b)
-  if not (vim.wo[w].number and vim.wo[w].relativenumber) then
-    return fail(what .. " has no relative line numbers")
+  vim.api.nvim_set_current_win(w)
+  if vim.wo[w].number or vim.wo[w].relativenumber then
+    return fail(what .. " still shows Neovim's own number column")
   end
+  local function check_at_cursor()
+    local cur, here, col, below
+    -- CursorMoved (the repaint) fires from the event loop, so let it run.
+    vim.wait(2000, function()
+      cur = vim.api.nvim_win_get_cursor(w)[1]
+      here, col = number_at(b, cur - 1)
+      below = number_at(b, cur)
+      return here == tostring(cur) and below == "1"
+    end, 20)
+    local line = vim.api.nvim_buf_get_lines(b, cur - 1, cur, false)[1]
+    if here ~= tostring(cur) or below ~= "1" then
+      return fail(what .. ": cursor row " .. cur .. " numbered " .. tostring(here) .. ", next " .. tostring(below))
+    end
+    -- The number sits just inside the left border, in blank reserved cells.
+    if not line:sub(1, col):find("\u{2502} $") then
+      return fail(what .. ": the number isn't just inside the border: " .. line)
+    end
+    return true
+  end
+  if not check_at_cursor() then return end
+  -- A headless nvim never fires CursorMoved for keys fed from a script
+  -- (it's raised by the main loop, which this script is running inside),
+  -- so after moving, raise it the way an interactive session would.
+  feed("j")
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = b })
+  if not check_at_cursor() then return end
+  feed("k")
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = b })
   local room = require("azure-cli.ui").text_width(w)
   for _, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
     if vim.fn.strdisplaywidth(l) > room then
@@ -69,9 +110,6 @@ print(text(files))
 -- reach through ctx. PR #101 adds src/throttle.py's is_locked() and calls
 -- it from src/auth.py, so `gd` on that call has a real definition to find
 -- in another file, through a real `git grep` over the fake clone.
-local function feed(keys)
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
-end
 
 -- Every open floating window's text, joined - the peek view is two floats
 -- side by side (the hit list, and the file at that revision previewed next

@@ -469,12 +469,17 @@ local function render()
     content_width = math.max(content_width, vim.fn.strdisplaywidth(l))
   end
   content_width = math.max(content_width, 1)
-  local box_width = content_width + 4
   local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local win_height = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_height(win)) or vim.o.lines
+  -- The row-number column just inside the left border (UI.paint_numbers
+  -- fills it in), sized for the last line the buffer can reach; 0 = off.
+  local num_w = UI.number_width(math.max(win_height, #lines + 2))
+  local box_width = content_width + 4 + num_w
   local pad_h = math.max(0, math.floor((win_width - box_width) / 2))
   local hprefix = string.rep(" ", pad_h)
-  local col_offset = pad_h + #"│ "  -- hprefix + "│ " (│ is a 3-byte UTF-8 char, not 1)
+  local num_col = pad_h + #"│ "  -- hprefix + "│ " (│ is a 3-byte UTF-8 char, not 1)
+  local col_offset = num_col + num_w
+  local gutter = string.rep(" ", num_w)
 
   local boxed = {}
   boxed[#boxed + 1] = hprefix .. "╭" .. string.rep("─", box_width - 2) .. "╮"
@@ -486,10 +491,10 @@ local function render()
       -- the active tab lines up visually with the rest of the (usually wider)
       -- table instead of sitting flush against the left border.
       tab_extra_pad = math.max(0, math.floor((content_width - w) / 2))
-      boxed[#boxed + 1] = hprefix .. "│ " .. string.rep(" ", tab_extra_pad) .. l
+      boxed[#boxed + 1] = hprefix .. "│ " .. gutter .. string.rep(" ", tab_extra_pad) .. l
         .. string.rep(" ", content_width - w - tab_extra_pad) .. " │"
     else
-      boxed[#boxed + 1] = hprefix .. "│ " .. l .. string.rep(" ", content_width - w) .. " │"
+      boxed[#boxed + 1] = hprefix .. "│ " .. gutter .. l .. string.rep(" ", content_width - w) .. " │"
     end
   end
   boxed[#boxed + 1] = hprefix .. "╰" .. string.rep("─", box_width - 2) .. "╯"
@@ -517,10 +522,14 @@ local function render()
   end
 
   lines = final
+  local function paint_numbers()
+    UI.paint_numbers(buf, top_line_1based, bottom_line_1based - 2, num_col, num_w)
+  end
 
   -- Change-aware: skip the buffer write + re-highlight when nothing changed, so
   -- periodic/auto refresh never flickers or moves the cursor.
   if vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), lines) then
+    paint_numbers()
     return
   end
 
@@ -579,6 +588,7 @@ local function render()
     local col = target and col_offset or (col_offset + tab_extra_pad)
     pcall(vim.api.nvim_win_set_cursor, win, { target or tab_line_1based, col })
   end
+  paint_numbers()
 end
 
 local function current_item()
@@ -1464,7 +1474,6 @@ vim.bo[buf].filetype = "azurecli-workitems"
 vim.api.nvim_set_current_buf(buf)
 win = vim.api.nvim_get_current_win()
 UI.plain_window(win, { cursorline = true })
-UI.row_numbers(win)
 set_wi_winbar()
 
 KEYS.bind(buf, "workitems", "open", open_item, { desc = "open the item: parent, children, description" })

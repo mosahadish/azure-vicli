@@ -147,10 +147,11 @@ local DEFAULT_NOTIFICATIONS = "float"
 -- resetting to this default every time).
 local DEFAULT_COLLAPSED_SECTIONS = { "SignedOff", "Drafts" }
 
--- setup({row_numbers=...}) - the PR and work-items dashboards' line
--- numbers (ui.lua's M.row_numbers): "relative" numbers each row by its
+-- setup({row_numbers=...}) - the row numbers the PR and work-items
+-- dashboards draw just inside their box's left border (ui.lua's
+-- M.number_width/M.paint_numbers): "relative" numbers each row by its
 -- distance from the cursor, so 5j/5k jumps straight to it; "absolute"
--- plain line numbers; false none.
+-- plain line numbers; false none (and no column reserved).
 local DEFAULT_ROW_NUMBERS = "relative"
 
 local DEFAULTS = {
@@ -530,7 +531,7 @@ function M.render_options()
   w("  -- Dashboard sections that start collapsed (Mentions, Actionable, Waiting,")
   w("  -- SignedOff, Drafts, Created).")
   w("  collapsed_sections = " .. lua_literal(DEFAULTS.collapsed_sections) .. ",")
-  w("  -- Dashboard line numbers: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
+  w("  -- Row numbers inside the dashboards: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
   w("  row_numbers = " .. lua_literal(DEFAULTS.row_numbers) .. ",")
   w("  -- python = \"/path/to/python\",       -- interpreter for azure-cli.py (default: python3, else python)")
   w("  -- config = \"~/other/azure-cli.yml\",  -- a different config file")

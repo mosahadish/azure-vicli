@@ -153,5 +153,12 @@ do
   check("layout: title (undroppable) is never removed", r.widths.title == 20)
 end
 
+-- In-box row numbers: relative to the cursor, the cursor row showing its
+-- own line number left-aligned (like 'number' + 'relativenumber').
+check("number_text: row below the cursor", M.number_text(6, 5, 4, true) == "  1 ")
+check("number_text: row above the cursor", M.number_text(2, 5, 4, true) == "  3 ")
+check("number_text: cursor row shows its line number", M.number_text(5, 5, 4, true) == "6   ")
+check("number_text: absolute", M.number_text(11, 5, 4, false) == " 12 ")
+
 print(fails == 0 and "ui: all cases pass" or ("ui: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

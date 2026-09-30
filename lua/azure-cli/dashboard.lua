@@ -451,18 +451,23 @@ local function box_and_center(lines, spans, win)
     content_width = math.max(content_width, vim.fn.strdisplaywidth(l))
   end
   content_width = math.max(content_width, 1)
-  local box_width = content_width + 4
   local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local win_height = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_height(win)) or vim.o.lines
+  -- The row-number column just inside the left border (UI.paint_numbers
+  -- fills it in), sized for the last line the buffer can reach; 0 = off.
+  local num_w = UI.number_width(math.max(win_height, #lines + 2))
+  local box_width = content_width + 4 + num_w
   local pad_h = math.max(0, math.floor((win_width - box_width) / 2))
   local hprefix = string.rep(" ", pad_h)
-  local col_offset = pad_h + #"│ "  -- hprefix + "│ " (│ is a 3-byte UTF-8 char, not 1)
+  local num_col = pad_h + #"│ "  -- hprefix + "│ " (│ is a 3-byte UTF-8 char, not 1)
+  local col_offset = num_col + num_w
+  local gutter = string.rep(" ", num_w)
 
   local boxed = {}
   boxed[#boxed + 1] = hprefix .. "╭" .. string.rep("─", box_width - 2) .. "╮"
   for _, l in ipairs(lines) do
     local w = vim.fn.strdisplaywidth(l)
-    boxed[#boxed + 1] = hprefix .. "│ " .. l .. string.rep(" ", content_width - w) .. " │"
+    boxed[#boxed + 1] = hprefix .. "│ " .. gutter .. l .. string.rep(" ", content_width - w) .. " │"
   end
   boxed[#boxed + 1] = hprefix .. "╰" .. string.rep("─", box_width - 2) .. "╯"
 
@@ -481,7 +486,8 @@ local function box_and_center(lines, spans, win)
   shifted[#shifted + 1] = { line = top_line0, s = 0, e = -1, hl = "AzureCliBorder" }
   shifted[#shifted + 1] = { line = bottom_line0, s = 0, e = -1, hl = "AzureCliBorder" }
 
-  return final, shifted, row_offset, col_offset
+  local numbers = { first = top_line0 + 1, last = bottom_line0 - 1, col = num_col, width = num_w }
+  return final, shifted, row_offset, col_offset, numbers
 end
 
 -- Sync-state glyph for a row: "\u{21E3}" while this PR's branches or content
@@ -711,8 +717,11 @@ local function render()
   -- Box the table and centre it in the window (both axes); shift row_pr's
   -- (and row_pr_key's/row_header_key's) line->value maps by the same row
   -- offset so <CR>/gy/za/etc. still hit the right row.
-  local row_offset, col_offset
-  lines, spans, row_offset, col_offset = box_and_center(lines, spans, win)
+  local row_offset, col_offset, numbers
+  lines, spans, row_offset, col_offset, numbers = box_and_center(lines, spans, win)
+  local function paint_numbers()
+    UI.paint_numbers(buf, numbers.first, numbers.last, numbers.col, numbers.width)
+  end
   local shifted_row_pr, shifted_row_pr_key, shifted_row_header_key = {}, {}, {}
   for ln, pr in pairs(row_pr) do
     shifted_row_pr[ln + row_offset] = pr
@@ -730,6 +739,7 @@ local function render()
   -- Change-aware: skip the buffer write when nothing changed, so background
   -- refreshes never flicker or move the cursor.
   if vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), lines) then
+    paint_numbers()
     return
   end
 
@@ -777,6 +787,7 @@ local function render()
     end
     pcall(vim.api.nvim_win_set_cursor, win, { target or (row_offset + 1), col_offset })
   end
+  paint_numbers()
 end
 
 -- The PR on the current cursor line, or nil on a header/blank line.
@@ -1719,7 +1730,6 @@ win = vim.api.nvim_get_current_win()
 -- Window-local only: a plugin-mode user's own 'number'/'signcolumn' must
 -- survive a visit here (these used to be set on vim.o and never restored).
 UI.plain_window(win, { cursorline = true })
-UI.row_numbers(win)
 set_winbar()
 
 -- Every binding below goes through KEYS.bind (lua/azure-cli/keys.lua)

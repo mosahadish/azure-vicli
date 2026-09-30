@@ -30,14 +30,68 @@ function M.plain_window(win, opts)
   M.wo(win, "foldenable", false)
 end
 
--- The dashboards' line numbers, per setup({row_numbers=...}): "relative"
--- (the default) numbers every row by its distance from the cursor, so 5j
--- or 5k lands on it, with the cursor row's own number; "absolute" plain
--- line numbers; false none.
-function M.row_numbers(win)
-  local mode = require("azure-cli.config").get().row_numbers
-  M.wo(win, "number", mode ~= false)
-  M.wo(win, "relativenumber", mode == "relative")
+-- Row numbers inside the dashboards' boxes (setup({row_numbers=...})).
+-- A dashboard reserves a blank column M.number_width() cells wide just
+-- inside the box's left border, and M.paint_numbers() overlays each boxed
+-- line's number there: its distance from the cursor by default, so 5j/5k
+-- lands on the row marked 5 (the cursor row shows its own line number,
+-- like 'number' + 'relativenumber'), or the plain line number with
+-- "absolute". Relative numbers repaint on every cursor move.
+local painted = {}  -- buf -> { first, last, col, width } (0-based lines, byte col)
+
+-- The reserved column's width for a buffer whose lines run up to
+-- `max_line`: its digits plus a space, at least 4; 0 when row_numbers is
+-- false (no column at all).
+function M.number_width(max_line)
+  if require("azure-cli.config").get().row_numbers == false then return 0 end
+  return math.max(3, #tostring(max_line)) + 1
+end
+
+-- The number text for 0-based line `l` with the cursor on 0-based `cur`,
+-- `width` cells wide (the last one a space).
+function M.number_text(l, cur, width, relative)
+  local digits = width - 1
+  if not relative then return string.format("%" .. digits .. "d ", l + 1) end
+  if l == cur then return string.format("%-" .. digits .. "d ", l + 1) end
+  return string.format("%" .. digits .. "d ", math.abs(l - cur))
+end
+
+local function draw_numbers(buf)
+  local p = painted[buf]
+  if not p or not vim.api.nvim_buf_is_valid(buf) then return end
+  local ns = vim.api.nvim_create_namespace("azure_cli_row_numbers")
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  if p.width == 0 then return end
+  local win = vim.fn.bufwinid(buf)
+  local cur = (win ~= -1) and (vim.api.nvim_win_get_cursor(win)[1] - 1) or -1
+  local relative = require("azure-cli.config").get().row_numbers ~= "absolute"
+  for l = p.first, p.last do
+    pcall(vim.api.nvim_buf_set_extmark, buf, ns, l, p.col, {
+      virt_text = { { M.number_text(l, cur, p.width, relative), l == cur and "CursorLineNr" or "LineNr" } },
+      virt_text_pos = "overlay",
+    })
+  end
+end
+
+-- Number the boxed lines `first`..`last` (0-based) of `buf` in the
+-- `width`-cell column at byte `col`; call again after every render (the
+-- lines and column move with the window size). Keeps them in step with
+-- the cursor from then on.
+function M.paint_numbers(buf, first, last, col, width)
+  if not painted[buf] then
+    vim.api.nvim_create_autocmd({ "CursorMoved", "BufWipeout" }, {
+      buffer = buf,
+      callback = function(ev)
+        if ev.event == "BufWipeout" then
+          painted[buf] = nil
+          return true
+        end
+        draw_numbers(buf)
+      end,
+    })
+  end
+  painted[buf] = { first = first, last = last, col = col, width = width }
+  draw_numbers(buf)
 end
 
 -- `win`'s text width: its width less the number/sign/fold gutter, which
