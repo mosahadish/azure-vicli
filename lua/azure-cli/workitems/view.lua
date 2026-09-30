@@ -7,8 +7,9 @@
 -- are navigable with <CR>.
 --
 -- Keys
---   <CR>   on a parent/child line: open that work item here
---   gs     change the state of this work item
+--   <CR>   on a parent/child line: open that work item here; on a PR: open it
+--   gR     open a linked pull request (in the reviewer, else the browser)
+--   gs     change this item's state (a popup; can set its children too)
 --   ga     assign this work item
 --   gp     set this work item's priority
 --   ge     edit this work item's title
@@ -28,6 +29,8 @@ local RPC = require("azure-cli.rpc")
 local PROMPT = require("azure-cli.prompt")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
+local STATE_DIALOG = require("azure-cli.workitems.state_dialog")
+local LINKED_PRS = require("azure-cli.workitems.linked_prs")
 local UI = require("azure-cli.ui")
 -- Shared housekeeping helpers - see shell.lua.
 local SHELL = require("azure-cli.shell")
@@ -77,6 +80,7 @@ UI.link_hl({
   AzureCliWiRemoved     = "ErrorMsg",
   AzureCliWiViewTitle   = "Title",
   AzureCliWiViewLabel   = "Special",
+  AzureCliWiOther       = "Comment",
 })
 
 -- Built from the sprint list's "states" field (work_items.states:,
@@ -88,11 +92,17 @@ local wi_built = STATES.build(STATE.WI_SPRINTS_CACHE and STATE.WI_SPRINTS_CACHE.
 local KNOWN_LABEL = {
   Parent = true, Children = true, Assigned = true, Priority = true,
   Created = true, Changed = true, Reason = true, Area = true,
-  Iteration = true, Tags = true, URL = true, PRs = true,
+  Iteration = true, Tags = true, URL = true,
 }
 local ns = vim.api.nvim_create_namespace("azure_cli_workitem")
+-- A linked PR's status word, coloured like the work-item states it echoes.
+local PR_STATUS_HL = {
+  active = "AzureCliWiActive", draft = "AzureCliWiNew",
+  completed = "AzureCliWiClosed", abandoned = "AzureCliWiRemoved",
+}
 
 local row_link = {}  -- buffer line (1-based) -> work item id (parent/child rows)
+local row_pr = {}    -- buffer line (1-based) -> linked PR (Pull Requests rows)
 
 local notify = SHELL.notify
 
@@ -128,6 +138,7 @@ local function render(data)
   local it = data.item or {}
   local lines = {}
   row_link = {}
+  row_pr = {}
 
   lines[#lines + 1] = string.format("#%s  %s  [%s]",
     tostring(it.id or "?"), it.type or "", it.state or "")
@@ -170,9 +181,16 @@ local function render(data)
   lines[#lines + 1] = "URL:       " .. (it.url or "")
   local prs = it.pullRequests or {}
   if #prs > 0 then
-    local pr_ids = {}
-    for _, p in ipairs(prs) do pr_ids[#pr_ids + 1] = "!" .. tostring(p.id) end
-    lines[#lines + 1] = "PRs:" .. string.rep(" ", 11 - 4) .. table.concat(pr_ids, ", ")
+    local pr_title = "Pull Requests (" .. #prs .. ")"
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = pr_title
+    lines[#lines + 1] = string.rep("─", #pr_title)
+    for _, p in ipairs(prs) do
+      for _, l in ipairs(LINKED_PRS.lines(p)) do
+        lines[#lines + 1] = l
+        row_pr[#lines] = p
+      end
+    end
   end
 
   add_block(lines, "Description", it.description, true)
@@ -227,6 +245,12 @@ local function render(data)
       if s then add("AzureCliWiId", lnum, s - 1, e) end
       local bs, be, state = line:find("%[(.-)%]")
       if bs and wi_built.hl[state] then add(wi_built.hl[state], lnum, bs - 1, be) end
+      if row_pr[i] then
+        local ps, pe = line:find("^  !%d+")
+        if ps then add("AzureCliWiId", lnum, 2, pe) end
+        local ss, se, st = line:find("^  !%d+%s+(%a+)")
+        if ss then add(PR_STATUS_HL[st] or "AzureCliWiOther", lnum, se - #st, se) end
+      end
     end
   end
 
@@ -244,65 +268,12 @@ STATE.WI_DETAIL_CACHE = STATE.WI_DETAIL_CACHE or {}
 -- Registry so the dashboard can trigger a live reload of an open detail tab
 -- (keyed by work item id) after it commits a state change.
 STATE.WI_VIEW_RELOAD = STATE.WI_VIEW_RELOAD or {}
--- Workflow metadata caches shared with workitems/dashboard.lua (keyed by "type\0state"),
--- so the state/reason pickers are instant when the dashboard already warmed them.
-STATE.WI_TRANS_CACHE = STATE.WI_TRANS_CACHE or {}
-STATE.WI_REASON_CACHE = STATE.WI_REASON_CACHE or {}
-local META_TTL = 600
 local prev_reg_id = nil
 local CACHE_TTL = 30
 
--- Fetch a cached metadata list (transitions/reasons) for a (type, state),
--- invoking cb(list) when ready; instant on a fresh cache hit, coalesced when
--- concurrent. cb is optional (prefetch = no cb).
-local meta_inflight = {}
-local function fetch_meta(cache, subcmd, wtype, state, cb)
-  local key = wtype .. "\0" .. state
-  local c = cache[key]
-  if c and (os.time() - c.ts) < META_TTL then
-    if cb then cb(c.list) end
-    return
-  end
-  local ikey = subcmd .. "\0" .. key
-  if meta_inflight[ikey] then
-    if cb then table.insert(meta_inflight[ikey], cb) end
-    return
-  end
-  meta_inflight[ikey] = cb and { cb } or {}
-  local out = {}
-  RPC.run(provider_argv("--wi-state", subcmd, wtype, state), {
-    stdout_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-    on_exit = function(_, code)
-      local list = vim.tbl_filter(function(s) return s ~= "" end, out)
-      if code == 0 then cache[key] = { list = list, ts = os.time() } end
-      local cbs = meta_inflight[ikey]
-      meta_inflight[ikey] = nil
-      for _, f in ipairs(cbs or {}) do pcall(f, list) end
-    end,
-  })
-end
-
-local function fetch_transitions(wtype, cur, cb)
-  fetch_meta(STATE.WI_TRANS_CACHE, "transitions", wtype, cur, cb)
-end
-
-local function fetch_reasons(wtype, new, cb)
-  fetch_meta(STATE.WI_REASON_CACHE, "reasons", wtype, new, cb)
-end
-
-local function meta_cached(cache, wtype, state)
-  local c = cache[wtype .. "\0" .. state]
-  return c and (os.time() - c.ts) < META_TTL
-end
-
--- Warm the state/reason caches for the current item so 'gs' is instant here too.
+-- Warm the workflow caches for the current item so 'gs' is instant here too.
 local function prefetch_state_meta()
-  local wtype, state = current_item.type or "", current_item.state or ""
-  if wtype == "" or state == "" then return end
-  fetch_transitions(wtype, state, function(targets)
-    for _, t in ipairs(targets or {}) do fetch_reasons(wtype, t) end
-  end)
+  STATE_DIALOG.prewarm(current_item.type or "", current_item.state or "")
 end
 
 local function apply(body)
@@ -356,96 +327,34 @@ local function load(id, force)
   })
 end
 
+-- <CR>: a parent/child line opens that item here; a Pull Requests line
+-- opens that PR (in the reviewer, or the browser - see linked_prs.lua).
 local function open_linked()
   local line = vim.api.nvim_win_get_cursor(0)[1]
   local id = row_link[line]
-  if id then load(id) end
+  if id then return load(id) end
+  local pr = row_pr[line]
+  if pr then LINKED_PRS.open(pr, ID) end
 end
 
--- Commit a new state (and optional reason) for this work item, then refresh
--- this view and the dashboard.
-local function apply_state(new, reason)
+-- gR: open a linked PR - the one under the cursor, else pick one.
+local function open_linked_pr()
   if ID == "" then return end
-  local suffix = (reason and reason ~= "") and (" (" .. reason .. ")") or ""
-  notify("Setting #" .. ID .. " \u{2192} " .. new .. suffix .. " \u{2026}")
-  local cmd = provider_argv("--wi-state", "set", ID, new)
-  if reason and reason ~= "" then cmd[#cmd + 1] = reason end
-  local err = {}
-  RPC.run(cmd, {
-    detach = true,  -- finish the ADO write even if the user quits before it returns
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
-      if code == 0 then
-        notify("#" .. ID .. " is now " .. new .. suffix .. ".")
-        STATE.WI_DETAIL_CACHE[ID] = nil
-        load(ID, true)
-        if STATE.WI_STATE_CHANGED then STATE.WI_STATE_CHANGED(ID, new) end
-      else
-        local msg = SHELL.job_error("work item #" .. ID, code, err)
-        notify("Set #" .. ID .. " failed: " .. msg, vim.log.levels.ERROR)
-      end
-    end,
-  })
+  local pr = row_pr[vim.api.nvim_win_get_cursor(0)[1]]
+  if pr then return LINKED_PRS.open(pr, ID) end
+  LINKED_PRS.choose(current_item.pullRequests, ID)
 end
 
--- Prompt for the reason to record with a transition into `new`, then call
--- cb(reason). Offers the reasons actually accepted for that state, plus a
--- default (let ADO pick) and a free-text option. cb("") means "use default".
-local function pick_reason(new, cb)
-  local wtype = current_item.type or ""
-  if not meta_cached(STATE.WI_REASON_CACHE, wtype, new) then
-    notify("Fetching reasons \u{2026}")
-  end
-  fetch_reasons(wtype, new, function(reasons)
-    vim.schedule(function()
-      if #reasons <= 1 then
-        cb("")
-        return
-      end
-      local items = {}
-      for _, r in ipairs(reasons) do items[#items + 1] = { label = r, reason = r } end
-      items[#items + 1] = { label = "(default reason)", reason = "" }
-      items[#items + 1] = { label = "(other\u{2026} type a reason)", other = true }
-      PROMPT.select({ prompt = "Reason for #" .. ID .. " \u{2192} " .. new, items = items }, function(choice)
-        if not choice then return end
-        if choice.other then
-          PROMPT.input({ prompt = "Reason:", allow_empty = true }, function(r)
-            if r ~= nil then cb(r) end
-          end)
-          return
-        end
-        cb(choice.reason)
-      end)
-    end)
-  end)
-end
-
--- Change the state of this work item, offering only states reachable from its
--- current state (per the ADO workflow transitions), then a reason.
+-- gs: the state popup (workitems/state_dialog.lua, shared with the
+-- dashboard). Its write reloads this tab through STATE.WI_VIEW_RELOAD.
 local function set_state()
   if ID == "" then return end
-  local wtype, cur = current_item.type or "", current_item.state or ""
-  if not meta_cached(STATE.WI_TRANS_CACHE, wtype, cur) then
-    notify("Fetching states for #" .. ID .. " \u{2026}")
-  end
-  fetch_transitions(wtype, cur, function(states)
-    if #states == 0 then
-      notify("No transitions for #" .. ID .. ".", vim.log.levels.WARN)
-      return
-    end
-    vim.schedule(function()
-      PROMPT.select({ prompt = "Set #" .. ID .. " (" .. cur .. " \u{2192})", items = states }, function(new)
-        if not new then return end
-        pick_reason(new, function(reason) apply_state(new, reason) end)
-      end)
-    end)
-  end)
+  local it = vim.tbl_extend("force", {}, current_item, { id = ID })
+  STATE_DIALOG.open(it)
 end
 
 -- Commit a single-field --wi-edit "set" for this work item, then refresh
--- this view (the way apply_state does) and, when given, reconcile the
+-- this view (the way gs's write does) and, when given, reconcile the
 -- dashboard's cached record via dash_patch (best-effort: no-op if the
 -- dashboard globals were never installed in this session).
 local function apply_field(arg_name, value, describe, dash_patch)
@@ -714,9 +623,9 @@ end
 -- through KEYS every time (see keys.lua's M.line), never hard-coded.
 local WORKITEM_VIEW_HELP = {
   "Navigate",
-  { "open", "on a parent/child line: open that work item here" },
+  { "open", "on a parent/child line: open that work item here; on a PR: open the PR" },
   "This item",
-  { "state", "change the state of this work item" },
+  { "state", "change this item's state (a popup; can set its children too)" },
   { "assign", "assign this work item" },
   { "priority", "set this work item's priority" },
   { "edit_title", "edit this work item's title" },
@@ -724,6 +633,7 @@ local WORKITEM_VIEW_HELP = {
   { "comment", "add a discussion comment" },
   { "link_pr", "link a pull request" },
   { "unlink_pr", "unlink a pull request" },
+  { "open_pr", "open a linked pull request (reviewer, or browser if it isn't in your PR list)" },
   { "browser", "open this work item in the browser" },
   { "copy_link", "copy this work item's link" },
   "Session",
@@ -756,6 +666,7 @@ KEYS.bind(buf, "workitem_view", "move_sprint", move_sprint_item, { desc = "move 
 KEYS.bind(buf, "workitem_view", "comment", add_comment, { desc = "add a discussion comment" })
 KEYS.bind(buf, "workitem_view", "link_pr", link_pr, { desc = "link a pull request" })
 KEYS.bind(buf, "workitem_view", "unlink_pr", unlink_pr, { desc = "unlink a pull request" })
+KEYS.bind(buf, "workitem_view", "open_pr", open_linked_pr, { desc = "open a linked pull request" })
 KEYS.bind(buf, "workitem_view", "browser", open_browser, { desc = "open this work item in the browser" })
 KEYS.bind(buf, "workitem_view", "copy_link", yank_link, { desc = "copy this work item's link" })
 KEYS.bind(buf, "workitem_view", "refresh", function() if ID ~= "" then load(ID, true) end end, { desc = "refresh" })

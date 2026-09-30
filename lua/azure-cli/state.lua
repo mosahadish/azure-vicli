@@ -24,6 +24,7 @@ local M = {}
 -- PR dashboard / reviewer
 M.PR_LIST_CACHE = nil               -- { prs, ts }
 M.PR_COMPLETED = {}                 -- PR id -> os.time() completed this session (prs.lua's drop_completed)
+M.PR_WORKITEMS = {}                 -- PR id -> { list, ts }: its linked work items (pr_workitems.lua)
 M.PR_CURRENT = nil                  -- metadata for the PR currently being opened
 M.PR_REFRESH_TIMER = nil                -- dashboard's periodic-refresh timer id
 M.whoami = nil                       -- "org|project" -> { id, displayName }
@@ -55,6 +56,8 @@ M.WI_SPRINTS_CACHE = nil
 M.WI_DETAIL_CACHE = {}
 M.WI_TRANS_CACHE = {}
 M.WI_REASON_CACHE = {}
+M.WI_STATES_CACHE = {}
+M.WI_TREE_KIDS = {}
 M.WI_ITEM_CHANGED = nil
 M.WI_STATE_CHANGED = nil
 M.WI_ITEM_MOVED = nil

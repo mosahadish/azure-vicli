@@ -90,7 +90,19 @@ case "$MODE" in
   headless)
     # tests/demo-smoke.lua: dashboard rows through the daemon, then the
     # reviewer on PR #101 - see that file's header comment.
-    out="$(nvim --headless -u "$WS/init.lua" -c "luafile $ROOT/tests/demo-smoke.lua" 2>&1)"
+    #
+    # Run under pcall so a Lua error in the smoke itself quits with a
+    # DEMO-SMOKE-FAIL line - a bare `luafile` that errors leaves headless
+    # nvim waiting forever - then always :qa! (a :qa! from inside the
+    # pcall'd smoke doesn't reliably exit), with `timeout` as a backstop for
+    # anything else that never returns.
+    run="lua local ok, err = pcall(dofile, [[$ROOT/tests/demo-smoke.lua]])"
+    run="$run; if not ok then print('DEMO-SMOKE-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')"
+    limit=()
+    if command -v timeout >/dev/null 2>&1; then limit=(timeout 300); fi
+    out="$("${limit[@]}" nvim --headless -u "$WS/init.lua" -c "$run" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 124 ]; then out="$out"$'\n'"DEMO-SMOKE-FAIL: timed out after 300s"; fi
     printf '%s\n' "$out"
     case "$out" in
       *DEMO-SMOKE-OK*) exit 0 ;;

@@ -19,8 +19,8 @@ local DEFAULT_KEYS = {
     filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", toasts = "gN", help = "?", quit = "q",
-    toggle_section = "za", expand_all = "zR", collapse_all = "zM",
-    first_pr = "gg", last_pr = "G",
+    toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
+    first_pr = "gg", last_pr = "G", open_workitem = "gW",
   },
   -- Reviewer file list.
   list = {
@@ -30,7 +30,7 @@ local DEFAULT_KEYS = {
     next_file_with_comments = "]C", prev_file_with_comments = "[C",
     resize_less = "<", resize_more = ">", comment_file = "C", help = "?",
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
-    since = "gi", followup = "gu",
+    since = "gi", followup = "gu", open_workitem = "gW",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
   },
   -- Reviewer diff pane.
@@ -45,7 +45,7 @@ local DEFAULT_KEYS = {
     find_references = "gr", open_file = "gf", search = "g/",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
-    batch_submit = "gS", since = "gi", followup = "gu",
+    batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
   },
   -- Reviewer Overview page.
@@ -56,7 +56,7 @@ local DEFAULT_KEYS = {
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
-    batch_submit = "gS", since = "gi", followup = "gu",
+    batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
@@ -71,13 +71,14 @@ local DEFAULT_KEYS = {
     refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
     copy_link = "gy", config = "gO", help = "?", quit = "q",
-    filter = "/", unlink_pr = "gL",
+    filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
+    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
   },
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
     edit_title = "ge", move_sprint = "gi", comment = "gc", link_pr = "gl",
-    unlink_pr = "gL", browser = "o", copy_link = "gy", refresh = "r",
+    unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?",
   },
 }
@@ -147,9 +148,17 @@ local DEFAULT_NOTIFICATIONS = "float"
 -- resetting to this default every time).
 local DEFAULT_COLLAPSED_SECTIONS = { "SignedOff", "Drafts" }
 
+-- setup({row_numbers=...}) - the row numbers the PR and work-items
+-- dashboards draw just inside their box's left border (ui.lua's
+-- M.number_width/M.paint_numbers): "relative" numbers each row by its
+-- distance from the cursor, so 5j/5k jumps straight to it; "absolute"
+-- plain line numbers; false none (and no column reserved).
+local DEFAULT_ROW_NUMBERS = "relative"
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
+  row_numbers = DEFAULT_ROW_NUMBERS,
 }
 
 local resolved = nil  -- set by M.setup(); M.get() falls back to DEFAULTS until then
@@ -390,6 +399,10 @@ function M.setup(opts)
   if opts.notifications ~= nil and opts.notifications ~= "float" and opts.notifications ~= "notify" then
     error("azure-cli.setup: `notifications` must be \"float\" or \"notify\"")
   end
+  if opts.row_numbers ~= nil and opts.row_numbers ~= "relative" and opts.row_numbers ~= "absolute"
+      and opts.row_numbers ~= false then
+    error("azure-cli.setup: `row_numbers` must be \"relative\", \"absolute\" or false")
+  end
   local collapsed_sections = DEFAULTS.collapsed_sections
   if opts.collapsed_sections ~= nil then
     if type(opts.collapsed_sections) ~= "table" then
@@ -420,6 +433,7 @@ function M.setup(opts)
     hide_ancient_days = opts.hide_ancient_days or DEFAULTS.hide_ancient_days,
     notifications = opts.notifications or DEFAULTS.notifications,
     collapsed_sections = collapsed_sections,
+    row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
   }
   -- cached_prs/threads_ttl_seconds apply straight to cache.lua's own
   -- M.MAX_PRS/M.THREADS_TTL fields, which every read site there already
@@ -518,6 +532,8 @@ function M.render_options()
   w("  -- Dashboard sections that start collapsed (Mentions, Actionable, Waiting,")
   w("  -- SignedOff, Drafts, Created).")
   w("  collapsed_sections = " .. lua_literal(DEFAULTS.collapsed_sections) .. ",")
+  w("  -- Row numbers inside the dashboards: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
+  w("  row_numbers = " .. lua_literal(DEFAULTS.row_numbers) .. ",")
   w("  -- python = \"/path/to/python\",       -- interpreter for azure-cli.py (default: python3, else python)")
   w("  -- config = \"~/other/azure-cli.yml\",  -- a different config file")
   w("}")

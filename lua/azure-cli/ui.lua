@@ -30,6 +30,77 @@ function M.plain_window(win, opts)
   M.wo(win, "foldenable", false)
 end
 
+-- Row numbers inside the dashboards' boxes (setup({row_numbers=...})).
+-- A dashboard reserves a blank column M.number_width() cells wide just
+-- inside the box's left border, and M.paint_numbers() overlays each boxed
+-- line's number there: its distance from the cursor by default, so 5j/5k
+-- lands on the row marked 5 (the cursor row shows its own line number,
+-- like 'number' + 'relativenumber'), or the plain line number with
+-- "absolute". Relative numbers repaint on every cursor move.
+local painted = {}  -- buf -> { first, last, col, width } (0-based lines, byte col)
+
+-- The reserved column's width for a buffer whose lines run up to
+-- `max_line`: its digits plus a space, at least 4; 0 when row_numbers is
+-- false (no column at all).
+function M.number_width(max_line)
+  if require("azure-cli.config").get().row_numbers == false then return 0 end
+  return math.max(3, #tostring(max_line)) + 1
+end
+
+-- The number text for 0-based line `l` with the cursor on 0-based `cur`,
+-- `width` cells wide (the last one a space).
+function M.number_text(l, cur, width, relative)
+  local digits = width - 1
+  if not relative then return string.format("%" .. digits .. "d ", l + 1) end
+  if l == cur then return string.format("%-" .. digits .. "d ", l + 1) end
+  return string.format("%" .. digits .. "d ", math.abs(l - cur))
+end
+
+local function draw_numbers(buf)
+  local p = painted[buf]
+  if not p or not vim.api.nvim_buf_is_valid(buf) then return end
+  local ns = vim.api.nvim_create_namespace("azure_cli_row_numbers")
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  if p.width == 0 then return end
+  local win = vim.fn.bufwinid(buf)
+  local cur = (win ~= -1) and (vim.api.nvim_win_get_cursor(win)[1] - 1) or -1
+  local relative = require("azure-cli.config").get().row_numbers ~= "absolute"
+  for l = p.first, p.last do
+    pcall(vim.api.nvim_buf_set_extmark, buf, ns, l, p.col, {
+      virt_text = { { M.number_text(l, cur, p.width, relative), l == cur and "CursorLineNr" or "LineNr" } },
+      virt_text_pos = "overlay",
+    })
+  end
+end
+
+-- Number the boxed lines `first`..`last` (0-based) of `buf` in the
+-- `width`-cell column at byte `col`; call again after every render (the
+-- lines and column move with the window size). Keeps them in step with
+-- the cursor from then on.
+function M.paint_numbers(buf, first, last, col, width)
+  if not painted[buf] then
+    vim.api.nvim_create_autocmd({ "CursorMoved", "BufWipeout" }, {
+      buffer = buf,
+      callback = function(ev)
+        if ev.event == "BufWipeout" then
+          painted[buf] = nil
+          return true
+        end
+        draw_numbers(buf)
+      end,
+    })
+  end
+  painted[buf] = { first = first, last = last, col = col, width = width }
+  draw_numbers(buf)
+end
+
+-- `win`'s text width: its width less the number/sign/fold gutter, which
+-- is what a centred layout has to fit into.
+function M.text_width(win)
+  local info = vim.fn.getwininfo(win)[1]
+  return vim.api.nvim_win_get_width(win) - ((info and info.textoff) or 0)
+end
+
 -- Define highlight groups as links to existing ones, all with
 -- { default = true } so a user's colorscheme or their own :highlight always
 -- wins. `map` is { AzureCliThing = "LinkTarget", ... }. Both dashboards
@@ -60,6 +131,8 @@ end
 --   lines           the text
 --   opts.focus      false keeps the cursor where it is (default: focus it)
 --   opts.big        the shared large centred size (comment threads)
+--   opts.center     sized to fit like the default, but centred on the
+--                   screen instead of opening at the cursor
 --   opts.title      border title
 --   opts.min_width / opts.min_height
 --   opts.footer     extra footer text; the close hint (and a scroll hint
@@ -93,7 +166,7 @@ function M.open_float(lines, opts)
   vim.bo[buf].buftype = "nofile"
 
   local cfg = { width = width, height = height, style = "minimal", border = "rounded" }
-  if opts.big then
+  if opts.big or opts.center then
     cfg.relative = "editor"
     cfg.row = math.floor((vim.o.lines - height) / 2)
     cfg.col = math.floor((vim.o.columns - width) / 2)

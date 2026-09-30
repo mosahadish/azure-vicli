@@ -44,6 +44,7 @@ local KEYS = require("azure-cli.keys")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 local PRS = require("azure-cli.prs")
+local PR_WORKITEMS = require("azure-cli.pr_workitems")
 -- Shared housekeeping helpers (flash, config file, browser/clipboard, the
 -- JSON state files, a failed job's one-line summary) - see shell.lua for
 -- what each of these used to be a private copy of here.
@@ -171,7 +172,7 @@ local DASHBOARD_ACTIONS = {
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
   { "vote", "vote" }, { "complete", "complete / auto-complete" },
-  { "requeue_build", "re-queue build" },
+  { "requeue_build", "re-queue build" }, { "open_workitem", "open a linked work item" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
@@ -403,6 +404,7 @@ UI.link_hl({
   AzureCliSyncing      = "Title",
   AzureCliReady        = "Comment",
   AzureCliBorder       = "FloatBorder",
+  AzureCliWorkItem     = "Identifier",
   AzureCliColHeader    = "Comment",
   AzureCliMe           = "Title",
 })
@@ -451,18 +453,23 @@ local function box_and_center(lines, spans, win)
     content_width = math.max(content_width, vim.fn.strdisplaywidth(l))
   end
   content_width = math.max(content_width, 1)
-  local box_width = content_width + 4
-  local win_width = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win)) or vim.o.columns
+  local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local win_height = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_height(win)) or vim.o.lines
+  -- The row-number column just inside the left border (UI.paint_numbers
+  -- fills it in), sized for the last line the buffer can reach; 0 = off.
+  local num_w = UI.number_width(math.max(win_height, #lines + 2))
+  local box_width = content_width + 4 + num_w
   local pad_h = math.max(0, math.floor((win_width - box_width) / 2))
   local hprefix = string.rep(" ", pad_h)
-  local col_offset = pad_h + #"│ "  -- hprefix + "│ " (│ is a 3-byte UTF-8 char, not 1)
+  local num_col = pad_h + #"│ "  -- hprefix + "│ " (│ is a 3-byte UTF-8 char, not 1)
+  local col_offset = num_col + num_w
+  local gutter = string.rep(" ", num_w)
 
   local boxed = {}
   boxed[#boxed + 1] = hprefix .. "╭" .. string.rep("─", box_width - 2) .. "╮"
   for _, l in ipairs(lines) do
     local w = vim.fn.strdisplaywidth(l)
-    boxed[#boxed + 1] = hprefix .. "│ " .. l .. string.rep(" ", content_width - w) .. " │"
+    boxed[#boxed + 1] = hprefix .. "│ " .. gutter .. l .. string.rep(" ", content_width - w) .. " │"
   end
   boxed[#boxed + 1] = hprefix .. "╰" .. string.rep("─", box_width - 2) .. "╯"
 
@@ -481,7 +488,8 @@ local function box_and_center(lines, spans, win)
   shifted[#shifted + 1] = { line = top_line0, s = 0, e = -1, hl = "AzureCliBorder" }
   shifted[#shifted + 1] = { line = bottom_line0, s = 0, e = -1, hl = "AzureCliBorder" }
 
-  return final, shifted, row_offset, col_offset
+  local numbers = { first = top_line0 + 1, last = bottom_line0 - 1, col = num_col, width = num_w }
+  return final, shifted, row_offset, col_offset, numbers
 end
 
 -- Sync-state glyph for a row: "\u{21E3}" while this PR's branches or content
@@ -490,6 +498,7 @@ end
 -- to stay clear of the build column's own \u{2713}/\u{2717}/\u{21BB}/\u{25CF}.
 -- Assigned once the warm/prefetch bookkeeping it reads exists (below).
 local pr_sync_state
+local warm_workitems  -- reads listed PRs' linked work items (assigned below)
 
 -- Appends one PR's row to `lines`/`spans`/`row_pr`. Used for both a PR's
 -- normal state section and the Mentions section below - the same record can
@@ -533,7 +542,16 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(" ")
   seg(fit(pr.autoComplete and "A" or "", 1), "AzureCliAutoComplete")
   seg(" ")
-  seg(fit(pr.title, widths.title))
+  -- Its linked work items, once pr_workitems.lua has read them: "#3001".
+  local wi = PR_WORKITEMS.label(PR_WORKITEMS.cached(pr.id))
+  local title_w = widths.title
+  if wi ~= "" and title_w > #wi + 8 then
+    seg(fit(pr.title, title_w - #wi - 2))
+    seg("  ")
+    seg(wi, "AzureCliWorkItem")
+  else
+    seg(fit(pr.title, title_w))
+  end
   seg(" ")
   seg(fit(pr.repo or "", widths.repo), "AzureCliRepo")
   if widths.author then
@@ -670,7 +688,7 @@ local function render()
   -- Solve the scaling columns' widths against the window once per render
   -- (see SCALING_COLUMNS/ROW_FIXED_WIDTH above and lua/azure-cli/ui.lua's
   -- UI.layout) and hand the result to every row this render builds.
-  local win_width = (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win)) or vim.o.columns
+  local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
   local layout = UI.layout(SCALING_COLUMNS, math.max(0, win_width - 8 - ROW_FIXED_WIDTH))
   layout_narrow = layout.narrow
   local widths = layout.widths
@@ -711,8 +729,11 @@ local function render()
   -- Box the table and centre it in the window (both axes); shift row_pr's
   -- (and row_pr_key's/row_header_key's) line->value maps by the same row
   -- offset so <CR>/gy/za/etc. still hit the right row.
-  local row_offset, col_offset
-  lines, spans, row_offset, col_offset = box_and_center(lines, spans, win)
+  local row_offset, col_offset, numbers
+  lines, spans, row_offset, col_offset, numbers = box_and_center(lines, spans, win)
+  local function paint_numbers()
+    UI.paint_numbers(buf, numbers.first, numbers.last, numbers.col, numbers.width)
+  end
   local shifted_row_pr, shifted_row_pr_key, shifted_row_header_key = {}, {}, {}
   for ln, pr in pairs(row_pr) do
     shifted_row_pr[ln + row_offset] = pr
@@ -730,6 +751,7 @@ local function render()
   -- Change-aware: skip the buffer write when nothing changed, so background
   -- refreshes never flicker or move the cursor.
   if vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), lines) then
+    paint_numbers()
     return
   end
 
@@ -777,6 +799,7 @@ local function render()
     end
     pcall(vim.api.nvim_win_set_cursor, win, { target or (row_offset + 1), col_offset })
   end
+  paint_numbers()
 end
 
 -- The PR on the current cursor line, or nil on a header/blank line.
@@ -1482,8 +1505,45 @@ local function load(silent, force)
       STATE.PR_LIST_CACHE = { prs = fresh, ts = os.time() }
       render()
       warm_all(fresh)
+      warm_workitems(fresh)
     end,
   })
+end
+
+-- Read the linked work items of every listed PR not cached yet, one at a
+-- time in the background, re-rendering as each arrives (render is
+-- change-aware), for the rows' "#3001" badges.
+local workitems_running = false
+warm_workitems = function(list)
+  if workitems_running then return end
+  local todo = {}
+  for _, pr in ipairs(list or {}) do
+    if not PR_WORKITEMS.cached(pr.id) then todo[#todo + 1] = pr end
+  end
+  if #todo == 0 then return end
+  workitems_running = true
+  local i = 0
+  local function next_one()
+    i = i + 1
+    local pr = todo[i]
+    if not pr then
+      workitems_running = false
+      return
+    end
+    PR_WORKITEMS.fetch(pr.id, pr_env(pr), function()
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
+        next_one()
+      end)
+    end)
+  end
+  next_one()
+end
+
+-- gW: open a work item linked to the PR under the cursor.
+local function open_linked_workitem()
+  local pr = current_pr()
+  if pr then PR_WORKITEMS.choose(pr.id, pr_env(pr)) end
 end
 
 -- Set the AZVICLI_* process env the reviewer (and its provider calls) read.
@@ -1757,6 +1817,7 @@ local function jump_edge_pr(last)
 end
 KEYS.bind(buf, "dashboard", "first_pr", function() jump_edge_pr(false) end, { desc = "jump to the first PR" })
 KEYS.bind(buf, "dashboard", "last_pr", function() jump_edge_pr(true) end, { desc = "jump to the last PR" })
+KEYS.bind(buf, "dashboard", "open_workitem", open_linked_workitem, { desc = "open a work item linked to this PR" })
 KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.workitems.dashboard").open()
 end, { desc = "switch to the work-items dashboard" })

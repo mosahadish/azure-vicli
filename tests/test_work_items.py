@@ -440,6 +440,70 @@ class WiListTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("selector must be current|next|sprints|items", buf.getvalue())
 
+    def test_ids_lists_those_items_with_parent_and_children(self):
+        actions = make_actions()
+        batch_resp = {"value": [{
+            "id": 7,
+            "fields": {"System.WorkItemType": "Task", "System.State": "To Do", "System.Title": "t",
+                       "System.AssignedTo": {"displayName": "Alice"}, "System.ChangedDate": ""},
+            "relations": [
+                {"rel": "System.LinkTypes.Hierarchy-Reverse", "url": "x/_apis/wit/workItems/3"},
+                {"rel": "System.LinkTypes.Hierarchy-Forward", "url": "x/_apis/wit/workItems/8"},
+                {"rel": "System.LinkTypes.Hierarchy-Forward", "url": "x/_apis/wit/workItems/9"},
+                {"rel": "ArtifactLink", "url": "vstfs:///Git/PullRequestId/p%2Fr%2F1"},
+            ],
+        }]}
+        fetch = FakeFetch(responses={BATCH_URL: batch_resp})
+        actions.fetch = fetch
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_list("ids", "7, 8,x")
+        self.assertEqual(rc, 0)
+        rec = json.loads(buf.getvalue().splitlines()[0])
+        self.assertEqual((rec["id"], rec["parentId"], rec["childIds"]), (7, 3, [8, 9]))
+        self.assertEqual(rec["pullRequests"], [{"id": 1}])
+        # No WIQL, no assignee or sprint filter: just the ids asked for.
+        self.assertEqual([c["url"] for c in fetch.calls], [BATCH_URL])
+        self.assertEqual(fetch.calls[0]["data"], {"ids": [7, 8], "$expand": "relations"})
+
+    def test_tree_reads_every_descendant_through_one_recursive_query(self):
+        actions = make_actions()
+        wiql_resp = {"workItemRelations": [
+            {"source": None, "target": {"id": 1}},
+            {"source": {"id": 1}, "target": {"id": 5}},
+            {"source": {"id": 5}, "target": {"id": 9}},
+            {"source": {"id": 1}, "target": {"id": 5}},  # listed twice: read once
+        ]}
+        rec = lambda i, p: {"id": i, "fields": {"System.WorkItemType": "Task", "System.State": "To Do",  # noqa: E731
+                                               "System.Title": "t", "System.Parent": p}, "relations": []}
+        fetch = FakeFetch(responses={WIQL_URL: wiql_resp, BATCH_URL: {"value": [rec(5, 1), rec(9, 5)]}})
+        actions.fetch = fetch
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_list("tree", "1")
+        self.assertEqual(rc, 0)
+        recs = [json.loads(ln) for ln in buf.getvalue().splitlines()]
+        self.assertEqual([(r["id"], r["parentId"]) for r in recs], [(5, 1), (9, 5)])
+        query = fetch.calls[0]["data"]["query"]
+        self.assertIn("[Source].[System.Id] IN (1)", query)
+        self.assertIn("MODE (Recursive)", query)
+        self.assertEqual(fetch.calls[1]["data"]["ids"], [5, 9])
+
+    def test_tree_with_nothing_under_prints_nothing(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch(responses={WIQL_URL: {"workItemRelations": [{"source": None, "target": {"id": 1}}]}})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_list("tree", "1")
+        self.assertEqual((rc, buf.getvalue()), (0, ""))
+
+    def test_ids_without_ids_is_rejected(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch()
+        with mock.patch("sys.stderr", StringIO()):
+            rc = actions.cmd_wi_list("ids", "")
+        self.assertEqual(rc, 1)
+
     def test_items_without_path_is_rejected(self):
         actions = make_actions()
         actions.fetch = FakeFetch()
@@ -750,6 +814,36 @@ class WiDetailTests(unittest.TestCase):
         batch_call = next(c for c in fetch.calls if c["url"] == BATCH_URL)
         self.assertEqual(sorted(batch_call["data"]["ids"]), [10, 20])
 
+    def test_linked_prs_carry_title_status_and_branches(self):
+        actions = make_actions()
+        item_url = "https://dev.azure.com/example-org/_apis/wit/workitems/8?$expand=all"
+        pr_url = "https://dev.azure.com/example-org/pg/_apis/git/repositories/rg/pullrequests/31"
+        gone_url = "https://dev.azure.com/example-org/pg/_apis/git/repositories/rg/pullrequests/32"
+        full = {"id": 8, "fields": {"System.WorkItemType": "Bug", "System.State": "New", "System.Title": "t"},
+                "relations": [
+                    {"rel": "ArtifactLink", "url": "vstfs:///Git/PullRequestId/pg%2Frg%2F31"},
+                    {"rel": "ArtifactLink", "url": "vstfs:///Git/PullRequestId/pg%2Frg%2F32"},
+                ]}
+        pr = {"pullRequestId": 31, "title": "Fix  it", "status": "completed", "isDraft": False,
+              "sourceRefName": "refs/heads/fix/x", "targetRefName": "refs/heads/main",
+              "createdBy": {"displayName": "Alice"},
+              "repository": {"name": "widgets", "project": {"name": "Example Project"}}}
+        fetch = FakeFetch(responses={item_url: full, pr_url: pr},
+                          raise_for={gone_url: ac.AdoHttpError(404, gone_url, b"gone")})
+        actions.fetch = fetch
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_detail("8")
+        self.assertEqual(rc, 0)
+        prs = json.loads(buf.getvalue().strip())["item"]["pullRequests"]
+        self.assertEqual(prs[0], {
+            "id": 31, "title": "Fix it", "status": "completed", "isDraft": False, "repo": "widgets",
+            "source": "fix/x", "target": "main", "author": "Alice",
+            "url": "https://dev.azure.com/example-org/Example%20Project/_git/widgets/pullrequest/31"})
+        # A PR that can't be read stays listed by id.
+        self.assertEqual(prs[1], {"id": 32})
+        self.assertEqual(next(c for c in fetch.calls if c["url"] == pr_url)["api_version"], "6.0")
+
     def test_comments_404_degrades_to_empty_list(self):
         actions = make_actions()
         item_url = "https://dev.azure.com/example-org/_apis/wit/workitems/7?$expand=all"
@@ -848,6 +942,26 @@ class WiStateTransitionsReasonsTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("HTTP 404 GET: not found", buf.getvalue())
         self.assertNotIn(url, buf.getvalue())  # state-style has no URL
+
+    def test_states_prints_name_and_category_in_workflow_order(self):
+        actions = make_actions()
+        url = "https://dev.azure.com/example-org/ExampleProject/_apis/wit/workitemtypes/Task"
+        resp = {"states": [{"name": "To Do", "category": "Proposed"}, {"name": "Done", "category": "Completed"},
+                           {"name": "Legacy"}, {"category": "Removed"}]}
+        actions.fetch = FakeFetch(responses={url: resp})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = actions.cmd_wi_state(["states", "Task"])
+        self.assertEqual(rc, 0)
+        # No category (an older server) prints the bare name; no name is skipped.
+        self.assertEqual(buf.getvalue().splitlines(), ["To Do\tProposed", "Done\tCompleted", "Legacy"])
+
+    def test_states_needs_type(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch()
+        with mock.patch("sys.stderr", StringIO()):
+            rc = actions.cmd_wi_state(["states", ""])
+        self.assertEqual(rc, 1)
 
     def test_reasons_ranked_by_frequency_then_alpha(self):
         actions = make_actions()

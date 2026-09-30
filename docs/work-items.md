@@ -17,13 +17,16 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | Key | Action |
 |---|---|
 | `<CR>` | Open the item: parent, children, description |
-| `gs` | Change the item's state, with the allowed transitions and reasons |
+| `gs` | Change the item's state in a popup, optionally for its children too (see below) |
 | `n` | New work item: type, title, and parent (if the cursor is on one) |
 | `ga` | Assign the item under the cursor (empty input = assign to me) |
 | `gp` | Set the item's priority (1-4) |
 | `ge` | Edit the item's title |
 | `gi` | Move the item to another sprint of the quarter |
 | `gl` | Link a pull request to the item under the cursor |
+| `T` | Tree view: everything under each item indented beneath it (remembered) |
+| `za` or `<Space>` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
+| `gR` | Open a pull request linked to the item (a picker when there are several) |
 | `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
@@ -36,11 +39,113 @@ optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
 sprint's list instead.
 
+### Tree view (`T`)
+
+`T` shows everything under each item indented beneath it (children, their
+children, and so on), the way the Azure DevOps taskboard groups tasks under
+their story:
+
+```
+── User Stories (2) ──
+ ▾#3001    [Active]      Throttle repeated login failures   P1   1/3 done !101 1h ago
+  ├ #3011   [In Progress] Count failed logins per account   Alice Andersson
+  ├ #3013   [Done]        Design the lockout rule           Alice Andersson
+  └▾#3012   [To Do]       Tests for the lockout window      0/1 done  Alice Andersson
+    └ #3014   [To Do]       Cover the sixth attempt         Bob Brown
+```
+
+Everything under an item is fetched whatever its type or assignee, in one
+recursive query, so a story's tasks show even when someone else has them;
+those rows show the assignee in place of the priority and age. (On a server
+that won't run the recursive query, only direct children are shown.) An
+item whose parent is also in the list moves under that parent instead of
+having its own row. Every key works on a child row too (`gs`, `<CR>`, `ga`,
+...). The filter keeps a parent when it or anything under it matches.
+
+`za` (or `<Space>`) folds or unfolds the children of the item under the cursor (▾ open,
+▸ folded); on a child row it folds that child's parent and moves to it.
+`zR` unfolds everything and `zM` folds everything. `T` again turns the tree
+off. Whether it's on is remembered between sessions.
+
+### Progress
+
+An item with children shows how many are finished, e.g. `1/3 done`, with
+or without the tree. A child counts as done when its state is in the
+Completed category (Done, Closed); removed children aren't counted. The
+count turns green once everything is done.
+
+### Changing state (`gs`)
+
+`gs` opens a popup, from the list or the detail view:
+
+```
+Set #3001  User Story · Active
+  Throttle repeated login failures
+
+State:   ‹ Implemented ›   (1/4)
+Reason:  ‹ (default reason) ›
+
+[ ] Also set children (1 of 3)
+    [ ] #3011 Task  In Progress  (already In Progress)  Count failed logins per account
+    [ ] #3012 Task  To Do → In Progress  Tests for the lockout window
+    [ ] #3013 Task  Done → In Progress  Design the lockout rule
+
+<Space>/l, h: cycle or toggle   <CR>: apply   q: close
+```
+
+`State` offers only the states the item's workflow allows from its current
+one, and `Reason` the reasons ADO has recorded for that transition (plus
+the default and a free-text choice). Move the cursor to a row and cycle it
+with `<Space>`/`l` (forward) or `h` (back).
+
+"Also set children" starts unchecked. Children are often another type with
+their own state names (a Task has no "Resolved"), so each child is mapped
+by the state's category (Proposed, In Progress, Resolved, Completed,
+Removed): the same state if that child can move to it, otherwise the state
+in the same category it can move to. A child already there, or with no
+state in that category, is listed with the reason and can't be checked.
+Children that would move backwards (a Done task when the story goes back
+to Active) or that were removed start unchecked, but `<Space>` on a child
+checks it. `<Space>` on a child while the box is off picks just that child.
+
+**Several items at once:** select rows with `V` and press `gs`. The first
+selected item chooses the state and reason; every other selected item is
+listed under "Also set the other selected items" with the state it would
+move to, mapped the same way as children below, and starts checked. One of
+the same type going to the same state gets the same reason; the rest get
+their type's default.
+
+`<CR>` sets the item first and, only if that succeeds, its checked children,
+each with its type's default reason. A child that fails is reported on its
+own; the item's change stands. Grandchildren are included too, indented
+under their parent, and mapped the same way.
+
+### Linked pull requests
+
+A row with linked pull requests shows them after its priority: `!101`, or
+`!101 +2` when there are more. The detail view lists each one under **Pull
+Requests** with its status (active, draft, completed, abandoned), title,
+repository, branches and author:
+
+```
+Pull Requests (1)
+─────────────────
+  !101    active     Throttle failed logins
+           widgets  feature/login-throttle → main  ·  Alice Andersson
+```
+
+`gR` opens a linked PR, from the list or the detail view (`<CR>` on one of
+those lines in the detail view does the same). It opens in the reviewer when
+the PR dashboard's list has that PR, which is where the reviewer gets the
+PR's details. Otherwise, for example a completed PR or one you're not on, it
+opens in the browser. A PR the server won't return (deleted, or no access)
+is still listed, by its id alone.
+
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
 detail on success), `o` opens the browser, `<BS>` returns to the list, and
-`?` shows its keys. It also shows the item's discussion and any linked pull
-requests: `gc` posts a comment (shown at once, tagged "(sending…)" until the
+`?` shows its keys. It also shows the item's discussion and linked pull
+requests (above): `gc` posts a comment (shown at once, tagged "(sending…)" until the
 server confirms), `gl` links a pull request by id - resolving its org,
 project and repository from the PR dashboard's cache when it's known there,
 otherwise prompting for the repository name - and `gL` unlinks one, picked

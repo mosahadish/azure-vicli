@@ -79,6 +79,20 @@ WI_TRANSITIONS = {
     "Closed": ["Active"],
     "Removed": ["New"],
 }
+# Tasks follow their own (Scrum-style) workflow, so a story's state names
+# don't exist on its tasks - what gs's "also set children" maps across by
+# state category.
+WI_TASK_TRANSITIONS = {
+    "To Do": ["In Progress", "Done", "Removed"],
+    "In Progress": ["Done", "To Do", "Removed"],
+    "Done": ["In Progress", "To Do"],
+    "Removed": ["To Do"],
+}
+WI_STATES = {
+    "Task": [("To Do", "Proposed"), ("In Progress", "InProgress"), ("Done", "Completed"), ("Removed", "Removed")],
+    None: [("New", "Proposed"), ("Active", "InProgress"), ("Implemented", "InProgress"),
+           ("Resolved", "Resolved"), ("Closed", "Completed"), ("Removed", "Removed")],
+}
 WI_REASONS = {
     "Active": ["Implementation started", "Work started"],
     "Resolved": ["Code complete and unit tests pass", "Fixed"],
@@ -268,6 +282,21 @@ WI_FIXTURES = [
     {"id": 2999, "type": "Feature", "state": "Active", "title": "Account hardening",
      "assignedTo": "alice", "priority": 1, "tags": "security", "parentId": None, "sprint": None,
      "description": "Parent feature for the security stories.", "prs": [], "comments": []},
+    # #3001's tasks: alice's, so they stay off my dashboard like real tasks
+    # under a story usually do (the dashboard lists stories and bugs).
+    {"id": 3011, "type": "Task", "state": "In Progress", "title": "Count failed logins per account",
+     "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
+    {"id": 3012, "type": "Task", "state": "To Do", "title": "Tests for the lockout window",
+     "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
+    {"id": 3013, "type": "Task", "state": "Done", "title": "Design the lockout rule",
+     "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
+    # A grandchild: #3012's own sub-task.
+    {"id": 3014, "type": "Task", "state": "To Do", "title": "Cover the sixth attempt",
+     "assignedTo": "bob", "priority": 3, "tags": "", "parentId": 3012, "sprint": 1,
+     "description": "", "prs": [], "comments": []},
 ]
 
 
@@ -778,6 +807,14 @@ class Fake:
         print("Comment {0} (thread {1}) updated.".format(cid, tid))
         return 0
 
+    def cmd_work_items(self):
+        pid = self.pr_id()
+        for w in self.state["workitems"]:
+            if pid.isdigit() and int(pid) in w.get("prs", []):
+                print(json.dumps({k: w[k] for k in ("id", "type", "state", "title", "assignedTo")},
+                                 ensure_ascii=False))
+        return 0
+
     def cmd_vote(self, rest):
         if not self.need_pr():
             return 1
@@ -872,10 +909,21 @@ class Fake:
     def wi(self, wid):
         return next((w for w in self.state["workitems"] if str(w["id"]) == str(wid)), None)
 
+    def linked_pr(self, pid):
+        pr = next((p for p in self.state["prs"] if str(p["id"]) == str(pid)), None)
+        if pr is None:
+            return {"id": pid}
+        return {"id": pr["id"], "title": pr["title"], "isDraft": pr["isDraft"], "repo": pr["repo"],
+                "status": "completed" if pr.get("completed") else "active",
+                "source": pr["source"], "target": pr["target"], "author": PEOPLE[pr["author"]]["displayName"],
+                "url": "{0}/{1}/_git/{2}/pullrequest/{3}".format(ORG, PROJECT, pr["repo"], pr["id"])}
+
     def wi_list_record(self, w):
         return {"id": w["id"], "type": w["type"], "state": w["state"], "title": w["title"],
                 "assignedTo": w["assignedTo"], "priority": w.get("priority"), "tags": w.get("tags", ""),
-                "parentId": w.get("parentId"), "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
+                "parentId": w.get("parentId"), "pullRequests": [{"id": p} for p in w.get("prs", [])],
+                "childIds": [x["id"] for x in self.state["workitems"] if x.get("parentId") == w["id"]],
+                "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
                 "url": "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])}
 
     def sprint_meta(self, timeframe):
@@ -895,9 +943,33 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members"):
-            print("ERROR: selector must be current|next|sprints|items|members, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select), file=sys.stderr)
             return 1
+        if select == "tree":
+            roots = [int(x) for x in item_path.split(",") if x.strip().isdigit()]
+            if not roots:
+                print("ERROR: 'tree' needs a comma-separated list of work item ids", file=sys.stderr)
+                return 1
+            seen, queue = set(roots), list(roots)
+            while queue:
+                pid = queue.pop(0)
+                for x in self.state["workitems"]:
+                    if x.get("parentId") == pid and x["id"] not in seen:
+                        seen.add(x["id"])
+                        queue.append(x["id"])
+                        print(json.dumps(self.wi_list_record(x), ensure_ascii=False))
+            return 0
+        if select == "ids":
+            want = [x.strip() for x in item_path.split(",") if x.strip()]
+            if not want:
+                print("ERROR: 'ids' needs a comma-separated list of work item ids", file=sys.stderr)
+                return 1
+            for wid in want:
+                w = self.wi(wid)
+                if w is not None:
+                    print(json.dumps(self.wi_list_record(w), ensure_ascii=False))
+            return 0
         if select == "sprints":
             sprints = self.state["sprints"]
             ci = next(i for i, s in enumerate(sprints) if s["timeframe"] == "current") + 1
@@ -939,7 +1011,7 @@ class Fake:
                                           "changedDate", "priority", "areaPath", "iterationPath", "tags", "reason",
                                           "description", "acceptanceCriteria", "reproSteps")}
         item["url"] = "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])
-        item["pullRequests"] = [{"id": p} for p in w.get("prs", [])]
+        item["pullRequests"] = [self.linked_pr(p) for p in w.get("prs", [])]
         parent = self.wi(w["parentId"]) if w.get("parentId") else None
         children = [x for x in self.state["workitems"] if x.get("parentId") == w["id"]]
         print(json.dumps({"item": item, "parent": summary(parent) if parent else None,
@@ -954,8 +1026,15 @@ class Fake:
             if not a2:
                 print("ERROR: transitions needs <type>", file=sys.stderr)
                 return 1
-            for to in WI_TRANSITIONS.get(a3, []):
+            for to in (WI_TASK_TRANSITIONS if a2 == "Task" else WI_TRANSITIONS).get(a3, []):
                 print(to)
+            return 0
+        if cmd == "states":
+            if not a2:
+                print("ERROR: states needs <type>", file=sys.stderr)
+                return 1
+            for name, cat in WI_STATES.get(a2) or WI_STATES[None]:
+                print(name + "\t" + cat)
             return 0
         if cmd == "reasons":
             if not a2 or not a3:
@@ -978,7 +1057,7 @@ class Fake:
             self.ws.save(self.state)
             print(a3)
             return 0
-        print("usage: --wi-state transitions <type> <currentState> | reasons <type> <toState> | "
+        print("usage: --wi-state transitions <type> <currentState> | reasons <type> <toState> | states <type> | "
               "set <id> <newState> [reason]", file=sys.stderr)
         return 1
 
@@ -1103,6 +1182,7 @@ def dispatch(ws, argv, env):
         "--edit-comment": lambda: f.cmd_edit_comment(rest),
         "--delete-comment": lambda: f.cmd_edit_comment(rest, delete=True),
         "--vote": lambda: f.cmd_vote(rest),
+        "--work-items": lambda: f.cmd_work_items(),
         "--complete": lambda: f.cmd_complete(rest),
         "--auto-complete": lambda: f.cmd_auto_complete(rest),
         "--requeue": lambda: f.cmd_requeue(rest),

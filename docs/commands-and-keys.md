@@ -79,11 +79,12 @@ paste the output here after changing a default.
 | `last_pr` | `G` |
 | `open` | `<CR>` |
 | `open_build` | `gb` |
+| `open_workitem` | `gW` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `requeue_build` | `gr` |
 | `toasts` | `gN` |
-| `toggle_section` | `za` |
+| `toggle_section` | `za` / `<Space>` |
 | `vote` | `gv` |
 | `workitems` | `W` |
 
@@ -107,6 +108,7 @@ paste the output here after changing a default.
 | `next_file_with_comments` | `]C` |
 | `next_unviewed` | `]m` |
 | `open` | `<CR>` |
+| `open_workitem` | `gW` |
 | `pr_comment` | `gC` |
 | `prev_file_with_comments` | `[C` |
 | `prev_unviewed` | `[m` |
@@ -144,6 +146,7 @@ paste the output here after changing a default.
 | `next_hunk` | `]c` |
 | `next_unviewed` | `]m` |
 | `open_file` | `gf` |
+| `open_workitem` | `gW` |
 | `prev_comment` | `[C` |
 | `prev_hunk` | `[c` |
 | `prev_unviewed` | `[m` |
@@ -178,6 +181,7 @@ paste the output here after changing a default.
 | `ignore_ws` | `gw` |
 | `next_comment` | `]C` |
 | `open_commit` | `<CR>` |
+| `open_workitem` | `gW` |
 | `prev_comment` | `[C` |
 | `quit` | `q` |
 | `reply` | `R` |
@@ -209,9 +213,11 @@ paste the output here after changing a default.
 | `assign` | `ga` |
 | `browser` | `o` |
 | `click` | `<LeftMouse>` |
+| `collapse_all` | `zM` |
 | `config` | `gO` |
 | `copy_link` | `gy` |
 | `edit_title` | `ge` |
+| `expand_all` | `zR` |
 | `filter` | `/` |
 | `goto_sprint_n` | `gt` |
 | `help` | `?` |
@@ -220,12 +226,15 @@ paste the output here after changing a default.
 | `new` | `n` |
 | `next_sprint` | `]` / `<Tab>` |
 | `open` | `<CR>` |
+| `open_pr` | `gR` |
 | `pr_list` | `P` |
 | `prev_sprint` | `[` / `<S-Tab>` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `state` | `gs` |
+| `toggle_fold` | `za` / `<Space>` |
+| `tree` | `T` |
 | `unlink_pr` | `gL` |
 
 #### workitem_view
@@ -242,6 +251,7 @@ paste the output here after changing a default.
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
 | `open` | `<CR>` |
+| `open_pr` | `gR` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |

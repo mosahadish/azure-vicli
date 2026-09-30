@@ -1619,7 +1619,7 @@ class AzureDevOpsPullRequestSource:
 PR_ACTION_FLAGS = (
     "--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
-    "--edit-comment", "--delete-comment",
+    "--edit-comment", "--delete-comment", "--work-items",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -1816,6 +1816,41 @@ class PrActions:
 
     def fetch_iterations(self):
         return self._fetch_raw_list(self._pr_url("/iterations"), "fetch_iterations")
+
+    def fetch_work_items(self):
+        """--work-items: the work items linked to this PR, one NDJSON line
+        each ({id, type, state, title, assignedTo}) - the PR dashboard's and
+        the reviewer's way back to them. A batch read that fails still lists
+        the linked ids ({id})."""
+        try:
+            refs = self.fetch(self._pr_url("/workitems"), pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("fetch_work_items: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        except Exception as e:
+            print("fetch_work_items: {0}".format(e), file=sys.stderr)
+            return 1
+        ids = []
+        for r in ((refs or {}).get("value") or []):
+            try:
+                ids.append(int(r.get("id")))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return 0
+        try:
+            b = self.fetch("{0}/_apis/wit/workitemsbatch".format(self.org), method="POST", pat=self.pat,
+                           api_version="6.0", data={"ids": ids, "fields": [
+                               "System.Id", "System.WorkItemType", "System.State", "System.Title",
+                               "System.AssignedTo"]})
+            recs = [_wi_summary(wi) for wi in ((b or {}).get("value") or [])]
+        except Exception:
+            recs = []
+        if not recs:
+            recs = [{"id": i} for i in ids]
+        for rec in recs:
+            print(json.dumps(rec, ensure_ascii=False))
+        return 0
 
     def _fetch_raw_list(self, url, label):
         try:
@@ -2152,6 +2187,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.fetch_threads()
     if flag == "--iterations":
         return actions.fetch_iterations()
+    if flag == "--work-items":
+        return actions.fetch_work_items()
     if flag == "--reply":
         return actions.post_reply(arg(0), arg(1))
     if flag == "--status":
@@ -2376,13 +2413,17 @@ def _wi_list_record(wi, collection, project):
     """One --wi-list NDJSON line - mirrors wi-list.sh's per-item `rec` dict."""
     f = wi.get("fields") or {}
     parent = f.get("System.Parent")
+    rel_parent, child_ids = None, []
+    for rel in (wi.get("relations") or []):
+        m = re.search(r"/workItems/(\d+)$", rel.get("url", ""))
+        if not m:
+            continue
+        if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse" and rel_parent is None:
+            rel_parent = int(m.group(1))
+        elif rel.get("rel") == "System.LinkTypes.Hierarchy-Forward":
+            child_ids.append(int(m.group(1)))
     if not isinstance(parent, int):
-        for rel in (wi.get("relations") or []):
-            if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse":
-                m = re.search(r"/workItems/(\d+)$", rel.get("url", ""))
-                if m:
-                    parent = int(m.group(1))
-                    break
+        parent = rel_parent
     changed = str(f.get("System.ChangedDate", ""))
     return {
         "id": wi.get("id"),
@@ -2393,6 +2434,9 @@ def _wi_list_record(wi, collection, project):
         "priority": f.get("Microsoft.VSTS.Common.Priority"),
         "tags": str(f.get("System.Tags", "") or ""),
         "parentId": parent if isinstance(parent, int) else None,
+        "pullRequests": _wi_pr_ids_from_relations(wi.get("relations")),
+        # The dashboard's tree view (T) fetches these with --wi-list ids.
+        "childIds": child_ids,
         "changedIso": changed,
         "changedHuman": _wi_human(changed),
         "url": "{0}/{1}/_workitems/edit/{2}".format(collection, project, wi.get("id")),
@@ -2417,6 +2461,12 @@ def _wi_pr_ids_from_relations(relations):
     segment after the final %2F/%2f or plain "/" is the PR id) - mirrors
     wi-detail.sh's pr_ids_from_relations() exactly.
     """
+    return [{"id": pid} for _, _, pid in _wi_pr_refs_from_relations(relations)]
+
+
+def _wi_pr_refs_from_relations(relations):
+    """(projectGuid, repoGuid, prId) per linked pull request; either guid is
+    "" when the artifact URL doesn't carry it."""
     out = []
     for rel in (relations or []):
         if rel.get("rel") != "ArtifactLink":
@@ -2425,8 +2475,33 @@ def _wi_pr_ids_from_relations(relations):
         if not url.startswith("vstfs:///Git/PullRequestId/"):
             continue
         m = re.search(r"(?:%2[Ff]|/)([0-9]+)$", url)
-        if m:
-            out.append({"id": int(m.group(1))})
+        if not m:
+            continue
+        parts = re.split(r"%2[Ff]|/", url[len("vstfs:///Git/PullRequestId/"):])
+        proj, repo = (parts[0], parts[1]) if len(parts) == 3 else ("", "")
+        out.append((proj, repo, int(m.group(1))))
+    return out
+
+
+def _wi_pr_summary(pid, pr, collection):
+    """A linked PR for --wi-detail from its GET pullrequests/{id} response:
+    enough for the detail view's Pull Requests block and to open it."""
+    repo = pr.get("repository") or {}
+    proj = (repo.get("project") or {}).get("name", "")
+    strip = lambda ref: re.sub(r"^refs/heads/", "", ref or "")  # noqa: E731
+    out = {
+        "id": pid,
+        "title": re.sub(r"\s+", " ", str(pr.get("title", "")).strip()),
+        "status": str(pr.get("status", "")),
+        "isDraft": bool(pr.get("isDraft")),
+        "repo": repo.get("name", ""),
+        "source": strip(pr.get("sourceRefName")),
+        "target": strip(pr.get("targetRefName")),
+        "author": _wi_assigned_str(pr.get("createdBy", "")),
+    }
+    if proj and out["repo"]:
+        out["url"] = "{0}/{1}/_git/{2}/pullrequest/{3}".format(
+            collection, urllib.parse.quote(proj), urllib.parse.quote(out["repo"]), pid)
     return out
 
 
@@ -2620,13 +2695,17 @@ class WorkItemActions:
         return self._get(url)
 
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members"):
-            print("ERROR: selector must be current|next|sprints|items|members, got '{0}'".format(select),
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select),
                   file=sys.stderr)
             return 1
         if select == "items" and not item_path:
             print("ERROR: 'items' needs an iteration path", file=sys.stderr)
             return 1
+        if select == "ids":
+            return self._wi_list_ids(item_path)
+        if select == "tree":
+            return self._wi_list_tree(item_path)
 
         if select == "sprints":
             return self._wi_list_sprints()
@@ -2715,6 +2794,55 @@ class WorkItemActions:
             chunk = ids[i:i + 200]
             try:
                 r = self._post(batch_url, {"ids": chunk, "$expand": "relations"})
+            except AdoHttpError as e:
+                return self._list_style_error(e, "POST")
+            for wi in ((r or {}).get("value") or []):
+                print(json.dumps(_wi_list_record(wi, self.collection, self.project), ensure_ascii=False))
+        return 0
+
+    def _wi_list_ids(self, ids_arg):
+        """--wi-list ids 1,2,3: those items as list records, whoever they're
+        assigned to and whatever their type - the tree view's children."""
+        ids = [int(x) for x in (ids_arg or "").split(",") if x.strip().isdigit()]
+        if not ids:
+            print("ERROR: 'ids' needs a comma-separated list of work item ids", file=sys.stderr)
+            return 1
+        return self._wi_print_records(ids)
+
+    def _wi_list_tree(self, ids_arg):
+        """--wi-list tree 1,2,3: everything under those items - children,
+        their children and so on - as list records (each with its parentId),
+        in one recursive WIQL link query plus the batch read. The roots
+        themselves aren't printed."""
+        roots = [int(x) for x in (ids_arg or "").split(",") if x.strip().isdigit()]
+        if not roots:
+            print("ERROR: 'tree' needs a comma-separated list of work item ids", file=sys.stderr)
+            return 1
+        wiql = {"query": (
+            "SELECT [System.Id] FROM WorkItemLinks\\n"
+            "WHERE ([Source].[System.Id] IN ({0}))\\n"
+            "  AND ([System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward')\\n"
+            "MODE (Recursive)"
+        ).format(",".join(str(r) for r in roots))}
+        try:
+            resp = self._post("{0}/{1}/_apis/wit/wiql".format(self.collection, self.project), wiql)
+        except AdoHttpError as e:
+            return self._list_style_error(e, "POST")
+        seen, ids = set(roots), []
+        for rel in ((resp or {}).get("workItemRelations") or []):
+            target = (rel.get("target") or {}).get("id")
+            if rel.get("source") and isinstance(target, int) and target not in seen:
+                seen.add(target)
+                ids.append(target)
+        if not ids:
+            return 0
+        return self._wi_print_records(ids)
+
+    def _wi_print_records(self, ids):
+        batch_url = "{0}/_apis/wit/workitemsbatch".format(self.collection)
+        for i in range(0, len(ids), 200):
+            try:
+                r = self._post(batch_url, {"ids": ids[i:i + 200], "$expand": "relations"})
             except AdoHttpError as e:
                 return self._list_style_error(e, "POST")
             for wi in ((r or {}).get("value") or []):
@@ -2850,7 +2978,7 @@ class WorkItemActions:
             "acceptanceCriteria": html_to_text(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")),
             "reproSteps": html_to_text(f.get("Microsoft.VSTS.TCM.ReproSteps", "")),
             "url": "{0}/{1}/_workitems/edit/{2}".format(self.collection, self.project, full.get("id")),
-            "pullRequests": _wi_pr_ids_from_relations(full.get("relations")),
+            "pullRequests": self._wi_linked_prs(full.get("relations")),
         }
 
         try:
@@ -2867,6 +2995,27 @@ class WorkItemActions:
         }
         print(json.dumps(out, ensure_ascii=False))
         return 0
+
+    def _wi_linked_prs(self, relations):
+        """The item's linked PRs with their title/status/branches, one GET
+        each on the repo route (api-version 6.0, like every PR call here).
+        A PR that can't be read - deleted, no access, an older server - is
+        still listed, by id alone."""
+        out = []
+        for proj, repo, pid in _wi_pr_refs_from_relations(relations):
+            if not (proj and repo):
+                out.append({"id": pid})
+                continue
+            url = "{0}/{1}/_apis/git/repositories/{2}/pullrequests/{3}".format(self.collection, proj, repo, pid)
+            try:
+                pr = self._get(url, api_version="6.0")
+            except (AdoHttpError, AdoTransportError):
+                pr = None
+            if isinstance(pr, dict) and pr.get("title") is not None:
+                out.append(_wi_pr_summary(pid, pr, self.collection))
+            else:
+                out.append({"id": pid})
+        return out
 
     def _fetch_comments(self, wid):
         """GET .../workItems/{id}/comments, oldest first. Older on-prem TFS
@@ -2909,10 +3058,12 @@ class WorkItemActions:
             return self._wi_transitions(a2, a3)
         if cmd == "reasons":
             return self._wi_reasons(a2, a3)
+        if cmd == "states":
+            return self._wi_states(a2)
         if cmd == "set":
             return self._wi_set_state(a2, a3, a4)
         print("usage: --wi-state transitions <type> <currentState> | "
-              "reasons <type> <toState> | set <id> <newState> [reason]", file=sys.stderr)
+              "reasons <type> <toState> | states <type> | set <id> <newState> [reason]", file=sys.stderr)
         return 1
 
     def _wi_transitions(self, wtype, cur):
@@ -2931,6 +3082,28 @@ class WorkItemActions:
             if to and to != cur and to not in seen:
                 seen.add(to)
                 print(to)
+        return 0
+
+    def _wi_states(self, wtype):
+        """One "name<TAB>category" line per state of `wtype`, in workflow
+        order. The category (Proposed/InProgress/Resolved/Completed/Removed)
+        is how gs maps a parent's new state onto children of another type,
+        whose state names differ; a server too old to report it prints the
+        bare name and the Lua side falls back to matching names only."""
+        if not wtype:
+            print("ERROR: states needs <type>", file=sys.stderr)
+            return 1
+        url = "{0}/{1}/_apis/wit/workitemtypes/{2}".format(self.collection, self.project, urllib.parse.quote(wtype))
+        try:
+            d = self._get(url)
+        except AdoHttpError as e:
+            return self._state_style_error(e, "GET")
+        for st in (d.get("states") or []):
+            name = st.get("name") if isinstance(st, dict) else None
+            if not name:
+                continue
+            cat = st.get("category") or ""
+            print(name + ("\t" + cat if cat else ""))
         return 0
 
     def _wi_reasons(self, wtype, state):

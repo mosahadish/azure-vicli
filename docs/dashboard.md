@@ -21,7 +21,7 @@ show up here.
 Signed off and Drafts start collapsed (`── Signed off (5) ── (collapsed)`,
 no rows shown) - configurable via `setup({collapsed_sections={...}})`, see
 [setup() options](configuration.md#setup-options); Mentions/Actionable/Waiting/Created stay
-open by default. `za` on a section header toggles it, `zR` expands every
+open by default. `za` (or `<Space>`) on a section header toggles it, `zR` expands every
 section and `zM` collapses every section; the state persists for the rest
 of the session (even across a W/P dashboard swap). If the cursor's PR is in
 a section that gets collapsed, the cursor lands on that section's header
@@ -54,12 +54,13 @@ solves the widths; see its own header comment for the exact rules).
 | `gv` | Vote |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
 | `gr` | Re-queue build validation |
-| `za` | Toggle collapse on the section header under the cursor |
+| `za` / `<Space>` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
 | `zM` | Collapse every section |
 | `gN` | Toggle desktop notifications for this session |
 | `gO` | Open the config file |
 | `r` | Refresh |
+| `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view and `gs` changes its state. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `W` | Switch to the work-items dashboard |
 | `q` | Quit |
 
