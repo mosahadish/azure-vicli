@@ -20,6 +20,7 @@ azure-vicli ships no agent configuration; you choose the agent and model
 
 - [Using it](#using-it)
 - [Setting it up](#setting-it-up)
+- [Let the agent set itself up](#let-the-agent-set-itself-up)
 - [What the agent can do](#what-the-agent-can-do)
 - [How it works](#how-it-works)
 
@@ -124,6 +125,62 @@ agent = {
 ```
 
 Without a session id it still works; each message replays the conversation.
+
+### Let the agent set itself up
+
+You can hand this section to the agent itself (Copilot, Claude Code, ...)
+and it can do the setup for you: open the agent in this repository and tell
+it **"follow the agent setup steps in docs/chat.md"**.
+
+**Agent setup steps.** You are configuring yourself as azure-vicli's chat
+agent. Do every step, check every flag against the installed CLI instead of
+guessing, and finish by telling the user what you wrote and anything you
+couldn't confirm.
+
+1. **Find your own CLI flags** (`<your-cli> --help`, plus your docs) for this
+   installed version:
+   - a one-shot, non-interactive prompt (e.g. `-p`), and whether the prompt
+     can come from stdin instead of an argument;
+   - adding an MCP server config from a JSON file for one run. azure-vicli
+     writes `{"mcpServers": {"azure-vicli": {"command", "args", "env"}}}`
+     and passes its path as `{mcp_config}`. Claude Code uses
+     `--mcp-config {mcp_config}`; Copilot's equivalent is likely
+     `--additional-mcp-config @{mcp_config}`;
+   - allowing every tool of the MCP server named `azure-vicli` without
+     prompting. A headless run can't prompt, so this is required. Prefer a
+     per-server allow (Claude Code: `--allowedTools mcp__azure-vicli`) over
+     allowing all tools, and never allow shell or file-writing tools for
+     this. azure-vicli asks the user itself before votes and state changes;
+   - choosing a model, and the valid model names;
+   - whether a non-interactive run reports a session id (stdout, stderr, or
+     a JSON field), and how to resume that session (e.g. `--resume <id>`).
+2. **Decide how the prompt is passed.** azure-vicli's message has several
+   lines. On Windows, an npm-installed CLI is a `.cmd` shim that cuts
+   arguments at the first newline, so pass the prompt on stdin
+   (`stdin = "{message}"`) whenever the CLI can read it from there.
+   Otherwise put `"{message}"` in `cmd`.
+3. **Find where the user's options live.** If their Neovim config calls
+   `require("azure-cli").setup({...})`, edit that call. Otherwise it's the
+   standalone launcher's `azure-cli.lua` next to `azure-cli.yml`:
+   `%APPDATA%\azure-cli.lua` on Windows, `~/.config/azure-cli.lua`
+   elsewhere. Create it with `return { ... }` if it doesn't exist. Keep
+   everything already there.
+4. **Write the `chat` block** (the fields are in the table above), shaped like
+   the examples in this file:
+   `chat = { agent = { label, models, cmd, stdin, followup, session_pattern } }`.
+   Use `{model}` where the model flag goes, and list the model names from
+   step 1 in `models`. Add `followup` (the same command plus the resume flag
+   with `{session_id}`) only if step 1 found a session id. If the CLI prints
+   it rather than returning JSON, also add a `session_pattern`: a Lua
+   pattern whose one capture is the id. Without a session id, leave
+   `followup` out; every message then replays the conversation, which
+   works.
+5. **Test the command by hand**: run it once with a short prompt and the
+   flags you chose (no MCP config needed for this), to see that it answers
+   and, if it should, prints a session id where you expect it.
+6. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `gq`
+   on the PR dashboard and ask "what am I looking at?". The answer should
+   name the PR under the cursor, which shows the azure-vicli tools work.
 
 ## What the agent can do
 
