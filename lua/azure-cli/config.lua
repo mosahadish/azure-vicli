@@ -22,6 +22,7 @@ local DEFAULT_KEYS = {
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
+    agent = "gX", agent_results = "gz",
   },
   -- Reviewer file list.
   list = {
@@ -34,6 +35,7 @@ local DEFAULT_KEYS = {
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
+    agent = "gX", agent_results = "gz",
   },
   -- Reviewer diff pane.
   diff = {
@@ -50,6 +52,8 @@ local DEFAULT_KEYS = {
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
+    agent = "gX", agent_results = "gz", agent_accept = "ga",
+    next_suggestion = "]a", prev_suggestion = "[a",
   },
   -- Reviewer Overview page.
   overview = {
@@ -61,6 +65,13 @@ local DEFAULT_KEYS = {
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
+    agent = "gX", agent_results = "gz", agent_accept = "ga",
+    next_suggestion = "]a", prev_suggestion = "[a",
+  },
+  -- Reviewer Agent page (an agent action's result - see docs/agents.md).
+  agent = {
+    open = "<CR>", accept = "ga", next_suggestion = "]a", prev_suggestion = "[a",
+    runs = "gz", run = "gX", back = "<BS>", help = "?", quit = "q",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
@@ -162,8 +173,61 @@ local DEFAULT_ROW_NUMBERS = "relative"
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
-  row_numbers = DEFAULT_ROW_NUMBERS,
+  row_numbers = DEFAULT_ROW_NUMBERS, agent_actions = {},
 }
+
+-- setup({agent_actions=...}): name -> action, run headless against a PR by
+-- gX (lua/azure-cli/agent.lua; docs/agents.md has the details and
+-- examples). None ship by default. Each action is validated field by field
+-- here so a typo fails at setup() rather than when the job starts.
+local AGENT_FIELDS = {
+  label = "string", description = "string", prompt = "string", stdin = "string",
+  workspace = "string", timeout_seconds = "number", env = "table",
+}
+local function validate_agent_actions(actions)
+  if type(actions) ~= "table" then
+    error("azure-cli.setup: `agent_actions` must be a table of name -> action")
+  end
+  for name, a in pairs(actions) do
+    local where = "agent_actions." .. tostring(name)
+    if type(name) ~= "string" or name == "" then
+      error("azure-cli.setup: `agent_actions` must be keyed by action name (a string)")
+    end
+    if type(a) ~= "table" then error("azure-cli.setup: " .. where .. " must be a table") end
+    for k, v in pairs(a) do
+      if k == "cmd" then
+        if type(v) == "table" then
+          if #v == 0 then error("azure-cli.setup: " .. where .. ".cmd is an empty list") end
+          for _, part in ipairs(v) do
+            if type(part) ~= "string" then
+              error("azure-cli.setup: " .. where .. ".cmd must be a list of strings")
+            end
+          end
+        elseif type(v) ~= "string" or v == "" then
+          error("azure-cli.setup: " .. where .. ".cmd must be a list of strings or a shell command string")
+        end
+      elseif k == "when" then
+        if type(v) ~= "function" and v ~= "always" and v ~= "author" and v ~= "reviewer" then
+          error("azure-cli.setup: " .. where .. ".when must be \"always\", \"author\", \"reviewer\" or a function")
+        end
+      elseif AGENT_FIELDS[k] then
+        if type(v) ~= AGENT_FIELDS[k] then
+          error("azure-cli.setup: " .. where .. "." .. k .. " must be a " .. AGENT_FIELDS[k])
+        end
+      else
+        error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. where)
+      end
+    end
+    if a.cmd == nil then error("azure-cli.setup: " .. where .. " needs a `cmd`") end
+    if a.workspace ~= nil and a.workspace ~= "worktree" and a.workspace ~= "repo" and a.workspace ~= "none" then
+      error("azure-cli.setup: " .. where .. ".workspace must be \"worktree\", \"repo\" or \"none\"")
+    end
+    if a.timeout_seconds ~= nil and a.timeout_seconds <= 0 then
+      error("azure-cli.setup: " .. where .. ".timeout_seconds must be positive")
+    end
+  end
+  return actions
+end
 
 local resolved = nil  -- set by M.setup(); M.get() falls back to DEFAULTS until then
 
@@ -428,6 +492,8 @@ function M.setup(opts)
     -- export from an earlier setup() call in this session must not linger).
     vim.env.AZVICLI_ACCOUNTS_JSON = nil
   end
+  local agent_actions = DEFAULTS.agent_actions
+  if opts.agent_actions ~= nil then agent_actions = validate_agent_actions(opts.agent_actions) end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
@@ -438,6 +504,7 @@ function M.setup(opts)
     notifications = opts.notifications or DEFAULTS.notifications,
     collapsed_sections = collapsed_sections,
     row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
+    agent_actions = agent_actions,
   }
   -- cached_prs/threads_ttl_seconds apply straight to cache.lua's own
   -- M.MAX_PRS/M.THREADS_TTL fields, which every read site there already
@@ -474,10 +541,11 @@ end
 -- over so the file can never drift from the code. Surfaces come out in the
 -- README's order, actions alphabetically, so a diff of two generated files
 -- is meaningful. Multi-key defaults render as Lua lists.
-local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view" }
+local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "agent", "nav", "workitems", "workitem_view" }
 local SURFACE_TITLES = {
   dashboard = "Pull-request dashboard", list = "Reviewer: file list", diff = "Reviewer: diff pane",
-  overview = "Reviewer: Overview page", nav = "Reviewer: gd/gr/gf revision buffers and peek",
+  overview = "Reviewer: Overview page", agent = "Reviewer: Agent page (agent action results)",
+  nav = "Reviewer: gd/gr/gf revision buffers and peek",
   workitems = "Work-items dashboard", workitem_view = "Work-item detail view",
 }
 local function lua_literal(v)
@@ -538,6 +606,11 @@ function M.render_options()
   w("  collapsed_sections = " .. lua_literal(DEFAULTS.collapsed_sections) .. ",")
   w("  -- Row numbers inside the dashboards: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
   w("  row_numbers = " .. lua_literal(DEFAULTS.row_numbers) .. ",")
+  w("  -- Agent actions gX runs against a PR (none by default) - see docs/agents.md:")
+  w("  -- agent_actions = {")
+  w("  --   triage = { label = \"Triage review comments\", stdin = \"/triage-comments {context_dir}\",")
+  w("  --              cmd = { \"claude\", \"-p\", \"--output-format\", \"text\" } },")
+  w("  -- },")
   w("  -- python = \"/path/to/python\",       -- interpreter for azure-cli.py (default: python3, else python)")
   w("  -- config = \"~/other/azure-cli.yml\",  -- a different config file")
   w("}")

@@ -221,6 +221,20 @@ cleanly; a failed submit leaves it on with just the failures still queued,
 so `gS` again retries only those. The queue survives leaving and
 re-opening the same PR within one nvim session.
 
+### Agent actions
+
+`gX` (file list, diff pane or Overview) runs one of your configured
+[agent actions](agents.md) on the PR in the background. From the diff pane
+the action also learns the file and line under the cursor, and the thread on
+it. `gz` opens the **Agent page** in the diff pane: the agent's answer, then
+its suggestions (replies to threads, new comments). `<CR>` on a suggestion
+goes to its thread or line, and `]a`/`[a` step between suggestions. `ga`
+drafts one: batch review turns on and the comment editor opens prefilled, so
+what you submit is queued for `gS`, never sent straight away. The same
+suggestions show as virtual lines under their threads and lines in the diff
+pane and on the Overview, where `ga`/`]a`/`[a` work too. See
+[Agent actions](agents.md) for setting actions up.
+
 ### Changes since my last review
 
 `gi` (file list, diff pane or Overview) toggles showing only what's been

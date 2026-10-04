@@ -76,7 +76,7 @@ SH_FILES=(azure-cli install.sh tests/demo.sh)
 # pure helpers (for its tests/test-review-*.lua) and a callable
 # `require(path)(ctx)` (for review/init.lua's EXT wiring) via a __call
 # metamethod.
-ALLOWED_GLOBALS=(_G debug dofile error ipairs math os pairs pcall require select setmetatable string table tonumber tostring type vim)
+ALLOWED_GLOBALS=(_G debug dofile error ipairs math next os pairs pcall require select setmetatable string table tonumber tostring type vim)
 
 mkdir -p "$TMP/lua" "$TMP/sh"
 
@@ -242,6 +242,8 @@ STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
 STATE_DIALOG_LUA="$TMP/lua/lua/azure-cli/workitems/state_dialog.lua"
 LINKED_PRS_LUA="$TMP/lua/lua/azure-cli/workitems/linked_prs.lua"
 PR_WORKITEMS_LUA="$TMP/lua/lua/azure-cli/pr_workitems.lua"
+AGENT_LUA="$TMP/lua/lua/azure-cli/agent.lua"
+REVIEW_AGENT_LUA="$TMP/lua/lua/azure-cli/review/agent.lua"
 
 # test-split.lua wants a real, multi-file range - use this repo's own
 # history rather than the tiny scratch repo above. When there is nothing
@@ -305,6 +307,7 @@ run_lua_test test-pr-workitems.lua "$REPO_ROOT" "$PR_WORKITEMS_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
+run_lua_test test-agent.lua "$REPO_ROOT" "$AGENT_LUA" "$REVIEW_AGENT_LUA"
 
 echo
 echo "== 5. python tests (azure-cli.py) =="
@@ -468,6 +471,11 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
   else
     fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
+  fi
+  if [[ "$out" == *AGENT-SMOKE-OK* ]]; then
+    pass "smoke: gX runs an agent action headless, gz shows its result, ga drafts a suggestion into the batch queue"
+  else
+    fail "smoke: gX runs an agent action headless, gz shows its result, ga drafts a suggestion into the batch queue" "$out"
   fi
   if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
     pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"

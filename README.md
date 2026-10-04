@@ -35,8 +35,8 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - [Running](#running)
 - [License](#license)
 - Docs: [dashboard](docs/dashboard.md) · [reviewer](docs/reviewer.md) ·
-  [work items](docs/work-items.md) · [commands and keys](docs/commands-and-keys.md) ·
-  [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
+  [work items](docs/work-items.md) · [agent actions](docs/agents.md) ·
+  [commands and keys](docs/commands-and-keys.md) · [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
   [development](docs/development.md)
 
 ## Requirements
@@ -154,6 +154,10 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   and follow-up views, per-commit diffs and no-LSP code navigation.
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
   assignee, priority, sprint moves, discussion and PR links.
+- **[Agent actions](docs/agents.md)** - run Claude Code, the Copilot CLI or
+  any command on a PR in the background (triage the review comments, review
+  the change, ...); read the answer in the reviewer and turn its suggested
+  replies into batch-review drafts with one key.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

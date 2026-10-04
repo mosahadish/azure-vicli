@@ -614,5 +614,129 @@ if not both("gl on PR #104 didn't show #3001 on both dashboards", function()
   return row_text(dash, 104):find("#3002 +1", 1, true) and row_text(wis, 3001):find("!101 +1", 1, true)
 end) then return end
 print("LINK-SMOKE-OK")
+
+-- Agent actions (lua/azure-cli/agent.lua, review/agent.lua): tests/fake-
+-- agent.py stands in for Claude Code. gX on PR #101's dashboard row runs it
+-- in the background; the row shows the new-result badge; gz in the reviewer
+-- opens the Agent page with its markdown and three suggestions; ga on the
+-- thread suggestion drafts the reply into the batch queue (nothing posted);
+-- the suggestion also shows inline under its thread in auth.py's diff.
+do
+  local AG = require("azure-cli.agent")
+  local fake_agent = require("azure-cli.config").plugin_root() .. "/tests/fake-agent.py"
+  require("azure-cli").setup({ agent_actions = {
+    triage = { label = "Fake triage", cmd = { "python3", fake_agent, "pr={pr_id}", "thread={thread_id}" },
+      stdin = "triage {context_dir}", timeout_seconds = 60 },
+  } })
+  -- vim.ui.select would block a headless nvim: answer with the first
+  -- entry whose label contains `want`.
+  local want
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      local label = opts.format_item and opts.format_item(it) or tostring(it)
+      if want and label:find(want, 1, true) then return cb(it, i) end
+    end
+    return cb(nil)
+  end
+
+  vim.cmd("tab sbuffer " .. dash)
+  local r101
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("#101 ", 1, true) then r101 = i break end
+  end
+  vim.api.nvim_win_set_cursor(0, { r101, 0 })
+  want = "Fake triage"
+  feed("gX")
+  ok = vim.wait(30000, function() return AG.state("101") == "unread" end, 100)
+  if not ok then return fail("gX's fake agent never finished: state " .. tostring(AG.state("101"))) end
+  local run = AG.runs("101")[1]
+  local body = table.concat(run.lines or {}, "\n")
+  if run.status ~= "done" or not body:find("FAKE-AGENT-RAN", 1, true) then
+    return fail("the agent run didn't succeed: " .. vim.inspect(run))
+  end
+  if not body:find("prompt: pr=101 thread=", 1, true) or not body:find("stdin: triage " .. run.dir, 1, true)
+      or not body:find("worktree HEAD: HEAD", 1, true) or not body:find("diff touches auth.py: True", 1, true) then
+    return fail("the agent didn't see its prompt/stdin/worktree/diff:\n" .. body)
+  end
+  if #run.items ~= 3 or run.items[1].kind ~= "thread" or run.items[1].file ~= "src/auth.py"
+      or run.items[2].kind ~= "line" or run.items[3].kind ~= "pr" then
+    return fail("the agent's suggestions weren't parsed/annotated: " .. vim.inspect(run.items))
+  end
+  if body:find("```json", 1, true) then return fail("the json block was left in the markdown:\n" .. body) end
+  local badge = vim.wait(5000, function()
+    return vim.api.nvim_buf_get_lines(dash, r101 - 1, r101, false)[1]:find("\u{2726}", 1, true) ~= nil
+  end, 50)
+  if not badge then return fail("PR #101's row has no new-result badge", dash) end
+  print("== agent result ==")
+  print(body)
+
+  require("azure-cli").open_review(101)
+  local lb = find_buf("azurecli-files")
+  ok = vim.wait(15000, function() lb = find_buf("azurecli-files") return lb ~= nil and vim.fn.bufwinid(lb) ~= -1 end, 100)
+  if not ok then return fail("the reviewer didn't come back for PR #101") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(lb))
+  feed("gz")
+  local page
+  ok = vim.wait(5000, function()
+    page = vim.api.nvim_get_current_buf()
+    return vim.bo[page].filetype == "markdown" and text(page):find("## Suggestions (3)", 1, true) ~= nil
+  end, 50)
+  if not ok then return fail("gz didn't open the Agent page", vim.api.nvim_get_current_buf()) end
+  if AG.state("101") ~= nil then return fail("showing the result didn't mark it read") end
+  print("== Agent page ==")
+  print(text(page))
+
+  -- ga on the thread suggestion: the reply editor opens prefilled; <C-s>
+  -- queues it (batch mode switched on), nothing is sent.
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(page, 0, -1, false)) do
+    if l:find("\u{25B8} thread #", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+  end
+  feed("ga")
+  local ed
+  ok = vim.wait(5000, function()
+    ed = vim.api.nvim_get_current_buf()
+    return text(ed):find("Good point - I'll return a reason code.", 1, true) ~= nil
+  end, 50)
+  if not ok then return fail("ga didn't open the reply editor prefilled", ed) end
+  feed("<C-s>")
+  local b = require("azure-cli.state").batch["101"]
+  ok = vim.wait(5000, function()
+    b = require("azure-cli.state").batch["101"]
+    return b and b.on and #b.items == 1 and b.items[1].kind == "reply"
+  end, 50)
+  if not ok then return fail("ga's reply wasn't queued in the batch: " .. vim.inspect(b)) end
+  if not run.items[1].accepted then return fail("the suggestion isn't marked drafted") end
+  for l in io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a"):gmatch("[^\n]+") do
+    if l:find("--reply", 1, true) then return fail("a drafted suggestion was posted: " .. l) end
+  end
+
+  -- <CR> on the suggestion goes to its thread in auth.py's diff, where it
+  -- shows inline (now "drafted") on the thread's own line.
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(page))
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(page, 0, -1, false)) do
+    if l:find("\u{25B8} thread #", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+  end
+  feed("<CR>")
+  local inline
+  ok = vim.wait(10000, function()
+    local bnr = vim.api.nvim_get_current_buf()
+    local ns = vim.api.nvim_get_namespaces()["azure_cli_agent_suggest"]
+    if not ns or not vim.api.nvim_buf_get_name(bnr) and false then return false end
+    local cur = vim.api.nvim_win_get_cursor(0)[1]
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(bnr, ns, 0, -1, { details = true })) do
+      for _, vl in ipairs(m[4].virt_lines or {}) do
+        if vl[1][1]:find("Fake triage", 1, true) and vl[1][1]:find("drafted", 1, true) and m[2] == cur - 1 then
+          inline = vl[1][1]
+          return true
+        end
+      end
+    end
+  end, 100)
+  if not ok then return fail("<CR> didn't land on the thread's line with the suggestion inline", vim.api.nvim_get_current_buf()) end
+  print("inline: " .. inline)
+  vim.ui.select = real_select
+  print("AGENT-SMOKE-OK")
+end
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")
