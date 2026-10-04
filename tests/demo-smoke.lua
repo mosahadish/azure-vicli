@@ -625,8 +625,13 @@ do
   local AG = require("azure-cli.agent")
   local fake_agent = require("azure-cli.config").plugin_root() .. "/tests/fake-agent.py"
   require("azure-cli").setup({ agent_actions = {
-    triage = { label = "Fake triage", cmd = { "python3", fake_agent, "pr={pr_id}", "thread={thread_id}" },
-      stdin = "triage {context_dir}", timeout_seconds = 60 },
+    -- Like Claude Code: a JSON envelope with a session id, resumed by the
+    -- follow-up command.
+    triage = { label = "Fake triage", cmd = { "python3", fake_agent, "--json", "pr={pr_id}", "thread={thread_id}" },
+      stdin = "triage {context_dir}", timeout_seconds = 60,
+      followup = { cmd = { "python3", fake_agent, "--resume", "{session_id}" }, stdin = "{message}" } },
+    -- No followup: a follow-up replays the conversation to it.
+    plain = { label = "Plain agent", cmd = { "python3", fake_agent }, stdin = "look at {pr_id}", timeout_seconds = 60 },
   } })
   -- vim.ui.select would block a headless nvim: answer with the first
   -- entry whose label contains `want`.
@@ -735,6 +740,63 @@ do
   end, 100)
   if not ok then return fail("<CR> didn't land on the thread's line with the suggestion inline", vim.api.nvim_get_current_buf()) end
   print("inline: " .. inline)
+
+  -- R on the Agent page: a follow-up resumes the agent's session (the id
+  -- came from its JSON envelope) and the answer, with its own suggestion,
+  -- lands on the same page.
+  if run.session_id ~= "fake-session-1" then return fail("no session id from the envelope: " .. tostring(run.session_id)) end
+  local function ask(message)
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(page))
+    feed("R")
+    local eb
+    ok = vim.wait(5000, function()
+      eb = vim.api.nvim_get_current_buf()
+      return eb ~= page and vim.bo[eb].buftype ~= "" and vim.api.nvim_win_get_config(0).relative ~= ""
+    end, 50)
+    if not ok then return fail("R didn't open the follow-up editor") end
+    vim.api.nvim_buf_set_lines(eb, 0, -1, false, { message })
+    feed("<C-s>")
+    return true
+  end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(lb))
+  feed("gz")
+  ok = vim.wait(5000, function() return vim.api.nvim_get_current_buf() == page end, 50)
+  if not ok then return fail("gz didn't bring the Agent page back") end
+  if not ask("why does it need a fix?") then return end
+  ok = vim.wait(30000, function()
+    local c = run.conversation and run.conversation[1]
+    return c and c.status ~= "running" and text(page):find("FAKE-FOLLOWUP-RAN", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the resumed follow-up never answered on the page", page) end
+  local pt = text(page)
+  if not pt:find("resumed session: fake-session-1", 1, true) or not pt:find("you asked: why does it need a fix?", 1, true)
+      or not pt:find("## You", 1, true) or not pt:find("### Suggestions (1)", 1, true) or #run.items ~= 4
+      or run.items[4].turn ~= 1 or run.conversation[1].mode ~= "resume" then
+    return fail("the resumed follow-up's answer isn't right: " .. vim.inspect(run.conversation), page)
+  end
+
+  -- An action without a followup: the follow-up replays the conversation.
+  want = "Plain agent"
+  feed("gX")
+  local plain
+  ok = vim.wait(30000, function()
+    plain = AG.runs("101")[1]
+    return plain.action == "plain" and plain.status == "done" and text(page):find("Plain agent", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("gX on the Agent page didn't run and show the plain agent", page) end
+  if not ask("and now?") then return end
+  ok = vim.wait(30000, function()
+    local c = plain.conversation and plain.conversation[1]
+    return c and c.status ~= "running" and text(page):find("FAKE-REPLAY-RAN", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the replayed follow-up never answered on the page", page) end
+  pt = text(page)
+  if not pt:find("saw my earlier answer: True", 1, true) or not pt:find("question: and now?", 1, true)
+      or not pt:find("replayed the conversation", 1, true) then
+    return fail("the replayed follow-up didn't carry the conversation", page)
+  end
+  print("== Agent page after follow-ups ==")
+  print(pt)
   vim.ui.select = real_select
   print("AGENT-SMOKE-OK")
 end

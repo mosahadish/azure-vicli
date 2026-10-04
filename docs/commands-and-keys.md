@@ -225,6 +225,7 @@ paste the output here after changing a default.
 | `open` | `<CR>` |
 | `prev_suggestion` | `[a` |
 | `quit` | `q` |
+| `reply` | `R` |
 | `run` | `gX` |
 | `runs` | `gz` |
 

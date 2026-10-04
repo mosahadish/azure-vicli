@@ -228,7 +228,8 @@ re-opening the same PR within one nvim session.
 the action also learns the file and line under the cursor, and the thread on
 it. `gz` opens the **Agent page** in the diff pane: the agent's answer, then
 its suggestions (replies to threads, new comments). `<CR>` on a suggestion
-goes to its thread or line, and `]a`/`[a` step between suggestions. `ga`
+goes to its thread or line, `]a`/`[a` step between suggestions, and `R`
+asks the agent a follow-up question - its answer appears on the same page. `ga`
 drafts one: batch review turns on and the comment editor opens prefilled, so
 what you submit is queued for `gS`, never sent straight away. The same
 suggestions show as virtual lines under their threads and lines in the diff

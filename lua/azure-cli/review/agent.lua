@@ -372,11 +372,24 @@ local function setup(ctx)
     UI.wo(dw, "winbar", UI.winbar(parts, ctx.ext.mode_tags and ctx.ext.mode_tags() or {}))
   end
 
+  -- "R ask a follow-up · ga draft a suggestion · ..." from the configured
+  -- keys, so the page says how to use it.
+  local function page_footer()
+    local parts = {}
+    for _, p in ipairs({ { "reply", "ask a follow-up" }, { "accept", "draft a suggestion" },
+        { "open", "go to it" }, { "help", "all keys" } }) do
+      local k = KEYS.resolve("agent", p[1])
+      if type(k) == "table" then k = k[1] end
+      if k then parts[#parts + 1] = k .. " " .. p[2] end
+    end
+    return "_" .. table.concat(parts, " \u{00B7} ") .. "_"
+  end
+
   render_page = function()
     if not (page_buf and vim.api.nvim_buf_is_valid(page_buf)) then return end
     local lines, item_at
     if page_run then
-      lines, item_at = AG.render_lines(page_run, os.time())
+      lines, item_at = AG.render_lines(page_run, os.time(), page_footer())
     else
       lines, item_at = { "# Agent", "", "No agent results for this PR yet.", "",
         "gX runs one of the agent actions configured in setup({ agent_actions = ... }) - see docs/agents.md." }, {}
@@ -413,6 +426,7 @@ local function setup(ctx)
     { "back", "back to the file list" },
     "Act",
     { "accept", "draft the suggestion (batch review: gQ lists the queue, gS submits it)" },
+    { "reply", "ask the agent a follow-up question - it answers on this page" },
     { "runs", "show another result of this PR" },
     { "run", "run an agent action (or cancel a running one)" },
     "Session",
@@ -436,6 +450,7 @@ local function setup(ctx)
     end, { desc = "draft the suggestion" })
     KEYS.bind(b, "agent", "next_suggestion", function() jump_lines(page_headings(), 1) end, { desc = "next suggestion" })
     KEYS.bind(b, "agent", "prev_suggestion", function() jump_lines(page_headings(), -1) end, { desc = "previous suggestion" })
+    KEYS.bind(b, "agent", "reply", function() M.ask() end, { desc = "ask the agent a follow-up question" })
     KEYS.bind(b, "agent", "runs", function()
       AG.choose_run(ID, function(r) open_page(r, true) end)
     end, { desc = "show another result" })
@@ -476,11 +491,10 @@ local function setup(ctx)
   -- -------------------------------------------------------------------
   -- Running.
 
-  function M.run_action()
+  -- What agent.lua needs to run something for this PR (M.start/M.followup).
+  local function base_info()
     local pr = pr_record()
-    local buf = vim.api.nvim_get_current_buf()
-    local lnum = vim.api.nvim_win_get_cursor(0)[1]
-    local info = {
+    return {
       pr = pr, repo_path = ctx.REPO_PATH, source = ctx.SOURCE, target = ctx.TARGET,
       is_author = AG.is_author(pr), result_hint = "gz shows it",
       -- Explicit rather than inherited: the process env names whichever PR
@@ -492,6 +506,12 @@ local function setup(ctx)
       },
       open_results = function() open_page(nil, true) end,
     }
+  end
+
+  function M.run_action()
+    local buf = vim.api.nvim_get_current_buf()
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    local info = base_info()
     local path = ctx.paths_by_buf[buf]
     info.surface = path and "diff" or (buf == ctx.overview_buf() and "overview" or (buf == page_buf and "agent" or "list"))
     if path then
@@ -502,6 +522,41 @@ local function setup(ctx)
     local threads = (ctx.comments_by_buf[buf] or {})[lnum]
     if threads and threads[1] and type(threads[1].id) == "number" then info.thread_id = threads[1].id end
     AG.pick(info)
+  end
+
+  -- R on the Agent page: ask the agent behind the shown result a follow-up
+  -- question. Its answer is appended to the same page (agent.lua's
+  -- M.followup resumes the agent's session when the action says how, or
+  -- replays the conversation to it otherwise).
+  function M.ask()
+    local run = page_run
+    if not run then
+      ctx.notify("No agent result to ask about yet (gX runs an action).")
+      return
+    end
+    if run.status == "running" then
+      ctx.notify(run.label .. " is still working on its first answer.", vim.log.levels.WARN)
+      return
+    end
+    local spec = AG.configured()[run.action]
+    if not spec then
+      ctx.notify("The action \"" .. tostring(run.action) .. "\" isn't configured any more.", vim.log.levels.WARN)
+      return
+    end
+    local EDITOR = require("azure-cli.editor")
+    EDITOR.open({
+      title = "Ask " .. run.label .. (AG.can_resume(spec, run) and "" or " (replays the conversation)"),
+      anchor = "center",
+      draft_key = EDITOR.draft_key(ID, "agent", run.id),
+      on_submit = function(text)
+        AG.followup(run, text, base_info())
+        if page_run == run and shown_in_diff_win(page_buf) then
+          render_page()
+          local dw = ctx.diff_win()
+          pcall(vim.api.nvim_win_set_cursor, dw, { vim.api.nvim_buf_line_count(page_buf), 0 })
+        end
+      end,
+    })
   end
 
   for _, kind in ipairs({ "list", "diff", "overview" }) do

@@ -287,6 +287,56 @@ do
   check("status_text", M.status_text({ status = "timeout" }) == "timed out" and M.status_text({ status = "done" }) == "done")
 end
 
+-- --- follow-ups: session ids, resume vs replay, conversation rendering -------
+
+do
+  local env = '{"type": "result", "result": "Hi", "session_id": "abc-123"}'
+  check("session: from the claude envelope", M.parse_output(env, decode).session_id == "abc-123")
+  check("session: none in plain text", M.parse_output("Hi", decode).session_id == nil)
+  check("find_session: stdout first", M.find_session("Session: (%S+)", "x\nSession: s-1\n", "Session: s-2") == "s-1")
+  check("find_session: then stderr", M.find_session("Session: (%S+)", "nothing", "Session: s-2") == "s-2")
+  check("find_session: no match", M.find_session("Session: (%S+)", "a", "b") == nil)
+  check("find_session: a broken pattern is no match", M.find_session("(", "a") == nil)
+
+  local resume = { followup = { cmd = { "claude", "-p", "--resume", "{session_id}" }, stdin = "{message}" } }
+  check("can_resume: needs the session it names", not M.can_resume(resume, {}) and M.can_resume(resume, { session_id = "s" }))
+  check("can_resume: an empty session id doesn't count", not M.can_resume(resume, { session_id = "" }))
+  local cont = { followup = { cmd = { "claude", "-p", "--continue" }, stdin = "{message}" } }
+  check("can_resume: a followup without {session_id} always can", M.can_resume(cont, {}))
+  check("can_resume: no followup -> replay", not M.can_resume({ cmd = { "x" } }, { session_id = "s" }))
+  check("can_resume: {session_id} in the followup's stdin counts", not M.can_resume(
+    { followup = { cmd = "agent", stdin = "resume {session_id}" } }, {}))
+
+  local run = {
+    label = "Triage", pr_id = "7", status = "done", started = 100, finished = 160,
+    lines = { "first answer" },
+    items = { { kind = "pr", text = "a" }, { kind = "pr", text = "b", turn = 1 } },
+    conversation = {
+      { message = "why?\nreally", status = "done", started = 200, finished = 230, lines = { "because" }, mode = "resume" },
+      { message = "and?", status = "running", started = 300, mode = "replay" },
+    },
+  }
+  local lines, item_at = M.render_lines(run, 330, "R ask a follow-up")
+  local all = table.concat(lines, "\n")
+  check("render: first answer's suggestions only under it", all:find("## Suggestions (1)", 1, true) ~= nil)
+  check("render: your message, both lines", all:find("## You \u{00B7} ", 1, true) and all:find("why?\nreally", 1, true))
+  check("render: the answer and its suggestions", all:find("## Triage \u{00B7} done \u{00B7} took 30s", 1, true)
+    and all:find("because", 1, true) and all:find("### Suggestions (1)", 1, true))
+  local second
+  for ln, l in ipairs(lines) do if l == "\u{25B8} pull request" then second = ln end end
+  check("render: a follow-up's suggestion maps to its global index", second and item_at[second] == 2)
+  check("render: a running turn", all:find("running \u{00B7} 30s so far \u{00B7} replayed the conversation", 1, true)
+    and all:find("Working on it", 1, true))
+  check("render: footer last", lines[#lines] == "R ask a follow-up")
+
+  local text = M.replay_text(run, "and?")
+  check("replay: carries the first answer", text:find("first answer", 1, true) ~= nil)
+  check("replay: carries the earlier turn", text:find("The user then asked:\nwhy?\nreally", 1, true)
+    and text:find("and you answered:\nbecause", 1, true))
+  check("replay: ends with the new question", text:find("Now the user asks:\nand?\n", 1, true) ~= nil)
+  check("replay: the pending turn itself isn't repeated", select(2, text:gsub("and%?", "")) == 1)
+end
+
 -- --- review/agent.lua's virt_lines -------------------------------------------
 
 do

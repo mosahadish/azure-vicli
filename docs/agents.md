@@ -20,6 +20,7 @@ examples below are starting points.
 - [Placeholders and environment](#placeholders-and-environment)
 - [The context bundle](#the-context-bundle)
 - [Output and suggestions](#output-and-suggestions)
+- [Talking to the agent](#talking-to-the-agent)
 - [Examples](#examples)
 - [Workspaces](#workspaces)
 - [Windows notes](#windows-notes)
@@ -33,9 +34,13 @@ require("azure-cli").setup({
       label = "Triage review comments",
       description = "suggest how to handle every open thread",
       when = "author",                         -- only on my own PRs
-      cmd = { "claude", "-p", "--output-format", "text",
+      cmd = { "claude", "-p", "--output-format", "json",
               "--allowedTools", "Read,Grep,Glob" },
       stdin = "Use the triage-pr-comments skill. The pull request is described in {context_dir}/README.md.",
+      -- R on the Agent page continues this same Claude session:
+      followup = { cmd = { "claude", "-p", "--output-format", "json", "--resume", "{session_id}",
+                           "--allowedTools", "Read,Grep,Glob" },
+                   stdin = "{message}" },
     },
   },
 })
@@ -54,7 +59,7 @@ when it's done.
 |---|---|
 | PR dashboard row | `◐` while an action runs, `✦` when there's a result you haven't looked at. |
 | Dashboard `gz` | The result in a large float (choose one when there are several). `<CR>` there opens the PR on the reviewer's Agent page. |
-| Reviewer `gz` | The **Agent page**, in the diff pane like the Overview: the agent's markdown, then its suggestions. `<CR>` goes to the thread or line a suggestion is about, `ga` drafts it, `]a`/`[a` step through suggestions, `gz` picks an older result, `gX` runs another action. |
+| Reviewer `gz` | The **Agent page**, in the diff pane like the Overview: the agent's markdown, then its suggestions. `<CR>` goes to the thread or line a suggestion is about, `ga` drafts it, `]a`/`[a` step through suggestions, `R` asks the agent a [follow-up](#talking-to-the-agent), `gz` picks an older result, `gX` runs another action. |
 | Reviewer diff pane and Overview | Each suggestion as virtual lines under its thread or line, e.g. `✦ Triage · fix (ga drafts the reply)`. `ga` on that line drafts it, `]a`/`[a` jump between them. |
 | Winbars | `[agent: running]` / `[agent: new result · gz]`. |
 
@@ -86,6 +91,8 @@ the context bundle each run was given, so they survive a restart.
 | `workspace` | no | Where the command runs: `"worktree"` (default; see [Workspaces](#workspaces)), `"repo"` (your clone itself, as it is; read-only use only), or `"none"` (the context directory). |
 | `timeout_seconds` | no | Killed after this long (default 1800). |
 | `env` | no | Extra environment variables; values are templates. |
+| `followup` | no | How to continue the agent's own session for a [follow-up question](#talking-to-the-agent): `{ cmd = ..., stdin = ..., prompt = ..., env = ... }`, the same kinds of templates, plus `{message}` (what you typed) and `{session_id}`. Without it, follow-ups replay the conversation instead. |
+| `session_pattern` | no | A Lua pattern with one capture that finds the session id in the agent's output (stdout, then stderr), for an agent that prints it instead of returning it in a JSON envelope - e.g. `"session: (%S+)"`. |
 
 An unknown field or a wrong type is an error at `setup()` time.
 
@@ -104,12 +111,15 @@ An unknown field or a wrong type is an error at `setup()` time.
 | `{file}` `{line}` `{side}` | the diff-pane cursor's file and line when `gX` was pressed there (empty elsewhere) |
 | `{thread_id}` | the thread under the cursor, if any (diff pane or Overview) |
 | `{prompt}` | the expanded `prompt` |
+| `{message}` `{session_id}` | in a follow-up: what you asked, and the agent's session (see [Talking to the agent](#talking-to-the-agent)) |
+| `{conversation_file}` | in a replayed follow-up: the conversation so far, as sent to the agent |
 | `{action}` | the action's name |
 
 An unknown `{name}` is left as written. The command also gets
 `AZVICLI_AGENT_CONTEXT`, `AZVICLI_AGENT_PR_FILE`, `AZVICLI_AGENT_THREADS_FILE`,
 `AZVICLI_AGENT_DIFF_FILE`, `AZVICLI_AGENT_WORKSPACE`, `AZVICLI_AGENT_FILE`,
-`AZVICLI_AGENT_LINE`, `AZVICLI_AGENT_SIDE` and `AZVICLI_AGENT_THREAD`, plus
+`AZVICLI_AGENT_LINE`, `AZVICLI_AGENT_SIDE`, `AZVICLI_AGENT_THREAD` and
+`AZVICLI_AGENT_SESSION`, plus
 the PR's `AZVICLI_PR`/`AZVICLI_ORG`/... variables. Those let a script call
 `azure-cli.py` itself, if you choose to give it that power.
 
@@ -172,6 +182,40 @@ blocks, the last one holding `items` wins. A bare JSON document (just the
 object or just the list) works too, and so does Claude Code's
 `--output-format json` envelope.
 
+## Talking to the agent
+
+On the Agent page, `R` asks the agent behind the result you're looking at a
+follow-up question ("why does thread 4711 need a fix?", "make that reply
+less blunt"). Type it in the editor and send it with `<C-s>`. The agent runs
+again in the background, in the same workspace with the same context
+directory, and its answer is appended to the same page under your question:
+
+```
+## You · 14:02
+why does thread 4711 need a fix?
+
+## Triage review comments · done · took 12s
+(its answer - and any new suggestions, which ga drafts like the first ones)
+```
+
+You can keep asking; each answer is another turn on the page, and it's
+stored with the result. There are two ways the agent remembers the
+conversation:
+
+- **Resume its own session**, when the action has a `followup`. The plugin
+  keeps the agent's session id from each answer - from Claude Code's
+  `--output-format json` envelope (`session_id`), or through the action's
+  `session_pattern` - and runs `followup.cmd` with `{session_id}` and
+  `{message}` filled in. The agent continues exactly where it stopped, with
+  everything it had already read.
+- **Replay**, for any other action (or when no session id was found). The
+  action's own `cmd` runs again, with its prompt/stdin followed by the
+  conversation so far and your new question. It works with any command,
+  but the agent starts fresh each time, so it re-reads what it needs. The
+  answer says "replayed the conversation".
+
+The editor's title says which one a question will use.
+
 ## Examples
 
 ### Claude Code: triage the comments on my PR, with a skill
@@ -225,6 +269,12 @@ explain_thread = {
   cmd = { "copilot", "-p", "{prompt}" },
   prompt = "Read {context_dir}/README.md. Explain thread {thread_id} in {threads_file} "
     .. "and what change would resolve it. Do not edit files.",
+  -- Follow-ups: `copilot --resume <id>` continues a session. Point
+  -- session_pattern at wherever your version prints the session id (this
+  -- pattern is an example - check your output); with no id found,
+  -- follow-ups replay the conversation instead.
+  session_pattern = "[Ss]ession[ %-_]?[Ii][Dd]:?%s*([%w%-]+)",
+  followup = { cmd = { "copilot", "--resume", "{session_id}", "-p", "{message}" } },
 },
 ```
 

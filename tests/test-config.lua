@@ -459,6 +459,14 @@ do
   rejects("a bad timeout", { a = { cmd = { "a" }, timeout_seconds = 0 } }, "timeout_seconds")
   rejects("a wrong type", { a = { cmd = { "a" }, prompt = 3 } }, "prompt must be a string")
   rejects("an unknown field", { a = { cmd = { "a" }, model = "x" } }, "unknown field `model`")
+  rejects("a followup without cmd", { a = { cmd = { "a" }, followup = { stdin = "{message}" } } }, "followup needs a `cmd`")
+  rejects("a bad followup cmd", { a = { cmd = { "a" }, followup = { cmd = {} } } }, "followup.cmd is an empty list")
+  rejects("an unknown followup field", { a = { cmd = { "a" }, followup = { cmd = { "a" }, when = "x" } } },
+    "unknown field `when` in agent_actions.a.followup")
+  rejects("a non-string session_pattern", { a = { cmd = { "a" }, session_pattern = 1 } }, "session_pattern must be a string")
+  local ok = pcall(config.setup, { agent_actions = { a = { cmd = { "a" }, session_pattern = "id: (%S+)",
+    followup = { cmd = { "a", "--resume", "{session_id}" }, stdin = "{message}", env = { X = "1" } } } } })
+  check("agent_actions: a followup and session_pattern are accepted", ok)
 end
 
 if fails > 0 then

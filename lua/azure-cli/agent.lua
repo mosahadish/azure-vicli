@@ -207,7 +207,9 @@ function M.parse_output(text, decode, depth)
     local ok, decoded = pcall(decode, trimmed)
     if ok and type(decoded) == "table" then
       if type(decoded.result) == "string" and decoded.items == nil then
-        return M.parse_output(decoded.result, decode, 1)
+        local p = M.parse_output(decoded.result, decode, 1)
+        p.session_id = str(decoded.session_id or decoded.sessionId)
+        return p
       end
       local list, summary = suggestions_of(decoded)
       if list then return { lines = {}, items = M.normalize_items(list), summary = summary } end
@@ -344,34 +346,29 @@ function M.status_text(run)
 end
 
 -- The text a run renders as (the reviewer's Agent page and the dashboard's
--- float share it): a heading, the agent's markdown, then a Suggestions
--- section, then stderr when the run failed or printed nothing. Returns
--- lines plus item_at (line -> index into run.items) for the keys that act
--- on "the suggestion under the cursor". `now` is os.time() (injected).
-function M.render_lines(run, now)
+-- float share it): a heading, the agent's markdown, its Suggestions, stderr
+-- when it failed or printed nothing - then each follow-up turn of the
+-- conversation (your message, the agent's answer, that answer's own
+-- suggestions). Returns lines plus item_at (line -> index into run.items)
+-- for the keys that act on "the suggestion under the cursor". `now` is
+-- os.time() (injected); `footer` (optional) is a key hint for the end.
+function M.render_lines(run, now, footer)
   local lines, item_at = {}, {}
   local function add(l) lines[#lines + 1] = l end
-  add("# " .. (run.label or run.action or "Agent") .. "  \u{00B7}  PR #" .. tostring(run.pr_id))
-  local when = run.started and os.date("%Y-%m-%d %H:%M", run.started) or "?"
-  local took = (run.finished and run.started) and (" \u{00B7} took " .. human_duration(run.finished - run.started))
-    or (run.started and now and (" \u{00B7} " .. human_duration(now - run.started) .. " so far") or "")
-  add(M.status_text(run) .. " \u{00B7} " .. when .. took)
-  if run.workspace_note then add("(" .. run.workspace_note .. ")") end
-  add("")
-  if run.status == "running" then
-    add("Running in the background - this page fills in when it finishes.")
-    return lines, item_at
+  local function add_text(text, prefix)
+    for l in ((text or "") .. "\n"):gmatch("(.-)\n") do add((prefix or "") .. l) end
   end
-  if run.summary then
-    add("**" .. run.summary .. "**")
+  -- The suggestions belonging to one turn (0 = the first answer).
+  local function add_items(turn, heading)
+    local idx = {}
+    for i, it in ipairs(run.items or {}) do
+      if (it.turn or 0) == turn then idx[#idx + 1] = i end
+    end
+    if #idx == 0 then return end
     add("")
-  end
-  for _, l in ipairs(run.lines or {}) do add(l) end
-  local items = run.items or {}
-  if #items > 0 then
-    add("")
-    add("## Suggestions (" .. #items .. ")")
-    for i, it in ipairs(items) do
+    add(heading .. " (" .. #idx .. ")")
+    for _, i in ipairs(idx) do
+      local it = run.items[i]
       add("")
       local head = "\u{25B8} " .. M.item_location(it)
       if it.verdict then head = head .. "  [" .. it.verdict .. "]" end
@@ -390,16 +387,98 @@ function M.render_lines(run, now)
       end
     end
   end
-  local stderr = run.stderr or {}
-  if #stderr > 0 and (run.status ~= "done" or #(run.lines or {}) == 0) then
-    add("")
-    add("## stderr")
-    for _, l in ipairs(stderr) do add("    " .. l) end
+  local function add_stderr(t, heading)
+    local stderr = t.stderr or {}
+    if #stderr > 0 and (t.status ~= "done" or #(t.lines or {}) == 0) then
+      add("")
+      add(heading)
+      for _, l in ipairs(stderr) do add("    " .. l) end
+    end
   end
-  if #(run.lines or {}) == 0 and #items == 0 and #stderr == 0 then
-    add("(the agent printed nothing)")
+  local function took(t)
+    if t.finished and t.started then return " \u{00B7} took " .. human_duration(t.finished - t.started) end
+    if t.started and now then return " \u{00B7} " .. human_duration(now - t.started) .. " so far" end
+    return ""
+  end
+
+  local label = run.label or run.action or "Agent"
+  add("# " .. label .. "  \u{00B7}  PR #" .. tostring(run.pr_id))
+  local when = run.started and os.date("%Y-%m-%d %H:%M", run.started) or "?"
+  add(M.status_text(run) .. " \u{00B7} " .. when .. took(run))
+  if run.workspace_note then add("(" .. run.workspace_note .. ")") end
+  add("")
+  if run.status == "running" then
+    add("Running in the background - this page fills in when it finishes.")
+    return lines, item_at
+  end
+  if run.summary then
+    add("**" .. run.summary .. "**")
+    add("")
+  end
+  for _, l in ipairs(run.lines or {}) do add(l) end
+  add_items(0, "## Suggestions")
+  add_stderr(run, "## stderr")
+  local said_nothing = #(run.lines or {}) == 0 and #(run.stderr or {}) == 0
+  if said_nothing then
+    for _, it in ipairs(run.items or {}) do if (it.turn or 0) == 0 then said_nothing = false break end end
+  end
+  if said_nothing then add("(the agent printed nothing)") end
+
+  for n, t in ipairs(run.conversation or {}) do
+    add("")
+    add("## You \u{00B7} " .. (t.started and os.date("%H:%M", t.started) or "?"))
+    add("")
+    add_text(t.message)
+    add("")
+    add("## " .. label .. " \u{00B7} " .. M.status_text(t) .. took(t) .. (t.mode == "replay" and " \u{00B7} replayed the conversation" or ""))
+    add("")
+    if t.status == "running" then
+      add("Working on it - this page updates when it answers.")
+    else
+      if t.summary then
+        add("**" .. t.summary .. "**")
+        add("")
+      end
+      for _, l in ipairs(t.lines or {}) do add(l) end
+      add_items(n, "### Suggestions")
+      add_stderr(t, "### stderr")
+      if #(t.lines or {}) == 0 and #(t.stderr or {}) == 0 then add("(the agent printed nothing)") end
+    end
+  end
+  if footer and footer ~= "" then
+    add("")
+    add(footer)
   end
   return lines, item_at
+end
+
+-- The text a replayed follow-up appends to the action's prompt/stdin, for
+-- an agent that can't resume its own session: everything said so far, then
+-- the new message. `run` is the run as it stands, `message` the new turn.
+function M.replay_text(run, message)
+  local parts = {
+    "",
+    "---",
+    "This is a follow-up. Your earlier answer on this pull request was:",
+    "",
+  }
+  for _, l in ipairs(run.lines or {}) do parts[#parts + 1] = l end
+  for _, t in ipairs(run.conversation or {}) do
+    if t.status ~= "running" and t.message ~= message then
+      parts[#parts + 1] = ""
+      parts[#parts + 1] = "The user then asked:"
+      parts[#parts + 1] = t.message
+      parts[#parts + 1] = ""
+      parts[#parts + 1] = "and you answered:"
+      for _, l in ipairs(t.lines or {}) do parts[#parts + 1] = l end
+    end
+  end
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = "Now the user asks:"
+  parts[#parts + 1] = message
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = "Answer that. Suggested replies or comments go in the json block described in README.md, as before."
+  return table.concat(parts, "\n")
 end
 
 -- The actions to offer for a PR, sorted by label: configured `actions`
@@ -430,6 +509,17 @@ function M.is_author(pr)
   if type(pr) ~= "table" then return false end
   if pr.state == "Created" then return true end
   return type(pr.myName) == "string" and pr.myName ~= "" and pr.author == pr.myName
+end
+
+-- The first capture of Lua pattern `pattern` in any of the given texts,
+-- or nil - how a session id is read from an agent that prints it rather
+-- than returning it in a JSON envelope.
+function M.find_session(pattern, ...)
+  for _, text in ipairs({ ... }) do
+    local ok, id = pcall(string.match, text or "", pattern)
+    if ok and type(id) == "string" and id ~= "" then return id end
+  end
+  return nil
 end
 
 -- "<repo>-<id>" made safe for a directory name.
@@ -483,6 +573,7 @@ end
 local PERSIST = {
   "id", "pr_id", "action", "label", "status", "exit", "started", "finished", "read",
   "lines", "items", "summary", "stderr", "workspace", "workspace_note", "dir",
+  "session_id", "conversation",
 }
 function M.save(run)
   if not run.dir then return end
@@ -505,6 +596,9 @@ function M.runs(pr_id)
         rec.dir = dir
         -- Neovim was closed while it ran: it isn't running any more.
         if rec.status == "running" then rec.status = "cancelled" end
+        for _, t in ipairs(type(rec.conversation) == "table" and rec.conversation or {}) do
+          if t.status == "running" then t.status = "cancelled" end
+        end
         list[#list + 1] = rec
       end
     end
@@ -690,45 +784,130 @@ local function placeholders(info, run, ws)
     repo_path = info.repo_path or "", workspace = ws or dir, context_dir = dir,
     pr_file = dir .. "/pr.json", threads_file = dir .. "/threads.json",
     diff_file = dir .. "/diff.patch", readme_file = dir .. "/README.md",
+    conversation_file = dir .. "/conversation.md",
     file = info.file or "", line = info.line and tostring(info.line) or "",
     side = info.side or "", thread_id = info.thread_id and tostring(info.thread_id) or "",
-    action = run.action,
+    action = run.action, session_id = run.session_id or "",
   }
+end
+
+-- Collected output of a finished job, parsed: { lines, items, summary,
+-- session_id, stderr (the last 60 lines) } - plus output.md/stderr.txt
+-- written under `prefix` in the run's directory.
+local function collect(run, prefix, out, err, threads, pattern)
+  local text = table.concat(out, "\n")
+  write_file(run.dir .. "/" .. prefix .. ".md", text)
+  if #err > 0 then write_file(run.dir .. "/" .. prefix .. "-stderr.txt", table.concat(err, "\n")) end
+  local parsed = M.parse_output(text, vim.json.decode)
+  parsed.items = M.annotate_items(parsed.items, threads)
+  local tail = {}
+  for i = math.max(1, #err - 59), #err do tail[#tail + 1] = err[i] end
+  parsed.stderr = tail
+  -- An agent that doesn't wrap its answer in JSON can still report a
+  -- session to resume: the action's session_pattern (one capture),
+  -- tried on stdout, then stderr.
+  if not parsed.session_id and type(pattern) == "string" and pattern ~= "" then
+    parsed.session_id = M.find_session(pattern, text, table.concat(err, "\n"))
+  end
+  return parsed
+end
+
+local function outcome(t, code)
+  if t.cancelled then return "cancelled" end
+  if t.timed_out then return "timeout" end
+  return (code == 0) and "done" or "failed"
+end
+
+local function announce(run, info, status_holder, n)
+  local what = status_holder.status == "done"
+    and ("finished" .. (n > 0 and (" with " .. n .. " suggestion" .. (n == 1 and "" or "s")) or ""))
+    or M.status_text(status_holder)
+  local hint = (info.result_hint and info.result_hint ~= "") and (" - " .. info.result_hint) or ""
+  notify(run.label .. " on PR #" .. run.pr_id .. " " .. what .. hint,
+    status_holder.status == "done" and vim.log.levels.INFO or vim.log.levels.WARN)
+  require("azure-cli.notify").toast("Agent " .. (status_holder.status == "done" and "finished" or "stopped") .. ": " .. run.label,
+    "PR #" .. run.pr_id .. " " .. ((info.pr or {}).title or "") .. " - " .. what)
 end
 
 local function finish(run, info, threads, code, out, err)
   local st = state()
   local running = st.running[run.pr_id]
   if running then running[run.action] = nil end
-  if run.timer then pcall(vim.fn.timer_stop, run.timer); run.timer = nil end
   run.finished = os.time()
   run.exit = code
-  if run.cancelled then run.status = "cancelled"
-  elseif run.timed_out then run.status = "timeout"
-  else run.status = (code == 0) and "done" or "failed" end
-  local text = table.concat(out, "\n")
-  write_file(run.dir .. "/output.md", text)
-  if #err > 0 then write_file(run.dir .. "/stderr.txt", table.concat(err, "\n")) end
-  local parsed = M.parse_output(text, vim.json.decode)
-  run.lines, run.summary = parsed.lines, parsed.summary
-  run.items = M.annotate_items(parsed.items, threads)
-  local tail = {}
-  for i = math.max(1, #err - 59), #err do tail[#tail + 1] = err[i] end
-  run.stderr = tail
+  run.status = outcome(run, code)
+  local parsed = collect(run, "output", out, err, threads, run.session_pattern)
+  run.lines, run.summary, run.items, run.stderr = parsed.lines, parsed.summary, parsed.items, parsed.stderr
+  run.session_id = parsed.session_id or run.session_id
+  run.threads = threads
   run.read = false
   run.job = nil
   M.save(run)
   prune(run.pr_id)
-  local n = #run.items
-  local what = run.status == "done"
-    and ("finished" .. (n > 0 and (" with " .. n .. " suggestion" .. (n == 1 and "" or "s")) or ""))
-    or M.status_text(run)
-  local hint = (info.result_hint and info.result_hint ~= "") and (" - " .. info.result_hint) or ""
-  notify(run.label .. " on PR #" .. run.pr_id .. " " .. what .. hint,
-    run.status == "done" and vim.log.levels.INFO or vim.log.levels.WARN)
-  require("azure-cli.notify").toast("Agent " .. (run.status == "done" and "finished" or "stopped") .. ": " .. run.label,
-    "PR #" .. run.pr_id .. " " .. (info.pr.title or "") .. " - " .. what)
+  announce(run, info, run, #run.items)
   emit(run.pr_id, run)
+end
+
+-- Runs one job for `run`: cmd (a list or a shell string, already
+-- expanded), stdin text (or nil), env, cwd; `holder` (the run, or a
+-- follow-up turn) gets .job/.timed_out, and on_exit(code, out, err) runs
+-- on the main loop. Returns false plus why when it couldn't start.
+local function launch(holder, cmd, stdin, env, cwd, timeout, on_exit)
+  if type(cmd) == "table" then
+    local exe = vim.fn.exepath(cmd[1])
+    if exe == "" then return false, "`" .. cmd[1] .. "` isn't on PATH" end
+    -- Windows: jobstart wants the real file for an npm-style .cmd shim.
+    cmd[1] = exe
+  end
+  local out, err = {}, {}
+  local timer
+  local ok_start, job = pcall(vim.fn.jobstart, cmd, {
+    cwd = cwd, env = env,
+    stdout_buffered = true, stderr_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if timer then pcall(vim.fn.timer_stop, timer) end
+        holder.job = nil
+        on_exit(code, join_output(out), join_output(err))
+      end)
+    end,
+  })
+  if not ok_start or job <= 0 then
+    return false, "could not start " .. (type(cmd) == "table" and cmd[1] or cmd) .. (ok_start and "" or (": " .. tostring(job)))
+  end
+  holder.job = job
+  if stdin then pcall(vim.fn.chansend, job, stdin) end
+  pcall(vim.fn.chanclose, job, "stdin")
+  timer = vim.fn.timer_start((tonumber(timeout) or M.DEFAULT_TIMEOUT) * 1000, function()
+    if holder.job then
+      holder.timed_out = true
+      pcall(vim.fn.jobstop, holder.job)
+    end
+  end)
+  return true
+end
+
+local function job_env(info, vars, extra)
+  local env = vim.tbl_extend("force", info.env or {}, {
+    AZVICLI_AGENT_CONTEXT = vars.context_dir, AZVICLI_AGENT_PR_FILE = vars.pr_file,
+    AZVICLI_AGENT_THREADS_FILE = vars.threads_file, AZVICLI_AGENT_DIFF_FILE = vars.diff_file,
+    AZVICLI_AGENT_WORKSPACE = vars.workspace, AZVICLI_AGENT_FILE = vars.file,
+    AZVICLI_AGENT_LINE = vars.line, AZVICLI_AGENT_SIDE = vars.side,
+    AZVICLI_AGENT_THREAD = vars.thread_id, AZVICLI_AGENT_SESSION = vars.session_id,
+  })
+  for k, v in pairs(extra or {}) do env[k] = M.expand(tostring(v), vars) end
+  return env
+end
+
+local function expand_cmd(cmd, vars)
+  if type(cmd) == "table" then
+    local out = {}
+    for i, a in ipairs(cmd) do out[i] = M.expand(a, vars) end
+    return out
+  end
+  return M.expand(cmd, vars, vim.fn.shellescape)
 end
 
 -- Starts action `name` (spec from setup's agent_actions) for info.pr.
@@ -751,6 +930,7 @@ function M.start(name, spec, info)
   local run = {
     id = id, pr_id = pr_id, action = name, label = spec.label or name, status = "running",
     started = started, read = false, dir = dir, items = {}, lines = {}, stderr = {},
+    session_pattern = spec.session_pattern,
   }
   st.running[pr_id][name] = run
   table.insert(M.runs(pr_id), 1, run)
@@ -769,52 +949,120 @@ function M.start(name, spec, info)
       if run.cancelled then finish(run, info, threads, -1, {}, {}) return end
       local vars = placeholders(info, run, ws)
       vars.prompt = M.expand(spec.prompt or "", vars)
-      local cmd
-      if type(spec.cmd) == "table" then
-        cmd = {}
-        for i, a in ipairs(spec.cmd) do cmd[i] = M.expand(a, vars) end
-        -- Windows: jobstart wants the real file for an npm-style .cmd shim.
-        local exe = vim.fn.exepath(cmd[1])
-        if exe == "" then fail("`" .. cmd[1] .. "` isn't on PATH") return end
-        cmd[1] = exe
-      else
-        cmd = M.expand(spec.cmd, vars, vim.fn.shellescape)
-      end
-      local env = vim.tbl_extend("force", info.env or {}, {
-        AZVICLI_AGENT_CONTEXT = dir, AZVICLI_AGENT_PR_FILE = vars.pr_file,
-        AZVICLI_AGENT_THREADS_FILE = vars.threads_file, AZVICLI_AGENT_DIFF_FILE = vars.diff_file,
-        AZVICLI_AGENT_WORKSPACE = vars.workspace, AZVICLI_AGENT_FILE = vars.file,
-        AZVICLI_AGENT_LINE = vars.line, AZVICLI_AGENT_SIDE = vars.side,
-        AZVICLI_AGENT_THREAD = vars.thread_id,
-      })
-      for k, v in pairs(spec.env or {}) do env[k] = M.expand(tostring(v), vars) end
-      local out, err = {}, {}
-      local ok_start, job = pcall(vim.fn.jobstart, cmd, {
-        cwd = ws or dir, env = env,
-        stdout_buffered = true, stderr_buffered = true,
-        on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
-        on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-        on_exit = function(_, code)
-          vim.schedule(function() finish(run, info, threads, code, join_output(out), join_output(err)) end)
-        end,
-      })
-      if not ok_start or job <= 0 then
-        fail("could not start " .. (type(cmd) == "table" and cmd[1] or cmd) .. (ok_start and "" or (": " .. tostring(job))))
-        return
-      end
-      run.job = job
-      if spec.stdin then pcall(vim.fn.chansend, job, M.expand(spec.stdin, vars)) end
-      pcall(vim.fn.chanclose, job, "stdin")
-      local timeout = tonumber(spec.timeout_seconds) or M.DEFAULT_TIMEOUT
-      run.timer = vim.fn.timer_start(timeout * 1000, function()
-        run.timer = nil
-        if run.job then
-          run.timed_out = true
-          pcall(vim.fn.jobstop, run.job)
-        end
-      end)
+      local ok, why2 = launch(run, expand_cmd(spec.cmd, vars), spec.stdin and M.expand(spec.stdin, vars) or nil,
+        job_env(info, vars, spec.env), ws or dir, spec.timeout_seconds, function(code, out, err)
+          finish(run, info, threads, code, out, err)
+        end)
+      if not ok then fail(why2) end
     end)
   end)
+end
+
+-- Whether a follow-up for `run` can resume the agent's own session: the
+-- action has a `followup`, and when that names {session_id} the first
+-- answer reported one.
+function M.can_resume(spec, run)
+  local f = spec and spec.followup
+  if not f then return false end
+  local uses = false
+  for _, part in ipairs(type(f.cmd) == "table" and f.cmd or { f.cmd }) do
+    if tostring(part):find("{session_id}", 1, true) then uses = true end
+  end
+  for _, t in ipairs({ f.stdin or "", f.prompt or "" }) do
+    if t:find("{session_id}", 1, true) then uses = true end
+  end
+  return not uses or (run.session_id ~= nil and run.session_id ~= "")
+end
+
+-- Sends `message` to the agent behind `run`, as a new turn of its
+-- conversation shown on the same page. With the action's `followup` (and
+-- a session to resume when it needs one) that command continues the
+-- agent's own session; otherwise the action's own command runs again with
+-- the conversation so far and the message appended to its prompt/stdin
+-- (M.replay_text) - "replayed". Same workspace and context directory as
+-- the first answer. `info` is what M.start takes (the reviewer rebuilds
+-- it; a run read back from disk has none of its own).
+function M.followup(run, message, info)
+  local spec = M.configured()[run.action]
+  if not spec then
+    notify("The action \"" .. tostring(run.action) .. "\" isn't configured any more, so it can't be asked a follow-up.",
+      vim.log.levels.WARN)
+    return
+  end
+  if run.status == "running" then
+    notify(run.label .. " is still working on its first answer.", vim.log.levels.WARN)
+    return
+  end
+  local st = state()
+  st.running[run.pr_id] = st.running[run.pr_id] or {}
+  local key = "followup:" .. run.id
+  if st.running[run.pr_id][key] then
+    notify(run.label .. " is still answering your last message.", vim.log.levels.WARN)
+    return
+  end
+  run.conversation = run.conversation or {}
+  local turn = { message = message, status = "running", started = os.time(), label = run.label .. " follow-up" }
+  local resume = M.can_resume(spec, run)
+  turn.mode = resume and "resume" or "replay"
+  table.insert(run.conversation, turn)
+  local n = #run.conversation
+  st.running[run.pr_id][key] = turn
+  M.save(run)
+  emit(run.pr_id, run)
+
+  local ws = run.workspace
+  if ws and vim.fn.isdirectory(ws) == 0 then ws = nil end
+  local vars = placeholders(info, run, ws)
+  vars.message = message
+  local f = resume and spec.followup or spec
+  vars.prompt = M.expand(f.prompt or spec.prompt or "", vars)
+  local cmd, stdin
+  if resume then
+    cmd = expand_cmd(f.cmd, vars)
+    stdin = f.stdin and M.expand(f.stdin, vars) or nil
+  else
+    local replay = M.replay_text(run, message)
+    write_file(vars.conversation_file, replay)
+    vars.prompt = vars.prompt .. "\n" .. replay
+    cmd = expand_cmd(spec.cmd, vars)
+    -- The conversation rides on stdin when the action uses it, or when its
+    -- command line doesn't carry {prompt} at all.
+    local cmd_has_prompt = false
+    for _, part in ipairs(type(spec.cmd) == "table" and spec.cmd or { spec.cmd }) do
+      if tostring(part):find("{prompt}", 1, true) then cmd_has_prompt = true end
+    end
+    if spec.stdin then
+      stdin = M.expand(spec.stdin, vars)
+      if not spec.stdin:find("{prompt}", 1, true) then stdin = stdin .. "\n" .. replay end
+    elseif not cmd_has_prompt then
+      stdin = replay
+    end
+  end
+  notify("Asked " .. run.label .. " on PR #" .. run.pr_id .. (resume and "" or " (replaying the conversation)") .. "\u{2026}")
+
+  local function done(code, out, err)
+    st.running[run.pr_id][key] = nil
+    turn.finished = os.time()
+    turn.exit = code
+    turn.status = outcome(turn, code)
+    turn.job = nil
+    local threads = run.threads or require("azure-cli.shell").read_json(run.dir .. "/threads.json", {})
+    local parsed = collect(run, "followup-" .. n, out, err, threads, spec.session_pattern)
+    turn.lines, turn.summary, turn.stderr = parsed.lines, parsed.summary, parsed.stderr
+    if resume and parsed.session_id then run.session_id = parsed.session_id end
+    for _, it in ipairs(parsed.items) do
+      it.turn = n
+      table.insert(run.items, it)
+    end
+    turn.timed_out, turn.cancelled, turn.label = nil, nil, nil
+    run.read = false
+    M.save(run)
+    announce(run, info, turn, #parsed.items)
+    emit(run.pr_id, run)
+  end
+  local ok, why = launch(turn, cmd, stdin, job_env(info, vars, f.env or spec.env),
+    ws or run.dir, spec.timeout_seconds, done)
+  if not ok then done(-1, {}, { why }) end
 end
 
 -- Stops a running action (its result is kept, marked cancelled).

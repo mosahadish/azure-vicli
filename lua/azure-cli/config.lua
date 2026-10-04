@@ -71,7 +71,7 @@ local DEFAULT_KEYS = {
   -- Reviewer Agent page (an agent action's result - see docs/agents.md).
   agent = {
     open = "<CR>", accept = "ga", next_suggestion = "]a", prev_suggestion = "[a",
-    runs = "gz", run = "gX", back = "<BS>", help = "?", quit = "q",
+    reply = "R", runs = "gz", run = "gX", back = "<BS>", help = "?", quit = "q",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
@@ -182,8 +182,24 @@ local DEFAULTS = {
 -- here so a typo fails at setup() rather than when the job starts.
 local AGENT_FIELDS = {
   label = "string", description = "string", prompt = "string", stdin = "string",
-  workspace = "string", timeout_seconds = "number", env = "table",
+  workspace = "string", timeout_seconds = "number", env = "table", followup = "table",
+  session_pattern = "string",
 }
+-- An action's `followup`: how to continue the agent's own session for a
+-- follow-up question (R on the Agent page) - see docs/agents.md.
+local FOLLOWUP_FIELDS = { prompt = "string", stdin = "string", env = "table" }
+local function check_cmd(v, where)
+  if type(v) == "table" then
+    if #v == 0 then error("azure-cli.setup: " .. where .. ".cmd is an empty list") end
+    for _, part in ipairs(v) do
+      if type(part) ~= "string" then
+        error("azure-cli.setup: " .. where .. ".cmd must be a list of strings")
+      end
+    end
+  elseif type(v) ~= "string" or v == "" then
+    error("azure-cli.setup: " .. where .. ".cmd must be a list of strings or a shell command string")
+  end
+end
 local function validate_agent_actions(actions)
   if type(actions) ~= "table" then
     error("azure-cli.setup: `agent_actions` must be a table of name -> action")
@@ -196,16 +212,7 @@ local function validate_agent_actions(actions)
     if type(a) ~= "table" then error("azure-cli.setup: " .. where .. " must be a table") end
     for k, v in pairs(a) do
       if k == "cmd" then
-        if type(v) == "table" then
-          if #v == 0 then error("azure-cli.setup: " .. where .. ".cmd is an empty list") end
-          for _, part in ipairs(v) do
-            if type(part) ~= "string" then
-              error("azure-cli.setup: " .. where .. ".cmd must be a list of strings")
-            end
-          end
-        elseif type(v) ~= "string" or v == "" then
-          error("azure-cli.setup: " .. where .. ".cmd must be a list of strings or a shell command string")
-        end
+        check_cmd(v, where)
       elseif k == "when" then
         if type(v) ~= "function" and v ~= "always" and v ~= "author" and v ~= "reviewer" then
           error("azure-cli.setup: " .. where .. ".when must be \"always\", \"author\", \"reviewer\" or a function")
@@ -219,6 +226,21 @@ local function validate_agent_actions(actions)
       end
     end
     if a.cmd == nil then error("azure-cli.setup: " .. where .. " needs a `cmd`") end
+    if a.followup ~= nil then
+      local fw = where .. ".followup"
+      for k, v in pairs(a.followup) do
+        if k == "cmd" then
+          check_cmd(v, fw)
+        elseif FOLLOWUP_FIELDS[k] then
+          if type(v) ~= FOLLOWUP_FIELDS[k] then
+            error("azure-cli.setup: " .. fw .. "." .. k .. " must be a " .. FOLLOWUP_FIELDS[k])
+          end
+        else
+          error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. fw)
+        end
+      end
+      if a.followup.cmd == nil then error("azure-cli.setup: " .. fw .. " needs a `cmd`") end
+    end
     if a.workspace ~= nil and a.workspace ~= "worktree" and a.workspace ~= "repo" and a.workspace ~= "none" then
       error("azure-cli.setup: " .. where .. ".workspace must be \"worktree\", \"repo\" or \"none\"")
     end
