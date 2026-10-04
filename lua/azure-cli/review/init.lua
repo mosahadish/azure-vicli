@@ -1305,6 +1305,9 @@ local function decorate_comments(buf, path, map)
   local PANE = require("azure-cli.review.pane")
   PANE.set_keep(buf, per_line)
   PANE.refresh(diff_win, buf)
+  -- An agent action's suggestions anchored on these threads/lines
+  -- (review/agent.lua), in their own namespace.
+  if EXT.agent then EXT.agent.decorate(buf) end
 end
 
 -- Clear and re-apply comment decorations on every currently open diff buffer.
@@ -2103,6 +2106,7 @@ local function render_overview()
   vim.api.nvim_buf_set_lines(overview_buf, 0, -1, false, lines)
   vim.bo[overview_buf].modifiable = false
   mark_threads_read(filtered(general_threads))
+  if EXT.agent then EXT.agent.decorate(overview_buf) end
 end
 
 -- Fetch the PR's commit list for the Overview page in the background and
@@ -2379,6 +2383,10 @@ EXT.mode_tags = function()
     -- changed there, since UI.winbar's `tags` list does its own spacing.
     local bt = (EXT.batch.tag() or ""):gsub("^%s+", "")
     if bt ~= "" then tags[#tags + 1] = bt end
+  end
+  if EXT.agent then
+    local at = EXT.agent.tag()
+    if at ~= "" then tags[#tags + 1] = at end
   end
   if active_only or it ~= "" then
     local total, shown = 0, 0
@@ -3333,6 +3341,10 @@ EXT.for_modules = {
   passes_filters = passes_filters,
   active_only = function() return active_only end,
   toggle_active_filter = toggle_active_filter,
+  -- review/agent.lua: its Agent page goes back to the Overview / leaves
+  -- the reviewer the way the Overview's own keys do.
+  open_overview = open_overview,
+  leave = leave,
 }
 
 -- Re-fetch PR comment threads from ADO and re-decorate every open diff buffer
@@ -3795,6 +3807,7 @@ STATE.review_cleanup = function()
   for _, b in pairs(EXT.nav.bufs) do bufs[#bufs + 1] = b end
   if overview_buf then bufs[#bufs + 1] = overview_buf end
   bufs[#bufs + 1] = list_buf
+  if EXT.agent and EXT.agent.cleanup then bufs[#bufs + 1] = EXT.agent.cleanup() end
   vim.schedule(function()
     for _, b in ipairs(bufs) do
       if b and vim.api.nvim_buf_is_valid(b) then pcall(vim.api.nvim_buf_delete, b, { force = true }) end
@@ -4076,6 +4089,9 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   ctx.fetch_since_base = EXT.since_mod.fetch_base
   EXT.followup = require("azure-cli.review.followup")(ctx)
   EXT.workitems = require("azure-cli.review.workitems")(ctx)
+  -- Agent actions (gX), the Agent page (gz) and their inline suggestions -
+  -- decorate_comments/render_overview/EXT.mode_tags call into it.
+  EXT.agent = require("azure-cli.review.agent")(ctx)
 
   -- File-list access for code defined before `files`/`open_file` exist
   -- (jump_change's cross-file stepping - ]c/]C crossing from the last/first

@@ -431,6 +431,44 @@ do
   rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", types = { 1 } } } }, "list of strings")
 end
 
+-- --- agent_actions: none by default, validated field by field --------------
+do
+  config.setup({})
+  check("agent_actions: none by default", next(config.get().agent_actions) == nil)
+  local good = {
+    triage = { cmd = { "claude", "-p", "{prompt}" }, prompt = "/triage {context_dir}", label = "Triage",
+      when = "author", workspace = "repo", timeout_seconds = 600, env = { X = "1" } },
+    shell = { cmd = "my-agent --pr {pr_id}", stdin = "{prompt}", when = function() return true end },
+  }
+  config.setup({ agent_actions = good })
+  check("agent_actions: kept as given", config.get().agent_actions == good)
+  config.setup({})
+  check("agent_actions: setup({}) clears them", next(config.get().agent_actions) == nil)
+  local function rejects(name, actions, needle)
+    local ok, err = pcall(config.setup, { agent_actions = actions })
+    check("agent_actions rejects " .. name, not ok and tostring(err):find(needle, 1, true) ~= nil, err)
+  end
+  rejects("a non-table", "x", "table of name -> action")
+  rejects("a list instead of names", { { cmd = { "a" } } }, "keyed by action name")
+  rejects("a missing cmd", { a = { prompt = "p" } }, "needs a `cmd`")
+  rejects("an empty cmd list", { a = { cmd = {} } }, "empty list")
+  rejects("a non-string cmd part", { a = { cmd = { "a", 1 } } }, "list of strings")
+  rejects("an empty cmd string", { a = { cmd = "" } }, "shell command string")
+  rejects("a bad when", { a = { cmd = { "a" }, when = "sometimes" } }, ".when")
+  rejects("a bad workspace", { a = { cmd = { "a" }, workspace = "tmp" } }, ".workspace")
+  rejects("a bad timeout", { a = { cmd = { "a" }, timeout_seconds = 0 } }, "timeout_seconds")
+  rejects("a wrong type", { a = { cmd = { "a" }, prompt = 3 } }, "prompt must be a string")
+  rejects("an unknown field", { a = { cmd = { "a" }, model = "x" } }, "unknown field `model`")
+  rejects("a followup without cmd", { a = { cmd = { "a" }, followup = { stdin = "{message}" } } }, "followup needs a `cmd`")
+  rejects("a bad followup cmd", { a = { cmd = { "a" }, followup = { cmd = {} } } }, "followup.cmd is an empty list")
+  rejects("an unknown followup field", { a = { cmd = { "a" }, followup = { cmd = { "a" }, when = "x" } } },
+    "unknown field `when` in agent_actions.a.followup")
+  rejects("a non-string session_pattern", { a = { cmd = { "a" }, session_pattern = 1 } }, "session_pattern must be a string")
+  local ok = pcall(config.setup, { agent_actions = { a = { cmd = { "a" }, session_pattern = "id: (%S+)",
+    followup = { cmd = { "a", "--resume", "{session_id}" }, stdin = "{message}", env = { X = "1" } } } } })
+  check("agent_actions: a followup and session_pattern are accepted", ok)
+end
+
 if fails > 0 then
   print(fails .. " check(s) failed")
   os.exit(1)

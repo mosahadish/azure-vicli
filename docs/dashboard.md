@@ -62,6 +62,8 @@ solves the widths; see its own header comment for the exact rules).
 | `r` | Refresh |
 | `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view, `gs` changes its state, `gl` links another and `gL` unlinks the one under the cursor. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
+| `gX` | Run an [agent action](agents.md) on the PR in the background (Claude Code, Copilot, any command you configured), cancel a running one, or show its results |
+| `gz` | Show the PR's agent results in a float; `<CR>` there opens them on the reviewer's Agent page |
 | `W` | Switch to the work-items dashboard |
 | `q` | Quit |
 
@@ -74,6 +76,8 @@ Each row carries badges to the left of the id:
 | `●` | Unread comment or mention activity since you last opened the PR. On a PR you didn't author that includes one of your own threads being **resolved**, not just replied to - the threads column going `0/1` -> `1/1` is activity on your comment like any other, and `gu` in the reviewer will say whether the code near it actually moved |
 | `⇣` | Branches or content being fetched in the background right now |
 | `◆` | Fully prefetched; opens instantly |
+| `◐` | An [agent action](agents.md) is running on the PR |
+| `✦` | An agent result you haven't looked at yet (`gz`) |
 | `@` | An active thread mentions you; the PR also appears under Mentions |
 
 The build column to the right of the id shows `✓` succeeded, `✗` failed,

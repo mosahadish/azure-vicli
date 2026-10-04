@@ -28,7 +28,7 @@ directly, in the current window, the same way it always has (see
 
 Every key in every table in these docs is a *default* - `setup()`'s `keys`
 option remaps or unbinds any of them, per **surface** (`dashboard`, `list`,
-`diff`, `overview`, `nav`, `workitems`, `workitem_view` - roughly, one per
+`diff`, `overview`, `agent`, `nav`, `workitems`, `workitem_view` - roughly, one per
 screen this tool shows) and **action** (a stable name for what the key
 does, independent of which key it's bound to):
 
@@ -66,6 +66,8 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `agent` | `gX` |
+| `agent_results` | `gz` |
 | `browser` | `o` |
 | `collapse_all` | `zM` |
 | `complete` | `gm` |
@@ -95,6 +97,8 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `agent` | `gX` |
+| `agent_results` | `gz` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -129,6 +133,9 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `agent` | `gX` |
+| `agent_accept` | `ga` |
+| `agent_results` | `gz` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -149,11 +156,13 @@ paste the output here after changing a default.
 | `link_workitem` | `gl` |
 | `next_comment` | `]C` |
 | `next_hunk` | `]c` |
+| `next_suggestion` | `]a` |
 | `next_unviewed` | `]m` |
 | `open_file` | `gf` |
 | `open_workitem` | `gW` |
 | `prev_comment` | `[C` |
 | `prev_hunk` | `[c` |
+| `prev_suggestion` | `[a` |
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
 | `reply` | `R` |
@@ -172,6 +181,9 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `agent` | `gX` |
+| `agent_accept` | `ga` |
+| `agent_results` | `gz` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -187,9 +199,11 @@ paste the output here after changing a default.
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
 | `next_comment` | `]C` |
+| `next_suggestion` | `]a` |
 | `open_commit` | `<CR>` |
 | `open_workitem` | `gW` |
 | `prev_comment` | `[C` |
+| `prev_suggestion` | `[a` |
 | `quit` | `q` |
 | `reply` | `R` |
 | `resize_less` | `<` |
@@ -199,6 +213,21 @@ paste the output here after changing a default.
 | `status` | `s` |
 | `unlink_workitem` | `gL` |
 | `vote` | `gv` |
+
+#### agent
+
+| Action | Default key(s) |
+|---|---|
+| `accept` | `ga` |
+| `back` | `<BS>` |
+| `help` | `?` |
+| `next_suggestion` | `]a` |
+| `open` | `<CR>` |
+| `prev_suggestion` | `[a` |
+| `quit` | `q` |
+| `reply` | `R` |
+| `run` | `gX` |
+| `runs` | `gz` |
 
 #### nav
 
@@ -265,4 +294,5 @@ paste the output here after changing a default.
 | `refresh` | `r` |
 | `state` | `gs` |
 | `unlink_pr` | `gL` |
+
 <!-- END GENERATED KEYS TABLE -->

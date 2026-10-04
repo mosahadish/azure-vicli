@@ -18,7 +18,8 @@
 --
 -- Row badges (left of the id): \u{25CF} unread comment activity, \u{21E3} branches or
 -- content being fetched in the background right now, \u{25C6} fully prefetched
--- (opens instantly), @ an active thread mentions me. The build column to the
+-- (opens instantly), \u{25D0} an agent action running / \u{2726} its result not
+-- looked at yet (agent.lua), @ an active thread mentions me. The build column to the
 -- right of the id keeps its own \u{2713} ok / \u{2717} failed / \u{21BB} expired /
 -- \u{25CF} running glyphs.
 --
@@ -45,6 +46,8 @@ local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 local PRS = require("azure-cli.prs")
 local PR_WORKITEMS = require("azure-cli.pr_workitems")
+-- Agent actions (gX/gz) and the row badge for their runs.
+local AGENT = require("azure-cli.agent")
 -- Shared housekeeping helpers (flash, config file, browser/clipboard, the
 -- JSON state files, a failed job's one-line summary) - see shell.lua for
 -- what each of these used to be a private copy of here.
@@ -143,13 +146,13 @@ local SCALING_COLUMNS = {
   { key = "updated", min = 8, ideal = 12, weight = 1, priority = 2 },
 }
 -- Display cells every fixed segment of a row costs, outside the five
--- scaling columns above: "  " + unread(1) + " " + sync(1) + " " + mention(1)
--- + " " + id(7) + " " + build(4) + " " + conflict(1) + " " + autocomplete(1)
--- + " " (=25, before the title column) + the " " gap after title + the " "
+-- scaling columns above: "  " + unread(1) + " " + sync(1) + " " + agent(1)
+-- + " " + mention(1) + " " + id(7) + " " + build(4) + " " + conflict(1) + " "
+-- + autocomplete(1) + " " (=27, before the title column) + the " " gap after title + the " "
 -- gap after repo + (" " + vote(7) + " " + threads(7) + " " = 17, between
 -- author and reviewer summary) + the "  " gap before updated-human (=2).
 -- Recompute this if add_pr_row's fixed segments ever change.
-local ROW_FIXED_WIDTH = 25 + 1 + 1 + 17 + 2
+local ROW_FIXED_WIDTH = 27 + 1 + 1 + 17 + 2
 local function pr_matches(pr, q)
   if tostring(pr.id or ""):find(q, 1, true) then return true end
   local hay = ((pr.title or "") .. " " .. (pr.repo or "") .. " " .. (pr.author or "")):lower()
@@ -174,6 +177,7 @@ local DASHBOARD_ACTIONS = {
   { "vote", "vote" }, { "complete", "complete / auto-complete" },
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
+  { "agent", "agent action" }, { "agent_results", "agent results" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
@@ -408,6 +412,8 @@ UI.link_hl({
   AzureCliWorkItem     = "Identifier",
   AzureCliColHeader    = "Comment",
   AzureCliMe           = "Title",
+  AzureCliAgentRun     = "WarningMsg",
+  AzureCliAgentNew     = "Special",
 })
 
 -- Parse a "o"-format ISO timestamp to an epoch for sorting/age checks - now
@@ -532,6 +538,10 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(fit(sync == "syncing" and "\u{21E3}" or (sync == "ready" and "\u{25C6}" or ""), 1),
     sync == "syncing" and "AzureCliSyncing" or "AzureCliReady")
   seg(" ")
+  local agent = AGENT.state(pr.id)
+  seg(fit(agent == "running" and "\u{25D0}" or (agent == "unread" and "\u{2726}" or ""), 1),
+    agent == "running" and "AzureCliAgentRun" or "AzureCliAgentNew")
+  seg(" ")
   seg(fit((pr.mentionThreads or 0) > 0 and "@" or "", 1), "AzureCliMention")
   seg(" ")
   seg(fit("#" .. tostring(pr.id), 7), "AzureCliId")
@@ -613,7 +623,7 @@ end
 -- The column header row above the first section, laid out with the same
 -- fixed/scaling widths add_pr_row uses so it lines up with every row.
 local function add_header_row(lines, spans, widths)
-  local parts = { "        ", fit("id", 7), " ", fit("ci", 4), " ", " ", " ", " ", " ", fit("title", widths.title),
+  local parts = { "          ", fit("id", 7), " ", fit("ci", 4), " ", " ", " ", " ", " ", fit("title", widths.title),
     " ", fit("repo", widths.repo) }
   if widths.author then parts[#parts + 1] = " " .. fit("author", widths.author) end
   parts[#parts + 1] = " " .. fit("votes", 7) .. " " .. fit("threads", 7)
@@ -934,6 +944,8 @@ local DASHBOARD_HELP_DESCS = {
   first_pr = "jump to the first PR",
   last_pr = "jump to the last PR",
   toasts = "toggle desktop notifications for this session",
+  agent = "run an agent action on the PR (headless; also cancels one, or shows results)",
+  agent_results = "show the PR's agent results (<CR> there opens them in the reviewer)",
   config = "open the config file",
   refresh = "refresh",
   workitems = "switch to the work-items dashboard",
@@ -962,6 +974,8 @@ local function show_help()
     "  \u{25CF}           unread comment activity since you last opened the PR",
     "  \u{21E3}           branches or content being fetched in the background right now",
     "  \u{25C6}           fully prefetched, opens instantly",
+    "  \u{25D0}           an agent action is running on it (gX)",
+    "  \u{2726}           an agent result you haven't looked at yet (gz)",
     "  @           an active thread mentions me; the PR also appears in Mentions",
     "",
     "Sections:",
@@ -1617,6 +1631,30 @@ local function open_pr_record(pr)
 end
 M.open_pr_by_record = open_pr_record
 
+-- gX / gz: agent actions (agent.lua) on the PR under the cursor. The
+-- result opens in a float here; <CR> in it opens the PR on the reviewer's
+-- Agent page (review/agent.lua picks up STATE.agent_open_page when the
+-- reviewer opens, or - already open - through the opener it registered).
+local function open_agent_results(pr)
+  AGENT.show_float(pr.id, function()
+    local id = tostring(pr.id)
+    STATE.agent_open_page = id
+    open_pr_record(pr)
+    local opener = STATE.agent_page_openers and STATE.agent_page_openers[id]
+    if opener and opener() then STATE.agent_open_page = nil end
+  end)
+end
+local function run_agent()
+  local pr = current_pr()
+  if not pr then return end
+  AGENT.pick({
+    pr = pr, env = pr_env(pr), repo_path = clone_for(pr), source = pr.source or "", target = pr.target or "",
+    surface = "dashboard", is_author = AGENT.is_author(pr), result_hint = "gz shows it",
+    open_results = function() open_agent_results(pr) end,
+  }, function(cb) ensure_warm(pr, cb, true) end)
+end
+AGENT.subscribe("dashboard", function() schedule_render() end)
+
 -- Open the PR under the cursor in the reviewer (<CR>).
 local function open_pr()
   local pr = current_pr()
@@ -1834,6 +1872,11 @@ KEYS.bind(buf, "dashboard", "last_pr", function() jump_edge_pr(true) end, { desc
 KEYS.bind(buf, "dashboard", "open_workitem", open_linked_workitem, { desc = "the work items linked to this PR" })
 KEYS.bind(buf, "dashboard", "link_workitem", link_workitem, { desc = "link a work item to this PR" })
 KEYS.bind(buf, "dashboard", "unlink_workitem", unlink_workitem, { desc = "unlink a work item from this PR" })
+KEYS.bind(buf, "dashboard", "agent", run_agent, { desc = "run an agent action on the PR" })
+KEYS.bind(buf, "dashboard", "agent_results", function()
+  local pr = current_pr()
+  if pr then open_agent_results(pr) end
+end, { desc = "show the PR's agent results" })
 KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.workitems.dashboard").open()
 end, { desc = "switch to the work-items dashboard" })
