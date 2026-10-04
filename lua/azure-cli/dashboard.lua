@@ -1838,6 +1838,20 @@ KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.workitems.dashboard").open()
 end, { desc = "switch to the work-items dashboard" })
 KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
+-- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
+-- the PR under the cursor (chat/view.lua).
+require("azure-cli.chat").bind_toggle(buf, "dashboard")
+require("azure-cli.chat.view").register("azurecli-dashboard", function(w)
+  local pr = row_pr[vim.api.nvim_win_get_cursor(w)[1]]
+  local snap = { screen = "PR dashboard" }
+  if pr then
+    snap.pr = { id = pr.id, title = pr.title, repo = pr.repo, source = pr.source, target = pr.target,
+      author = pr.author, section = pr.state, votes = pr.voteRatio, build = pr.buildStatus }
+  else
+    snap.note = "The cursor isn't on a pull request; list_pull_requests shows the whole list."
+  end
+  return snap
+end)
 -- Standalone quits Neovim entirely (today's behaviour, `qa!`) - it's the
 -- launcher's whole nvim session, nothing else to go back to. Plugin mode
 -- just closes this dashboard's own tab (opened by init.lua's

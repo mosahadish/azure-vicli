@@ -33,6 +33,7 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -3174,6 +3175,7 @@ class WorkItemActions:
         a4 = rest[3] if len(rest) > 3 else ""
         a5 = rest[4] if len(rest) > 4 else ""
         a6 = rest[5] if len(rest) > 5 else ""
+        a7 = rest[6] if len(rest) > 6 else ""
 
         if cmd == "create":
             return self._wi_create(a2, a3, a4, a5)
@@ -3185,11 +3187,83 @@ class WorkItemActions:
             return self._wi_link_pr(a2, a3, a4, a5, a6)
         if cmd == "unlink-pr":
             return self._wi_unlink_pr(a2, a3)
+        if cmd == "create-branch":
+            return self._wi_create_branch(a2, a3, a4, a5, a6, a7)
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | "
               "set <id> <field> <value> | comment <id> <text> | "
               "link-pr <wiId> <orgUrl> <project> <repoName> <prId> | "
-              "unlink-pr <wiId> <prId>", file=sys.stderr)
+              "unlink-pr <wiId> <prId> | "
+              "create-branch <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch>", file=sys.stderr)
         return 1
+
+    def _wi_create_branch(self, wid, org_url, project, repo_name, from_branch, new_branch):
+        """Creates branch `new_branch` at the tip of `from_branch` on the
+        server (Refs - Update Refs: POST .../refs with an all-zero
+        oldObjectId) and, unless `wid` is empty or "0", links it to work
+        item `wid` as a "Branch" artifact link (what the work item's
+        Development section lists). Prints {"branch", "objectId", "linked"}.
+        """
+        org_url = org_url or self.collection
+        project = project or self.project
+        if not (org_url and project and repo_name and from_branch and new_branch):
+            print("ERROR: create-branch needs <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch>",
+                  file=sys.stderr)
+            return 1
+        strip = lambda b: b[len("refs/heads/"):] if b.startswith("refs/heads/") else b
+        from_branch, new_branch = strip(from_branch), strip(new_branch)
+        repo_url = "{0}/{1}/_apis/git/repositories/{2}".format(org_url, project, urllib.parse.quote(repo_name))
+        try:
+            repo = self._get(repo_url)
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        repo_guid = repo.get("id")
+        project_guid = (repo.get("project") or {}).get("id")
+        if not repo_guid or not project_guid:
+            print("ERROR: could not resolve repository/project id for '" + repo_name + "'", file=sys.stderr)
+            return 2
+        # filter= is a prefix match ("heads/develop" also finds
+        # "heads/develop-old"), so pick the exact ref out of the answer.
+        refs_url = "{0}/refs?filter={1}".format(repo_url, urllib.parse.quote("heads/" + from_branch))
+        try:
+            refs = self._get(refs_url, api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        want = "refs/heads/" + from_branch
+        sha = next((r.get("objectId") for r in (refs.get("value") or []) if r.get("name") == want), None)
+        if not sha:
+            print("ERROR: branch '{0}' not found in {1}".format(from_branch, repo_name), file=sys.stderr)
+            return 1
+        body = [{"name": "refs/heads/" + new_branch, "oldObjectId": "0" * 40, "newObjectId": sha}]
+        try:
+            d = self._post(repo_url + "/refs", body, api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "POST")
+        result = (d.get("value") or [{}])[0] if isinstance(d, dict) else {}
+        if not result.get("success"):
+            print("ERROR: could not create '{0}': {1}".format(
+                new_branch, result.get("customMessage") or result.get("updateStatus") or json.dumps(d)[:300]),
+                file=sys.stderr)
+            return 1
+        linked = None
+        if wid and wid != "0":
+            artifact_url = "vstfs:///Git/Ref/{0}%2F{1}%2FGB{2}".format(
+                project_guid, repo_guid, urllib.parse.quote(new_branch, safe=""))
+            patch = [{
+                "op": "add",
+                "path": "/relations/-",
+                "value": {"rel": "ArtifactLink", "url": artifact_url, "attributes": {"name": "Branch"}},
+            }]
+            try:
+                self._patch("{0}/_apis/wit/workitems/{1}".format(self.collection, wid), patch,
+                            content_type="application/json-patch+json")
+                linked = int(wid) if str(wid).isdigit() else wid
+            except AdoHttpError as e:
+                # The branch exists now; say so rather than reporting a failure.
+                print(json.dumps({"branch": new_branch, "objectId": sha, "linked": None,
+                                  "linkError": _clip(str(e))}, ensure_ascii=False))
+                return 0
+        print(json.dumps({"branch": new_branch, "objectId": sha, "linked": linked}, ensure_ascii=False))
+        return 0
 
     def _wi_create(self, wtype, title, parent_id, iteration_path):
         if not wtype or not title:
@@ -4177,6 +4251,126 @@ def parse_args(argv):
     return args
 
 
+# ---------------------------------------------------------------------------
+# --mcp: the chat panel's tools, as an MCP server
+# ---------------------------------------------------------------------------
+#
+# The chat panel (lua/azure-cli/chat/) runs an agent CLI (Claude Code, the
+# Copilot CLI, ...) and hands it an MCP config that starts `azure-cli.py
+# --mcp`. This process speaks MCP to the agent over stdio (JSON-RPC 2.0, one
+# message per line) and forwards tools/list and tools/call to the Neovim
+# that started the chat, through the TCP bridge chat/bridge.lua listens on
+# (AZVICLI_CHAT_BRIDGE = "host:port", AZVICLI_CHAT_TOKEN authenticates each
+# request). The tools themselves live on the Lua side, where the plugin
+# already knows what is on screen and how to do every action - so this is
+# only a relay: one JSON line out, one JSON line back, per call.
+
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _bridge_call(payload, env=None, timeout=900):
+    """One request to the Neovim bridge: sends `payload` (plus the token)
+    as a JSON line and returns the decoded JSON line it answers with.
+    Raises OSError/ValueError when the bridge isn't reachable or answers
+    garbage. The timeout is long because a write tool may be waiting on
+    the user to approve it in Neovim.
+    """
+    env = os.environ if env is None else env
+    addr = env.get("AZVICLI_CHAT_BRIDGE") or ""
+    host, _, port = addr.rpartition(":")
+    if not host or not port.isdigit():
+        raise OSError("AZVICLI_CHAT_BRIDGE is not set - start the agent from azure-vicli's chat panel")
+    msg = dict(payload)
+    msg["token"] = env.get("AZVICLI_CHAT_TOKEN") or ""
+    with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+        sock.sendall((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    return json.loads(buf.decode("utf-8"))
+
+
+def mcp_handle(msg, bridge=_bridge_call):
+    """Answers one JSON-RPC message from the agent: the response dict, or
+    None for a notification. `bridge` is injectable for tests.
+    """
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+    mid, method = msg.get("id"), msg.get("method")
+    if mid is None:
+        return None  # notifications/initialized, notifications/cancelled, ...
+
+    def ok(result):
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+    if method == "initialize":
+        params = msg.get("params") or {}
+        return ok({
+            "protocolVersion": params.get("protocolVersion") or MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "azure-vicli", "version": "1"},
+            "instructions": "Tools for the Azure DevOps pull requests and work items open in the user's "
+                            "azure-vicli (Neovim). Call current_view to see what the user is looking at.",
+        })
+    if method == "ping":
+        return ok({})
+    if method == "tools/list":
+        try:
+            answer = bridge({"method": "list"})
+        except (OSError, ValueError) as ex:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": "azure-vicli: " + str(ex)}}
+        return ok({"tools": answer.get("tools") or []})
+    if method == "tools/call":
+        params = msg.get("params") or {}
+        try:
+            answer = bridge({"method": "call", "name": params.get("name"), "arguments": params.get("arguments") or {}})
+        except (OSError, ValueError) as ex:
+            return ok({"content": [{"type": "text", "text": "azure-vicli is not reachable: " + str(ex)}], "isError": True})
+        text = answer.get("text")
+        if text is None:
+            text = json.dumps(answer.get("result"), ensure_ascii=False, indent=1)
+        return ok({"content": [{"type": "text", "text": text}], "isError": bool(answer.get("error"))})
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found: " + str(method)}}
+
+
+def mcp_serve(stdin=None, stdout=None, bridge=_bridge_call):
+    """--mcp: reads JSON-RPC messages, one per line, from stdin until EOF.
+    Each request runs on its own thread (a tool call can wait minutes for
+    the user's approval while the agent asks for something else), and
+    responses are written whole, one per line, under a lock.
+    """
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    lock = threading.Lock()
+    threads = []
+
+    def answer(line):
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+        else:
+            resp = mcp_handle(msg, bridge)
+        if resp is not None:
+            with lock:
+                stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+                stdout.flush()
+
+    for raw in stdin:
+        line = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else raw.strip()
+        if not line:
+            continue
+        t = threading.Thread(target=answer, args=(line,), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+    return 0
+
+
 def main(argv=None):
     """Thin wrapper: --serve runs the daemon loop, an empty argv either
     branch-prefetches or launches the nvim dashboard (both stay here rather
@@ -4191,6 +4385,8 @@ def main(argv=None):
 
     if argv[:1] == ["--serve"]:
         return serve()
+    if argv[:1] == ["--mcp"]:
+        return mcp_serve()
 
     if not argv:
         # No flags at all: either branch-prefetch (AZVICLI_PREFETCH=1|all -

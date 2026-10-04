@@ -1063,7 +1063,31 @@ class Fake:
 
     def cmd_wi_edit(self, rest):
         cmd = rest[0] if rest else ""
-        a2, a3, a4, a5, a6 = (rest[1:] + ["", "", "", "", ""])[:5]
+        a2, a3, a4, a5, a6, a7 = (rest[1:] + ["", "", "", "", "", ""])[:6]
+        if cmd == "create-branch":
+            # <wiId|0> <orgUrl> <project> <repo> <from> <new>: a real branch in
+            # the bare origin, recorded on the work item as a "Branch" link.
+            bare = self.ws.clone_url(a5)
+            if not os.path.isdir(bare):
+                print("ERROR: HTTP 404 GET: repository '{0}' not found".format(a5), file=sys.stderr)
+                return 2
+            sha = subprocess.run(["git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/" + a6],
+                                 capture_output=True, text=True).stdout.strip()
+            if not sha:
+                print("ERROR: branch '{0}' not found in {1}".format(a6, a5), file=sys.stderr)
+                return 1
+            made = subprocess.run(["git", "--git-dir", bare, "branch", a7, sha], capture_output=True, text=True)
+            if made.returncode != 0:
+                print("ERROR: could not create '{0}': {1}".format(a7, made.stderr.strip()), file=sys.stderr)
+                return 1
+            linked = None
+            w = self.wi(a2) if a2 and a2 != "0" else None
+            if w is not None:
+                w.setdefault("branches", []).append({"repo": a5, "name": a7})
+                linked = w["id"]
+                self.ws.save(self.state)
+            print(json.dumps({"branch": a7, "objectId": sha, "linked": linked}))
+            return 0
         if cmd == "create":
             if not a2 or not a3:
                 print("ERROR: create needs <type> <title>", file=sys.stderr)
@@ -1246,6 +1270,15 @@ def main(argv):
         print("fake-provider: AZVICLI_FAKE_WS must point at a workspace built by "
               "`fake-provider.py setup <dir>` (tests/demo.sh does this).", file=sys.stderr)
         return 1
+    if argv[:1] == ["--mcp"]:
+        # The chat's MCP relay doesn't touch Azure DevOps at all - it only
+        # forwards to the Neovim bridge - so the real one runs as-is.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "azure_cli_real", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "azure-cli.py"))
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        return real.mcp_serve()
     ws = Workspace(root)
     if argv[:1] == ["--serve"]:
         return serve(ws)

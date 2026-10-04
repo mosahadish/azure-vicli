@@ -305,6 +305,39 @@ local function setup(ctx)
   end
   rehydrate()
 
+  -- The chat's draft_reply/draft_comment tools (chat/tools.lua) queue
+  -- through here while this PR is open, so a draft shows at once, tagged
+  -- "(queued)", exactly like one queued by hand. Returns false once this
+  -- reviewer is gone - the tool then queues into STATE.batch directly and
+  -- rehydrate() above picks it up the next time the PR is opened.
+  STATE.batch_live = STATE.batch_live or {}
+  STATE.batch_live[ctx.ID] = function(item)
+    local lw = ctx.list_win()
+    if not (lw and vim.api.nvim_win_is_valid(lw)) then return false end
+    local s = state()
+    if item.kind == "reply" then
+      local t = ctx.find_thread(item.thread_id)
+      if not t then return false end
+      local c = {
+        author = ctx.my_display_name(), authorId = ctx.my_id(),
+        content = item.text, pending = true, queued = true,
+      }
+      table.insert(t.comments, c)
+      table.insert(ctx.pending_replies(), { thread_id = t.id, comment = c })
+      item.comment, item.thread = c, t
+    else
+      local p = ctx.add_pending_thread(item.text, item.bucket, item.where,
+        item.path, item.side, item.lineno, item.end_lineno)
+      p.entry.queued = true
+      p.entry.comments[1].queued = true
+      item.pending = p
+    end
+    table.insert(s.items, item)
+    s.on = true
+    ctx.redraw()
+    return true
+  end
+
   -- Takes over a write post_new_thread/send_reply would otherwise send right
   -- away: queues it instead, tags its already-shown optimistic entry
   -- "(queued)" (pr-review.lua's sending_tag checks x.queued before the

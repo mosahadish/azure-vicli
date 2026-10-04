@@ -614,5 +614,145 @@ if not both("gl on PR #104 didn't show #3001 on both dashboards", function()
   return row_text(dash, 104):find("#3002 +1", 1, true) and row_text(wis, 3001):find("!101 +1", 1, true)
 end) then return end
 print("LINK-SMOKE-OK")
+
+-- The chat panel (lua/azure-cli/chat/): tests/fake-chat-agent.py stands in
+-- for Claude Code and speaks real MCP to `azure-cli.py --mcp`, which relays
+-- to the panel's bridge. From auth.py's diff, on bob's thread: gq opens the
+-- panel; "triage" sees the view (PR, file, line, thread), reads the threads
+-- and drafts a reply into the batch queue (not posted); gm picks a model;
+-- "branch" creates a branch on the fake origin linked to #3001 (no
+-- question asked); "vote" asks first and the "Deny" goes back to the agent.
+-- The panel follows into the dashboard's tab, and gq hides it.
+do
+  local CHAT = require("azure-cli.chat")
+  local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
+  local agent_cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}" }
+  require("azure-cli").setup({ chat = { agent = {
+    label = "Fake Claude", cmd = agent_cmd, models = { "fast", "smart" }, timeout_seconds = 60,
+    followup = { cmd = vim.list_extend(vim.deepcopy(agent_cmd), { "--resume", "{session_id}" }) },
+  } } })
+  local answer
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      local label = opts.format_item and opts.format_item(it) or tostring(it)
+      if answer and label:find(answer, 1, true) then return cb(it, i) end
+    end
+    return cb(nil)
+  end
+
+  require("azure-cli").open_review(101)
+  local lb
+  ok = vim.wait(20000, function()
+    lb = find_buf("azurecli-files")
+    return lb ~= nil and vim.fn.bufwinid(lb) ~= -1 and text(lb):find("auth.py", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the reviewer didn't open PR #101 for the chat") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(lb))
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(lb, 0, -1, false)) do
+    if l:find("auth.py", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+  end
+  feed("<CR>")
+  local dbuf
+  ok = vim.wait(10000, function()
+    dbuf = vim.api.nvim_get_current_buf()
+    return dbuf ~= lb and require("azure-cli.state").chat_views ~= nil
+      and (vim.api.nvim_buf_get_lines(dbuf, 0, -1, false)[1] or "") ~= "Loading diff…"
+  end, 50)
+  -- The thread on new-side line 12.
+  local tl
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(dbuf, 0, -1, false)) do
+    if l:find("is_locked", 1, true) then tl = tl or i end
+  end
+  local map = require("azure-cli.review.pane").entry(dbuf)
+  for bl = 1, vim.api.nvim_buf_line_count(dbuf) do
+    local m = map and map.map and map.map[bl]
+    if m and m.side == "R" and m.lineno == 12 then tl = bl break end
+  end
+  vim.api.nvim_win_set_cursor(0, { tl, 0 })
+  local diff_win = vim.api.nvim_get_current_win()
+
+  local function ask(msg)
+    local st = require("azure-cli.state").chat
+    local n = #st.entries
+    local input = st.wins[vim.api.nvim_get_current_tabpage()].input
+    vim.api.nvim_set_current_win(input)
+    vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(input), 0, -1, false, { msg })
+    vim.cmd("stopinsert")
+    feed("<CR>")
+    local e
+    local okw = vim.wait(30000, function()
+      e = st.entries[#st.entries]
+      return #st.entries == n + 2 and e.status ~= "running"
+    end, 100)
+    if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(st.entries[#st.entries]) end
+    return e
+  end
+
+  feed("gq")
+  local st = require("azure-cli.state").chat
+  local wins = st.wins[vim.api.nvim_get_current_tabpage()]
+  if not (wins and vim.api.nvim_win_is_valid(wins.log) and vim.api.nvim_get_current_win() == wins.input) then
+    return fail("gq didn't open the chat panel with the input focused")
+  end
+  if vim.api.nvim_win_get_position(wins.log)[2] <= vim.api.nvim_win_get_position(diff_win)[2] then
+    return fail("the chat panel isn't on the right")
+  end
+  vim.api.nvim_set_current_win(diff_win)
+  local e, why = ask("triage this PR's comments")
+  if not e then return fail(why) end
+  local log = text(vim.api.nvim_win_get_buf(wins.log))
+  if e.status ~= "done" or not e.text:find("FAKE-CHAT-RAN", 1, true)
+      or not e.text:find("view: reviewer: a file's diff, PR 101, file src/auth.py, line 12, thread 5000", 1, true)
+      or not e.text:find("message had the view: True", 1, true) or not e.text:find("model: fast", 1, true)
+      or not e.text:find("threads: 3, active: 2", 1, true) or not log:find("\u{270E} draft_reply", 1, true) then
+    return fail("the triage turn went wrong:\n" .. log)
+  end
+  local b = require("azure-cli.state").batch["101"]
+  if not (b and b.on and b.items[#b.items].kind == "reply" and b.items[#b.items].text == "Agreed - a reason code it is.") then
+    return fail("draft_reply didn't queue the reply: " .. vim.inspect(b))
+  end
+  for l in io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a"):gmatch("[^\n]+") do
+    if l:find("--reply", 1, true) then return fail("a drafted reply was posted: " .. l) end
+  end
+
+  -- gm: the next turn uses "smart", and resumes the session.
+  answer = "smart"
+  vim.api.nvim_set_current_win(wins.log)
+  feed("gm")
+  vim.api.nvim_set_current_win(diff_win)
+  e, why = ask("create a branch from main for 3001")
+  if not e then return fail(why) end
+  if not e.text:find("model: smart", 1, true) or not e.text:find("resumed: fake-chat-1", 1, true)
+      or not e.text:find("Created branch feature/3001-throttle-login from main in widgets and linked it to #3001", 1, true) then
+    return fail("the branch turn went wrong:\n" .. e.text)
+  end
+  local bare = vim.env.AZVICLI_FAKE_WS .. "/origin/widgets.git"
+  if vim.fn.system({ "git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/feature/3001-throttle-login" }) == "" then
+    return fail("the branch isn't on the fake origin")
+  end
+
+  -- vote asks first: "Deny" is what the agent hears back.
+  answer = "Deny"
+  vim.api.nvim_set_current_win(diff_win)
+  e, why = ask("vote approve")
+  if not e then return fail(why) end
+  if not e.text:find("vote: The user declined", 1, true) then return fail("the vote wasn't asked/declined:\n" .. e.text) end
+  print("== chat ==")
+  print(text(vim.api.nvim_win_get_buf(wins.log)))
+
+  -- Follows into the PR dashboard's tab; gq there hides it.
+  vim.cmd("tab sbuffer " .. dash)
+  ok = vim.wait(3000, function()
+    local w = st.wins[vim.api.nvim_get_current_tabpage()]
+    return w and vim.api.nvim_win_is_valid(w.log)
+  end, 50)
+  if not ok then return fail("the chat panel didn't follow into the dashboard's tab") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
+  feed("gq")
+  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq didn't hide the chat") end
+  vim.ui.select = real_select
+  print("CHAT-SMOKE-OK")
+end
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

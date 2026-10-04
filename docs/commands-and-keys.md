@@ -11,6 +11,7 @@ Installed as a plugin, everything goes through one user command:
 | `:AzureCli` / `:AzureCli dashboard` | Open the [pull request dashboard](dashboard.md#pull-request-dashboard), in a new tab. |
 | `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, in a new tab - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
 | `:AzureCli workitems` | Open the [work-items dashboard](work-items.md#work-items), in a new tab. |
+| `:AzureCli chat` | Show or hide the [chat panel](chat.md) - the same as `gq` on any azure-vicli screen. |
 | `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
 | `:AzureCli toasts` | Toggle [desktop notifications](dashboard.md#desktop-notifications) for the rest of this session - the same switch the dashboard's own `gN` key flips. |
 | `:AzureCli status` | Show the [provider daemon's](development.md#architecture) status, plus the resolved python interpreter and config file path (see [setup() options](configuration.md#setup-options)). |
@@ -28,7 +29,7 @@ directly, in the current window, the same way it always has (see
 
 Every key in every table in these docs is a *default* - `setup()`'s `keys`
 option remaps or unbinds any of them, per **surface** (`dashboard`, `list`,
-`diff`, `overview`, `nav`, `workitems`, `workitem_view` - roughly, one per
+`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat` - roughly, one per
 screen this tool shows) and **action** (a stable name for what the key
 does, independent of which key it's bound to):
 
@@ -67,6 +68,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `browser` | `o` |
+| `chat` | `gq` |
 | `collapse_all` | `zM` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -99,6 +101,7 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
+| `chat` | `gq` |
 | `comment_file` | `C` |
 | `commits` | `gc` |
 | `complete` | `gm` |
@@ -133,6 +136,7 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
+| `chat` | `gq` |
 | `comment` | `c` |
 | `comment_file` | `C` |
 | `comment_range` | `c` |
@@ -176,6 +180,7 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
+| `chat` | `gq` |
 | `comment` | `c` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -206,6 +211,7 @@ paste the output here after changing a default.
 |---|---|
 | `back` | `<BS>` |
 | `back_to_diff` | `q` |
+| `chat` | `gq` |
 | `config` | `gO` |
 | `find_references` | `gr` |
 | `goto_definition` | `gd` |
@@ -220,6 +226,7 @@ paste the output here after changing a default.
 |---|---|
 | `assign` | `ga` |
 | `browser` | `o` |
+| `chat` | `gq` |
 | `click` | `<LeftMouse>` |
 | `collapse_all` | `zM` |
 | `config` | `gO` |
@@ -252,6 +259,7 @@ paste the output here after changing a default.
 | `assign` | `ga` |
 | `back` | `<BS>` |
 | `browser` | `o` |
+| `chat` | `gq` |
 | `comment` | `gc` |
 | `copy_link` | `gy` |
 | `edit_title` | `ge` |
@@ -265,4 +273,19 @@ paste the output here after changing a default.
 | `refresh` | `r` |
 | `state` | `gs` |
 | `unlink_pr` | `gL` |
+
+#### chat
+
+| Action | Default key(s) |
+|---|---|
+| `back` | `<BS>` |
+| `cancel` | `<C-c>` |
+| `focus_input` | `i` / `a` |
+| `help` | `?` |
+| `hide` | `q` |
+| `model` | `gm` |
+| `new_chat` | `gn` |
+| `send` | `<CR>` |
+| `send_insert` | `<C-s>` |
+
 <!-- END GENERATED KEYS TABLE -->

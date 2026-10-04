@@ -429,6 +429,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token" "$out"
   fi
 
+  # The chat panel's pure helpers (chat/*.lua, review/chat.lua) need
+  # vim.json and vim.api at load, so their unit tests run in a real nvim.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat tests passed"* ]]; then
+    pass "test-chat.lua (headless nvim)"
+  else
+    fail "test-chat.lua (headless nvim)" "$out"
+  fi
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua
@@ -468,6 +477,11 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
   else
     fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
+  fi
+  if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
+    pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
+  else
+    fail "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" "$out"
   fi
   if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
     pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"
