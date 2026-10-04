@@ -115,45 +115,74 @@ local function expand(template, vars, quote)
 end
 M.expand = expand
 
--- The transcript as lines: each turn under a "## You" / "## <agent>"
--- heading, the agent's tool calls listed under its heading as they
--- happen. Pure (`now` injected).
+-- The transcript as lines, plus what each line is, for colouring: a
+-- "You" / "<agent>" heading per turn (the name, then a dimmer " · on PR
+-- #101" / " · working… 4s"), your text, the agent's tool calls as they
+-- happen, then its markdown answer. Returns lines, roles (line -> one of
+-- you_head, you, agent_head, agent, tool_read, tool_write, tool_err,
+-- note, intro; nil for the gap between turns) and name_end (heading line
+-- -> byte where its dim part starts). Pure (`now` injected).
 function M.render(entries, now, agent_label)
-  local lines = {}
-  local function add(l) lines[#lines + 1] = l end
-  local function add_text(t) for l in ((t or "") .. "\n"):gmatch("(.-)\n") do add(l) end end
+  local lines, roles, name_end = {}, {}, {}
+  local function add(l, role) lines[#lines + 1] = l; roles[#lines] = role end
+  local function add_text(t, role) for l in ((t or "") .. "\n"):gmatch("(.-)\n") do add(l, role) end end
+  local function head(name, extra, role)
+    add(name .. (extra ~= "" and ("  \u{00B7}  " .. extra) or ""), role)
+    name_end[#lines] = #name
+  end
   if #entries == 0 then
-    add("# Chat")
-    add("")
-    add("Ask about what you're looking at - \"triage this PR's comments\", \"what do you think about this")
-    add("comment?\", \"create a branch from develop for this work item\". Type below, <CR> sends.")
-    return lines
+    add("Chat", "agent_head")
+    name_end[1] = 4
+    add("", "intro")
+    add_text("Ask about what you're looking at - \"triage this PR's comments\", \"what do you think about "
+      .. "this comment?\", \"create a branch from develop for this work item\".\nType below; <CR> sends.", "intro")
+    return lines, roles, name_end
   end
   for i, e in ipairs(entries) do
-    if i > 1 then add("") end
+    if i > 1 then add("", nil) end
     if e.role == "you" then
-      add("## You" .. (e.where and ("  \u{00B7}  _" .. e.where .. "_") or ""))
-      add("")
-      add_text(e.text)
+      head("You", e.where or "", "you_head")
+      add_text(e.text, "you")
     elseif e.role == "agent" then
-      local head = "## " .. (agent_label or "Agent")
+      local bits = {}
       if e.status == "running" then
-        head = head .. "  \u{00B7}  _working\u{2026} " .. math.max(0, (now or 0) - (e.started or now or 0)) .. "s_"
+        bits[#bits + 1] = "working\u{2026} " .. math.max(0, (now or 0) - (e.started or now or 0)) .. "s"
       elseif e.status and e.status ~= "done" then
-        head = head .. "  \u{00B7}  _" .. e.status .. "_"
+        bits[#bits + 1] = e.status
       end
-      if e.mode == "replay" then head = head .. "  \u{00B7}  _replayed_" end
-      add(head)
-      add("")
-      for _, t in ipairs(e.tools or {}) do add("    " .. t) end
-      if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("") end
-      if e.text and e.text ~= "" then add_text(e.text) end
+      if e.mode == "replay" then bits[#bits + 1] = "replayed" end
+      head(agent_label or "Agent", table.concat(bits, "  \u{00B7}  "), "agent_head")
+      for _, t in ipairs(e.tools or {}) do
+        local role = t:find("^\u{2717}") and "tool_err" or (t:find("^\u{270E}") and "tool_write" or "tool_read")
+        add("  " .. t, role)
+      end
+      if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("", "agent") end
+      if e.text and e.text ~= "" then add_text(e.text, "agent") end
     else
-      add("_" .. (e.text or "") .. "_")
+      add_text(e.text or "", "note")
     end
   end
-  return lines
+  return lines, roles, name_end
 end
+
+-- Highlight groups the chat uses, all links (so a colorscheme can restyle
+-- them): the bar down each turn and its heading per speaker, tool calls by
+-- kind.
+local HL = {
+  AzureCliChatYou = "Function", AzureCliChatAgent = "String", AzureCliChatMeta = "Comment",
+  AzureCliChatToolRead = "Comment", AzureCliChatToolWrite = "DiagnosticWarn", AzureCliChatToolErr = "DiagnosticError",
+  AzureCliChatNote = "DiagnosticInfo", AzureCliChatYouText = "Normal",
+}
+local BAR = {
+  you_head = "AzureCliChatYou", you = "AzureCliChatYou",
+  agent_head = "AzureCliChatAgent", agent = "AzureCliChatAgent",
+  tool_read = "AzureCliChatAgent", tool_write = "AzureCliChatAgent", tool_err = "AzureCliChatAgent",
+  note = "AzureCliChatNote", intro = "AzureCliChatAgent",
+}
+local LINE_HL = {
+  tool_read = "AzureCliChatToolRead", tool_write = "AzureCliChatToolWrite", tool_err = "AzureCliChatToolErr",
+  note = "AzureCliChatNote", intro = "AzureCliChatMeta", you = "AzureCliChatYouText",
+}
 
 -- ---------------------------------------------------------------------------
 -- Buffers and windows.
@@ -192,14 +221,35 @@ end
 local function render()
   if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
   local st = STATE()
-  local lines = M.render(st.entries, os.time(), agent_label())
+  local lines, roles, name_end = M.render(st.entries, os.time(), agent_label())
   vim.bo[log_buf].modifiable = true
   vim.api.nvim_buf_set_lines(log_buf, 0, -1, false, lines)
   vim.bo[log_buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(log_buf, ns, 0, -1)
-  for i, l in ipairs(lines) do
-    if l:match("^## ") then pcall(vim.api.nvim_buf_add_highlight, log_buf, ns, "Title", i - 1, 0, -1)
-    elseif l:match("^    [\u{00B7}\u{270E}\u{2717}]") then pcall(vim.api.nvim_buf_add_highlight, log_buf, ns, "Comment", i - 1, 0, -1) end
+  for i = 1, #lines do
+    local role = roles[i]
+    if role then
+      -- A coloured bar down the left of each turn, in its speaker's colour.
+      pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
+        sign_text = "\u{258E}", sign_hl_group = BAR[role] or "AzureCliChatAgent", priority = 10,
+      })
+      if role == "you_head" or role == "agent_head" then
+        local cut = name_end[i] or #lines[i]
+        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
+          end_col = cut, hl_group = role == "you_head" and "AzureCliChatYou" or "AzureCliChatAgent", priority = 200,
+        })
+        if cut < #lines[i] then
+          pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, cut, {
+            end_col = #lines[i], hl_group = "AzureCliChatMeta", priority = 200,
+          })
+        end
+        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, { line_hl_group = "CursorLine", priority = 5 })
+      elseif LINE_HL[role] then
+        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
+          end_col = #lines[i], hl_group = LINE_HL[role], priority = 200,
+        })
+      end
+    end
   end
   -- Keep every chat window scrolled to the end.
   for _, w in pairs(st.wins) do
@@ -264,6 +314,11 @@ local function ensure_bufs()
   vim.bo[input_buf].filetype = "markdown"
   pcall(vim.api.nvim_buf_set_name, input_buf, "azure-cli://chat-input")
   vim.b[log_buf].azure_cli_chat = true
+  require("azure-cli.ui").link_hl(HL)
+  -- The agent answers in markdown: render it (headings, **bold**, `code`,
+  -- lists) with Neovim's bundled markdown parser when there is one, falling
+  -- back to the regex syntax the filetype already gives.
+  pcall(vim.treesitter.start, log_buf, "markdown")
   vim.b[input_buf].azure_cli_chat = true
   local function focus_input()
     local w = (STATE().wins[vim.api.nvim_get_current_tabpage()] or {}).input
@@ -344,6 +399,12 @@ local function open_here(focus)
     UI.wo(w, "linebreak", true)
     UI.wo(w, vertical and "winfixwidth" or "winfixheight", true)
   end
+  -- The speaker bars live in the sign column; markdown's ** and ` markers
+  -- are hidden (except on the cursor line, so the text can still be read
+  -- and yanked as written).
+  UI.wo(log, "signcolumn", "yes:1")
+  UI.wo(log, "conceallevel", 2)
+  UI.wo(log, "concealcursor", "")
   UI.wo(input, "winfixheight", true)
   st.wins[tab] = { log = log, input = input }
   -- The splits above fired WinEnter while still showing the screen's

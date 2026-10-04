@@ -52,6 +52,15 @@ While the agent works, its tool calls appear under its heading as they
 happen (`· get_pr_threads (pr_id=101)`, `✎ draft_reply (...)`), then its
 answer.
 
+Each turn has a coloured bar down its left side: one colour for you, another
+for the agent. The agent's markdown is rendered (headings, **bold**, `code`,
+lists, with the markers hidden except on the cursor line). Tool calls are dim
+for lookups, warning-coloured for changes (`✎`) and error-coloured when
+something failed or you declined it (`✗`). The colours are highlight groups
+linked to your colorscheme's, so `:hi` can restyle them: `AzureCliChatYou`,
+`AzureCliChatAgent`, `AzureCliChatMeta`, `AzureCliChatToolRead`,
+`AzureCliChatToolWrite`, `AzureCliChatToolErr`, `AzureCliChatNote`.
+
 ## Setting it up
 
 The panel's placement, and the agent it talks to, go in `setup()` (or the

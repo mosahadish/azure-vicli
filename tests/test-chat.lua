@@ -66,19 +66,29 @@ end
 
 -- --- render -------------------------------------------------------------------
 do
-  local empty = CHAT.render({}, 0, "Claude")
-  check("render: empty chat explains itself", empty[1] == "# Chat" and table.concat(empty, " "):find("triage", 1, true))
-  local lines = CHAT.render({
+  local empty, eroles = CHAT.render({}, 0, "Claude")
+  check("render: empty chat explains itself", empty[1] == "Chat" and eroles[3] == "intro"
+    and table.concat(empty, " "):find("triage", 1, true))
+  local lines, roles, name_end = CHAT.render({
     { role = "you", text = "triage\nplease", where = "on PR #1" },
-    { role = "agent", status = "running", started = 100, tools = { "\u{00B7} current_view" } },
+    { role = "agent", status = "running", started = 100, tools = { "\u{00B7} current_view", "\u{270E} draft_reply",
+      "\u{2717} vote: declined" } },
   }, 112, "Claude")
-  local all = table.concat(lines, "\n")
-  check("render: your turn with where", all:find("## You  \u{00B7}  _on PR #1_\n\ntriage\nplease", 1, true))
-  check("render: running agent with its tools", all:find("## Claude  \u{00B7}  _working\u{2026} 12s_\n\n    \u{00B7} current_view", 1, true))
-  local done = table.concat(CHAT.render({ { role = "agent", status = "failed (exit 1)", text = "boom", mode = "replay" },
-    { role = "note", text = "hello" } }, 0, nil), "\n")
-  check("render: status, replay, note", done:find("## Agent  \u{00B7}  _failed (exit 1)_  \u{00B7}  _replayed_\n\nboom", 1, true)
-    and done:find("_hello_", 1, true))
+  check("render: your heading, name then where", lines[1] == "You  \u{00B7}  on PR #1" and roles[1] == "you_head"
+    and name_end[1] == 3)
+  check("render: your text", lines[2] == "triage" and lines[3] == "please" and roles[3] == "you")
+  check("render: a gap between turns has no role", lines[4] == "" and roles[4] == nil)
+  check("render: running agent heading", lines[5] == "Claude  \u{00B7}  working\u{2026} 12s" and roles[5] == "agent_head"
+    and name_end[5] == #"Claude")
+  check("render: tool calls by kind", roles[6] == "tool_read" and roles[7] == "tool_write" and roles[8] == "tool_err"
+    and lines[6] == "  \u{00B7} current_view")
+  local done, droles = CHAT.render({ { role = "agent", status = "failed (exit 1)", text = "**boom**", mode = "replay" },
+    { role = "note", text = "hello" } }, 0, nil)
+  check("render: status and replay in the heading", done[1] == "Agent  \u{00B7}  failed (exit 1)  \u{00B7}  replayed")
+  check("render: the answer stays markdown", done[2] == "**boom**" and droles[2] == "agent")
+  check("render: a note", done[4] == "hello" and droles[4] == "note")
+  local plain = CHAT.render({ { role = "agent", status = "done", text = "ok" } }, 0, "A")
+  check("render: a finished turn's heading is just the name", plain[1] == "A")
 end
 
 -- --- view.text ------------------------------------------------------------------
