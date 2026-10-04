@@ -88,7 +88,7 @@ local DEFAULT_KEYS = {
   -- The chat panel (both its conversation and its input box).
   chat = {
     send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
-    cancel = "<C-c>", model = "gm", back = "<BS>", hide = "q", help = "?",
+    cancel = "<C-c>", model = "gm", back = "<BS>", hide = "q", toggle = "gq", help = "?",
   },
 }
 

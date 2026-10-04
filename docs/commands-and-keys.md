@@ -287,5 +287,6 @@ paste the output here after changing a default.
 | `new_chat` | `gn` |
 | `send` | `<CR>` |
 | `send_insert` | `<C-s>` |
+| `toggle` | `gq` |
 
 <!-- END GENERATED KEYS TABLE -->

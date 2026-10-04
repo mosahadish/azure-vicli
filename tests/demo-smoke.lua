@@ -622,7 +622,8 @@ print("LINK-SMOKE-OK")
 -- and drafts a reply into the batch queue (not posted); gm picks a model;
 -- "branch" creates a branch on the fake origin linked to #3001 (no
 -- question asked); "vote" asks first and the "Deny" goes back to the agent.
--- The panel follows into the dashboard's tab, and gq hides it.
+-- The panel follows into the dashboard's tab; gq there jumps into it, and
+-- gq from inside it hides it.
 do
   local CHAT = require("azure-cli.chat")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
@@ -749,9 +750,16 @@ do
     return w and vim.api.nvim_win_is_valid(w.log)
   end, 50)
   if not ok then return fail("the chat panel didn't follow into the dashboard's tab") end
+  -- gq from the dashboard while the panel shows: into its input box; gq
+  -- again from there: hidden.
   vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
   feed("gq")
-  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq didn't hide the chat") end
+  vim.cmd("stopinsert")
+  if vim.api.nvim_get_current_win() ~= st.wins[vim.api.nvim_get_current_tabpage()].input then
+    return fail("gq on a screen didn't jump into the showing chat's input box")
+  end
+  feed("gq")
+  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq inside the chat didn't hide it") end
   vim.ui.select = real_select
   print("CHAT-SMOKE-OK")
 end

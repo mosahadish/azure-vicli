@@ -26,10 +26,12 @@ azure-vicli ships no agent configuration; you choose the agent and model
 
 ## Using it
 
-`gq` on any azure-vicli screen (or `:AzureCli chat`) shows the panel and puts
-you in its input box. Once shown, the panel appears in every azure-vicli tab
-you visit (dashboard, reviewer, work items) until you hide it with `gq` again
-(or `q` inside it). The conversation is the same in every tab.
+`gq` on any azure-vicli screen (or `:AzureCli chat`) takes you to the chat:
+it opens the panel, or jumps into it if it's already showing, and puts you
+in its input box. `gq` (or `q`) inside the panel hides it, and `<BS>` goes
+back to the screen next to it while leaving it open. Once shown, the panel
+appears in every azure-vicli tab you visit (dashboard, reviewer, work items)
+until you hide it. The conversation is the same in every tab.
 
 | Key (in the panel) | Action |
 |---|---|
@@ -39,7 +41,7 @@ you visit (dashboard, reviewer, work items) until you hide it with `gq` again
 | `<C-c>` | Stop the agent |
 | `gn` | Start a new conversation |
 | `<BS>` | Back to the screen next to the panel |
-| `q` | Hide the panel |
+| `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
 | `?` | These keys |
 
 Every message is sent together with a description of what you're looking at:

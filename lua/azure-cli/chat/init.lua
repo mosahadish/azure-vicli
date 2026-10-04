@@ -331,6 +331,7 @@ local function ensure_bufs()
     KEYS.bind(b, "chat", "new_chat", function() new_chat() end, { desc = "start a new conversation" })
     KEYS.bind(b, "chat", "cancel", function() cancel() end, { desc = "stop the agent" })
     KEYS.bind(b, "chat", "hide", function() M.hide() end, { desc = "hide the chat" })
+    KEYS.bind(b, "chat", "toggle", function() M.hide() end, { desc = "hide the chat" })
     KEYS.bind(b, "chat", "help", function() show_help() end, { desc = "chat keys" })
     KEYS.bind(b, "chat", "model", function() pick_model() end, { desc = "choose the model" })
     KEYS.bind(b, "chat", "back", function()
@@ -448,11 +449,15 @@ function M.hide()
   if main and vim.api.nvim_win_is_valid(main) then pcall(vim.api.nvim_set_current_win, main) end
 end
 
--- gq: shows the panel, focused and ready to type, or hides it when it's
--- showing.
+-- gq: from a screen, opens the panel - or, when it's already showing,
+-- jumps into its input box - ready to type; from inside the panel, hides
+-- it. So gq always takes you to the chat, and gq again puts it away.
 function M.toggle()
   local st = STATE()
-  if st.visible and panel_open_in(vim.api.nvim_get_current_tabpage()) then return M.hide() end
+  if st.visible and panel_open_in(vim.api.nvim_get_current_tabpage())
+      and is_chat_buf(vim.api.nvim_get_current_buf()) then
+    return M.hide()
+  end
   M.show(true)
 end
 
@@ -723,6 +728,7 @@ show_help = function()
     { "model", "choose the model (from chat.agent.models)" },
     "Panel",
     { "back", "back to the screen next to the chat" }, { "hide", "hide the chat (gq shows it again)" },
+    { "toggle", "hide the chat - the same key on a screen takes you back to it" },
     { "help", "this help" },
   }, { notes = {
     "The agent sees what you're looking at - the PR, work item, file, line or comment thread under the cursor - "
@@ -761,7 +767,7 @@ end
 -- calls this for its own surface).
 function M.bind_toggle(buf, surface)
   require("azure-cli.keys").bind(buf, surface, "chat", function() M.toggle() end,
-    { desc = "show/hide the chat panel" })
+    { desc = "go to the chat panel (opening it if needed)" })
 end
 
 return M

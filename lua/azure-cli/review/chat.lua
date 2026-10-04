@@ -18,7 +18,7 @@ end
 local function setup(ctx)
   local ID = tostring(ctx.ID)
   for _, kind in ipairs({ "list", "diff", "overview", "nav" }) do
-    ctx.add_key(kind, "chat", function() require("azure-cli.chat").toggle() end, "show/hide the chat panel")
+    ctx.add_key(kind, "chat", function() require("azure-cli.chat").toggle() end, "go to the chat panel (opening it if needed)")
   end
   require("azure-cli.chat.view").register("review:" .. ID, function(win)
     local buf = vim.api.nvim_win_get_buf(win)
