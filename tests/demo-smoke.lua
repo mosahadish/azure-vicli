@@ -698,7 +698,8 @@ do
   if vim.api.nvim_win_get_position(wins.log)[2] <= vim.api.nvim_win_get_position(diff_win)[2] then
     return fail("the chat panel isn't on the right")
   end
-  vim.api.nvim_set_current_win(diff_win)
+  -- Straight from the input box gq focused, the way a user types: the
+  -- view must still be the diff's, not the panel's own windows.
   local e, why = ask("triage this PR's comments")
   if not e then return fail(why) end
   local log = text(vim.api.nvim_win_get_buf(wins.log))

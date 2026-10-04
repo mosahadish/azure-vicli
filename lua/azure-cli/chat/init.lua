@@ -237,7 +237,10 @@ function M.main_win()
   local st = STATE()
   local tab = vim.api.nvim_get_current_tabpage()
   local w = st.main_win[tab]
-  if w and vim.api.nvim_win_is_valid(w) then return w end
+  -- Never the panel itself: a split briefly shows the buffer it was split
+  -- from, so a WinEnter on it can have recorded a window that became the
+  -- chat's a moment later.
+  if w and vim.api.nvim_win_is_valid(w) and not is_chat_buf(vim.api.nvim_win_get_buf(w)) then return w end
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
     if not is_chat_buf(vim.api.nvim_win_get_buf(win)) and vim.api.nvim_win_get_config(win).relative == "" then
       return win
@@ -343,6 +346,10 @@ local function open_here(focus)
   end
   UI.wo(input, "winfixheight", true)
   st.wins[tab] = { log = log, input = input }
+  -- The splits above fired WinEnter while still showing the screen's
+  -- buffer, so the "last window" tracking recorded the new panel windows:
+  -- what the chat describes is the window gq was pressed in.
+  if not is_chat_buf(vim.api.nvim_win_get_buf(prev)) then st.main_win[tab] = prev end
   render()
   if focus then
     vim.api.nvim_set_current_win(input)
@@ -491,7 +498,9 @@ local function where_label(snap)
   if type(snap.work_item) == "table" then bits[#bits + 1] = "#" .. tostring(snap.work_item.id) end
   if snap.file then bits[#bits + 1] = vim.fn.fnamemodify(snap.file, ":t") .. (snap.line and (":" .. snap.line) or "") end
   if type(snap.thread) == "table" then bits[#bits + 1] = "thread " .. tostring(snap.thread.id) end
-  return #bits > 0 and ("on " .. table.concat(bits, " \u{00B7} ")) or (snap.screen and ("on the " .. snap.screen) or nil)
+  if #bits > 0 then return "on " .. table.concat(bits, " \u{00B7} ") end
+  if snap.screen and snap.screen ~= "other" and snap.screen ~= "unknown" then return "on the " .. snap.screen end
+  return nil
 end
 
 local function bridge_handler(entry_ref)
