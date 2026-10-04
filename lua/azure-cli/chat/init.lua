@@ -168,10 +168,13 @@ end
 -- Highlight groups the chat uses, all links (so a colorscheme can restyle
 -- them): the bar down each turn and its heading per speaker, tool calls by
 -- kind.
+-- Foreground-only on purpose: the panel's background stays whatever the
+-- window's is (a group with a background, like Normal or CursorLine in
+-- some palettes, painted visible bands across the text).
 local HL = {
   AzureCliChatYou = "Function", AzureCliChatAgent = "String", AzureCliChatMeta = "Comment",
   AzureCliChatToolRead = "Comment", AzureCliChatToolWrite = "DiagnosticWarn", AzureCliChatToolErr = "DiagnosticError",
-  AzureCliChatNote = "DiagnosticInfo", AzureCliChatYouText = "Normal",
+  AzureCliChatNote = "DiagnosticInfo",
 }
 local BAR = {
   you_head = "AzureCliChatYou", you = "AzureCliChatYou",
@@ -181,7 +184,7 @@ local BAR = {
 }
 local LINE_HL = {
   tool_read = "AzureCliChatToolRead", tool_write = "AzureCliChatToolWrite", tool_err = "AzureCliChatToolErr",
-  note = "AzureCliChatNote", intro = "AzureCliChatMeta", you = "AzureCliChatYouText",
+  note = "AzureCliChatNote", intro = "AzureCliChatMeta",
 }
 
 -- ---------------------------------------------------------------------------
@@ -238,12 +241,13 @@ local function render()
         pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
           end_col = cut, hl_group = role == "you_head" and "AzureCliChatYou" or "AzureCliChatAgent", priority = 200,
         })
+        -- Bold names, without touching the colour the group gives them.
+        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, { end_col = cut, hl_group = "AzureCliChatName", priority = 201 })
         if cut < #lines[i] then
           pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, cut, {
             end_col = #lines[i], hl_group = "AzureCliChatMeta", priority = 200,
           })
         end
-        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, { line_hl_group = "CursorLine", priority = 5 })
       elseif LINE_HL[role] then
         pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
           end_col = #lines[i], hl_group = LINE_HL[role], priority = 200,
@@ -315,6 +319,7 @@ local function ensure_bufs()
   pcall(vim.api.nvim_buf_set_name, input_buf, "azure-cli://chat-input")
   vim.b[log_buf].azure_cli_chat = true
   require("azure-cli.ui").link_hl(HL)
+  vim.api.nvim_set_hl(0, "AzureCliChatName", { default = true, bold = true })
   -- The agent answers in markdown: render it (headings, **bold**, `code`,
   -- lists) with Neovim's bundled markdown parser when there is one, falling
   -- back to the regex syntax the filetype already gives.

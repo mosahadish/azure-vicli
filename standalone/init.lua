@@ -125,6 +125,16 @@ local function apply_palette()
   hl("AzureCliWiViewTitle",       { bold = true })
   hl("AzureCliWiViewLabel",       { fg = "#fab387" })
 
+  -- Chat panel (lua/azure-cli/chat/init.lua): foreground only, so the
+  -- panel keeps the window's own background.
+  hl("AzureCliChatYou",       { fg = "#89b4fa", bold = true })
+  hl("AzureCliChatAgent",     { fg = "#a6e3a1", bold = true })
+  hl("AzureCliChatMeta",      { fg = "#7f849c", italic = true })
+  hl("AzureCliChatToolRead",  { fg = "#6c7086" })
+  hl("AzureCliChatToolWrite", { fg = "#f9e2af" })
+  hl("AzureCliChatToolErr",   { fg = "#f38ba8" })
+  hl("AzureCliChatNote",      { fg = "#89dceb" })
+
   -- Reviewer diff-pane decorations (lua/azure-cli/review/init.lua).
   hl("AzureCliDiffAddBg",   { bg = "#20302a" })
   hl("AzureCliDiffDelBg",   { bg = "#332329" })

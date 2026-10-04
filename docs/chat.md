@@ -61,7 +61,9 @@ for lookups, warning-coloured for changes (`✎`) and error-coloured when
 something failed or you declined it (`✗`). The colours are highlight groups
 linked to your colorscheme's, so `:hi` can restyle them: `AzureCliChatYou`,
 `AzureCliChatAgent`, `AzureCliChatMeta`, `AzureCliChatToolRead`,
-`AzureCliChatToolWrite`, `AzureCliChatToolErr`, `AzureCliChatNote`.
+`AzureCliChatToolWrite`, `AzureCliChatToolErr`, `AzureCliChatNote` (keep them
+foreground-only, or they paint bands across the panel). The standalone
+launcher sets them in its own palette.
 
 ## Setting it up
 
