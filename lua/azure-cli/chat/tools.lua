@@ -22,7 +22,7 @@ local function CONFIG() return require("azure-cli.config") end
 -- ---------------------------------------------------------------------------
 -- Helpers.
 
-local function pr_record(id)
+function M.pr_record(id)
   local cache = STATE().PR_LIST_CACHE
   for _, p in ipairs((cache and cache.prs) or {}) do
     if tostring(p.id) == tostring(id) then return p end
@@ -31,6 +31,7 @@ local function pr_record(id)
   if cur and tostring(cur.id) == tostring(id) then return cur end
   return nil
 end
+local pr_record = M.pr_record
 
 -- Where the PR's repository is cloned: <clones_dir>/<repo> (the
 -- dashboard's rule), else AZVICLI_REPO_PATH. "" when neither.
@@ -40,7 +41,7 @@ function M.clone_path(pr)
   return ((vim.env.AZVICLI_REPO_PATH or ""):gsub("^/([a-zA-Z])/", "%1:/"))
 end
 
-local function pr_env(pr)
+function M.pr_env(pr)
   return {
     AZVICLI_PR = tostring(pr.id), AZVICLI_REPO = pr.repo or "", AZVICLI_PROJECT = pr.project or "",
     AZVICLI_ORG = pr.org or "", AZVICLI_SOURCE = pr.source or "", AZVICLI_TARGET = pr.target or "",
@@ -48,16 +49,20 @@ local function pr_env(pr)
   }
 end
 
-local function need_pr(args, done)
-  local pr = pr_record(args.pr_id)
+local pr_env = M.pr_env
+
+function M.need_pr(args, done)
+  local pr = M.pr_record(args.pr_id)
   if not pr then
     done(nil, "PR #" .. tostring(args.pr_id) .. " isn't in the user's pull request list (open the PR dashboard to load it).")
   end
   return pr
 end
 
+local need_pr = M.need_pr
+
 -- Runs a provider subcommand: cb(ok, stdout_text, err_text).
-local function provider(argv, env, cb)
+function M.provider(argv, env, cb)
   local out, err = {}, {}
   local full = CONFIG().provider_argv()
   vim.list_extend(full, argv)
@@ -73,7 +78,9 @@ local function provider(argv, env, cb)
   })
 end
 
-local function git(argv, cb)
+local provider = M.provider
+
+function M.git(argv, cb)
   local out, err = {}, {}
   local ok, job = pcall(vim.fn.jobstart, argv, {
     stdout_buffered = true, stderr_buffered = true,
@@ -85,6 +92,8 @@ local function git(argv, cb)
   })
   if not ok or job <= 0 then vim.schedule(function() cb(false, "", "could not run git") end) end
 end
+
+local git = M.git
 
 -- The provider's --threads JSON as a plain list - system comments and
 -- deleted threads/comments dropped, the code anchor flattened. Pure.
@@ -142,7 +151,7 @@ end
 -- and turns batch mode on: through the live reviewer when that PR is open
 -- (so it shows at once, tagged "(queued)"), else straight into
 -- STATE.batch, where the reviewer picks it up when the PR is opened.
-local function queue_draft(pr_id, item)
+function M.queue_draft(pr_id, item)
   local st = STATE()
   local live = st.batch_live and st.batch_live[tostring(pr_id)]
   if live and live(item) then return end
@@ -154,6 +163,25 @@ local function queue_draft(pr_id, item)
   end
   s.on = true
   table.insert(s.items, item)
+end
+
+local queue_draft = M.queue_draft
+
+-- Takes a queued draft back out (the undo of draft_reply/draft_comment):
+-- through the live reviewer when that PR is open, else straight out of
+-- STATE.batch.
+function M.drop_draft(pr_id, item)
+  local st = STATE()
+  local live = st.batch_drop and st.batch_drop[tostring(pr_id)]
+  if live and live(item) then return true end
+  local s = st.batch and st.batch[tostring(pr_id)]
+  for i, it in ipairs((s and s.items) or {}) do
+    if it == item or (it.kind == item.kind and it.text == item.text and it.thread_id == item.thread_id) then
+      table.remove(s.items, i)
+      return true
+    end
+  end
+  return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -173,7 +201,7 @@ M.list = {
     schema = { type = "object", properties = vim.empty_dict() },
     risk = "read",
     run = function(_, env, done)
-      done(require("azure-cli.chat.view").snapshot(env.main_win()))
+      done((env.view and env.view()) or require("azure-cli.chat.view").snapshot(env.main_win()))
     end,
   },
   {
@@ -295,7 +323,8 @@ M.list = {
         tostring(pr.id) }, nil, function(ok, _, err)
         if not ok then return done(nil, "linking failed: " .. err) end
         pcall(require("azure-cli.workitems.linked_prs").link_changed, tostring(args.work_item_id), tostring(pr.id), true)
-        done("Linked PR #" .. pr.id .. " to work item #" .. args.work_item_id .. ".")
+        done("Linked PR #" .. pr.id .. " to work item #" .. args.work_item_id .. ".", nil,
+          { op = "unlink", work_item_id = args.work_item_id, pr_id = pr.id })
       end)
     end,
   },
@@ -325,18 +354,20 @@ M.list = {
         if not ok then return done(nil, "creating the branch failed: " .. err) end
         local okd, res = pcall(vim.json.decode, out)
         res = okd and res or {}
+        local undo = { op = "delete_branch", org = org, project = project, repo = args.repo, name = args.name,
+          sha = res.objectId }
         local msg = "Created branch " .. args.name .. " from " .. args.from .. " in " .. args.repo
           .. (res.linked and (" and linked it to #" .. tostring(res.linked)) or "")
           .. (res.linkError and (" (linking to the work item failed: " .. res.linkError .. ")") or "") .. "."
-        if not args.checkout then return done(msg) end
+        if not args.checkout then return done(msg, nil, undo) end
         if clone == "" or vim.fn.isdirectory(clone .. "/.git") == 0 then
-          return done(msg .. " Not checked out: no local clone of " .. args.repo .. " is configured.")
+          return done(msg .. " Not checked out: no local clone of " .. args.repo .. " is configured.", nil, undo)
         end
         env.log("git fetch + switch in " .. clone)
         git({ "git", "-C", clone, "fetch", "-q", "origin", args.name }, function(fok, _, ferr)
-          if not fok then return done(msg .. " Fetching it failed: " .. ferr) end
+          if not fok then return done(msg .. " Fetching it failed: " .. ferr, nil, undo) end
           git({ "git", "-C", clone, "switch", "-c", args.name, "--track", "origin/" .. args.name }, function(sok, _, serr)
-            done(msg .. (sok and (" Checked out in " .. clone .. ".") or (" Checking it out failed: " .. serr)))
+            done(msg .. (sok and (" Checked out in " .. clone .. ".") or (" Checking it out failed: " .. serr)), nil, undo)
           end)
         end)
       end)
@@ -352,9 +383,11 @@ M.list = {
     run = function(args, _, done)
       local pr = need_pr(args, done)
       if not pr then return end
-      queue_draft(pr.id, { kind = "reply", thread_id = args.thread_id, text = args.text })
+      local item = { kind = "reply", thread_id = args.thread_id, text = args.text }
+      queue_draft(pr.id, item)
       done("Drafted a reply to thread #" .. args.thread_id .. " on PR #" .. pr.id
-        .. " - queued for the user to review and send (gQ lists the queue, gS sends it).")
+        .. " - queued for the user to review and send (gQ lists the queue, gS sends it).", nil,
+        { op = "drop_draft", pr_id = pr.id, item = item })
     end,
   },
   {
@@ -385,7 +418,8 @@ M.list = {
           label = "PR comment" }
       end
       queue_draft(pr.id, item)
-      done("Drafted: " .. item.label .. " on PR #" .. pr.id .. " - queued for the user (gQ lists, gS sends).")
+      done("Drafted: " .. item.label .. " on PR #" .. pr.id .. " - queued for the user (gQ lists, gS sends).", nil,
+        { op = "drop_draft", pr_id = pr.id, item = item })
     end,
   },
   {
@@ -403,10 +437,14 @@ M.list = {
       if not pr then return end
       local v = VOTES[args.vote]
       if not v then return done(nil, "unknown vote " .. tostring(args.vote)) end
+      local before = 0
+      for _, r in ipairs(type(pr.reviewers) == "table" and pr.reviewers or {}) do
+        if r.name == pr.myName or (pr.myId and r.id == pr.myId) then before = tonumber(r.vote) or 0 end
+      end
       provider({ "--vote", v[1] }, pr_env(pr), function(ok, _, err)
         if not ok then return done(nil, "voting failed: " .. err) end
         if STATE().PR_DASHBOARD_RENDER then pcall(STATE().PR_DASHBOARD_RENDER) end
-        done("Voted " .. v[2] .. " on PR #" .. pr.id .. ".")
+        done("Voted " .. v[2] .. " on PR #" .. pr.id .. ".", nil, { op = "vote", pr_id = pr.id, vote = tostring(before) })
       end)
     end,
   },
@@ -423,34 +461,75 @@ M.list = {
     run = function(args, _, done)
       local argv = { "--wi-state", "set", tostring(args.id), args.state }
       if args.reason and args.reason ~= "" then argv[#argv + 1] = args.reason end
-      provider(argv, nil, function(ok, _, err)
-        if not ok then return done(nil, "changing the state failed: " .. err) end
-        pcall(require("azure-cli.pr_workitems").patch_state, args.id, args.state)
-        done("Work item #" .. args.id .. " is now " .. args.state .. ".")
+      M.work_item_field(args.id, "state", function(before)
+        provider(argv, nil, function(ok, _, err)
+          if not ok then return done(nil, "changing the state failed: " .. err) end
+          pcall(require("azure-cli.pr_workitems").patch_state, args.id, args.state)
+          done("Work item #" .. args.id .. " is now " .. args.state .. ".", nil,
+            before and { op = "set_state", id = args.id, state = before } or nil)
+        end)
       end)
     end,
   },
 }
 
+-- A work item's current `field` ("state", "assignedTo", "iterationPath",
+-- "title") - from the work-items list when it's loaded, else read with
+-- --wi-detail - cb(value or nil). What an undo goes back to.
+function M.work_item_field(id, field, cb)
+  for _, it in ipairs((STATE().WI_LIST_CACHE or {}).items or {}) do
+    if type(it) == "table" and tostring(it.id) == tostring(id) and it[field] ~= nil then return cb(it[field]) end
+  end
+  provider({ "--wi-detail", tostring(id) }, nil, function(ok, out)
+    if not ok then return cb(nil) end
+    local okd, d = pcall(vim.json.decode, out)
+    local item = okd and type(d) == "table" and (d.item or d) or {}
+    cb(item[field])
+  end)
+end
+
+-- The other tool groups.
+for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", "azure-cli.chat.tools_fix" }) do
+  vim.list_extend(M.list, require(mod)(M))
+end
+
 M.by_name = {}
 for _, t in ipairs(M.list) do M.by_name[t.name] = t end
 
--- tools/list's answer.
+-- How a tool may run: setup({ chat = { permissions = { name = "allow" |
+-- "ask" | "deny" } } }), else its own default - reads and the low-risk
+-- writes allow, the rest ask.
+function M.permission(tool, perms)
+  local p = perms and perms[tool.name]
+  if p == "allow" or p == "ask" or p == "deny" then return p end
+  return tool.risk == "ask" and "ask" or "allow"
+end
+
+local function perms() return (require("azure-cli.config").get().chat or {}).permissions end
+
+-- tools/list's answer: every tool not denied.
 function M.describe()
   local out = {}
+  local p = perms()
   for _, t in ipairs(M.list) do
-    out[#out + 1] = { name = t.name, description = t.description, inputSchema = t.schema }
+    if M.permission(t, p) ~= "deny" then
+      out[#out + 1] = { name = t.name, description = t.description, inputSchema = t.schema }
+    end
   end
   return out
 end
 
--- Runs tool `name` with `args`: cb(text, is_error). Asks first for an "ask"
--- tool; logs every call in the chat.
+-- Runs tool `name` with `args`: cb(text, is_error). Asks first when its
+-- permission says so (env.confirm, with the tool's `details` shown when it
+-- has them); logs every call in the chat; records every successful change
+-- (risk "write"/"ask") in the audit log with its undo, when it has one.
 function M.call(name, args, env, cb)
   local tool = M.by_name[name or ""]
   if not tool then return cb("unknown tool " .. tostring(name), true) end
   args = type(args) == "table" and args or {}
-  local function finish(result, err)
+  local perm = M.permission(tool, perms())
+  if perm == "deny" then return cb("The user doesn't allow " .. name .. ".", true) end
+  local function finish(result, err, undo)
     if err then
       env.log("\u{2717} " .. name .. ": " .. tostring(err))
       return cb(tostring(err), true)
@@ -459,26 +538,102 @@ function M.call(name, args, env, cb)
       local ok, text = pcall(vim.json.encode, result)
       result = ok and text or tostring(result)
     end
+    if tool.risk == "write" or tool.risk == "ask" then
+      local summary = result:gsub("%s+", " ")
+      if #summary > 160 then summary = summary:sub(1, 157) .. "..." end
+      pcall(require("azure-cli.chat.store").audit_add, { tool = name, args = M.audit_args(args), summary = summary,
+        undo = undo })
+      if undo and M.undoers[undo.op] then M.last_undo = undo end
+    end
     cb(result, false)
   end
   local function go()
-    env.log((tool.risk == "read" and "\u{00B7} " or "\u{270E} ") .. name .. M.args_label(args))
+    env.log(((tool.risk == "write" or tool.risk == "ask") and "\u{270E} " or "\u{00B7} ") .. name .. M.args_label(args))
     local ok, err = pcall(tool.run, args, env, finish)
     if not ok then finish(nil, err) end
   end
-  if tool.risk == "ask" then
+  if perm == "ask" then
     local what = tool.confirm and tool.confirm(args) or name
-    env.confirm("The agent wants to " .. what .. ".", function(yes)
-      if yes then
-        go()
-      else
-        env.log("\u{2717} " .. name .. ": declined")
-        cb("The user declined: " .. what .. ".", true)
-      end
-    end)
+    local function ask(details)
+      env.confirm("The agent wants to " .. what .. ".", function(yes)
+        if yes then
+          go()
+        else
+          env.log("\u{2717} " .. name .. ": declined")
+          cb("The user declined: " .. what .. ".", true)
+        end
+      end, details)
+    end
+    if tool.details then tool.details(args, ask) else ask(nil) end
   else
     go()
   end
+end
+
+-- The arguments as kept in the audit log: long text cut.
+function M.audit_args(args)
+  local out = {}
+  for k, v in pairs(args or {}) do
+    if type(v) == "string" and #v > 200 then v = v:sub(1, 197) .. "..." end
+    out[k] = v
+  end
+  return out
+end
+
+-- Undoing what a tool did: op -> function(undo, cb(ok, message)).
+M.undoers = {
+  unlink = function(u, cb)
+    provider({ "--wi-edit", "unlink-pr", tostring(u.work_item_id), tostring(u.pr_id) }, nil, function(ok, _, err)
+      if ok then pcall(require("azure-cli.workitems.linked_prs").link_changed, tostring(u.work_item_id), tostring(u.pr_id), false) end
+      cb(ok, ok and ("Unlinked PR !" .. u.pr_id .. " from #" .. u.work_item_id .. ".") or err)
+    end)
+  end,
+  delete_branch = function(u, cb)
+    provider({ "--wi-edit", "delete-branch", u.org or "", u.project or "", u.repo, u.name, u.sha or "" }, nil,
+      function(ok, _, err) cb(ok, ok and ("Deleted branch " .. u.name .. ".") or err) end)
+  end,
+  drop_draft = function(u, cb)
+    local ok = u.item and M.drop_draft(u.pr_id, u.item)
+    cb(ok and true or false, ok and "Removed the draft from the queue." or "That draft isn't queued any more.")
+  end,
+  vote = function(u, cb)
+    local pr = M.pr_record(u.pr_id)
+    if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
+    provider({ "--vote", u.vote }, pr_env(pr), function(ok, _, err) cb(ok, ok and "Vote put back." or err) end)
+  end,
+  set_state = function(u, cb)
+    provider({ "--wi-state", "set", tostring(u.id), u.state }, nil, function(ok, _, err)
+      if ok then pcall(require("azure-cli.pr_workitems").patch_state, u.id, u.state) end
+      cb(ok, ok and ("#" .. u.id .. " is " .. u.state .. " again.") or err)
+    end)
+  end,
+  set_field = function(u, cb)
+    provider({ "--wi-edit", "set", tostring(u.id), u.field, u.value or "" }, nil, function(ok, _, err)
+      cb(ok, ok and ("#" .. u.id .. "'s " .. u.field .. " is back to " .. tostring(u.value) .. ".") or err)
+    end)
+  end,
+  thread_status = function(u, cb)
+    local pr = M.pr_record(u.pr_id)
+    if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
+    provider({ "--status", tostring(u.thread_id), u.status }, pr_env(pr), function(ok, _, err)
+      cb(ok, ok and ("Thread #" .. u.thread_id .. " is " .. u.status .. " again.") or err)
+    end)
+  end,
+  description = function(u, cb)
+    local pr = M.pr_record(u.pr_id)
+    if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
+    provider({ "--set-description", u.text or "" }, pr_env(pr), function(ok, _, err)
+      cb(ok, ok and "Description put back." or err)
+    end)
+  end,
+}
+
+-- Undoes audit item `item` (from store.audit()): cb(ok, message).
+function M.undo(item, cb)
+  local u = item and item.undo
+  local f = u and M.undoers[u.op]
+  if not f then return cb(false, "That change can't be undone from here.") end
+  f(u, cb)
 end
 
 -- " (pr_id=101, thread_id=4711)" - the short arguments of a call, for the

@@ -14,11 +14,18 @@ what's under your cursor and can act on it. You can say things like:
 - *"Create a branch from develop for this work item"* (on the work items
   screen): it creates the branch on the server, links it to the work item,
   and can check it out locally.
+- *"Fix this comment"*: it changes the code in a separate worktree, shows
+  you the diff, and commits and pushes it once you allow it, then drafts the
+  reply.
+- *"Why did the build fail?"*, *"show me where that is"*, *"split this
+  story into tasks and move it to next sprint"*, `/standup` ...
 
 azure-vicli ships no agent configuration; you choose the agent and model
 (see [Setting it up](#setting-it-up)).
 
 - [Using it](#using-it)
+- [Saved prompts, references and selections](#saved-prompts-references-and-selections)
+- [Conversations, agents and models](#conversations-agents-and-models)
 - [Setting it up](#setting-it-up)
 - [Let the agent set itself up](#let-the-agent-set-itself-up)
 - [What the agent can do](#what-the-agent-can-do)
@@ -36,10 +43,16 @@ until you hide it. The conversation is the same in every tab.
 | Key (in the panel) | Action |
 |---|---|
 | `<CR>` (input box, normal mode) / `<C-s>` (while typing) | Send the message |
+| `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
-| `gm` | Choose the model for the next messages |
+| `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |
+| `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
+| `gp` | Run a saved prompt |
+| `gL` | What the agent changed; `u` on a line undoes it |
+| `gh` | Open an earlier conversation |
+| `gn` | Start a new conversation (the current one stays in `gh`) |
+| `ga` / `gm` | Choose the agent / the model |
 | `<C-c>` | Stop the agent |
-| `gn` | Start a new conversation |
 | `<BS>` | Back to the screen next to the panel |
 | `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
 | `?` | These keys |
@@ -50,9 +63,11 @@ the cursor in the window you were last in. Your message's heading in the
 conversation shows it, e.g. `on PR #101 · auth.py:12 · thread 5000`. Move the
 cursor, then ask; "this" always means what's under it now.
 
-While the agent works, its tool calls appear under its heading as they
-happen (`· get_pr_threads (pr_id=101)`, `✎ draft_reply (...)`), then its
-answer.
+While the agent works, its answer appears as it's written (with Claude
+Code's `stream-json` output, see below; other agents show their output as it
+arrives), along with its tool calls as they happen: azure-vicli's own
+(`· get_pr_threads (pr_id=101)`, `✎ draft_reply (...)`) and the agent's
+(`· Read src/auth.py`).
 
 Each turn has a coloured bar down its left side: one colour for you, another
 for the agent. The agent's markdown is rendered (headings, **bold**, `code`,
@@ -64,6 +79,50 @@ linked to your colorscheme's, so `:hi` can restyle them: `AzureCliChatYou`,
 `AzureCliChatToolWrite`, `AzureCliChatToolErr`, `AzureCliChatNote` (keep them
 foreground-only, or they paint bands across the panel). The standalone
 launcher sets them in its own palette.
+
+## Saved prompts, references and selections
+
+**Saved prompts.** `/triage`, `/review`, `/explain`, `/build` and `/standup`
+come built in; type one in the input box (anything after it is added to
+the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
+They run against what's on screen like any message. Add your own, replace
+or remove the built-in ones with `chat.prompts`:
+
+```lua
+prompts = {
+  security = "Look for injection, auth and secrets problems in this PR's change.",
+  standup = false,   -- remove a built-in one
+},
+```
+
+**References.** Write `!101` for a pull request and `#3001` for a work item
+(type `!` or `#` and a completion menu lists your PRs and work items). The
+agent gets a line about each one you name with your message, and writes them
+back the same way. In the conversation, `<CR>` on one opens the PR in the
+reviewer or the work item in its view.
+
+**Selections.** Select lines (in a diff, the Overview, a work item), then
+press `gq`: the panel opens and the next message carries the selected text
+and, in a diff, which file lines it covers. The winbar shows
+`[selection: N lines]` until it's sent. Without a selection, a message from
+a diff carries the change (the run of added/removed lines) around the cursor.
+
+## Conversations, agents and models
+
+Conversations are saved (under Neovim's data directory, the last 50): the
+one in the panel is still there after a restart, `gn` starts a new one, and
+`gh` brings back an earlier one, its session included.
+
+With several agents configured (`chat.agents`, below), `ga` switches
+between them; the new one can't resume the other's session, so your next
+message replays the conversation to it. `gm` picks the model for the current
+agent.
+
+**Proactive.** When the dashboard sees new comments on one of your PRs, a
+note appears in the conversation suggesting `/triage` (no agent runs;
+`suggest_on_new_comments = false` turns it off). With `daily_summary =
+true`, the first time the dashboard loads each day the chat runs `/standup`
+in a fresh conversation and tells you when it's ready.
 
 ## Setting it up
 
@@ -79,12 +138,14 @@ require("azure-cli").setup({
     agent = {
       label = "Claude",
       models = { "sonnet", "opus", "haiku" },   -- gm picks one; the first is the default
-      cmd = { "claude", "-p", "--output-format", "json", "--model", "{model}",
-              "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__azure-vicli" },
+      cmd = { "claude", "-p", "--output-format", "stream-json", "--verbose", "--model", "{model}",
+              "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
+              "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
       stdin = "{message}",
       followup = {          -- later messages continue the same session
-        cmd = { "claude", "-p", "--output-format", "json", "--model", "{model}",
-                "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__azure-vicli",
+        cmd = { "claude", "-p", "--output-format", "stream-json", "--verbose", "--model", "{model}",
+                "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
+                "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write",
                 "--resume", "{session_id}" },
         stdin = "{message}",
       },
@@ -93,9 +154,19 @@ require("azure-cli").setup({
 })
 ```
 
-`--allowedTools "mcp__azure-vicli"` lets Claude Code use azure-vicli's tools
-without its own prompts (it can't show them in a headless run). Which writes
-still ask you is up to azure-vicli, see [below](#what-the-agent-can-do).
+- `--output-format stream-json --verbose` streams the answer into the panel
+  as it's written (`--output-format json` works too, all at once).
+- `--allowedTools "mcp__azure-vicli"` lets Claude Code use azure-vicli's
+  tools without its own prompts (it can't show them in a headless run);
+  which changes still ask you is azure-vicli's business, see
+  [below](#what-the-agent-can-do).
+- `Edit,Write` and `--add-dir {fix_root}` are for "fix this comment": the
+  agent edits files in a worktree under `{fix_root}`, never in your checkout
+  (the instructions it's given say so). Leave them out if you don't want the
+  agent changing code at all.
+
+**Several agents.** Instead of `agent`, give `agents = { claude = {...},
+copilot = {...} }` and optionally `default_agent = "claude"`; `ga` switches.
 
 | `chat.agent` field | Meaning |
 |---|---|
@@ -105,12 +176,18 @@ still ask you is up to azure-vicli, see [below](#what-the-agent-can-do).
 | `session_pattern` | A Lua pattern with one capture that finds the session id in the agent's output, for an agent that prints it rather than returning Claude Code's JSON. |
 | `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}`. |
 | `label` | The agent's name in the panel. |
+| `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls, e.g. `{ "^\u{25CF} ", "^%s+\u{2514}" }` for Copilot's `● tool` / `└ result` lines). |
 | `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900). |
 
-Placeholders: `{message}` (your message, with the view description and, on
-the first message, a short preamble), `{text}` (just what you typed),
-`{view}` (the view description), `{mcp_config}` (the MCP config file),
-`{session_id}`, `{model}`.
+Placeholders: `{message}` (your message, with the view description, the
+references and, on the first message, the instructions), `{text}` (just what
+you typed, prompts expanded), `{view}` (the view description),
+`{mcp_config}` (the MCP config file), `{fix_root}` (where fix worktrees
+live), `{session_id}`, `{model}`.
+
+The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
+`default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
+(default false), `suggest_on_new_comments` (default true).
 
 The agent runs in the local clone of the PR you're looking at, when there is
 one, so a repository's own agent instructions and skills apply. A skill
@@ -132,6 +209,7 @@ agent = {
   models = { "gpt-5", "claude-sonnet-4.5" },   -- examples: use what `copilot --help` lists
   cmd = { "copilot", "-p", "{message}", "--model", "{model}", "--additional-mcp-config", "@{mcp_config}" },
   session_pattern = "[Ss]ession[ %-_]?[Ii][Dd]:?%s*([%w%-]+)",
+  strip = { "^\u{25CF} ", "^%s+\u{2514}" },   -- drop Copilot's own "● tool / └ result" log lines
   followup = { cmd = { "copilot", "--resume", "{session_id}", "-p", "{message}", "--model", "{model}",
                        "--additional-mcp-config", "@{mcp_config}" } },
 },
@@ -162,9 +240,17 @@ couldn't confirm.
    - allowing every tool of the MCP server named `azure-vicli` without
      prompting. A headless run can't prompt, so this is required. Prefer a
      per-server allow (Claude Code: `--allowedTools mcp__azure-vicli`) over
-     allowing all tools, and never allow shell or file-writing tools for
-     this. azure-vicli asks the user itself before votes and state changes;
+     allowing all tools, and never allow shell tools for this. azure-vicli
+     asks the user itself before pushes, votes and other visible changes;
+   - if the CLI prints its own log of tool calls into its answer, the
+     patterns that match those lines (for `strip`);
    - choosing a model, and the valid model names;
+   - streaming output, if it has any (Claude Code: `--output-format
+     stream-json --verbose`); azure-vicli shows plain text as it arrives
+     either way;
+   - for "fix this comment": letting it edit files in an extra directory,
+     `{fix_root}` (Claude Code: `--add-dir {fix_root}` and `Edit,Write` in
+     `--allowedTools`) - only if the user wants the agent changing code;
    - whether a non-interactive run reports a session id (stdout, stderr, or
      a JSON field), and how to resume that session (e.g. `--resume <id>`).
 2. **Decide how the prompt is passed.** azure-vicli's message has several
@@ -180,7 +266,7 @@ couldn't confirm.
    everything already there.
 4. **Write the `chat` block** (the fields are in the table above), shaped like
    the examples in this file:
-   `chat = { agent = { label, models, cmd, stdin, followup, session_pattern } }`.
+   `chat = { agent = { label, models, cmd, stdin, followup, session_pattern, strip } }`.
    Use `{model}` where the model flag goes, and list the model names from
    step 1 in `models`. Add `followup` (the same command plus the resume flag
    with `{session_id}`) only if step 1 found a session id. If the CLI prints
@@ -201,19 +287,57 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 
 | Tool | What it does | Asks you first? |
 |---|---|---|
-| `current_view` | What you're looking at (see above) | - |
+| `current_view` | What you're looking at when you sent the message (see above) | - |
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details | - |
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
-| `list_work_items`, `get_work_item` | Your sprint's items; one item in full | - |
+| `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
+| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints | - |
+| `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
+| `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) | - |
 | `link_pr_to_work_item` | Links a PR and a work item | no |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
 | `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
+| `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
+| `requeue_build` | Queues the PR's build again | no |
+| `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you as a diff); throwing it away | no |
+| `commit_and_push_fix` | Commits the change and pushes it to the PR's branch | **yes**, showing the diff |
+| `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
+| `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description | **yes** (the description is shown) |
+| `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items); merges one | **yes** |
 | `vote` | Votes on a PR | **yes** |
-| `set_work_item_state` | Changes a work item's state | **yes** |
+| `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
 
 When a tool asks, a prompt pops up in Neovim ("The agent wants to vote
-"Approve" on PR #101. Allow?"). "Deny" is reported back to the agent, which
-carries on without it.
+"Approve" on PR #101. Allow?"), with the diff or text it would send next to
+it. "Deny" is reported back to the agent, which carries on without it.
+
+**Your own rules.** `chat.permissions` overrides any tool: `"allow"` (no
+question), `"ask"`, or `"deny"` (the agent doesn't even see it):
+
+```lua
+permissions = { create_branch = "ask", commit_and_push_fix = "deny", set_thread_status = "allow" },
+```
+
+**Undo.** Every change the agent makes is logged; `gL` lists them (newest
+first) and `u` on one undoes it where that's possible: unlinking, deleting a
+branch it created (only if nobody pushed to it since), taking a draft back
+out of the queue, and putting back a vote, a state, an assignee, a sprint, a
+thread's status or a description. Opening or completing a PR, comments,
+tasks and pushes can't be undone from here; the list says so.
+
+### Fix this comment
+
+1. You ask (from the thread, ideally): "fix this comment".
+2. The agent calls `start_fix`: a git worktree of the PR's source branch at
+   its latest commit, under `{fix_root}` (Neovim's cache directory), never
+   your own checkout.
+3. It edits the files there with its own tools, then `show_fix` opens the
+   diff for you.
+4. `commit_and_push_fix` asks you, with the diff next to the question, then
+   commits (with your git identity) and pushes to the PR's branch. If
+   someone pushed in the meantime the push fails and nothing is lost; ask it
+   to try again from the new tip.
+5. It drafts a reply ("Fixed in abc123: ...") into the batch queue.
 
 ## How it works
 

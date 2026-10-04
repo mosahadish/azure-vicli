@@ -478,6 +478,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
   fi
+  if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
+    pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"
+  else
+    fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
+  fi
   if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
     pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
   else

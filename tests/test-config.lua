@@ -431,6 +431,41 @@ do
   rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", types = { 1 } } } }, "list of strings")
 end
 
+-- --- chat: placement defaults, agents, prompts, permissions -------------------
+do
+  config.setup({})
+  local c = config.get().chat
+  check("chat: defaults", c.position == "right" and c.size == 0.35 and c.input_height == 3 and c.agent == nil)
+  local good = {
+    position = "bottom", size = 12, daily_summary = true, suggest_on_new_comments = false, default_agent = "claude",
+    agents = {
+      claude = { cmd = { "claude", "-p" }, models = { "sonnet", { label = "Opus", value = "opus" } },
+        followup = { cmd = { "claude", "--resume", "{session_id}" }, stdin = "{message}" } },
+      copilot = { cmd = "copilot -p {message}", session_pattern = "id: (%S+)", strip = { "^\u{25CF}" } },
+    },
+    prompts = { mine = "Do X", standup = false },
+    permissions = { vote = "deny", create_branch = "ask" },
+  }
+  config.setup({ chat = good })
+  c = config.get().chat
+  check("chat: accepted", c.position == "bottom" and c.agents.claude and c.prompts.mine == "Do X" and c.permissions.vote == "deny")
+  local function rejects(name, chat, needle)
+    local ok, err = pcall(config.setup, { chat = chat })
+    check("chat rejects " .. name, not ok and tostring(err):find(needle, 1, true) ~= nil, err)
+  end
+  rejects("a bad position", { position = "middle" }, "chat.position")
+  rejects("an unknown field", { colour = "x" }, "unknown field `colour` in chat")
+  rejects("an agent without cmd", { agent = { label = "x" } }, "chat.agent needs a `cmd`")
+  rejects("a bad agents entry", { agents = { x = { cmd = {} } } }, "chat.agents.x.cmd is an empty list")
+  rejects("a default_agent that isn't there", { agents = { a = { cmd = { "a" } } }, default_agent = "b" }, "default_agent")
+  rejects("a bad model", { agent = { cmd = { "a" }, models = { 3 } } }, "models[1]")
+  rejects("a bad strip pattern", { agent = { cmd = { "a" }, strip = { 1 } } }, "strip[1]")
+  rejects("a bad prompt", { prompts = { ["bad name"] = "x" } }, "chat.prompts")
+  rejects("a bad permission", { permissions = { vote = "maybe" } }, "chat.permissions.vote")
+  rejects("a bad followup", { agent = { cmd = { "a" }, followup = { model = "x" } } }, "unknown field `model` in chat.agent.followup")
+  config.setup({})
+end
+
 if fails > 0 then
   print(fails .. " check(s) failed")
   os.exit(1)

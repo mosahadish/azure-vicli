@@ -278,15 +278,23 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `agent` | `ga` |
+| `audit` | `gL` |
 | `back` | `<BS>` |
 | `cancel` | `<C-c>` |
 | `focus_input` | `i` / `a` |
 | `help` | `?` |
 | `hide` | `q` |
+| `history` | `gh` |
 | `model` | `gm` |
 | `new_chat` | `gn` |
+| `next_message` | `<Down>` |
+| `open_ref` | `<CR>` |
+| `prev_message` | `<Up>` |
+| `prompts` | `gp` |
 | `send` | `<CR>` |
 | `send_insert` | `<C-s>` |
 | `toggle` | `gq` |
+| `use_as_reply` | `gr` |
 
 <!-- END GENERATED KEYS TABLE -->

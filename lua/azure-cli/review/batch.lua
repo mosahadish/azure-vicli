@@ -310,6 +310,22 @@ local function setup(ctx)
   -- "(queued)", exactly like one queued by hand. Returns false once this
   -- reviewer is gone - the tool then queues into STATE.batch directly and
   -- rehydrate() above picks it up the next time the PR is opened.
+  -- ...and take one back out (the undo of a draft): false once this
+  -- reviewer is gone.
+  STATE.batch_drop = STATE.batch_drop or {}
+  STATE.batch_drop[ctx.ID] = function(item)
+    local lw = ctx.list_win()
+    if not (lw and vim.api.nvim_win_is_valid(lw)) then return false end
+    local s = state()
+    for _, it in ipairs(s.items) do
+      if it == item or (it.kind == item.kind and it.text == item.text and it.thread_id == item.thread_id) then
+        drop_item(s, it)
+        ctx.redraw()
+        return true
+      end
+    end
+    return false
+  end
   STATE.batch_live = STATE.batch_live or {}
   STATE.batch_live[ctx.ID] = function(item)
     local lw = ctx.list_win()

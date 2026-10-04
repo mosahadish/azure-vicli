@@ -1409,6 +1409,11 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   for _, pr in ipairs(mine_events) do
     notify("New comment on your PR #" .. pr.id .. ": " .. (pr.title or ""))
     NOTIFY.toast("PR #" .. pr.id, "New comment on your PR: " .. (pr.title or ""))
+    -- ...and a suggestion in the chat to triage them.
+    local old = prev_by_id[pr.id]
+    pcall(function()
+      require("azure-cli.chat").on_new_comments(pr, (pr.totalThreads or 0) - ((old and old.totalThreads) or 0))
+    end)
   end
   for _, pr in ipairs(thread_events) do
     notify("New reply on your thread in PR #" .. pr.id .. ": " .. (pr.title or ""))
@@ -1507,6 +1512,8 @@ local function load(silent, force)
       render()
       warm_all(fresh)
       warm_workitems(fresh)
+      -- The chat's once-a-day summary (setup({chat={daily_summary=true}})).
+      pcall(function() require("azure-cli.chat").on_dashboard_loaded(win) end)
     end,
   })
 end

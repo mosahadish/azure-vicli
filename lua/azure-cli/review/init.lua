@@ -1305,6 +1305,8 @@ local function decorate_comments(buf, path, map)
   local PANE = require("azure-cli.review.pane")
   PANE.set_keep(buf, per_line)
   PANE.refresh(diff_win, buf)
+  -- The chat agent's notes on these lines (review/chat.lua).
+  if EXT.chat and EXT.chat.decorate then EXT.chat.decorate(buf) end
 end
 
 -- Clear and re-apply comment decorations on every currently open diff buffer.
@@ -3333,6 +3335,9 @@ EXT.for_modules = {
   passes_filters = passes_filters,
   active_only = function() return active_only end,
   toggle_active_filter = toggle_active_filter,
+  -- review/chat.lua: the chat's open_in_ui shows the Overview for a PR
+  -- without a file.
+  open_overview = open_overview,
 }
 
 -- Re-fetch PR comment threads from ADO and re-decorate every open diff buffer

@@ -815,6 +815,66 @@ class Fake:
                                  ensure_ascii=False))
         return 0
 
+    # -- the chat panel's PR tools -----------------------------------------
+
+    def cmd_build_log(self, rest):
+        if not self.need_pr():
+            return 1
+        pr = self.pr()
+        bid = int(rest[0]) if rest and rest[0].isdigit() else 0
+        failed = []
+        if pr["buildStatus"] == "failed":
+            failed = [{"name": "Run tests", "type": "Task",
+                       "issues": ["tests/test_util.py::test_name_flag FAILED - expected 'x', got '--name'"],
+                       "log": "collected 4 items\ntests/test_util.py ..F.\nE   AssertionError: expected 'x', got '--name'\n"
+                              "1 failed, 3 passed"}]
+        print(json.dumps({"build": bid, "failed": failed}))
+        return 0
+
+    def cmd_add_reviewer(self, rest):
+        if not self.need_pr():
+            return 1
+        who = (rest[0] if rest else "").lower()
+        people = [p for p in PEOPLE.values() if who and who in p["displayName"].lower()]
+        if len(people) != 1:
+            print("{0} people match '{1}'".format(len(people), who), file=sys.stderr)
+            return 1
+        pr = self.pr()
+        if not any(r["id"] == people[0]["id"] for r in pr["reviewers"]):
+            pr["reviewers"].append({"name": people[0]["displayName"], "id": people[0]["id"], "vote": 0})
+            self.ws.save(self.state)
+        print(json.dumps({"added": people[0]["displayName"], "id": people[0]["id"]}))
+        return 0
+
+    def cmd_set_description(self, rest):
+        if not self.need_pr():
+            return 1
+        self.pr()["description"] = rest[0] if rest else ""
+        self.ws.save(self.state)
+        print("Description updated.")
+        return 0
+
+    def cmd_create_pr(self, rest):
+        source, target, title, desc, wis = (rest + ["", "", "", "", ""])[:5]
+        if not source or not target or not title:
+            print("create-pr needs <source> <target> <title>", file=sys.stderr)
+            return 1
+        repo = self.env.get("AZVICLI_REPO") or ""
+        pid = max(p["id"] for p in self.state["prs"]) + 1
+        self.state["prs"].append({
+            "id": pid, "title": title, "repo": repo, "source": source, "target": target, "author": "me",
+            "isDraft": False, "autoComplete": False, "autoCompleteSetBy": "", "description": desc,
+            "buildStatus": "none", "queuePosition": -1, "buildUrl": "", "policies": [], "missingReviewers": [],
+            "mergeConflict": False, "reviewers": [], "updatedIso": now_iso(), "completed": False,
+        })
+        for wid in [w for w in wis.split(",") if w.strip().isdigit()]:
+            w = self.wi(wid.strip())
+            if w is not None:
+                w.setdefault("prs", []).append(pid)
+        self.ws.save(self.state)
+        print(json.dumps({"id": pid, "url": "{0}/{1}/_git/{2}/pullrequest/{3}".format(ORG, PROJECT, repo, pid)}))
+        return 0
+
     def cmd_vote(self, rest):
         if not self.need_pr():
             return 1
@@ -1088,6 +1148,19 @@ class Fake:
                 self.ws.save(self.state)
             print(json.dumps({"branch": a7, "objectId": sha, "linked": linked}))
             return 0
+        if cmd == "delete-branch":
+            bare = self.ws.clone_url(a4)
+            tip = subprocess.run(["git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/" + a5],
+                                 capture_output=True, text=True).stdout.strip()
+            if not tip:
+                print("ERROR: branch '{0}' doesn't exist".format(a5), file=sys.stderr)
+                return 1
+            if a6 and tip != a6:
+                print("ERROR: '{0}' has moved since it was created".format(a5), file=sys.stderr)
+                return 1
+            subprocess.run(["git", "--git-dir", bare, "branch", "-D", a5], capture_output=True)
+            print(json.dumps({"deleted": a5}))
+            return 0
         if cmd == "create":
             if not a2 or not a3:
                 print("ERROR: create needs <type> <title>", file=sys.stderr)
@@ -1214,6 +1287,10 @@ def dispatch(ws, argv, env):
         "--wi-detail": lambda: f.cmd_wi_detail(rest),
         "--wi-state": lambda: f.cmd_wi_state(rest),
         "--wi-edit": lambda: f.cmd_wi_edit(rest),
+        "--build-log": lambda: f.cmd_build_log(rest),
+        "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
+        "--set-description": lambda: f.cmd_set_description(rest),
+        "--create-pr": lambda: f.cmd_create_pr(rest),
     }
     handler = table.get(flag)
     if handler is None:

@@ -763,5 +763,191 @@ do
   vim.ui.select = real_select
   print("CHAT-SMOKE-OK")
 end
+-- The chat, part two: streamed answers (stream-json), a visual selection
+-- and !refs in the message, a saved prompt (/build) reading a build log,
+-- open_in_ui, annotate_code, the fix flow (worktree -> diff -> commit and
+-- push, asked first), board tools with an undo from the audit log (gL, u),
+-- gr drafting an answer as a reply, switching agents (ga) and going back to
+-- an earlier conversation (gh).
+do
+  local CHAT = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
+  local streamed = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}", "--stream" }
+  require("azure-cli").setup({ chat = {
+    default_agent = "claude",
+    agents = {
+      claude = { label = "Fake Claude", cmd = streamed, models = { "fast", "smart" }, timeout_seconds = 60,
+        followup = { cmd = vim.list_extend(vim.deepcopy(streamed), { "--resume", "{session_id}" }) } },
+      plain = { label = "Plain", cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" }, timeout_seconds = 60 },
+    },
+  } })
+  vim.env.GIT_AUTHOR_NAME, vim.env.GIT_AUTHOR_EMAIL = "Fake Agent", "agent@example.com"
+  vim.env.GIT_COMMITTER_NAME, vim.env.GIT_COMMITTER_EMAIL = "Fake Agent", "agent@example.com"
+  local answer
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      local label = opts.format_item and opts.format_item(it) or tostring(it)
+      if answer and label:find(answer, 1, true) then return cb(it, i) end
+    end
+    return cb(nil)
+  end
+  local st = STATE.chat
+  local function wins() return st.wins[vim.api.nvim_get_current_tabpage()] end
+  local function ask(msg)
+    local w = wins()
+    local n = #st.entries
+    vim.api.nvim_set_current_win(w.input)
+    vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(w.input), 0, -1, false, { msg })
+    vim.cmd("stopinsert")
+    feed("<CR>")
+    local e
+    local okw = vim.wait(40000, function()
+      e = st.entries[#st.entries]
+      return #st.entries >= n + 2 and e.role == "agent" and e.status ~= "running"
+    end, 100)
+    if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(st.entries[#st.entries]) end
+    return e
+  end
+  local function need(e, why, ...)
+    if not e then return fail(why) end
+    for _, s in ipairs({ ... }) do
+      if not (e.text or ""):find(s, 1, true) then return fail("\"" .. s .. "\" missing from the answer:\n" .. tostring(e.text)) end
+    end
+    return true
+  end
+
+  -- The reviewer on PR #101 at auth.py:12, through the opener open_in_ui uses.
+  require("azure-cli").open_review(101)
+  ok = vim.wait(20000, function()
+    local o = STATE.review_openers and STATE.review_openers["101"]
+    return o and o("src/auth.py", "R", 12)
+  end, 100)
+  if not ok then return fail("review_openers didn't show auth.py") end
+  local diffwin
+  ok = vim.wait(10000, function()
+    diffwin = vim.api.nvim_get_current_win()
+    local b = vim.api.nvim_win_get_buf(diffwin)
+    local m = (require("azure-cli.review.pane").entry(b) or {}).map
+    local cur = m and m[vim.api.nvim_win_get_cursor(diffwin)[1]]
+    return cur and cur.side == "R" and cur.lineno == 12
+  end, 100)
+  if not ok then return fail("the opener didn't land on auth.py's line 12") end
+
+  -- A selection of two lines + gq, then a message naming !102.
+  CHAT.new_chat(true)
+  feed("Vj")
+  feed("gq")
+  if not st.selection or st.selection.to - st.selection.from ~= 1 then return fail("gq in visual mode didn't capture the selection") end
+  local e, why = ask("explain this, and compare with !102")
+  if not need(e, why, "selection: 12-13", "refs: yes", "model: fast") then return end
+  local streamed_tool = false
+  for _, t in ipairs(e.tools or {}) do if t:find("Read src/auth.py", 1, true) then streamed_tool = true end end
+  if not streamed_tool or st.session_id ~= "fake-chat-1" then
+    return fail("the stream-json answer wasn't read: " .. vim.inspect(e.tools) .. " session " .. tostring(st.session_id))
+  end
+
+  -- /build: the saved prompt, about the PR with the failing build.
+  e, why = ask("/build")
+  if not need(e, why, "get_build_log:", "expected 'x', got '--name'", "resumed: fake-chat-1") then return end
+  if st.entries[#st.entries - 1].text ~= "/build" then return fail("the prompt name should show as typed") end
+
+  -- open_in_ui: throttle.py line 4 in the reviewer.
+  e, why = ask("show me the lockout code")
+  if not need(e, why, "open_in_ui: Showing PR !101 at src/throttle.py:4") then return end
+  ok = vim.wait(5000, function()
+    local w = vim.api.nvim_get_current_win()
+    local b = vim.api.nvim_win_get_buf(w)
+    return vim.api.nvim_buf_get_name(b) ~= "" or (require("azure-cli.review.pane").entry(b) or {}).map ~= nil
+  end, 50)
+
+  -- annotate_code: a note under auth.py:12.
+  vim.api.nvim_set_current_win(diffwin)
+  e, why = ask("annotate the risky lines")
+  if not need(e, why, "annotate_code: Noted src/auth.py:12") then return end
+  local nns = vim.api.nvim_get_namespaces()["azure_cli_chat_notes"]
+  local noted = false
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, nns or -1, 0, -1, { details = true })) do
+      for _, vl in ipairs(m[4].virt_lines or {}) do
+        if vl[1][1]:find("Lockout check here", 1, true) then noted = true end
+      end
+    end
+  end
+  if not noted then return fail("the note isn't drawn in auth.py's diff") end
+
+  -- The fix flow: the push asks first ("Allow"), then lands on the branch.
+  answer = "Allow"
+  e, why = ask("fix it please")
+  if not need(e, why, "start_fix:", "show_fix:", "commit_and_push_fix: Pushed") then return end
+  local bare = vim.env.AZVICLI_FAKE_WS .. "/origin/widgets.git"
+  local subject = vim.fn.system({ "git", "--git-dir", bare, "log", "-1", "--format=%s", "feature/login-throttle" })
+  local content = vim.fn.system({ "git", "--git-dir", bare, "show", "feature/login-throttle:src/auth.py" })
+  if not subject:find("Return a reason code on lockout", 1, true) or not content:find("FIXED-BY-AGENT", 1, true) then
+    return fail("the fix wasn't pushed: " .. subject)
+  end
+
+  -- Board tools, then u in gL undoes the link.
+  e, why = ask("plan the work")
+  if not need(e, why, "create_child_task: Created Task", "move_to_sprint: Moved #3002", "link_pr_to_work_item: Linked PR #102") then return end
+  local items = require("azure-cli.chat.store").audit()
+  if not (items[#items] and items[#items].tool == "link_pr_to_work_item" and items[#items].undo) then
+    return fail("the link isn't in the audit log with an undo: " .. vim.inspect(items[#items]))
+  end
+  vim.api.nvim_set_current_win(wins().log)
+  feed("gL")
+  local fw = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_config(fw).relative == "" then return fail("gL didn't open the audit float") end
+  vim.api.nvim_win_set_cursor(fw, { 1, 0 })
+  feed("u")
+  ok = vim.wait(10000, function()
+    for l in io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a"):gmatch("[^\n]+") do
+      if l:find("unlink-pr", 1, true) and l:find("3002", 1, true) then return true end
+    end
+  end, 100)
+  if not ok then return fail("u in the audit log didn't unlink") end
+  pcall(vim.api.nvim_win_close, fw, true)
+
+  -- gr: the last answer as a reply to the thread its question was on.
+  vim.api.nvim_set_current_win(wins().log)
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  vim.api.nvim_win_set_cursor(0, { #lines, 0 })
+  local before = #((STATE.batch or {})["101"] or { items = {} }).items
+  feed("gr")
+  local ed = vim.api.nvim_get_current_buf()
+  if not table.concat(vim.api.nvim_buf_get_lines(ed, 0, -1, false), "\n"):find("FAKE-CHAT-RAN", 1, true) then
+    return fail("gr didn't prefill the editor with the answer")
+  end
+  feed("<C-s>")
+  ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
+  if not ok then return fail("gr's reply wasn't queued") end
+
+  -- ga: the other agent, which gets the conversation replayed.
+  answer = "Plain"
+  vim.api.nvim_set_current_win(wins().log)
+  feed("ga")
+  e, why = ask("hello")
+  if not need(e, why, "resumed: None") then return end
+  if e.label ~= "Plain" or e.mode ~= "replay" then return fail("ga didn't switch agents: " .. vim.inspect({ e.label, e.mode })) end
+
+  -- A note from the dashboard, then gn and back with gh.
+  CHAT.on_new_comments({ id = 102, title = "Reload config" }, 2)
+  if not (st.entries[#st.entries].role == "note" and st.entries[#st.entries].text:find("!102", 1, true)) then
+    return fail("on_new_comments left no note")
+  end
+  local turns = #st.entries
+  vim.api.nvim_set_current_win(wins().log)
+  feed("gn")
+  if #st.entries ~= 0 then return fail("gn didn't start a new conversation") end
+  answer = "explain this"
+  feed("gh")
+  if #st.entries ~= turns then return fail("gh didn't bring the conversation back: " .. #st.entries .. " vs " .. turns) end
+  vim.ui.select = real_select
+  print("== chat, part two ==")
+  print(table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(wins().log), 0, 40, false), "\n"))
+  CHAT.hide()
+  print("CHATPLUS-SMOKE-OK")
+end
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

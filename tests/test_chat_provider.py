@@ -11,6 +11,7 @@ from io import StringIO
 from unittest import mock
 
 from test_work_items import FakeFetch, ac, make_actions
+import test_pr_actions as tpa
 
 REPO = "https://dev.azure.com/org/proj/_apis/git/repositories/widgets"
 REFS = REPO + "/refs?filter=heads/develop"
@@ -93,6 +94,122 @@ class CreateBranchTests(unittest.TestCase):
                                    branch_fetch())
         self.assertEqual(rc, 1)
         self.assertIn("create-branch needs", err)
+
+
+class DeleteBranchTests(unittest.TestCase):
+    REFS2 = REPO + "/refs?filter=heads/feature/3001-x"
+
+    def run_edit(self, args, fetch):
+        actions = make_actions()
+        actions.fetch = fetch
+        out, err = StringIO(), StringIO()
+        with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = actions.cmd_wi_edit(args)
+        return rc, out.getvalue(), err.getvalue()
+
+    def fetch(self, tip=SHA):
+        return FakeFetch(responses={
+            self.REFS2: {"value": [{"name": "refs/heads/feature/3001-x", "objectId": tip}]},
+            REPO + "/refs": {"value": [{"success": True, "updateStatus": "succeeded"}]},
+        })
+
+    def test_deletes_with_an_all_zero_new_object(self):
+        fetch = self.fetch()
+        rc, out, _ = self.run_edit(["delete-branch", "https://dev.azure.com/org", "proj", "widgets", "feature/3001-x", SHA], fetch)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), {"deleted": "feature/3001-x"})
+        post = fetch.calls[-1]
+        self.assertEqual(post["data"], [{"name": "refs/heads/feature/3001-x", "oldObjectId": SHA, "newObjectId": "0" * 40}])
+
+    def test_refuses_once_someone_pushed(self):
+        rc, _, err = self.run_edit(["delete-branch", "https://dev.azure.com/org", "proj", "widgets", "feature/3001-x", SHA],
+                                   self.fetch(tip="c" * 40))
+        self.assertEqual(rc, 1)
+        self.assertIn("has moved", err)
+
+
+class ChatPrActionTests(unittest.TestCase):
+    PR = "https://dev.azure.com/org/proj/_apis/git/repositories/myrepo/pullRequests/42"
+    BUILD = "https://dev.azure.com/org/proj/_apis/build/builds/77"
+
+    def run_action(self, method, *args, responses=None, raise_for=None):
+        actions = tpa.make_actions()
+        actions.fetch = tpa.FakeFetch(responses=responses, raise_for=raise_for)
+        out, err = StringIO(), StringIO()
+        with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = getattr(actions, method)(*args)
+        return rc, out.getvalue(), err.getvalue(), actions.fetch
+
+    def test_build_log_reads_failed_records_and_their_log_tails(self):
+        timeline = {"records": [
+            {"name": "Build", "type": "Task", "result": "succeeded", "log": {"id": 1}},
+            {"name": "Test", "type": "Task", "result": "failed", "log": {"id": 2},
+             "issues": [{"type": "error", "message": "boom"}, {"type": "warning", "message": "meh"}]},
+            {"name": "Job", "type": "Job", "result": "failed", "issues": []},
+        ]}
+        log = "\n".join("line {0}".format(i) for i in range(200)).encode()
+        rc, out, _, fetch = self.run_action("build_log", "77", responses={
+            self.BUILD + "/timeline": timeline, self.BUILD + "/logs/2": log})
+        self.assertEqual(rc, 0)
+        res = json.loads(out)
+        self.assertEqual([f["name"] for f in res["failed"]], ["Test", "Job"])
+        self.assertEqual(res["failed"][0]["issues"], ["boom"])
+        tail = res["failed"][0]["log"].splitlines()
+        self.assertEqual((len(tail), tail[-1]), (120, "line 199"))
+        self.assertNotIn("log", res["failed"][1])
+        self.assertTrue(fetch.calls[1]["raw"])
+
+    def test_build_log_json_lines_body(self):
+        rc, out, _, _ = self.run_action("build_log", "77", responses={
+            self.BUILD + "/timeline": {"records": [{"name": "T", "type": "Task", "result": "failed", "log": {"id": 3}}]},
+            self.BUILD + "/logs/3": json.dumps({"count": 2, "value": ["a", "b"]}).encode()})
+        self.assertEqual(json.loads(out)["failed"][0]["log"], "a\nb")
+
+    def test_build_log_needs_a_number(self):
+        self.assertEqual(self.run_action("build_log", "x")[0], 1)
+
+    def test_add_reviewer_searches_identities_on_vssps_then_puts(self):
+        ident = "https://vssps.dev.azure.com/org/_apis/identities?searchFilter=General&filterValue=Bob%20Brown&queryMembership=None"
+        rc, out, _, fetch = self.run_action("add_reviewer", "Bob Brown", "true", responses={
+            ident: {"value": [{"id": "bob-id", "providerDisplayName": "Bob Brown"},
+                              {"id": "grp", "providerDisplayName": "[x]\\Team", "isContainer": True}]}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)["added"], "Bob Brown")
+        put = fetch.calls[-1]
+        self.assertEqual((put["method"], put["url"], put["data"]), ("PUT", self.PR + "/reviewers/bob-id",
+                                                                     {"vote": 0, "isRequired": True}))
+
+    def test_add_reviewer_on_server_uses_the_collection(self):
+        actions = tpa.make_actions(env_overrides={"AZVICLI_ORG": "https://tfs.example.org/tfs/Coll"})
+        self.assertEqual(actions._identities_base(), "https://tfs.example.org/tfs/Coll")
+
+    def test_add_reviewer_ambiguous(self):
+        ident = "https://vssps.dev.azure.com/org/_apis/identities?searchFilter=General&filterValue=B&queryMembership=None"
+        rc, _, err, _ = self.run_action("add_reviewer", "B", responses={ident: {"value": [
+            {"id": "1", "providerDisplayName": "Bob"}, {"id": "2", "providerDisplayName": "Bea"}]}})
+        self.assertEqual(rc, 1)
+        self.assertIn("2 people match 'B': Bob, Bea", err)
+
+    def test_set_description(self):
+        rc, _, _, fetch = self.run_action("set_description", "New text")
+        self.assertEqual(rc, 0)
+        self.assertEqual((fetch.calls[0]["method"], fetch.calls[0]["url"], fetch.calls[0]["data"]),
+                         ("PATCH", self.PR, {"description": "New text"}))
+
+    def test_create_pr_links_work_items(self):
+        url = "https://dev.azure.com/org/proj/_apis/git/repositories/myrepo/pullrequests"
+        rc, out, _, fetch = self.run_action("create_pr", "feature/x", "develop", "Title", "Body", "3001, 3002,x", "true",
+                                            responses={url: {"pullRequestId": 99}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)["id"], 99)
+        body = fetch.calls[0]["data"]
+        self.assertEqual(body["sourceRefName"], "refs/heads/feature/x")
+        self.assertEqual(body["targetRefName"], "refs/heads/develop")
+        self.assertEqual(body["workItemRefs"], [{"id": "3001"}, {"id": "3002"}])
+        self.assertTrue(body["isDraft"])
+
+    def test_create_pr_needs_branches_and_a_title(self):
+        self.assertEqual(self.run_action("create_pr", "a", "", "t")[0], 1)
 
 
 class McpHandleTests(unittest.TestCase):

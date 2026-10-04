@@ -226,8 +226,13 @@ re-opening the same PR within one nvim session.
 `gq` (file list, diff pane, Overview, revision buffers) shows or hides the
 [chat panel](chat.md). The agent is told which file, line, code and comment
 thread is under your cursor, so "what do you think about this comment?" or
-"triage this PR's comments" need no further explanation. Replies it drafts
-land in this PR's batch-review queue, tagged "(queued)", for `gS`.
+"triage this PR's comments" need no further explanation; with lines
+selected, `gq` sends the selection along. Replies it drafts land in this PR's
+batch-review queue, tagged "(queued)", for `gS`. Notes it leaves on lines
+(`annotate_code`) show as virtual lines under them, and when it shows you
+something ("show me where that's checked") the reviewer jumps to that file
+and line. "Fix this comment" changes code in a separate worktree and asks
+before pushing - see [Chat](chat.md#fix-this-comment).
 
 ### Changes since my last review
 

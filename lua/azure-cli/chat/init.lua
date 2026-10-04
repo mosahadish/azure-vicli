@@ -1,36 +1,50 @@
 -- lua/azure-cli/chat/init.lua: the chat panel - an agent (Claude Code, the
 -- Copilot CLI, ...) you talk to from inside azure-vicli, which sees what you
--- see and can act on it.
+-- see and can act on it. docs/chat.md is the user-facing description.
 --
--- The panel is a split next to whatever azure-vicli screen you're on: the
--- conversation on top, a small input box below. `gq` (any screen) shows or
--- hides it; once shown it follows you into every azure-vicli tab (PR
--- dashboard, reviewer, work items) until hidden again. setup({ chat = {
--- position, size, ... } }) places it.
+-- The panel is a split next to whatever azure-vicli screen you're on (the
+-- conversation on top, an input box below) that follows you into every
+-- azure-vicli tab while shown. gq on a screen takes you to it (opening it
+-- if needed); gq/q inside it hides it. gq on a visual selection sends the
+-- selected lines along with the next message.
 --
--- Sending a message runs the configured agent headless (chat.agent: a
--- command template, like an agent action's) with the message on stdin,
--- prefixed by a description of what you're looking at (chat/view.lua).
--- Later messages resume the agent's own session when chat.agent.followup
--- says how ({session_id} from Claude Code's JSON output, or
--- session_pattern), and otherwise replay the conversation so far.
+-- Sending a message runs the chosen agent headless (chat.agent, or one of
+-- chat.agents - ga switches), its stdout read as it arrives
+-- (chat/core.lua's stream reader: Claude Code's stream-json, its json
+-- envelope, or plain text), with a description of what's under the cursor
+-- (chat/view.lua) and of the PRs/work items the message names
+-- (chat/refs.lua). Later messages resume the agent's session (followup +
+-- {session_id}) or replay the conversation. Conversations are saved
+-- (chat/store.lua): the last one comes back after a restart, gh opens an
+-- older one.
 --
--- The agent gets an MCP server ({mcp_config}: `azure-cli.py --mcp`) whose
--- tools (chat/tools.lua) read the PR list, threads, diffs and work items
--- and act - link, create a branch, draft replies into the batch-review
--- queue directly; vote and change a work item's state only after you say
--- yes. Tool calls show in the conversation as they happen.
+-- The agent's tools (chat/tools*.lua) reach Neovim through `azure-cli.py
+-- --mcp` and chat/bridge.lua; their calls show in the conversation as they
+-- happen, every change lands in an audit log (gL, u undoes), and the ones
+-- that ask pop up a prompt (with the diff/text they'd send, when there is
+-- one).
 local M = {}
+
+local CORE = require("azure-cli.chat.core")
+for _, k in ipairs({ "PREAMBLE", "compose", "parse_answer", "can_resume", "expand", "render", "models" }) do
+  M[k] = CORE[k]
+end
 
 local function STATE()
   local S = require("azure-cli.state")
   S.chat = S.chat or {
-    entries = {},        -- { role = "you"|"agent"|"note", text, lines, tools = {}, status, view }
+    entries = {},        -- { role = "you"|"agent"|"note", text, where, view, tools, status, label, ... }
     session_id = nil,
+    conv_id = nil,       -- chat/store.lua's id for the conversation in the panel
     visible = false,
     wins = {},           -- tabpage -> { log = win, input = win }
     main_win = {},       -- tabpage -> the last non-chat window
-    running = nil,       -- { job, entry, started }
+    running = nil,       -- { job, entry, timer, cancelled }
+    models = {},         -- agent name -> model picked with gm
+    agent_name = nil,    -- picked with ga
+    sent = {},           -- what was sent, for <Up>/<Down> in the input box
+    selection = nil,     -- { win, buf, from, to, text } from gq in visual mode
+    restored = false,
   }
   return S.chat
 end
@@ -38,143 +52,87 @@ end
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
 local function config() return require("azure-cli.config").get().chat or {} end
 
-M.PREAMBLE = [[You are the assistant inside azure-vicli, a Neovim plugin for Azure DevOps pull requests and work items. The user talks to you from a chat panel next to the screen they're on. Each message starts with "Current view", describing what they are looking at; "this PR", "this comment" and "this work item" mean what it names.
+-- ---------------------------------------------------------------------------
+-- Agents and models.
 
-Use the azure-vicli tools to look things up (current_view, list_pull_requests, get_pull_request, get_pr_threads, get_pr_diff, list_work_items, get_work_item) and to act (link_pr_to_work_item, create_branch, draft_reply, draft_comment, vote, set_work_item_state). Drafts are queued for the user to review, never posted. Answer briefly, in markdown.]]
+-- Every configured agent, name -> spec: chat.agents, or the one chat.agent
+-- (named by its label).
+function M.agents()
+  local cfg = config()
+  if cfg.agents and not vim.tbl_isempty(cfg.agents) then return cfg.agents end
+  if cfg.agent then return { [cfg.agent.label or "agent"] = cfg.agent } end
+  return {}
+end
+
+-- The agent in use: name, spec - the one picked with ga, else
+-- chat.default_agent, else the first by name.
+function M.current_agent()
+  local agents = M.agents()
+  local st = STATE()
+  if st.agent_name and agents[st.agent_name] then return st.agent_name, agents[st.agent_name] end
+  local d = config().default_agent
+  if d and agents[d] then return d, agents[d] end
+  local names = vim.tbl_keys(agents)
+  table.sort(names)
+  if names[1] then return names[1], agents[names[1]] end
+  return nil, nil
+end
+
+local function agent_label()
+  local name, a = M.current_agent()
+  return (a and a.label) or name or "Agent"
+end
+
+-- The model in use for `agent`: the one picked with gm (per agent) this
+-- session, else agent.model, else the first of agent.models, else nil.
+function M.current_model(agent)
+  for name, a in pairs(M.agents()) do
+    if a == agent and STATE().models[name] then return STATE().models[name] end
+  end
+  if agent and agent.model then return agent.model end
+  local list = CORE.models(agent)
+  return list[1] and list[1].value or nil
+end
 
 -- ---------------------------------------------------------------------------
--- Pure helpers.
+-- Conversation persistence.
 
--- The text sent to the agent for one message: the preamble (first message
--- only, or every replayed one), the earlier conversation (replay only),
--- the current view and the message. Pure.
-function M.compose(message, view_text, opts)
-  opts = opts or {}
-  local parts = {}
-  if opts.first or opts.history then parts[#parts + 1] = M.PREAMBLE end
-  if opts.history and #opts.history > 0 then
-    parts[#parts + 1] = "## The conversation so far"
-    for _, e in ipairs(opts.history) do
-      if e.role == "you" then
-        parts[#parts + 1] = "User: " .. e.text
-      elseif e.role == "agent" and e.text and e.text ~= "" then
-        parts[#parts + 1] = "You: " .. e.text
-      end
-    end
-  end
-  parts[#parts + 1] = "## Current view\n" .. (view_text or "(unknown)")
-  parts[#parts + 1] = "## Message\n" .. message
-  return table.concat(parts, "\n\n")
+local function save()
+  local st = STATE()
+  if #st.entries == 0 then return end
+  st.conv_id = st.conv_id or require("azure-cli.chat.store").new_id()
+  st.created = st.created or os.time()
+  pcall(require("azure-cli.chat.store").save, { id = st.conv_id, created = st.created, entries = st.entries,
+    session_id = st.session_id, agent = (M.current_agent()), model = M.current_model(select(2, M.current_agent())) })
 end
 
--- The agent's answer out of its stdout: Claude Code's --output-format json
--- envelope ({ "result", "session_id" }) unwrapped, else the text as-is;
--- `pattern` (chat.agent.session_pattern) finds a session id in plain
--- output. Returns text, session_id. `decode` is vim.json.decode at runtime.
-function M.parse_answer(out, err, decode, pattern)
-  local text = (out or ""):gsub("\r\n", "\n"):gsub("^%s+", ""):gsub("%s+$", "")
-  local session
-  if text:sub(1, 1) == "{" then
-    local ok, d = pcall(decode, text)
-    if ok and type(d) == "table" and type(d.result) == "string" then
-      text = d.result:gsub("^%s+", ""):gsub("%s+$", "")
-      session = type(d.session_id) == "string" and d.session_id or nil
-      if d.is_error == true and text == "" then text = "(the agent reported an error)" end
-    end
-  end
-  if not session and type(pattern) == "string" and pattern ~= "" then
-    for _, s in ipairs({ out or "", err or "" }) do
-      local ok, id = pcall(string.match, s, pattern)
-      if ok and type(id) == "string" and id ~= "" then session = id break end
-    end
-  end
-  return text, session
+local function load_conversation(rec)
+  local st = STATE()
+  st.entries = rec.entries or {}
+  st.session_id = rec.session_id
+  st.conv_id = rec.id
+  st.created = rec.created
+  if rec.agent and M.agents()[rec.agent] then st.agent_name = rec.agent end
 end
 
--- Whether a message can resume the agent's session: a followup is set and
--- either doesn't need {session_id} or there is one.
-function M.can_resume(agent, session)
-  local f = agent and agent.followup
-  if not f then return false end
-  local needs = false
-  for _, part in ipairs(type(f.cmd) == "table" and f.cmd or { f.cmd }) do
-    if tostring(part):find("{session_id}", 1, true) then needs = true end
-  end
-  if (f.stdin or ""):find("{session_id}", 1, true) then needs = true end
-  return not needs or (session ~= nil and session ~= "")
+local function restore_once()
+  local st = STATE()
+  if st.restored then return end
+  st.restored = true
+  if #st.entries > 0 then return end
+  local rec = require("azure-cli.chat.store").load_current()
+  if rec then load_conversation(rec) end
 end
 
-local function expand(template, vars, quote)
-  if type(template) ~= "string" then return template end
-  return (template:gsub("{([%w_]+)}", function(name)
-    local v = vars[name]
-    if v == nil then return nil end
-    v = tostring(v)
-    return quote and quote(v) or v
-  end))
-end
-M.expand = expand
+-- ---------------------------------------------------------------------------
+-- Rendering.
 
--- The transcript as lines, plus what each line is, for colouring: a
--- "You" / "<agent>" heading per turn (the name, then a dimmer " · on PR
--- #101" / " · working… 4s"), your text, the agent's tool calls as they
--- happen, then its markdown answer. Returns lines, roles (line -> one of
--- you_head, you, agent_head, agent, tool_read, tool_write, tool_err,
--- note, intro; nil for the gap between turns) and name_end (heading line
--- -> byte where its dim part starts). Pure (`now` injected).
-function M.render(entries, now, agent_label)
-  local lines, roles, name_end = {}, {}, {}
-  local function add(l, role) lines[#lines + 1] = l; roles[#lines] = role end
-  local function add_text(t, role) for l in ((t or "") .. "\n"):gmatch("(.-)\n") do add(l, role) end end
-  local function head(name, extra, role)
-    add(name .. (extra ~= "" and ("  \u{00B7}  " .. extra) or ""), role)
-    name_end[#lines] = #name
-  end
-  if #entries == 0 then
-    add("Chat", "agent_head")
-    name_end[1] = 4
-    add("", "intro")
-    add_text("Ask about what you're looking at - \"triage this PR's comments\", \"what do you think about "
-      .. "this comment?\", \"create a branch from develop for this work item\".\nType below; <CR> sends.", "intro")
-    return lines, roles, name_end
-  end
-  for i, e in ipairs(entries) do
-    if i > 1 then add("", nil) end
-    if e.role == "you" then
-      head("You", e.where or "", "you_head")
-      add_text(e.text, "you")
-    elseif e.role == "agent" then
-      local bits = {}
-      if e.status == "running" then
-        bits[#bits + 1] = "working\u{2026} " .. math.max(0, (now or 0) - (e.started or now or 0)) .. "s"
-      elseif e.status and e.status ~= "done" then
-        bits[#bits + 1] = e.status
-      end
-      if e.mode == "replay" then bits[#bits + 1] = "replayed" end
-      head(agent_label or "Agent", table.concat(bits, "  \u{00B7}  "), "agent_head")
-      for _, t in ipairs(e.tools or {}) do
-        local role = t:find("^\u{2717}") and "tool_err" or (t:find("^\u{270E}") and "tool_write" or "tool_read")
-        add("  " .. t, role)
-      end
-      if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("", "agent") end
-      if e.text and e.text ~= "" then add_text(e.text, "agent") end
-    else
-      add_text(e.text or "", "note")
-    end
-  end
-  return lines, roles, name_end
-end
-
--- Highlight groups the chat uses, all links (so a colorscheme can restyle
--- them): the bar down each turn and its heading per speaker, tool calls by
--- kind.
 -- Foreground-only on purpose: the panel's background stays whatever the
--- window's is (a group with a background, like Normal or CursorLine in
--- some palettes, painted visible bands across the text).
+-- window's is (a group with a background painted bands across the text).
 local HL = {
   AzureCliChatYou = "Function", AzureCliChatAgent = "String", AzureCliChatMeta = "Comment",
   AzureCliChatToolRead = "Comment", AzureCliChatToolWrite = "DiagnosticWarn", AzureCliChatToolErr = "DiagnosticError",
-  AzureCliChatNote = "DiagnosticInfo",
+  AzureCliChatNote = "DiagnosticInfo", AzureCliChatRef = "Underlined",
 }
 local BAR = {
   you_head = "AzureCliChatYou", you = "AzureCliChatYou",
@@ -187,75 +145,42 @@ local LINE_HL = {
   note = "AzureCliChatNote", intro = "AzureCliChatMeta",
 }
 
--- ---------------------------------------------------------------------------
--- Buffers and windows.
-
 local log_buf, input_buf
 local ns = vim.api.nvim_create_namespace("azure_cli_chat")
+local entry_at = {}
 
-local function is_chat_buf(b) return b == log_buf or b == input_buf end
-
-local function agent_label()
-  local a = config().agent
-  return (a and a.label) or "Agent"
-end
-
--- chat.agent.models as { label, value } pairs: a string is both.
-function M.models(agent)
-  local out = {}
-  for _, m in ipairs((agent and agent.models) or {}) do
-    if type(m) == "string" then out[#out + 1] = { label = m, value = m }
-    elseif type(m) == "table" and m.value then out[#out + 1] = { label = m.label or m.value, value = m.value } end
-  end
-  return out
-end
-
--- The model in use: the one picked with gm this session, else
--- chat.agent.model, else the first of chat.agent.models, else nil (the
--- agent's own default).
-function M.current_model(agent)
-  local picked = STATE().model
-  if picked then return picked end
-  if agent and agent.model then return agent.model end
-  local list = M.models(agent)
-  return list[1] and list[1].value or nil
-end
+local function is_chat_buf(b) return b ~= nil and (b == log_buf or b == input_buf) end
+M.is_chat_buf = is_chat_buf
 
 local function render()
   if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
   local st = STATE()
-  local lines, roles, name_end = M.render(st.entries, os.time(), agent_label())
+  local lines, roles, name_end, at = CORE.render(st.entries, os.time(), agent_label())
+  entry_at = at
   vim.bo[log_buf].modifiable = true
   vim.api.nvim_buf_set_lines(log_buf, 0, -1, false, lines)
   vim.bo[log_buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(log_buf, ns, 0, -1)
+  local function mark(row, col, opts) pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, row, col, opts) end
   for i = 1, #lines do
     local role = roles[i]
     if role then
-      -- A coloured bar down the left of each turn, in its speaker's colour.
-      pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
-        sign_text = "\u{258E}", sign_hl_group = BAR[role] or "AzureCliChatAgent", priority = 10,
-      })
+      mark(i - 1, 0, { sign_text = "\u{258E}", sign_hl_group = BAR[role] or "AzureCliChatAgent", priority = 10 })
       if role == "you_head" or role == "agent_head" then
         local cut = name_end[i] or #lines[i]
-        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
-          end_col = cut, hl_group = role == "you_head" and "AzureCliChatYou" or "AzureCliChatAgent", priority = 200,
-        })
-        -- Bold names, without touching the colour the group gives them.
-        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, { end_col = cut, hl_group = "AzureCliChatName", priority = 201 })
-        if cut < #lines[i] then
-          pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, cut, {
-            end_col = #lines[i], hl_group = "AzureCliChatMeta", priority = 200,
-          })
-        end
+        mark(i - 1, 0, { end_col = cut, hl_group = role == "you_head" and "AzureCliChatYou" or "AzureCliChatAgent", priority = 200 })
+        mark(i - 1, 0, { end_col = cut, hl_group = "AzureCliChatName", priority = 201 })
+        if cut < #lines[i] then mark(i - 1, cut, { end_col = #lines[i], hl_group = "AzureCliChatMeta", priority = 200 }) end
       elseif LINE_HL[role] then
-        pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, i - 1, 0, {
-          end_col = #lines[i], hl_group = LINE_HL[role], priority = 200,
-        })
+        mark(i - 1, 0, { end_col = #lines[i], hl_group = LINE_HL[role], priority = 200 })
+      end
+      if role == "agent" or role == "you" or role == "note" then
+        -- !101 / #3001: <CR> opens them.
+        local _, all = CORE.find_refs(lines[i])
+        for _, r in ipairs(all) do mark(i - 1, r.s - 1, { end_col = r.e, hl_group = "AzureCliChatRef", priority = 210 }) end
       end
     end
   end
-  -- Keep every chat window scrolled to the end.
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) and vim.api.nvim_get_current_win() ~= w.log then
       pcall(vim.api.nvim_win_set_cursor, w.log, { #lines, 0 })
@@ -265,13 +190,26 @@ local function render()
 end
 M.render_now = render
 
+-- Coalesces bursts of output into one redraw per 80ms.
+local render_pending = false
+local function render_soon()
+  if render_pending then return end
+  render_pending = true
+  vim.defer_fn(function()
+    render_pending = false
+    render()
+  end, 80)
+end
+
 function M.set_winbars()
   local st = STATE()
   local tags = {}
-  local model = M.current_model(config().agent)
+  local _, agent = M.current_agent()
+  local model = M.current_model(agent)
   if model then tags[#tags + 1] = "[" .. model .. "]" end
   if st.running then tags[#tags + 1] = "[working\u{2026}]" end
   if st.session_id then tags[#tags + 1] = "[session]" end
+  if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) then
@@ -281,7 +219,8 @@ function M.set_winbars()
       local KEYS = require("azure-cli.keys")
       local send = KEYS.resolve("chat", "send")
       if type(send) == "table" then send = send[1] end
-      pcall(UI.wo, w.input, "winbar", "%#Comment# " .. (send and (send .. " sends") or "") .. "  \u{00B7}  ? keys")
+      pcall(UI.wo, w.input, "winbar", "%#Comment# " .. (send and (send .. " sends") or "")
+        .. "  \u{00B7}  /prompt  \u{00B7}  !PR #item  \u{00B7}  ? keys")
     end
   end
 end
@@ -291,9 +230,8 @@ function M.main_win()
   local st = STATE()
   local tab = vim.api.nvim_get_current_tabpage()
   local w = st.main_win[tab]
-  -- Never the panel itself: a split briefly shows the buffer it was split
-  -- from, so a WinEnter on it can have recorded a window that became the
-  -- chat's a moment later.
+  -- A split briefly shows the buffer it was split from, so a WinEnter on it
+  -- can have recorded a window that became the chat's a moment later.
   if w and vim.api.nvim_win_is_valid(w) and not is_chat_buf(vim.api.nvim_win_get_buf(w)) then return w end
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
     if not is_chat_buf(vim.api.nvim_win_get_buf(win)) and vim.api.nvim_win_get_config(win).relative == "" then
@@ -303,10 +241,20 @@ function M.main_win()
   return vim.api.nvim_get_current_win()
 end
 
-local send, cancel, new_chat, show_help, pick_model  -- forward
+-- ---------------------------------------------------------------------------
+-- Buffers, keys and windows.
+
+local send, cancel, new_chat, show_help, pick_model, pick_agent, pick_prompt, pick_history, show_audit,
+  use_as_reply, open_ref, history_step  -- forward
+
+local function input_text()
+  if not (input_buf and vim.api.nvim_buf_is_valid(input_buf)) then return "" end
+  return vim.trim(table.concat(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), "\n"))
+end
 
 local function ensure_bufs()
   if log_buf and vim.api.nvim_buf_is_valid(log_buf) and input_buf and vim.api.nvim_buf_is_valid(input_buf) then return end
+  restore_once()
   local KEYS = require("azure-cli.keys")
   log_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[log_buf].buftype = "nofile"
@@ -318,13 +266,12 @@ local function ensure_bufs()
   vim.bo[input_buf].filetype = "markdown"
   pcall(vim.api.nvim_buf_set_name, input_buf, "azure-cli://chat-input")
   vim.b[log_buf].azure_cli_chat = true
+  vim.b[input_buf].azure_cli_chat = true
   require("azure-cli.ui").link_hl(HL)
   vim.api.nvim_set_hl(0, "AzureCliChatName", { default = true, bold = true })
-  -- The agent answers in markdown: render it (headings, **bold**, `code`,
-  -- lists) with Neovim's bundled markdown parser when there is one, falling
-  -- back to the regex syntax the filetype already gives.
+  -- The agent answers in markdown: render it with Neovim's bundled parser.
   pcall(vim.treesitter.start, log_buf, "markdown")
-  vim.b[input_buf].azure_cli_chat = true
+
   local function focus_input()
     local w = (STATE().wins[vim.api.nvim_get_current_tabpage()] or {}).input
     if w and vim.api.nvim_win_is_valid(w) then
@@ -339,15 +286,50 @@ local function ensure_bufs()
     KEYS.bind(b, "chat", "toggle", function() M.hide() end, { desc = "hide the chat" })
     KEYS.bind(b, "chat", "help", function() show_help() end, { desc = "chat keys" })
     KEYS.bind(b, "chat", "model", function() pick_model() end, { desc = "choose the model" })
+    KEYS.bind(b, "chat", "agent", function() pick_agent() end, { desc = "choose the agent" })
+    KEYS.bind(b, "chat", "prompts", function() pick_prompt() end, { desc = "run a saved prompt" })
+    KEYS.bind(b, "chat", "history", function() pick_history() end, { desc = "open an earlier conversation" })
+    KEYS.bind(b, "chat", "audit", function() show_audit() end, { desc = "what the agent changed (u undoes)" })
     KEYS.bind(b, "chat", "back", function()
       local w = M.main_win()
       if w and vim.api.nvim_win_is_valid(w) then vim.api.nvim_set_current_win(w) end
     end, { desc = "back to the screen next to the chat" })
   end
   KEYS.bind(log_buf, "chat", "focus_input", focus_input, { desc = "type a message" })
+  KEYS.bind(log_buf, "chat", "open_ref", function() open_ref() end, { desc = "open the PR/work item under the cursor" })
+  KEYS.bind(log_buf, "chat", "use_as_reply", function() use_as_reply() end, { desc = "draft this answer as a reply" })
   KEYS.bind(input_buf, "chat", "send", function() send() end, { desc = "send the message" })
   KEYS.bind(input_buf, "chat", "send_insert", function() vim.cmd("stopinsert") send() end,
     { desc = "send the message", mode = "i" })
+  KEYS.bind(input_buf, "chat", "prev_message", function() history_step(-1) end, { desc = "the previous message sent" })
+  KEYS.bind(input_buf, "chat", "next_message", function() history_step(1) end, { desc = "the next message sent" })
+  -- The same keys while typing, unless the completion menu is open.
+  for action, dir in pairs({ prev_message = -1, next_message = 1 }) do
+    local key = KEYS.resolve("chat", action)
+    for _, k in ipairs(type(key) == "table" and key or { key }) do
+      if k then
+        vim.keymap.set("i", k, function()
+          if vim.fn.pumvisible() == 1 then return vim.api.nvim_replace_termcodes(k, true, false, true) end
+          vim.schedule(function() history_step(dir) end)
+          return ""
+        end, { buffer = input_buf, expr = true, silent = true })
+      end
+    end
+  end
+  -- !<digits> / #<digits>: complete PRs and work items as they're typed.
+  vim.api.nvim_create_autocmd("TextChangedI", {
+    buffer = input_buf,
+    callback = function()
+      local col = vim.api.nvim_win_get_cursor(0)[2]
+      local before = vim.api.nvim_get_current_line():sub(1, col)
+      local sigil, digits = before:match("([!#])(%d*)$")
+      if not sigil then return end
+      local prev = before:sub(-#digits - 2, -#digits - 2)
+      if prev ~= "" and prev:match("[%w_]") then return end
+      local items = require("azure-cli.chat.refs").complete(sigil, digits)
+      if #items > 0 then vim.fn.complete(col - #digits, items) end
+    end,
+  })
   render()
 end
 
@@ -367,7 +349,6 @@ local function panel_open_in(tab)
   return w and w.log and vim.api.nvim_win_is_valid(w.log)
 end
 
--- Opens the panel in the current tab (no-op when it's there already).
 local function open_here(focus)
   local st = STATE()
   local tab = vim.api.nvim_get_current_tabpage()
@@ -406,16 +387,14 @@ local function open_here(focus)
     UI.wo(w, vertical and "winfixwidth" or "winfixheight", true)
   end
   -- The speaker bars live in the sign column; markdown's ** and ` markers
-  -- are hidden (except on the cursor line, so the text can still be read
-  -- and yanked as written).
+  -- are hidden except on the cursor line.
   UI.wo(log, "signcolumn", "yes:1")
   UI.wo(log, "conceallevel", 2)
   UI.wo(log, "concealcursor", "")
   UI.wo(input, "winfixheight", true)
   st.wins[tab] = { log = log, input = input }
   -- The splits above fired WinEnter while still showing the screen's
-  -- buffer, so the "last window" tracking recorded the new panel windows:
-  -- what the chat describes is the window gq was pressed in.
+  -- buffer: what the chat describes is the window gq was pressed in.
   if not is_chat_buf(vim.api.nvim_win_get_buf(prev)) then st.main_win[tab] = prev end
   render()
   if focus then
@@ -455,8 +434,7 @@ function M.hide()
 end
 
 -- gq: from a screen, opens the panel - or, when it's already showing,
--- jumps into its input box - ready to type; from inside the panel, hides
--- it. So gq always takes you to the chat, and gq again puts it away.
+-- jumps into its input box - ready to type; from inside the panel, hides it.
 function M.toggle()
   local st = STATE()
   if st.visible and panel_open_in(vim.api.nvim_get_current_tabpage())
@@ -466,8 +444,21 @@ function M.toggle()
   M.show(true)
 end
 
--- Follow the user into every azure-vicli tab while visible, and remember
--- the last non-chat window per tab (what "current view" describes).
+-- gq in visual mode: remember the selected lines for the next message,
+-- then go to the chat.
+function M.capture_selection()
+  local buf = vim.api.nvim_get_current_buf()
+  local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+  if a > b then a, b = b, a end
+  STATE().selection = {
+    win = vim.api.nvim_get_current_win(), buf = buf, from = a, to = b,
+    text = table.concat(vim.api.nvim_buf_get_lines(buf, a - 1, b, false), "\n"),
+  }
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  M.show(true)
+  M.set_winbars()
+end
+
 local group = vim.api.nvim_create_augroup("AzureCliChat", { clear = true })
 vim.api.nvim_create_autocmd("WinEnter", {
   group = group,
@@ -499,9 +490,7 @@ vim.api.nvim_create_autocmd("WinClosed", {
           for _, win in ipairs({ w.log, w.input }) do
             if win ~= closed and win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
           end
-          -- Closed by hand (:q, <C-w>c) while its tab lives on: that's
-          -- hiding it, or it would come straight back on the next
-          -- BufWinEnter. A whole tab closing (leaving the reviewer) isn't.
+          -- Closed by hand while its tab lives on: that's hiding it.
           if vim.api.nvim_tabpage_is_valid(tab) then STATE().visible = false end
         end)
         STATE().wins[tab] = nil
@@ -513,18 +502,35 @@ vim.api.nvim_create_autocmd("WinClosed", {
 -- ---------------------------------------------------------------------------
 -- Talking to the agent.
 
+-- A float with `lines` next to a yes/no question (the diff a push would
+-- send, the text a comment would post), closed once answered.
+local function confirm(question, cb, details)
+  local win
+  if details and #details > 0 then
+    win = require("azure-cli.ui").open_float(details, { big = true, title = "Details", focus = false })
+    local buf = win and vim.api.nvim_win_get_buf(win)
+    if buf and (details[1] or ""):match("^diff ") then vim.bo[buf].filetype = "diff" end
+  end
+  notify(question .. " (answer in the prompt)")
+  require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, function(yes)
+    if win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+    cb(yes)
+  end)
+end
+M.confirm = confirm
+
 local function tool_env(entry)
   return {
     main_win = function() return entry.view_win and vim.api.nvim_win_is_valid(entry.view_win) and entry.view_win or M.main_win() end,
+    -- What the user was looking at when they sent the message (selection
+    -- included) - current_view answers with it.
+    view = function() return entry.snap end,
     log = function(line)
       entry.tools = entry.tools or {}
       table.insert(entry.tools, line)
-      render()
+      render_soon()
     end,
-    confirm = function(question, cb)
-      notify(question .. " (answer in the prompt)")
-      require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, cb)
-    end,
+    confirm = confirm,
   }
 end
 
@@ -551,11 +557,8 @@ end
 local function agent_cwd(snap)
   local pr = snap and snap.pr
   if type(pr) == "table" then
-    local rec
-    for _, p in ipairs((require("azure-cli.state").PR_LIST_CACHE or {}).prs or {}) do
-      if tostring(p.id) == tostring(pr.id) then rec = p break end
-    end
-    local clone = require("azure-cli.chat.tools").clone_path(rec or pr)
+    local TOOLS = require("azure-cli.chat.tools")
+    local clone = TOOLS.clone_path(TOOLS.pr_record(pr.id) or pr)
     if clone ~= "" and vim.fn.isdirectory(clone) == 1 then return clone end
   end
   local dir = vim.fn.stdpath("cache") .. "/azure-cli"
@@ -565,9 +568,15 @@ end
 
 local function where_label(snap)
   local bits = {}
-  if type(snap.pr) == "table" then bits[#bits + 1] = "PR #" .. tostring(snap.pr.id) end
+  if type(snap.pr) == "table" then bits[#bits + 1] = "PR !" .. tostring(snap.pr.id) end
   if type(snap.work_item) == "table" then bits[#bits + 1] = "#" .. tostring(snap.work_item.id) end
-  if snap.file then bits[#bits + 1] = vim.fn.fnamemodify(snap.file, ":t") .. (snap.line and (":" .. snap.line) or "") end
+  if snap.file then
+    local range = snap.line and (":" .. snap.line) or ""
+    if snap.selection_lines then range = ":" .. snap.selection_lines end
+    bits[#bits + 1] = vim.fn.fnamemodify(snap.file, ":t") .. range
+  elseif snap.selection then
+    bits[#bits + 1] = "a selection"
+  end
   if type(snap.thread) == "table" then bits[#bits + 1] = "thread " .. tostring(snap.thread.id) end
   if #bits > 0 then return "on " .. table.concat(bits, " \u{00B7} ") end
   if snap.screen and snap.screen ~= "other" and snap.screen ~= "unknown" then return "on the " .. snap.screen end
@@ -588,18 +597,25 @@ local function bridge_handler(entry_ref)
   end
 end
 
-send = function(text)
+local function panel_visible()
+  for _, w in pairs(STATE().wins) do if w.log and vim.api.nvim_win_is_valid(w.log) then return true end end
+  return false
+end
+
+-- Sends `text` (default: the input box). opts.view_win overrides which
+-- window "current view" describes; opts.quiet doesn't clear the input box.
+send = function(text, opts)
+  opts = opts or {}
   local st = STATE()
-  if not text then
-    if not (input_buf and vim.api.nvim_buf_is_valid(input_buf)) then return end
-    text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), "\n"))
-  end
+  restore_once()
+  local from_input = text == nil
+  if from_input then text = input_text() end
   if text == "" then return end
   if st.running then
     notify("The agent is still answering - wait, or stop it (<C-c>).", vim.log.levels.WARN)
     return
   end
-  local agent = config().agent
+  local agent_name, agent = M.current_agent()
   if not agent then
     table.insert(st.entries, { role = "note", text = "No chat agent is configured - add setup({ chat = { agent = { ... } } }); docs/chat.md has examples." })
     render()
@@ -611,34 +627,49 @@ send = function(text)
     notify(token or "could not start the chat bridge", vim.log.levels.ERROR)
     return
   end
-  if input_buf and vim.api.nvim_buf_is_valid(input_buf) then
+  if from_input and input_buf and vim.api.nvim_buf_is_valid(input_buf) then
     vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "" })
   end
+  table.insert(st.sent, text)
+  while #st.sent > 100 do table.remove(st.sent, 1) end
+  st.sent_pos = nil
+
+  local shown_text = text
+  local expanded = CORE.expand_prompt(text, CORE.prompts(config().prompts))
 
   local VIEW = require("azure-cli.chat.view")
-  local view_win = M.main_win()
-  local snap = VIEW.snapshot(view_win)
+  local view_win = opts.view_win or M.main_win()
+  local sel = st.selection
+  if sel and not (vim.api.nvim_win_is_valid(sel.win) and sel.win == view_win) then sel = nil end
+  st.selection = nil
+  local snap = VIEW.snapshot(view_win, sel)
+  local view_text = VIEW.text(snap)
   local history = {}
   for _, e in ipairs(st.entries) do if e.role ~= "note" then history[#history + 1] = e end end
   local first = #history == 0
-  local resume = not first and M.can_resume(agent, st.session_id)
-  table.insert(st.entries, { role = "you", text = text, where = where_label(snap) })
-  local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win,
-    mode = (not first and not resume) and "replay" or nil }
+  local resume = not first and CORE.can_resume(agent, st.session_id)
+  table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
+  local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
+    label = agent.label or agent_name, mode = (not first and not resume) and "replay" or nil }
   table.insert(st.entries, entry)
   BRIDGE.handler = bridge_handler(function() return entry end)
   render()
 
-  local message = M.compose(text, VIEW.text(snap), { first = first, history = (not first and not resume) and history or nil })
+  local message = CORE.compose(expanded, view_text, {
+    first = first, history = (not first and not resume) and history or nil,
+    refs = require("azure-cli.chat.refs").describe(expanded),
+  })
   local vars = {
-    message = message, text = text, session_id = st.session_id or "", model = M.current_model(agent) or "",
-    mcp_config = write_mcp_config(addr, token), view = VIEW.text(snap),
+    message = message, text = expanded, session_id = st.session_id or "", model = M.current_model(agent) or "",
+    mcp_config = write_mcp_config(addr, token), view = view_text,
+    fix_root = require("azure-cli.chat.tools_fix").root(),
   }
+  vim.fn.mkdir(vars.fix_root, "p")
   local spec = resume and agent.followup or agent
   local cmd
   if type(spec.cmd) == "table" then
     cmd = {}
-    for i, a in ipairs(spec.cmd) do cmd[i] = expand(a, vars) end
+    for i, a in ipairs(spec.cmd) do cmd[i] = CORE.expand(a, vars) end
     local exe = vim.fn.exepath(cmd[1])
     if exe == "" then
       entry.status, entry.text = "failed", "`" .. cmd[1] .. "` isn't on PATH."
@@ -646,25 +677,40 @@ send = function(text)
     end
     cmd[1] = exe
   else
-    cmd = expand(spec.cmd, vars, vim.fn.shellescape)
+    cmd = CORE.expand(spec.cmd, vars, vim.fn.shellescape)
   end
   local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
-  for k, v in pairs(agent.env or {}) do env[k] = expand(tostring(v), vars) end
-  for k, v in pairs(spec.env or {}) do env[k] = expand(tostring(v), vars) end
-  local out, err = {}, {}
+  for k, v in pairs(agent.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
+  for k, v in pairs(spec.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
+  local reader = CORE.stream_new(agent.strip)
+  local seen_tools = 0
+  local err = {}
+  local function absorb()
+    entry.text = CORE.stream_text(reader)
+    for i = seen_tools + 1, #reader.tools do table.insert(entry.tools, "\u{00B7} " .. reader.tools[i]) end
+    seen_tools = #reader.tools
+  end
   local ok, job = pcall(vim.fn.jobstart, cmd, {
-    cwd = agent_cwd(snap), env = env, stdout_buffered = true, stderr_buffered = true,
-    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    cwd = agent_cwd(snap), env = env, stderr_buffered = true,
+    on_stdout = function(_, d)
+      if d and CORE.stream_feed(reader, d, vim.json.decode) then
+        vim.schedule(function() absorb(); render_soon() end)
+      end
+    end,
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
       vim.schedule(function()
         if st.running and st.running.timer then pcall(vim.fn.timer_stop, st.running.timer) end
         local cancelled = st.running and st.running.cancelled
         st.running = nil
-        local answer, session = M.parse_answer(table.concat(out, "\n"), table.concat(err, "\n"), vim.json.decode,
-          agent.session_pattern)
+        CORE.stream_finish(reader, vim.json.decode)
+        absorb()
+        local session = reader.session
+        if not session and agent.session_pattern then
+          session = CORE.find_session(agent.session_pattern, table.concat(reader.plain, "\n"), table.concat(err, "\n"))
+        end
         if session then st.session_id = session end
-        entry.text = answer
+        if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
         if cancelled then
           entry.status = "stopped"
         elseif code ~= 0 then
@@ -679,9 +725,9 @@ send = function(text)
           if entry.text == "" then entry.text = "_(no answer)_" end
         end
         render()
-        local visible = false
-        for _, w in pairs(st.wins) do if w.log and vim.api.nvim_win_is_valid(w.log) then visible = true end end
-        if not visible then notify(agent_label() .. " answered in the chat (gq shows it).") end
+        save()
+        if not panel_visible() then notify(agent_label() .. " answered in the chat (gq shows it).") end
+        if opts.on_done then pcall(opts.on_done, entry) end
       end)
     end,
   })
@@ -689,10 +735,9 @@ send = function(text)
     entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
     return render()
   end
-  pcall(vim.fn.chansend, job, expand(spec.stdin or "{message}", vars))
+  pcall(vim.fn.chansend, job, CORE.expand(spec.stdin or "{message}", vars))
   pcall(vim.fn.chanclose, job, "stdin")
   st.running = { job = job, entry = entry }
-  -- Tick the "working… Ns" heading while it runs.
   st.running.timer = vim.fn.timer_start(1000, function()
     if st.running then render() end
   end, { ["repeat"] = -1 })
@@ -700,7 +745,6 @@ send = function(text)
   vim.defer_fn(function()
     if st.running and st.running.job == job then
       st.running.cancelled = true
-      entry.tools = entry.tools or {}
       table.insert(entry.tools, "\u{2717} timed out after " .. timeout .. "s")
       pcall(vim.fn.jobstop, job)
     end
@@ -715,12 +759,71 @@ cancel = function()
   pcall(vim.fn.jobstop, st.running.job)
 end
 
-new_chat = function()
+-- A fresh conversation (the current one stays in the history - gh).
+new_chat = function(quiet)
   local st = STATE()
   if st.running then cancel() end
-  st.entries, st.session_id = {}, nil
+  save()
+  st.entries, st.session_id, st.conv_id, st.created = {}, nil, nil, nil
+  require("azure-cli.chat.store").forget_current()
   render()
-  notify("New conversation.")
+  if not quiet then notify("New conversation.") end
+end
+M.new_chat = new_chat
+
+-- <Up>/<Down> in the input box: step through what was sent.
+history_step = function(dir)
+  local st = STATE()
+  if #st.sent == 0 then return end
+  local pos = (st.sent_pos or (#st.sent + 1)) + dir
+  pos = math.max(1, math.min(#st.sent + 1, pos))
+  st.sent_pos = pos
+  local text = st.sent[pos] or ""
+  vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, vim.split(text, "\n", { plain = true }))
+  local w = (st.wins[vim.api.nvim_get_current_tabpage()] or {}).input
+  if w and vim.api.nvim_win_is_valid(w) then
+    pcall(vim.api.nvim_win_set_cursor, w, { vim.api.nvim_buf_line_count(input_buf), #vim.api.nvim_buf_get_lines(input_buf, -2, -1, false)[1] })
+  end
+end
+
+-- <CR> on !101 / #3001 in the conversation.
+open_ref = function()
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  local ref = require("azure-cli.chat.refs").at(line, col)
+  if not ref then return notify("Put the cursor on a !PR or #work-item reference.") end
+  require("azure-cli.chat.refs").open(ref)
+end
+
+-- gr on an answer: open the comment editor prefilled with it, as a reply
+-- to the thread its question was about (or a new PR comment), queued as a
+-- batch-review draft on submit.
+use_as_reply = function()
+  local st = STATE()
+  local idx = entry_at[vim.api.nvim_win_get_cursor(0)[1]]
+  local e = idx and st.entries[idx]
+  if not (e and e.role == "agent" and (e.text or "") ~= "") then
+    return notify("Put the cursor on one of the agent's answers.")
+  end
+  local view
+  for i = idx - 1, 1, -1 do
+    if st.entries[i].role == "you" then view = st.entries[i].view break end
+  end
+  local pr = view and view.pr
+  if not pr then return notify("That answer wasn't about a pull request - nothing to reply on.", vim.log.levels.WARN) end
+  local thread = view.thread
+  local TOOLS = require("azure-cli.chat.tools")
+  local EDITOR = require("azure-cli.editor")
+  EDITOR.open({
+    title = thread and ("Reply \u{00B7} thread " .. tostring(thread.id)) or ("PR comment \u{00B7} !" .. tostring(pr.id)),
+    initial = e.text, anchor = "center",
+    on_submit = function(text)
+      local item = thread and { kind = "reply", thread_id = thread.id, text = text }
+        or { kind = "thread", args = { "--pr-comment", text }, bucket = "general", text = text, label = "PR comment" }
+      TOOLS.queue_draft(pr.id, item)
+      notify("Queued as a draft on PR !" .. pr.id .. " (gQ in the reviewer lists it, gS sends it).")
+    end,
+  })
 end
 
 show_help = function()
@@ -729,28 +832,33 @@ show_help = function()
     "Talk",
     { "send", "send the message (in the input box)" }, { "send_insert", "send while typing" },
     { "focus_input", "type a message (in the conversation)" },
-    { "cancel", "stop the agent" }, { "new_chat", "start a new conversation" },
-    { "model", "choose the model (from chat.agent.models)" },
+    { "prev_message", "the previous message you sent" }, { "next_message", "the next one" },
+    { "prompts", "run a saved prompt (/name in the input box does the same)" },
+    { "cancel", "stop the agent" },
+    "Answers",
+    { "open_ref", "open the !PR / #work item under the cursor" },
+    { "use_as_reply", "draft the answer under the cursor as a reply (queued for gS)" },
+    { "audit", "what the agent changed - u undoes one" },
+    "Conversation",
+    { "new_chat", "start a new conversation" }, { "history", "open an earlier conversation" },
+    { "agent", "choose the agent" }, { "model", "choose the model" },
     "Panel",
     { "back", "back to the screen next to the chat" }, { "hide", "hide the chat (gq shows it again)" },
     { "toggle", "hide the chat - the same key on a screen takes you back to it" },
     { "help", "this help" },
   }, { notes = {
-    "The agent sees what you're looking at - the PR, work item, file, line or comment thread under the cursor - "
-      .. "and can link, create branches and draft replies directly; votes and state changes ask you first.",
+    "The agent sees what you're looking at - the PR, work item, file, line, comment thread or selection "
+      .. "(gq in visual mode) under the cursor - and the !PRs and #work items you name. Type ! or # for completion.",
   } })
   require("azure-cli.ui").open_float(lines, { min_width = 60 })
 end
 
--- gm: pick the model for the next messages, from chat.agent.models. It
--- reaches the agent through {model} in its command, so it applies to the
--- next message, resumed sessions included.
 pick_model = function()
-  local agent = config().agent
-  local list = M.models(agent)
+  local name, agent = M.current_agent()
+  local list = CORE.models(agent)
   if #list == 0 then
-    return notify("No models to choose from - list them in setup({ chat = { agent = { models = { ... } } } }) "
-      .. "and put {model} in its cmd.", vim.log.levels.WARN)
+    return notify("No models to choose from - list them in the agent's `models` and put {model} in its cmd.",
+      vim.log.levels.WARN)
   end
   local uses = false
   for _, spec in ipairs({ agent, agent.followup or {} }) do
@@ -759,20 +867,160 @@ pick_model = function()
     end
   end
   local cur = M.current_model(agent)
-  require("azure-cli.prompt").select({ prompt = "Model for the chat", items = list,
+  require("azure-cli.prompt").select({ prompt = "Model for " .. (agent.label or name), items = list,
     current = function(m) return m.value == cur end }, function(choice)
     if not choice then return end
-    STATE().model = choice.value
+    STATE().models[name] = choice.value
     M.set_winbars()
     notify("Chat model: " .. choice.label .. (uses and "" or " - but the agent's cmd has no {model}, so it can't pass it on."))
   end)
 end
 
--- Binds the show/hide key on a screen's buffer (every azure-vicli screen
--- calls this for its own surface).
+-- ga: switch agents. The other agent can't resume this one's session, so
+-- the next message replays the conversation to it.
+pick_agent = function()
+  local agents = M.agents()
+  local names = vim.tbl_keys(agents)
+  table.sort(names)
+  if #names < 2 then
+    return notify("Only one agent is configured - add more under setup({ chat = { agents = { ... } } }).")
+  end
+  local cur = M.current_agent()
+  require("azure-cli.prompt").select({ prompt = "Agent for the chat", items = names,
+    format = function(n) return agents[n].label or n end, current = cur }, function(choice)
+    if not choice or choice == cur then return end
+    local st = STATE()
+    st.agent_name = choice
+    st.session_id = nil
+    M.set_winbars()
+    notify("Chat agent: " .. (agents[choice].label or choice) .. " - it gets the conversation so far with your next message.")
+  end)
+end
+
+-- gp: run a saved prompt, about whatever is on screen.
+pick_prompt = function()
+  local prompts = CORE.prompts(config().prompts)
+  local names = vim.tbl_keys(prompts)
+  table.sort(names)
+  if #names == 0 then return notify("No saved prompts.") end
+  require("azure-cli.prompt").select({ prompt = "Saved prompt", items = names,
+    format = function(n)
+      local t = prompts[n]:gsub("%s+", " ")
+      return "/" .. n .. "  " .. (#t > 70 and (t:sub(1, 67) .. "...") or t)
+    end }, function(choice)
+    if choice then send("/" .. choice) end
+  end)
+end
+
+-- gh: back to an earlier conversation.
+pick_history = function()
+  local STORE = require("azure-cli.chat.store")
+  save()
+  local list = STORE.list()
+  if #list == 0 then return notify("No saved conversations yet.") end
+  local st = STATE()
+  require("azure-cli.prompt").select({ prompt = "Conversation", items = list,
+    format = function(c)
+      return os.date("%m-%d %H:%M", c.updated) .. "  " .. c.title .. "  (" .. c.turns .. " turns"
+        .. (c.agent and (", " .. c.agent) or "") .. ")"
+    end,
+    current = function(c) return c.id == st.conv_id end }, function(choice)
+    if not choice or choice.id == st.conv_id then return end
+    if st.running then cancel() end
+    local rec = STORE.load(choice.id)
+    if not rec then return notify("That conversation couldn't be read.", vim.log.levels.WARN) end
+    load_conversation(rec)
+    pcall(vim.fn.writefile, { rec.id }, STORE.root() .. "/current")
+    render()
+  end)
+end
+
+-- gL: the audit log - every change the agent made, newest first; u on one
+-- undoes it (when it can be).
+show_audit = function()
+  local STORE = require("azure-cli.chat.store")
+  local items = STORE.audit()
+  if #items == 0 then return notify("The agent hasn't changed anything yet.") end
+  local order = {}
+  for i = #items, 1, -1 do order[#order + 1] = i end
+  local function lines()
+    local out = {}
+    for _, i in ipairs(order) do
+      local it = items[i]
+      out[#out + 1] = os.date("%m-%d %H:%M", it.at or 0) .. "  " .. it.tool .. "  " .. (it.summary or "")
+        .. (it.undone and "  [undone]" or (it.undo and "" or "  [can't undo]"))
+    end
+    return out
+  end
+  local win, buf = require("azure-cli.ui").open_float(lines(), { big = true, title = "What the agent changed",
+    footer = "u undo" })
+  if not win then return end
+  vim.keymap.set("n", "u", function()
+    local i = order[vim.api.nvim_win_get_cursor(win)[1]]
+    local it = i and items[i]
+    if not it then return end
+    if it.undone then return notify("Already undone.") end
+    require("azure-cli.chat.tools").undo(it, function(ok, msg)
+      notify(msg or (ok and "Undone." or "Couldn't undo it."), ok and vim.log.levels.INFO or vim.log.levels.WARN)
+      if ok then
+        STORE.audit_mark_undone(i)
+        it.undone = os.time()
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.bo[buf].modifiable = true
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines())
+          vim.bo[buf].modifiable = false
+        end
+      end
+    end)
+  end, { buffer = buf, silent = true, nowait = true })
+end
+
+-- Binds the chat key on a screen's buffer (every azure-vicli screen calls
+-- this for its own surface): normal mode goes to the chat, visual mode
+-- sends the selection along with the next message.
 function M.bind_toggle(buf, surface)
-  require("azure-cli.keys").bind(buf, surface, "chat", function() M.toggle() end,
-    { desc = "go to the chat panel (opening it if needed)" })
+  local KEYS = require("azure-cli.keys")
+  KEYS.bind(buf, surface, "chat", function() M.toggle() end, { desc = "go to the chat panel (opening it if needed)" })
+  KEYS.bind(buf, surface, "chat", function() M.capture_selection() end,
+    { desc = "ask the chat about the selected lines", mode = "x" })
+end
+
+-- ---------------------------------------------------------------------------
+-- Proactive.
+
+-- A note in the conversation (no agent run).
+function M.note(text)
+  local st = STATE()
+  restore_once()
+  table.insert(st.entries, { role = "note", text = text })
+  render()
+  save()
+end
+
+-- The dashboard saw new comments on one of my PRs: suggest a triage in the
+-- chat (chat.suggest_on_new_comments, on by default when an agent is set).
+function M.on_new_comments(pr, count)
+  if config().suggest_on_new_comments == false or not M.current_agent() then return end
+  M.note("!" .. tostring(pr.id) .. " \"" .. tostring(pr.title or "") .. "\" got " .. tostring(count)
+    .. " new comment" .. (count == 1 and "" or "s") .. " - open it and send /triage, or ask here.")
+end
+
+-- The PR dashboard loaded: once a day (chat.daily_summary), run /standup
+-- in a fresh conversation and say it's ready.
+function M.on_dashboard_loaded(dash_win)
+  if not config().daily_summary or not M.current_agent() then return end
+  local STORE = require("azure-cli.chat.store")
+  local stamp = STORE.root() .. "/daily"
+  local today = os.date("%Y-%m-%d")
+  local ok, lines = pcall(vim.fn.readfile, stamp)
+  if ok and lines[1] == today then return end
+  if STATE().running then return end
+  vim.fn.mkdir(STORE.root(), "p")
+  pcall(vim.fn.writefile, { today }, stamp)
+  new_chat(true)
+  send("/standup", { view_win = dash_win, on_done = function()
+    notify("Your daily summary is ready in the chat (gq).")
+  end })
 end
 
 return M

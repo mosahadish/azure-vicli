@@ -36,8 +36,11 @@ local function reviewer_pr(win)
   return nil
 end
 
--- The snapshot for `win` (default: the current window).
-function M.snapshot(win)
+-- The snapshot for `win` (default: the current window). `sel` ({ buf,
+-- from, to, text }, from gq in visual mode) is handed to the describer,
+-- which can say where it is (the reviewer maps it to file lines); the text
+-- is added when the describer didn't.
+function M.snapshot(win, sel)
   win = win or vim.api.nvim_get_current_win()
   if not (win and vim.api.nvim_win_is_valid(win)) then return { screen = "unknown" } end
   local buf = vim.api.nvim_win_get_buf(win)
@@ -51,9 +54,10 @@ function M.snapshot(win)
       fn = views()[key]
     end
   end
-  if not fn then return { screen = "other", filetype = ft } end
-  local ok, snap = pcall(fn, win)
-  if not ok or type(snap) ~= "table" then return { screen = key, error = ok and "nothing to describe" or tostring(snap) } end
+  if not fn then return { screen = "other", filetype = ft, selection = sel and sel.text or nil } end
+  local ok, snap = pcall(fn, win, sel)
+  if not ok or type(snap) ~= "table" then snap = { screen = key, error = ok and "nothing to describe" or tostring(snap) } end
+  if sel and snap.selection == nil then snap.selection = sel.text end
   return snap
 end
 
@@ -89,7 +93,12 @@ function M.text(snap)
     out[#out + 1] = "Comment thread #" .. tostring(t.id) .. " [" .. tostring(t.status or "?") .. "]"
       .. (first and (" started by " .. tostring(first.author) .. ": " .. tostring(first.content):gsub("%s+", " "):sub(1, 200)) or "")
   end
-  if snap.selection then out[#out + 1] = "Selected text:\n" .. snap.selection end
+  if snap.selection then
+    out[#out + 1] = "Selected" .. (snap.selection_lines and (" (lines " .. snap.selection_lines .. ")") or "") .. ":\n"
+      .. snap.selection
+  elseif snap.hunk then
+    out[#out + 1] = "The change around the cursor:\n" .. snap.hunk
+  end
   if snap.note then out[#out + 1] = snap.note end
   return table.concat(out, "\n")
 end

@@ -88,7 +88,9 @@ local DEFAULT_KEYS = {
   -- The chat panel (both its conversation and its input box).
   chat = {
     send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
-    cancel = "<C-c>", model = "gm", back = "<BS>", hide = "q", toggle = "gq", help = "?",
+    cancel = "<C-c>", model = "gm", agent = "ga", prompts = "gp", history = "gh", audit = "gL",
+    use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
+    back = "<BS>", hide = "q", toggle = "gq", help = "?",
   },
 }
 
@@ -174,10 +176,14 @@ local DEFAULTS = {
 
 -- setup({chat=...}): the chat panel (lua/azure-cli/chat/) - where it sits,
 -- and the agent it talks to (none by default; docs/chat.md has examples).
-local CHAT_FIELDS = { position = "string", size = "number", input_height = "number", agent = "table" }
+local CHAT_FIELDS = {
+  position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
+  default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
+  suggest_on_new_comments = "boolean",
+}
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", followup = "table", session_pattern = "string",
-  timeout_seconds = "number", model = "string", models = "table",
+  timeout_seconds = "number", model = "string", models = "table", strip = "table",
 }
 local function check_chat_cmd(v, where)
   if type(v) == "table" then
@@ -202,37 +208,59 @@ local function validate_chat(chat)
   end
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
   if out.input_height < 1 then error("azure-cli.setup: chat.input_height must be at least 1") end
-  local a = chat.agent
-  if a ~= nil then
+  local function check_agent(a, where)
     for k, v in pairs(a) do
       if k == "cmd" then
-        check_chat_cmd(v, "chat.agent")
+        check_chat_cmd(v, where)
       elseif CHAT_AGENT_FIELDS[k] then
         if type(v) ~= CHAT_AGENT_FIELDS[k] then
-          error("azure-cli.setup: chat.agent." .. k .. " must be a " .. CHAT_AGENT_FIELDS[k])
+          error("azure-cli.setup: " .. where .. "." .. k .. " must be a " .. CHAT_AGENT_FIELDS[k])
         end
       else
-        error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in chat.agent")
+        error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. where)
       end
     end
-    if a.cmd == nil then error("azure-cli.setup: chat.agent needs a `cmd`") end
+    if a.cmd == nil then error("azure-cli.setup: " .. where .. " needs a `cmd`") end
     if a.followup ~= nil then
       for k, v in pairs(a.followup) do
-        if k == "cmd" then check_chat_cmd(v, "chat.agent.followup")
+        if k == "cmd" then check_chat_cmd(v, where .. ".followup")
         elseif k == "stdin" or k == "env" then
           if type(v) ~= (k == "stdin" and "string" or "table") then
-            error("azure-cli.setup: chat.agent.followup." .. k .. " must be a " .. (k == "stdin" and "string" or "table"))
+            error("azure-cli.setup: " .. where .. ".followup." .. k .. " must be a " .. (k == "stdin" and "string" or "table"))
           end
         else
-          error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in chat.agent.followup")
+          error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. where .. ".followup")
         end
       end
-      if a.followup.cmd == nil then error("azure-cli.setup: chat.agent.followup needs a `cmd`") end
+      if a.followup.cmd == nil then error("azure-cli.setup: " .. where .. ".followup needs a `cmd`") end
     end
     for i, m in ipairs(a.models or {}) do
       if type(m) ~= "string" and not (type(m) == "table" and type(m.value) == "string") then
-        error("azure-cli.setup: chat.agent.models[" .. i .. "] must be a string or { label = ..., value = ... }")
+        error("azure-cli.setup: " .. where .. ".models[" .. i .. "] must be a string or { label = ..., value = ... }")
       end
+    end
+    for i, pat in ipairs(a.strip or {}) do
+      if type(pat) ~= "string" then error("azure-cli.setup: " .. where .. ".strip[" .. i .. "] must be a Lua pattern string") end
+    end
+  end
+  if chat.agent ~= nil then check_agent(chat.agent, "chat.agent") end
+  for name, a in pairs(chat.agents or {}) do
+    if type(name) ~= "string" or type(a) ~= "table" then
+      error("azure-cli.setup: chat.agents must map a name to an agent table")
+    end
+    check_agent(a, "chat.agents." .. name)
+  end
+  if chat.default_agent and not (chat.agents and chat.agents[chat.default_agent]) then
+    error("azure-cli.setup: chat.default_agent names no agent in chat.agents")
+  end
+  for name, text in pairs(chat.prompts or {}) do
+    if type(name) ~= "string" or not name:match("^[%w_%-]+$") or (type(text) ~= "string" and text ~= false) then
+      error("azure-cli.setup: chat.prompts maps a name (letters, digits, - and _) to a prompt string, or false")
+    end
+  end
+  for name, perm in pairs(chat.permissions or {}) do
+    if perm ~= "allow" and perm ~= "ask" and perm ~= "deny" then
+      error("azure-cli.setup: chat.permissions." .. tostring(name) .. " must be \"allow\", \"ask\" or \"deny\"")
     end
   end
   return out

@@ -1621,6 +1621,7 @@ PR_ACTION_FLAGS = (
     "--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
+    "--build-log", "--add-reviewer", "--set-description", "--create-pr",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2075,6 +2076,120 @@ class PrActions:
         print("Vote set to {0}.".format(vote))
         return 0
 
+    # -- the chat panel's PR tools (lua/azure-cli/chat/tools_pr.lua) --------
+
+    def build_log(self, build_id, tail=120):
+        """Why a build failed: every failed timeline record (job/task) with
+        its error issues, then the last `tail` lines of each failed task's
+        log (Timeline - Get, then Logs - Get Build Log). Prints JSON
+        {"build", "failed": [{"name", "type", "issues", "log"}]}.
+        """
+        if not _is_uint(build_id):
+            print("Invalid build id.", file=sys.stderr)
+            return 1
+        base = "{0}/{1}/_apis/build/builds/{2}".format(self.org, self.project, build_id)
+        try:
+            timeline = self.fetch(base + "/timeline", pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST timeline failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        failed = []
+        for rec in (timeline or {}).get("records") or []:
+            if rec.get("result") != "failed":
+                continue
+            entry = {
+                "name": rec.get("name"), "type": rec.get("type"),
+                "issues": [i.get("message") for i in (rec.get("issues") or []) if i.get("type") == "error"],
+            }
+            log_id = (rec.get("log") or {}).get("id")
+            if rec.get("type") == "Task" and log_id is not None and len(failed) < 6:
+                try:
+                    body = self.fetch("{0}/logs/{1}".format(base, log_id), pat=self.pat, api_version="6.0", raw=True)
+                    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+                    try:
+                        decoded = json.loads(text)
+                        if isinstance(decoded, dict) and isinstance(decoded.get("value"), list):
+                            text = "\n".join(str(x) for x in decoded["value"])
+                    except ValueError:
+                        pass
+                    entry["log"] = "\n".join(text.splitlines()[-tail:])
+                except AdoHttpError as e:
+                    entry["log"] = "(could not read the log: HTTP {0})".format(e.status)
+            failed.append(entry)
+        print(json.dumps({"build": int(build_id), "failed": failed}, ensure_ascii=False))
+        return 0
+
+    def _identities_base(self):
+        """Identity search lives on vssps.dev.azure.com for Azure DevOps
+        Services, and on the collection itself on Azure DevOps Server."""
+        org = (self.org or "").rstrip("/")
+        m = re.match(r"^https://dev\.azure\.com/([^/]+)", org)
+        if m:
+            return "https://vssps.dev.azure.com/" + m.group(1)
+        return org
+
+    def add_reviewer(self, who, required="false"):
+        """Finds `who` (display name, account or email - Identities - Read
+        Identities, searchFilter=General) and adds them to the PR as a
+        reviewer (PUT .../reviewers/{id}, vote 0). Ambiguous or unknown
+        names are an error listing the matches."""
+        if _is_blank(who):
+            print("Who should review?", file=sys.stderr)
+            return 1
+        url = "{0}/_apis/identities?searchFilter=General&filterValue={1}&queryMembership=None".format(
+            self._identities_base(), urllib.parse.quote(who))
+        try:
+            found = self.fetch(url, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST identity search failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        people = [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
+        if len(people) != 1:
+            names = ", ".join(i.get("providerDisplayName") or "?" for i in people[:8])
+            print("{0} people match '{1}'{2}".format(len(people), who, (": " + names) if names else ""), file=sys.stderr)
+            return 1
+        person = people[0]
+        try:
+            self.fetch(self._pr_url("/reviewers/{0}".format(person["id"])), method="PUT",
+                       data={"vote": 0, "isRequired": _to_bool(required)}, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST add-reviewer failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        print(json.dumps({"added": person.get("providerDisplayName"), "id": person.get("id")}, ensure_ascii=False))
+        return 0
+
+    def set_description(self, text):
+        """Replaces the PR's description (PATCH .../pullRequests/{id})."""
+        try:
+            self.fetch(self._pr_url(), method="PATCH", data={"description": text or ""}, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST description update failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        print("Description updated.")
+        return 0
+
+    def create_pr(self, source, target, title, description="", work_items="", draft="false"):
+        """Opens a PR from `source` into `target` (POST .../pullrequests),
+        linking the comma-separated work item ids. Prints {"id", "url"}."""
+        if not source or not target or _is_blank(title):
+            print("create-pr needs <source> <target> <title>", file=sys.stderr)
+            return 1
+        ref = lambda b: b if b.startswith("refs/") else "refs/heads/" + b
+        data = {"sourceRefName": ref(source), "targetRefName": ref(target), "title": title,
+                "description": description or "", "isDraft": _to_bool(draft)}
+        ids = [w.strip() for w in (work_items or "").split(",") if w.strip().isdigit()]
+        if ids:
+            data["workItemRefs"] = [{"id": w} for w in ids]
+        try:
+            pr = self.fetch(self._url("pullrequests"), method="POST", data=data, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST create-pr failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        pid = (pr or {}).get("pullRequestId")
+        print(json.dumps({"id": pid, "url": build_pr_url(self.org, self.project, self.repo, pid) if pid else ""},
+                         ensure_ascii=False))
+        return 0
+
     def complete_pr(self, strategy, del_branch="true", transition="true"):
         if strategy not in _MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
@@ -2204,6 +2319,14 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.complete_pr(arg(0), arg(1, "true"), arg(2, "true"))
     if flag == "--auto-complete":
         return actions.set_auto_complete(arg(0), arg(1) or None, arg(2, "true"), arg(3, "true"))
+    if flag == "--build-log":
+        return actions.build_log(arg(0))
+    if flag == "--add-reviewer":
+        return actions.add_reviewer(arg(0), arg(1, "false"))
+    if flag == "--set-description":
+        return actions.set_description(arg(0))
+    if flag == "--create-pr":
+        return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
 
     print("Unknown PR action: {0}".format(flag), file=sys.stderr)  # unreachable via PR_ACTION_FLAGS
     return 1
@@ -3189,12 +3312,52 @@ class WorkItemActions:
             return self._wi_unlink_pr(a2, a3)
         if cmd == "create-branch":
             return self._wi_create_branch(a2, a3, a4, a5, a6, a7)
+        if cmd == "delete-branch":
+            return self._wi_delete_branch(a2, a3, a4, a5, a6)
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | "
               "set <id> <field> <value> | comment <id> <text> | "
               "link-pr <wiId> <orgUrl> <project> <repoName> <prId> | "
               "unlink-pr <wiId> <prId> | "
-              "create-branch <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch>", file=sys.stderr)
+              "create-branch <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch> | "
+              "delete-branch <orgUrl> <project> <repoName> <branch> [sha]", file=sys.stderr)
         return 1
+
+    def _wi_delete_branch(self, org_url, project, repo_name, branch, sha=""):
+        """Deletes `branch` (Refs - Update Refs with an all-zero newObjectId)
+        - the chat's undo of create-branch. `sha` (the commit it was created
+        at) guards against deleting a branch someone has pushed to since;
+        without it the current tip is read first."""
+        org_url = org_url or self.collection
+        project = project or self.project
+        if not (org_url and project and repo_name and branch):
+            print("ERROR: delete-branch needs <orgUrl> <project> <repoName> <branch> [sha]", file=sys.stderr)
+            return 1
+        repo_url = "{0}/{1}/_apis/git/repositories/{2}".format(org_url, project, urllib.parse.quote(repo_name))
+        name = "refs/heads/" + (branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch)
+        try:
+            refs = self._get("{0}/refs?filter={1}".format(repo_url, urllib.parse.quote(name[len("refs/"):])),
+                             api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        tip = next((r.get("objectId") for r in (refs.get("value") or []) if r.get("name") == name), None)
+        if not tip:
+            print("ERROR: branch '{0}' doesn't exist".format(branch), file=sys.stderr)
+            return 1
+        if sha and tip != sha:
+            print("ERROR: '{0}' has moved since it was created (new commits) - not deleting it".format(branch),
+                  file=sys.stderr)
+            return 1
+        try:
+            d = self._post(repo_url + "/refs", [{"name": name, "oldObjectId": tip, "newObjectId": "0" * 40}],
+                           api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "POST")
+        result = (d.get("value") or [{}])[0] if isinstance(d, dict) else {}
+        if not result.get("success"):
+            print("ERROR: could not delete '{0}': {1}".format(branch, result.get("updateStatus")), file=sys.stderr)
+            return 1
+        print(json.dumps({"deleted": branch}))
+        return 0
 
     def _wi_create_branch(self, wid, org_url, project, repo_name, from_branch, new_branch):
         """Creates branch `new_branch` at the tip of `from_branch` on the

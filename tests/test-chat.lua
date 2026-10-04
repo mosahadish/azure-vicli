@@ -115,9 +115,15 @@ do
     check("tool " .. t.name .. " is complete", type(t.description) == "string" and type(t.schema) == "table"
       and type(t.run) == "function" and (t.risk == "read" or t.risk == "write" or t.risk == "ask"))
   end
-  check("tools: votes and state changes ask; links, branches and drafts don't",
-    table.concat(asks, ",") == "vote,set_work_item_state"
-      and TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write")
+  table.sort(asks)
+  check("tools: what asks first - everything others see or that leaves the machine",
+    table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
+      .. "complete_pull_request,create_pull_request,set_thread_status,set_work_item_state,update_pr_description,vote",
+    table.concat(asks, ","))
+  check("tools: links, branches, drafts, tasks and sprints don't",
+    TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
+      and TOOLS.by_name.link_pr_to_work_item.risk == "write" and TOOLS.by_name.create_child_task.risk == "write"
+      and TOOLS.by_name.move_to_sprint.risk == "write")
   check("tools: describe() is tools/list's shape", #TOOLS.describe() == #names and TOOLS.describe()[1].inputSchema ~= nil)
   check("args_label", TOOLS.args_label({ pr_id = 1, text = string.rep("x", 50), b = true }) == " (b=true, pr_id=1)"
     and TOOLS.args_label({}) == "")
@@ -144,12 +150,127 @@ do
   check("call: unknown tool", answer[2] == true and answer[1]:find("unknown tool", 1, true))
 end
 
+-- --- core: streaming, prompts, refs, title ------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  local dec = vim.json.decode
+  local r = CORE.stream_new()
+  CORE.stream_feed(r, { '{"type":"system","subtype":"init","session_id":"s-9"}', '{"type":"assistant","message":{"content":[{"type":"text","text":"Hel' }, dec)
+  check("stream: a partial line waits", #r.texts == 0 and r.session == "s-9")
+  CORE.stream_feed(r, { 'lo"},{"type":"tool_use","name":"Read","input":{"file_path":"a.py"}}]}}', "" }, dec)
+  check("stream: the completed line is read", CORE.stream_text(r) == "Hello" and r.tools[1] == "Read a.py")
+  CORE.stream_feed(r, { '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__azure-vicli__get_pr","input":{}}]}}', "" }, dec)
+  check("stream: our own MCP tools aren't listed twice", #r.tools == 1)
+  CORE.stream_feed(r, { '{"type":"result","result":"Hello world","session_id":"s-9"}', "" }, dec)
+  check("stream: the result wins", CORE.stream_text(r) == "Hello world")
+  local p = CORE.stream_new({ "^\u{25CF} ", "^%s+\u{2514}" })
+  CORE.stream_feed(p, { "\u{25CF} list_items (MCP)", "  \u{2514} [{...}]", "", "The answer.", "" }, dec)
+  CORE.stream_finish(p, dec)
+  check("stream: plain text, strip patterns", CORE.stream_text(p) == "The answer.")
+  local q = CORE.stream_new()
+  CORE.stream_feed(q, { "no newline at the end" }, dec)
+  CORE.stream_finish(q, dec)
+  check("stream: finish flushes the last line", CORE.stream_text(q) == "no newline at the end")
+  local text, sid, tools = CORE.parse_answer('{"type":"system","session_id":"x"}\n{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}\n{"type":"result","result":"Hi","session_id":"x"}', "", dec)
+  check("parse_answer: stream-json too", text == "Hi" and sid == "x" and #tools == 0)
+  local pretty = CORE.parse_answer('{\n  "result": "multi",\n  "session_id": "m"\n}', "", dec)
+  check("parse_answer: a pretty-printed envelope", pretty == "multi")
+
+  local prompts = CORE.prompts({ mine = "Do X", standup = false })
+  check("prompts: defaults, added, removed", prompts.triage and prompts.mine == "Do X" and prompts.standup == nil)
+  local exp, name = CORE.expand_prompt("/mine  for !12 ", prompts)
+  check("expand_prompt: with the rest", exp == "Do X\n\nfor !12" and name == "mine")
+  check("expand_prompt: unknown /name stays", CORE.expand_prompt("/nope x", prompts) == "/nope x")
+  check("expand_prompt: plain text", CORE.expand_prompt("hello", prompts) == "hello")
+
+  local refs, all = CORE.find_refs("See !101 and #3001, PR 102, pr #103; again !101, not a&#38; or abc#5")
+  local got = {}
+  for _, x in ipairs(refs) do got[#got + 1] = x.kind .. x.id end
+  check("find_refs: kinds, order, no repeats", table.concat(got, ",") == "pr101,any3001,pr102,pr103", table.concat(got, ","))
+  check("find_refs: spans", all[1].s == 5 and all[1].e == 8)
+  check("title", CORE.title({ { role = "note", text = "n" }, { role = "you", text = "first\nmessage" } }) == "first message"
+    and CORE.title({}) == "(empty)")
+  local c = CORE.compose("m", "v", { refs = "- PR !1" })
+  check("compose: references section", c:find("## Referenced in the message\n- PR !1", 1, true) ~= nil)
+end
+
+-- --- refs (with caches) ----------------------------------------------------------
+do
+  local REFS = require("azure-cli.chat.refs")
+  local S = require("azure-cli.state")
+  S.PR_LIST_CACHE = { prs = { { id = 101, title = "Throttle", repo = "w", source = "f", target = "main", author = "Al" } } }
+  S.WI_LIST_CACHE = { items = { { id = 3001, type = "Story", title = "Login", state = "Active" } } }
+  check("refs: # resolves to a listed PR first", REFS.resolve({ kind = "any", id = 101 }).kind == "pr")
+  check("refs: else a work item", REFS.resolve({ kind = "any", id = 3001 }).item.title == "Login")
+  local d = REFS.describe("!101 and #3001 and #9")
+  check("refs: describe", d:find('PR !101 "Throttle" in w (f -> main), by Al', 1, true)
+    and d:find('work item #3001 Story "Login" [Active]', 1, true) and d:find("#9 (a work item, probably", 1, true), d)
+  check("refs: at a column", REFS.at("open !101 now", 6).id == 101 and REFS.at("open !101 now", 1) == nil)
+  local items = REFS.complete("#", "30")
+  check("refs: completion", #items == 1 and items[1].word == "#3001")
+  check("refs: ! completes PRs only", #REFS.complete("!", "") == 1)
+end
+
+-- --- permissions ---------------------------------------------------------------------
+do
+  check("permission: reads allow", TOOLS.permission(TOOLS.by_name.get_pr_threads, nil) == "allow")
+  check("permission: ask stays ask", TOOLS.permission(TOOLS.by_name.vote, {}) == "ask")
+  check("permission: the user's override", TOOLS.permission(TOOLS.by_name.create_branch, { create_branch = "ask" }) == "ask"
+    and TOOLS.permission(TOOLS.by_name.vote, { vote = "allow" }) == "allow")
+  require("azure-cli").setup({ chat = { agent = { cmd = { "x" } }, permissions = { vote = "deny" } } })
+  local listed = false
+  for _, t in ipairs(TOOLS.describe()) do if t.name == "vote" then listed = true end end
+  check("permission: denied tools aren't listed", not listed)
+  local said
+  TOOLS.call("vote", { pr_id = 1, vote = "approve" }, { log = function() end }, function(t, err) said = { t, err } end)
+  check("permission: a denied call is refused", said[2] == true and said[1]:find("doesn't allow", 1, true))
+  require("azure-cli").setup({})
+  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.get_build_log
+    and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
+  check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
+    and TOOLS.undoers.set_field and TOOLS.undoers.thread_status)
+end
+
+-- --- store (in a scratch directory) --------------------------------------------------
+do
+  local STORE = require("azure-cli.chat.store")
+  local tmp = vim.fn.tempname()
+  STORE.root = function() return tmp end
+  STORE.save({ id = "20260101-000000-aaaa", created = 1, entries = {
+    { role = "you", text = "first", view_win = 1000, view = { screen = "x" } },
+    { role = "agent", text = "ok", status = "running", snap = { big = true } } } })
+  local back = STORE.load_current()
+  check("store: saved and current", back and back.id == "20260101-000000-aaaa" and back.title == "first")
+  check("store: a running turn is saved as stopped, window ids dropped",
+    back.entries[2].status == "stopped" and back.entries[1].view_win == nil and back.entries[2].snap == nil)
+  check("store: list", #STORE.list() == 1)
+  STORE.audit_add({ tool = "draft_reply", summary = "s", undo = { op = "drop_draft", pr_id = 1,
+    item = { kind = "reply", text = "t", thread_id = 4, comment = { huge = true }, thread = {} } } })
+  local a = STORE.audit()
+  check("store: audit keeps a slim draft", a[1].undo.item.text == "t" and a[1].undo.item.comment == nil)
+  STORE.audit_mark_undone(1)
+  check("store: undone", STORE.audit()[1].undone ~= nil)
+  STORE.forget_current()
+  check("store: forget", STORE.load_current() == nil)
+  vim.fn.delete(tmp, "rf")
+end
+
 -- --- review/chat.lua -----------------------------------------------------------------
 do
   local t = RCHAT.thread({ id = 7, status = "fixed", path = "a.py", side = "R", lineno = 4,
     comments = { { author = "A", content = "c", authorId = "x", pending = true } } })
   check("review thread", t.id == 7 and t.file == "a.py" and t.line == 4 and t.comments[1].author == "A"
     and t.comments[1].authorId == nil)
+  local map = { { kind = "ctx", side = "R", lineno = 10 }, { kind = "del", side = "L", lineno = 11 },
+    { kind = "add", side = "R", lineno = 11 }, { kind = "add", side = "R", lineno = 12 }, { kind = "ctx", side = "R", lineno = 13 } }
+  local lines = { " a", "-b", "+B", "+C", " d" }
+  check("hunk: the changed run around the cursor", RCHAT.hunk(map, lines, 3) == "--b\n++B\n++C")
+  check("hunk: none on an unchanged line", RCHAT.hunk(map, lines, 1) == nil)
+  check("hunk: capped", RCHAT.hunk(map, lines, 3, 2) == "--b\n++B")
+  local range, side = RCHAT.selection_lines(map, 2, 5)
+  check("selection_lines: source side preferred", range == "11-13" and side == "R")
+  check("selection_lines: target only", RCHAT.selection_lines(map, 2, 2) == "11")
+  check("selection_lines: one line", RCHAT.selection_lines(map, 1, 1) == "10")
 end
 
 if fails > 0 then
