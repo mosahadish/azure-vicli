@@ -353,7 +353,10 @@ tasks and pushes can't be undone from here; the list says so.
    right with the reviewer's keys - `]c` / `[c` jump between changes and on
    into the next file, `<BS>` goes back to the files, `gf` opens the file in
    the worktree to edit it yourself, `<` / `>` resize, `q` closes. The chat
-   comes along into that tab.
+   comes along into that tab: `gq` goes to it (in visual mode, with the
+   selected lines), and it knows the file and line you're on. The view
+   doesn't follow the agent's edits by itself - `r` refreshes it, staying on
+   the same file and line.
 4. `commit_and_push_fix` asks you, with the diff next to the question, then
    commits (with your git identity) and pushes to the PR's branch. If
    someone pushed in the meantime the push fails and nothing is lost; ask it

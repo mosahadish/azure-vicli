@@ -930,6 +930,30 @@ do
   feed("]c")
   local at = vim.api.nvim_get_current_line()
   if not at:find("FIXED-BY-AGENT", 1, true) then return fail("]c in the change viewer didn't reach the change: " .. at) end
+  -- The chat describes the file and line here.
+  local vsnap = require("azure-cli.chat.view").snapshot(dwin)
+  if vsnap.file ~= "src/auth.py" or not vsnap.line or not (vsnap.code_line or ""):find("FIXED-BY-AGENT", 1, true) then
+    return fail("the chat doesn't describe the change viewer: " .. vim.inspect(vsnap))
+  end
+  -- r picks up a later edit, staying on the file and line.
+  local before_line = vim.api.nvim_win_get_cursor(dwin)[1]
+  local wt_file = require("azure-cli.chat.tools_fix").path(require("azure-cli.chat.tools").pr_record(101)) .. "/src/auth.py"
+  vim.fn.writefile({ "# MORE-BY-AGENT" }, wt_file, "a")
+  feed("r")
+  local refreshed = vim.wait(10000, function()
+    local b = vim.api.nvim_win_get_buf(dwin)
+    return vim.api.nvim_win_is_valid(dwin) and table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n"):find("MORE-BY-AGENT", 1, true) ~= nil
+  end, 50)
+  if not refreshed then return fail("r in the change viewer didn't pick up the new edit") end
+  if vim.api.nvim_get_current_win() ~= dwin or vim.api.nvim_win_get_cursor(dwin)[1] ~= before_line then
+    return fail("r moved off the line: " .. before_line .. " -> " .. vim.api.nvim_win_get_cursor(dwin)[1])
+  end
+  -- gq goes to the chat from here.
+  feed("gq")
+  local cw = require("azure-cli.state").chat.wins[ctab]
+  if not (cw and vim.api.nvim_get_current_win() == cw.input) then return fail("gq in the change viewer didn't go to the chat") end
+  vim.cmd("stopinsert")
+  vim.api.nvim_set_current_win(dwin)
   feed("q")
   if vim.api.nvim_tabpage_is_valid(ctab) then return fail("q didn't close the change viewer") end
   vim.api.nvim_set_current_tabpage(fix_tab)

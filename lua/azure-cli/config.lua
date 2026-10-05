@@ -34,6 +34,7 @@ local DEFAULT_KEYS = {
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
+    refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
   },
   -- Reviewer diff pane.
   diff = {
@@ -50,6 +51,7 @@ local DEFAULT_KEYS = {
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
+    refresh = "r",  -- the chat's change viewer only
   },
   -- Reviewer Overview page.
   overview = {

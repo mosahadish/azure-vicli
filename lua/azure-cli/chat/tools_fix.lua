@@ -97,9 +97,20 @@ function M.show(title, dir, diff)
   return require("azure-cli.chat.changes").open(title, dir, vim.split(diff, "\n", { plain = true }))
 end
 
+-- The change in worktree `dir` for viewing: its uncommitted change, or once
+-- that's committed, its last commit. cb(ok, diff_or_err, last_commit).
+function M.load(dir, git, cb)
+  M.diff(dir, function(ok, diff)
+    if not ok then return cb(false, diff) end
+    if vim.trim(diff) ~= "" then return cb(true, diff, false) end
+    git({ "git", "-C", dir, "diff", "HEAD~1", "HEAD" }, function(cok, out)
+      cb(true, cok and out or "", cok)
+    end)
+  end, git)
+end
+
 -- The chat's gd: the change last shown, else the most recently touched fix
--- or story worktree - its uncommitted change, or once that's committed, its
--- last commit. cb(err) when there's none.
+-- or story worktree (see M.load). cb(err) when there's none.
 function M.open_latest(git, cb)
   local dir, title = M.last and M.last.dir, M.last and M.last.title
   if not (dir and is_repo(dir)) then
@@ -114,18 +125,12 @@ function M.open_latest(git, cb)
     local wi = name:match("%-wi(%d+)$")
     title = "Proposed change - " .. (wi and ("#" .. wi) or ("PR !" .. (name:match("%-(%d+)$") or name)))
   end
-  M.diff(dir, function(ok, diff)
+  title = title:gsub(" %(last commit%)$", "")
+  M.load(dir, git, function(ok, diff, last)
     if not ok then return cb(diff) end
-    if vim.trim(diff) ~= "" then
-      M.show(title, dir, diff)
-      return cb(nil)
-    end
-    -- Nothing uncommitted (it was committed and pushed): its last commit.
-    git({ "git", "-C", dir, "diff", "HEAD~1", "HEAD" }, function(cok, out)
-      M.show(title .. (cok and " (last commit)" or ""), dir, cok and out or "")
-      cb(nil)
-    end)
-  end, git)
+    M.show(title .. (last and " (last commit)" or ""), dir, diff)
+    cb(nil)
+  end)
 end
 
 setmetatable(M, { __call = function(_, T)

@@ -7,8 +7,15 @@
 -- ]c / [c, <CR>, <BS>, gf, < / > and q work as they do there - remapped ones
 -- included.
 --
---   M.open(title, dir, raw)   shows `raw` (`git diff` output of worktree
---                             `dir`), reusing the tab when it's still open
+--   M.open(title, dir, raw, keep)  shows `raw` (`git diff` output of
+--                             worktree `dir`), reusing the tab when it's
+--                             still open; `keep` = { path, line, list } puts
+--                             the cursor back where it was
+--   M.refresh()               the same worktree again (r), staying on the
+--                             file and line
+--
+-- gq goes to the chat, as on every other screen, and the chat describes
+-- the file and line under the cursor here (M.describe).
 --   M.files(raw)              the changed files in diff order: { path,
 --                             status = "A"|"D"|"R"|"M" } (pure)
 local M = {}
@@ -72,6 +79,8 @@ end
 local LIST_HELP = {
   "Files",
   { "open", "show the file's change" },
+  { "refresh", "refresh (the agent may have changed more)" },
+  { "chat", "go to the chat" },
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
 }
@@ -81,6 +90,8 @@ local DIFF_HELP = {
   { "prev_hunk", "previous change (continues into the previous file)" },
   { "back", "back to the file list" },
   { "open_file", "edit the file in the worktree, at this line" },
+  { "refresh", "refresh (the agent may have changed more)" },
+  { "chat", "go to the chat (in visual mode: send the selected lines)" },
   "Window",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
@@ -119,6 +130,15 @@ end
 
 local jump  -- forward
 
+-- gq / r on both panes.
+local function bind_common(buf, surface)
+  local K = KEYS()
+  K.bind(buf, surface, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
+  K.bind(buf, surface, "chat", function() require("azure-cli.chat").capture_selection() end,
+    { desc = "send the selected lines to the chat", mode = "x" })
+  K.bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
+end
+
 -- The diff buffer for file `idx` (built once per open).
 local function diff_buf(idx)
   local f = view.files[idx]
@@ -130,6 +150,7 @@ local function diff_buf(idx)
   vim.bo[buf].bufhidden = "hide"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "azurecli-changes"  -- the chat's describer, and its tab-follow
   local ok, ft = pcall(vim.filetype.match, { filename = f.path })
   if ok and ft then pcall(function() vim.bo[buf].syntax = ft end) end
   pcall(vim.treesitter.start, buf, ok and ft and vim.treesitter.language.get_lang(ft) or nil)
@@ -154,6 +175,7 @@ local function diff_buf(idx)
   K.bind(buf, "diff", "resize_more", function() resize(5) end, { desc = "grow the file list" })
   K.bind(buf, "diff", "quit", close, { desc = "close" })
   K.bind(buf, "diff", "help", function() help("diff", DIFF_HELP) end, { desc = "keys" })
+  bind_common(buf, "diff")
   return buf
 end
 
@@ -217,6 +239,7 @@ local function setup_list(buf)
   K.bind(buf, "list", "resize_more", function() resize(5) end, { desc = "grow the file list" })
   K.bind(buf, "list", "quit", close, { desc = "close" })
   K.bind(buf, "list", "help", function() help("list", LIST_HELP) end, { desc = "keys" })
+  bind_common(buf, "list")
   -- Moving through the list previews each file's change.
   vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = buf,
@@ -227,7 +250,7 @@ local function setup_list(buf)
   })
 end
 
-function M.open(title, dir, raw)
+function M.open(title, dir, raw, keep)
   for group, link in pairs({ AzureCliDiffAddBg = "DiffAdd", AzureCliDiffDelBg = "DiffDelete",
     AzureCliDiffAddSign = "DiffAdd", AzureCliDiffDelSign = "DiffDelete",
     AzureCliDiffAddWord = "DiffText", AzureCliDiffDelWord = "DiffText" }) do
@@ -235,11 +258,9 @@ function M.open(title, dir, raw)
   end
   local CACHE = require("azure-cli.cache")
   local width = view and view.width or 40
-  if view then
-    for _, b in pairs(view.bufs or {}) do
-      if vim.api.nvim_buf_is_valid(b) then pcall(vim.api.nvim_buf_delete, b, { force = true }) end
-    end
-  end
+  -- The previous diff buffers go once the new ones are on screen (deleting
+  -- the one a window shows would close that window).
+  local stale = view and vim.tbl_values(view.bufs or {}) or {}
   local reuse = view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab) and valid_win(view.list_win)
     and valid_win(view.diff_win)
   local old = reuse and view or nil
@@ -268,7 +289,15 @@ function M.open(title, dir, raw)
   vim.bo[view.list_buf].modifiable = false
   pcall(UI().wo, view.list_win, "winbar", "%#Title# " .. title:gsub("%%", "%%%%") .. "%* %#Comment#"
     .. #view.files .. " file" .. (#view.files == 1 and "" or "s"))
-  if #view.files > 0 then
+  local at
+  for i, f in ipairs(view.files) do if keep and f.path == keep.path then at = i end end
+  if at then
+    -- A refresh: the same file, the same line (or the nearest one left).
+    show(at, false)
+    local n = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(view.diff_win))
+    pcall(vim.api.nvim_win_set_cursor, view.diff_win, { math.max(1, math.min(keep.line or 1, n)), 0 })
+    vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zv") end)
+  elseif #view.files > 0 then
     show(1, false)
     vim.api.nvim_set_current_win(view.diff_win)
     local m = view.maps[vim.api.nvim_win_get_buf(view.diff_win)].map
@@ -278,13 +307,59 @@ function M.open(title, dir, raw)
   end
   -- The diff pane gets the focus - again after the chat panel has followed
   -- into this tab (it opens on a scheduled callback and moves the cursor).
+  for _, b in ipairs(stale) do
+    if vim.api.nvim_buf_is_valid(b) and #vim.fn.win_findbuf(b) == 0 then
+      pcall(require("azure-cli.review.pane").forget, b)
+      pcall(vim.api.nvim_buf_delete, b, { force = true })
+    end
+  end
   local function focus()
-    local w = #view.files > 0 and view.diff_win or view.list_win
+    local w = (#view.files > 0 and not (keep and keep.list)) and view.diff_win or view.list_win
     if valid_win(w) then vim.api.nvim_set_current_win(w) end
   end
   focus()
   vim.schedule(function() vim.schedule(focus) end)
   return view.tab
 end
+
+function M.refresh()
+  if not (view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab)) then return end
+  local cur = view.files[view.current or 0]
+  local keep = {
+    path = cur and cur.path,
+    line = valid_win(view.diff_win) and vim.api.nvim_win_get_cursor(view.diff_win)[1] or 1,
+    list = vim.api.nvim_get_current_win() == view.list_win,
+  }
+  local title, dir = view.title:gsub(" %(last commit%)$", ""), view.dir
+  require("azure-cli.chat.tools_fix").load(dir, require("azure-cli.chat.tools").git, function(ok, diff, last)
+    if not ok then return notify("Refreshing failed: " .. tostring(diff)) end
+    M.open(title .. (last and " (last commit)" or ""), dir, vim.split(diff, "\n", { plain = true }), keep)
+    notify("Refreshed: " .. #view.files .. " file" .. (#view.files == 1 and "" or "s") .. " changed.")
+  end)
+end
+
+-- The chat's description of this screen: the change, and the file and line
+-- under the cursor (the line number in the new version of the file).
+function M.describe(win)
+  if not view then return nil end
+  local files = {}
+  for _, f in ipairs(view.files) do files[#files + 1] = f.status .. " " .. f.path end
+  local snap = { screen = "change viewer", change = view.title, worktree = view.dir, files = files,
+    note = "Looking at " .. view.title .. " (worktree " .. view.dir .. "): " .. table.concat(files, ", ") }
+  local buf = vim.api.nvim_win_get_buf(win)
+  local cur = view.maps[buf]
+  if cur then
+    local row = vim.api.nvim_win_get_cursor(win)[1]
+    local m = cur.map[row] or {}
+    snap.file, snap.line, snap.side = view.files[cur.idx].path, m.lineno, m.side
+    snap.code_line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
+  elseif buf == view.list_buf then
+    local f = view.files[vim.api.nvim_win_get_cursor(win)[1]]
+    snap.file = f and f.path
+  end
+  return snap
+end
+
+require("azure-cli.chat.view").register("azurecli-changes", function(win) return M.describe(win) end)
 
 return M
