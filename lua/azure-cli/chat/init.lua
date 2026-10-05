@@ -201,13 +201,29 @@ local function render_soon()
   end, 80)
 end
 
+-- A spinner frame while the agent runs (advanced by send's timer), else nil.
+local SPINNER = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
+local function spinner()
+  local run = STATE().running
+  if not run then return nil end
+  return SPINNER[(run.tick or 0) % #SPINNER + 1]
+end
+
+-- For a statusline: "<spinner> Copilot 42s" while the agent runs, else "".
+-- e.g. lualine: { function() return require("azure-cli.chat").status() end }
+function M.status()
+  local run = STATE().running
+  if not run then return "" end
+  return spinner() .. " " .. agent_label() .. " " .. math.max(0, os.time() - (run.entry.started or os.time())) .. "s"
+end
+
 function M.set_winbars()
   local st = STATE()
   local tags = {}
   local _, agent = M.current_agent()
   local model = M.current_model(agent)
   if model then tags[#tags + 1] = "[" .. model .. "]" end
-  if st.running then tags[#tags + 1] = "[working\u{2026}]" end
+  if st.running then tags[#tags + 1] = "[" .. spinner() .. " working]" end
   if st.session_id then tags[#tags + 1] = "[session]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
@@ -223,6 +239,7 @@ function M.set_winbars()
         .. "  \u{00B7}  /prompt  \u{00B7}  !PR #item  \u{00B7}  ? keys")
     end
   end
+  pcall(vim.cmd, "redrawstatus!")  -- for M.status() in a statusline
 end
 
 -- The window the user was last in, in the current tab (never the panel).
@@ -738,8 +755,15 @@ send = function(text, opts)
   pcall(vim.fn.chansend, job, CORE.expand(spec.stdin or "{message}", vars))
   pcall(vim.fn.chanclose, job, "stdin")
   st.running = { job = job, entry = entry }
-  st.running.timer = vim.fn.timer_start(1000, function()
-    if st.running then render() end
+  -- The spinner turns every 120ms (only the winbars and statuslines are
+  -- redrawn); the whole transcript, for the seconds count, once a second.
+  st.running.tick = 0
+  M.set_winbars()
+  st.running.timer = vim.fn.timer_start(120, function()
+    local run = st.running
+    if not run then return end
+    run.tick = run.tick + 1
+    if run.tick % 8 == 0 then render() else M.set_winbars() end
   end, { ["repeat"] = -1 })
   local timeout = tonumber(agent.timeout_seconds) or 900
   vim.defer_fn(function()

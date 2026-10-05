@@ -67,7 +67,12 @@ While the agent works, its answer appears as it's written (with Claude
 Code's `stream-json` output, see below; other agents show their output as it
 arrives), along with its tool calls as they happen: azure-vicli's own
 (`· get_pr_threads (pr_id=101)`, `✎ draft_reply (...)`) and the agent's
-(`· Read src/auth.py`).
+(`· Read src/auth.py`). A spinner turns in the panel's title bar
+(`[⠹ working]`) until it's done, and the answer's heading counts the
+seconds. With the panel hidden, put it in your statusline:
+`require("azure-cli.chat").status()` is `⠹ Copilot 42s` while the agent
+works and `""` otherwise (lualine: `{ function() return
+require("azure-cli.chat").status() end }`).
 
 Each turn has a coloured bar down its left side: one colour for you, another
 for the agent. The agent's markdown is rendered (headings, **bold**, `code`,

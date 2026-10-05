@@ -682,11 +682,21 @@ do
     vim.cmd("stopinsert")
     feed("<CR>")
     local e
+    local spun = false
     local okw = vim.wait(30000, function()
+      if st.running then
+        local bar = vim.wo[st.wins[vim.api.nvim_get_current_tabpage()].log].winbar
+        spun = spun or bar:match("%[%S+ working%]") ~= nil
+      end
       e = st.entries[#st.entries]
       return #st.entries == n + 2 and e.status ~= "running"
     end, 100)
     if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(st.entries[#st.entries]) end
+    -- (Its timer doesn't fire inside this vim.wait, so only that it shows.)
+    if not spun then return nil, "no spinner in the winbar while the agent ran" end
+    if require("azure-cli.chat").status() ~= "" or vim.wo[st.wins[vim.api.nvim_get_current_tabpage()].log].winbar:find("working", 1, true) then
+      return nil, "the spinner is still showing after the answer"
+    end
     return e
   end
 

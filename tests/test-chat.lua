@@ -225,6 +225,17 @@ do
   TOOLS.call("vote", { pr_id = 1, vote = "approve" }, { log = function() end }, function(t, err) said = { t, err } end)
   check("permission: a denied call is refused", said[2] == true and said[1]:find("doesn't allow", 1, true))
   require("azure-cli").setup({})
+  do
+    local CH = require("azure-cli.chat")
+    check("status: empty while idle", CH.status() == "")
+    local cst = require("azure-cli.state").chat
+    cst.running = { tick = 0, entry = { started = os.time() } }
+    local a = CH.status()
+    cst.running.tick = 1
+    local b = CH.status()
+    cst.running = nil
+    check("status: a spinner frame that turns with the tick", a ~= "" and b ~= "" and a ~= b and a:find(" 0s$"), a .. " / " .. b)
+  end
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
