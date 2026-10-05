@@ -926,6 +926,17 @@ do
   feed("q")
   if vim.api.nvim_tabpage_is_valid(ctab) then return fail("q didn't close the change viewer") end
   vim.api.nvim_set_current_tabpage(fix_tab)
+  -- gd in the chat opens it again.
+  vim.api.nvim_set_current_win(wins().log)
+  feed("gd")
+  local reopened = vim.wait(10000, function()
+    local b = vim.fn.bufnr("azure-cli://changes")
+    return b > 0 and #vim.fn.win_findbuf(b) > 0
+  end, 50)
+  if not reopened then return fail("gd in the chat didn't reopen the change") end
+  cbuf = vim.fn.bufnr("azure-cli://changes")
+  pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(vim.fn.win_findbuf(cbuf)[1])))
+  vim.api.nvim_set_current_tabpage(fix_tab)
   local bare = vim.env.AZVICLI_FAKE_WS .. "/origin/widgets.git"
   local subject = vim.fn.system({ "git", "--git-dir", bare, "log", "-1", "--format=%s", "feature/login-throttle" })
   local content = vim.fn.system({ "git", "--git-dir", bare, "show", "feature/login-throttle:src/auth.py" })

@@ -307,6 +307,7 @@ local function ensure_bufs()
     KEYS.bind(b, "chat", "prompts", function() pick_prompt() end, { desc = "run a saved prompt" })
     KEYS.bind(b, "chat", "history", function() pick_history() end, { desc = "open an earlier conversation" })
     KEYS.bind(b, "chat", "audit", function() show_audit() end, { desc = "what the agent changed (u undoes)" })
+    KEYS.bind(b, "chat", "changes", function() M.show_changes() end, { desc = "the agent's change, file by file" })
     KEYS.bind(b, "chat", "resize_less", function() M.resize(-1) end, { desc = "make the chat smaller" })
     KEYS.bind(b, "chat", "resize_more", function() M.resize(1) end, { desc = "make the chat bigger" })
     KEYS.bind(b, "chat", "back", function()
@@ -459,6 +460,13 @@ local function close_here()
 end
 
 M.resize = resize
+
+-- gd: the agent's change (start_fix / start_story) in the change viewer.
+function M.show_changes()
+  require("azure-cli.chat.tools_fix").open_latest(require("azure-cli.chat.tools").git, function(err)
+    if err then notify(err) end
+  end)
+end
 
 function M.show(focus)
   STATE().visible = true
@@ -885,6 +893,7 @@ show_help = function()
     { "open_ref", "open the !PR / #work item under the cursor" },
     { "use_as_reply", "draft the answer under the cursor as a reply (queued for gS)" },
     { "audit", "what the agent changed - u undoes one" },
+    { "changes", "the agent's code change, file by file (like the reviewer: ]c / [c, gf, q)" },
     "Conversation",
     { "new_chat", "start a new conversation" }, { "history", "open an earlier conversation" },
     { "agent", "choose the agent" }, { "model", "choose the model" },

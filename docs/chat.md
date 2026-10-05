@@ -49,6 +49,7 @@ until you hide it. The conversation is the same in every tab.
 | `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
 | `gp` | Run a saved prompt |
 | `gL` | What the agent changed; `u` on a line undoes it |
+| `gd` | The agent's code change (a fix or a story), file by file like the reviewer |
 | `gh` | Open an earlier conversation |
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `ga` / `gm` | Choose the agent / the model |

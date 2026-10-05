@@ -67,7 +67,31 @@ end
 
 -- The change in its own tab, file by file, like a PR in the reviewer.
 function M.show(title, dir, diff)
+  M.last = { title = title, dir = dir }
   return require("azure-cli.chat.changes").open(title, dir, vim.split(diff, "\n", { plain = true }))
+end
+
+-- The chat's gd: the change last shown, else the most recently touched fix
+-- or story worktree. cb(err) when there's none.
+function M.open_latest(git, cb)
+  local dir, title = M.last and M.last.dir, M.last and M.last.title
+  if not (dir and is_repo(dir)) then
+    dir, title = nil, nil
+    local newest = -1
+    for _, d in ipairs(vim.fn.glob(M.root() .. "/*", false, true)) do
+      local t = is_repo(d) and vim.fn.getftime(d) or -1
+      if t > newest then newest, dir = t, d end
+    end
+    if not dir then return cb("The agent hasn't started a change yet (start_fix / start_story).") end
+    local name = vim.fn.fnamemodify(dir, ":t")
+    local wi = name:match("%-wi(%d+)$")
+    title = "Proposed change - " .. (wi and ("#" .. wi) or ("PR !" .. (name:match("%-(%d+)$") or name)))
+  end
+  M.diff(dir, function(ok, diff)
+    if not ok then return cb(diff) end
+    M.show(title, dir, diff)
+    cb(nil)
+  end, git)
 end
 
 setmetatable(M, { __call = function(_, T)
