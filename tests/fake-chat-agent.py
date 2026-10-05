@@ -142,6 +142,12 @@ def main():
         call("start_story", {"work_item_id": 3001, "repo": "widgets", "from": "main", "name": "feature/3001-story"})
         call("show_fix", {"work_item_id": 3001})
         call("commit_and_push_fix", {"work_item_id": 3001, "message": "Implement the login throttle story"})
+    elif "look up" in asked:
+        call("get_pull_request", {"pr_id": 102})
+        call("get_pr_threads", {"pr_id": 102})
+        call("get_pull_request", {"pr_id": 9999})
+        call("find_definition", {"pr_id": 101, "name": "is_locked"})
+        call("find_implementations", {"repo": "widgets", "name": "Nothing"})
     elif "plan" in asked:
         call("create_child_task", {"parent_id": 3001, "title": "Write the lockout tests"})
         call("move_to_sprint", {"id": 3002, "sprint": "Sprint 43"})

@@ -22,6 +22,10 @@ local function CONFIG() return require("azure-cli.config") end
 -- ---------------------------------------------------------------------------
 -- Helpers.
 
+-- PRs get_pull_request fetched because they aren't on the dashboard: id ->
+-- record (the provider's --get-pr, the same shape as a dashboard row).
+M.fetched = {}
+
 function M.pr_record(id)
   local cache = STATE().PR_LIST_CACHE
   for _, p in ipairs((cache and cache.prs) or {}) do
@@ -29,7 +33,43 @@ function M.pr_record(id)
   end
   local cur = STATE().PR_CURRENT
   if cur and tostring(cur.id) == tostring(id) then return cur end
-  return nil
+  return M.fetched[tostring(id)]
+end
+
+-- Looks PR `id` up on the server when it isn't on the dashboard, trying
+-- each org/project the dashboard's PRs come from, then the work-item
+-- account's: cb(record) or cb(nil, err).
+function M.fetch_pr(id, cb)
+  local known = M.pr_record(id)
+  if known then return cb(known) end
+  local places, seen = {}, {}
+  local function add(org, project)
+    if org and org ~= "" and project and project ~= "" and not seen[org .. "|" .. project] then
+      seen[org .. "|" .. project] = true
+      places[#places + 1] = { org = org, project = project }
+    end
+  end
+  for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do add(p.org, p.project) end
+  add(vim.env.AZVICLI_WI_COLLECTION, vim.env.AZVICLI_WI_PROJECT)
+  if #places == 0 then return cb(nil, "no Azure DevOps project known yet (open the PR dashboard first)") end
+  local errs = {}
+  local function try(i)
+    local at = places[i]
+    if not at then
+      return cb(nil, "PR !" .. tostring(id) .. " wasn't found: " .. table.concat(errs, "; "))
+    end
+    M.provider({ "--get-pr" }, { AZVICLI_ORG = at.org, AZVICLI_PROJECT = at.project, AZVICLI_PR = tostring(id) },
+      function(ok, out, err)
+        local okd, rec = pcall(vim.json.decode, out)
+        if ok and okd and type(rec) == "table" and rec.id then
+          M.fetched[tostring(id)] = rec
+          return cb(rec)
+        end
+        errs[#errs + 1] = at.project .. ": " .. (err ~= "" and err or "no answer")
+        try(i + 1)
+      end)
+  end
+  try(1)
 end
 local pr_record = M.pr_record
 
@@ -68,7 +108,7 @@ local pr_env = M.pr_env
 function M.need_pr(args, done)
   local pr = M.pr_record(args.pr_id)
   if not pr then
-    done(nil, "PR #" .. tostring(args.pr_id) .. " isn't in the user's pull request list (open the PR dashboard to load it).")
+    done(nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request for it first.")
   end
   return pr
 end
@@ -233,12 +273,15 @@ M.list = {
   },
   {
     name = "get_pull_request",
-    description = "One pull request: title, description, branches, author, reviewers and votes, build, url.",
+    description = "One pull request, any in the project (not only the user's dashboard): title, description, "
+      .. "branches, author, reviewers and votes, build, url. After it, the other PR tools work for that PR too.",
     schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
     risk = "read",
     run = function(args, _, done)
-      local pr = need_pr(args, done)
-      if pr then done(pr_summary(pr, true)) end
+      M.fetch_pr(args.pr_id, function(pr, err)
+        if not pr then return done(nil, err) end
+        done(pr_summary(pr, true))
+      end)
     end,
   },
   {
@@ -498,7 +541,8 @@ function M.work_item_field(id, field, cb)
 end
 
 -- The other tool groups.
-for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", "azure-cli.chat.tools_fix" }) do
+for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", "azure-cli.chat.tools_fix",
+  "azure-cli.chat.tools_code" }) do
   vim.list_extend(M.list, require(mod)(M))
 end
 

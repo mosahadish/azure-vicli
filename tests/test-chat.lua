@@ -255,6 +255,48 @@ do
       and FIX.inside(wt, "x/../../a") == nil and FIX.inside(wt, ".git/config") == nil and FIX.inside(wt, ".") == nil
       and FIX.inside(wt, "") == nil)
   end
+  do
+    -- find_implementations / find_definition's patterns against real git grep.
+    local C = require("azure-cli.chat.tools_code")
+    local dir = vim.fn.tempname()
+    vim.fn.mkdir(dir .. "/src", "p")
+    vim.fn.writefile({
+      "public interface IGripper : IDevice { bool Grip(); }",
+      "public class AcsGripper : GripperBase, IGripper",
+      "{",
+      "    public bool Grip() { return true; }",
+      "    internal int LoadPort = 3;",
+      "}",
+      "public sealed class AdamGripper : IGripper { }",
+      "public class FastAcsGripper : AcsGripper { }",
+      "class Generic<T> : IGripper<T> where T : class { }",
+      "public class Other : IGripperFactory { }",
+      "var g = new AcsGripper();",
+      "return g.Grip();",
+    }, dir .. "/src/G.cs")
+    vim.fn.writefile({ "public class JGripper extends Base implements Runnable, IGripper {", "}" }, dir .. "/src/J.java")
+    vim.fn.writefile({ "class PyGripper(Base, IGripper):", "    pass" }, dir .. "/src/g.py")
+    vim.fn.system({ "git", "-C", dir, "init", "-q" })
+    local function grep(pats, name, defs)
+      local argv = { "git", "-C", dir, "grep", "-n", "-I", "-E", "--untracked" }
+      for _, p in ipairs(pats) do vim.list_extend(argv, { "-e", p }) end
+      local types = {}
+      for _, h in ipairs(C.parse_hits(vim.fn.system(argv), nil, name, defs)) do
+        types[#types + 1] = defs and (h.file .. ":" .. h.line) or C.declared_type(h.text)
+      end
+      table.sort(types)
+      return table.concat(types, ",")
+    end
+    check("find_implementations: C#, generics, Java and Python, not look-alike names",
+      grep(C.implements_patterns("IGripper"), "IGripper") == "AcsGripper,AdamGripper,Generic,JGripper,PyGripper",
+      grep(C.implements_patterns("IGripper"), "IGripper"))
+    check("find_implementations: the next level down", grep(C.implements_patterns("AcsGripper"), "AcsGripper") == "FastAcsGripper")
+    check("find_definition: members and types, not calls", grep(C.definition_patterns("Grip"), "Grip", true) == "src/G.cs:1,src/G.cs:4"
+      and grep(C.definition_patterns("LoadPort"), "LoadPort", true) == "src/G.cs:5"
+      and grep(C.definition_patterns("AcsGripper"), "AcsGripper", true) == "src/G.cs:2",
+      grep(C.definition_patterns("Grip"), "Grip", true))
+    vim.fn.delete(dir, "rf")
+  end
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft

@@ -662,6 +662,16 @@ class Fake:
             print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(str(pr["id"]), [])), ensure_ascii=False))
         return 0
 
+    def cmd_get_pr(self):
+        # Any PR by id, completed ones included (unlike --list).
+        pid = self.env.get("AZVICLI_PR") or ""
+        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid), None)
+        if pr is None:
+            print("ERROR: HTTP 404 GET: pull request {0} not found".format(pid), file=sys.stderr)
+            return 1
+        print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(pid, [])), ensure_ascii=False))
+        return 0
+
     def cmd_whoami(self, rest):
         if "--org" not in rest:
             print("azure-cli --whoami requires --org <organization-url>.", file=sys.stderr)
@@ -1291,6 +1301,7 @@ def dispatch(ws, argv, env):
         "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
         "--set-description": lambda: f.cmd_set_description(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
+        "--get-pr": lambda: f.cmd_get_pr(),
     }
     handler = table.get(flag)
     if handler is None:

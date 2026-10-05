@@ -211,6 +211,25 @@ class ChatPrActionTests(unittest.TestCase):
     def test_create_pr_needs_branches_and_a_title(self):
         self.assertEqual(self.run_action("create_pr", "a", "", "t")[0], 1)
 
+    def test_get_pr_by_id_alone_prints_a_dashboard_record(self):
+        url = "https://dev.azure.com/org/proj/_apis/git/pullrequests/42"
+        pr = {"pullRequestId": 42, "title": "Fix it", "status": "active", "repository": {"name": "other-repo"},
+              "sourceRefName": "refs/heads/feature/x", "targetRefName": "refs/heads/develop",
+              "createdBy": {"displayName": "Bob"}, "creationDate": "2026-10-01T10:00:00Z", "reviewers": []}
+        rc, out, _, fetch = self.run_action("get_pr", responses={url: pr})
+        self.assertEqual(rc, 0)
+        self.assertEqual(fetch.calls[0]["url"], url)
+        rec = json.loads(out)
+        self.assertEqual((rec["id"], rec["repo"], rec["source"], rec["target"], rec["author"], rec["state"]),
+                         (42, "other-repo", "feature/x", "develop", "Bob", "active"))
+        self.assertEqual((rec["org"], rec["project"]), ("https://dev.azure.com/org", "proj"))
+
+    def test_get_pr_failure(self):
+        url = "https://dev.azure.com/org/proj/_apis/git/pullrequests/42"
+        rc, _, err, _ = self.run_action("get_pr", raise_for={url: ac.AdoHttpError(404, url, b"not found")})
+        self.assertEqual(rc, 1)
+        self.assertIn("HTTP 404", err)
+
 
 class McpHandleTests(unittest.TestCase):
     def setUp(self):

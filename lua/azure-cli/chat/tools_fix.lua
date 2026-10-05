@@ -150,7 +150,7 @@ setmetatable(M, { __call = function(_, T)
     end
     local pr = T.pr_record(args.pr_id)
     if not pr then
-      return nil, "PR #" .. tostring(args.pr_id) .. " isn't in the user's pull request list (open the PR dashboard to load it)."
+      return nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request for it first."
     end
     if not is_repo(M.path(pr)) then return nil, "no fix in progress - call start_fix first" end
     return { dir = M.path(pr), branch = pr.source, label = "PR !" .. pr.id }

@@ -976,6 +976,16 @@ do
     return fail("the story wasn't pushed: " .. subject)
   end
 
+  -- get_pull_request on a PR that isn't on the dashboard fetches it (and
+  -- the other PR tools then work for it); the code-search tools.
+  local cache = STATE.PR_LIST_CACHE
+  local kept = cache.prs
+  cache.prs = vim.tbl_filter(function(p) return tostring(p.id) ~= "102" end, kept)
+  e, why = ask("look up those")
+  cache.prs = kept
+  if not need(e, why, "get_pull_request: {", "get_pr_threads: [", "PR !9999 wasn't found",
+    "find_definition: {", "src/throttle.py", "def is_locked", "find_implementations: {") then return end
+
   -- Board tools, then u in gL undoes the link.
   e, why = ask("plan the work")
   if not need(e, why, "create_child_task: Created Task", "move_to_sprint: Moved #3002", "link_pr_to_work_item: Linked PR #102") then return end

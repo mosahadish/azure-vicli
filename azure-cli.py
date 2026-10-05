@@ -1621,7 +1621,7 @@ PR_ACTION_FLAGS = (
     "--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
-    "--build-log", "--add-reviewer", "--set-description", "--create-pr",
+    "--build-log", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2190,6 +2190,39 @@ class PrActions:
                          ensure_ascii=False))
         return 0
 
+    def get_pr(self):
+        """Any PR in the project by id (GET {org}/{project}/_apis/git/
+        pullrequests/{id} - no repository needed), printed as the same record
+        --list prints for a dashboard row, minus what --list works out on top
+        (thread counts, build, policies). For the chat's get_pull_request on
+        a PR that isn't on the user's dashboard."""
+        if not _is_uint(self.pr_id):
+            print("get-pr needs a numeric AZVICLI_PR", file=sys.stderr)
+            return 1
+        url = "{0}/{1}/_apis/git/pullrequests/{2}".format(self.org, self.project, self.pr_id)
+        try:
+            pr = self.fetch(url, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST get-pr failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        except Exception as e:
+            print("REST get-pr failed: {0}".format(e), file=sys.stderr)
+            return 1
+        want_org = self.org.rstrip("/").lower()
+        same_org = [a for a in self.config.accounts if (a.org_url or "").rstrip("/").lower() == want_org]
+        account = next((a for a in same_org if (a.project or "").lower() == self.project.lower()),
+                       same_org[0] if same_org else None)
+
+        class _Acct(object):
+            org_url = self.org
+            project = self.project
+            clones_dir = (getattr(account, "clones_dir", "") or "") if account else ""
+
+        record = to_record(pr or {}, _Acct, (pr or {}).get("status") or "", (None, None, None, None, None),
+                           ("none", None, "", [], []), None, None)
+        print(json.dumps(record, ensure_ascii=False))
+        return 0
+
     def complete_pr(self, strategy, del_branch="true", transition="true"):
         if strategy not in _MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
@@ -2276,7 +2309,10 @@ def cmd_pr_action(flag, rest, env=None):
     concurrently on the daemon's thread pool.
     """
     env = os.environ if env is None else env
-    for name in ("AZVICLI_ORG", "AZVICLI_PROJECT", "AZVICLI_REPO", "AZVICLI_PR"):
+    # --get-pr looks a PR up by id alone: the project-level endpoint needs no repo.
+    required = ("AZVICLI_ORG", "AZVICLI_PROJECT", "AZVICLI_PR") if flag == "--get-pr" else (
+        "AZVICLI_ORG", "AZVICLI_PROJECT", "AZVICLI_REPO", "AZVICLI_PR")
+    for name in required:
         if not env.get(name):
             print("{0} not set".format(name), file=sys.stderr)
             return 1
@@ -2327,6 +2363,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.set_description(arg(0))
     if flag == "--create-pr":
         return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
+    if flag == "--get-pr":
+        return actions.get_pr()
 
     print("Unknown PR action: {0}".format(flag), file=sys.stderr)  # unreachable via PR_ACTION_FLAGS
     return 1
