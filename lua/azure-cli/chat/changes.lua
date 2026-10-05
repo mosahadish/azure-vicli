@@ -276,6 +276,14 @@ function M.open(title, dir, raw)
       if is_change(m, ln) then vim.api.nvim_win_set_cursor(view.diff_win, { ln, 0 }) vim.cmd("normal! zvzz") break end
     end
   end
+  -- The diff pane gets the focus - again after the chat panel has followed
+  -- into this tab (it opens on a scheduled callback and moves the cursor).
+  local function focus()
+    local w = #view.files > 0 and view.diff_win or view.list_win
+    if valid_win(w) then vim.api.nvim_set_current_win(w) end
+  end
+  focus()
+  vim.schedule(function() vim.schedule(focus) end)
   return view.tab
 end
 

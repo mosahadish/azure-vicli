@@ -72,7 +72,8 @@ function M.show(title, dir, diff)
 end
 
 -- The chat's gd: the change last shown, else the most recently touched fix
--- or story worktree. cb(err) when there's none.
+-- or story worktree - its uncommitted change, or once that's committed, its
+-- last commit. cb(err) when there's none.
 function M.open_latest(git, cb)
   local dir, title = M.last and M.last.dir, M.last and M.last.title
   if not (dir and is_repo(dir)) then
@@ -89,8 +90,15 @@ function M.open_latest(git, cb)
   end
   M.diff(dir, function(ok, diff)
     if not ok then return cb(diff) end
-    M.show(title, dir, diff)
-    cb(nil)
+    if vim.trim(diff) ~= "" then
+      M.show(title, dir, diff)
+      return cb(nil)
+    end
+    -- Nothing uncommitted (it was committed and pushed): its last commit.
+    git({ "git", "-C", dir, "diff", "HEAD~1", "HEAD" }, function(cok, out)
+      M.show(title .. (cok and " (last commit)" or ""), dir, cok and out or "")
+      cb(nil)
+    end)
   end, git)
 end
 

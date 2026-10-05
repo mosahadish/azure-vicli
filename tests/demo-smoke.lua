@@ -905,6 +905,13 @@ do
   if not need(e, why, "start_fix:", "show_fix:", "commit_and_push_fix: Pushed") then return end
   -- show_fix opened the change in its own tab, like the reviewer: files on
   -- the left, the diff on the right, ]c through it, q closes.
+  local function diff_focused()
+    vim.wait(500, function() return false end, 50)  -- the chat follows into the tab meanwhile
+    local b = vim.api.nvim_get_current_buf()
+    return vim.api.nvim_buf_get_name(b) ~= "azure-cli://changes" and not vim.b[b].azure_cli_chat
+      and (require("azure-cli.review.pane").entry(b) or {}).map ~= nil
+  end
+  if not diff_focused() then return fail("show_fix didn't leave the focus in the diff pane") end
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   if cbuf < 0 or not table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n"):find("M  src/auth.py", 1, true) then
     return fail("show_fix didn't open the change viewer with src/auth.py")
@@ -926,7 +933,7 @@ do
   feed("q")
   if vim.api.nvim_tabpage_is_valid(ctab) then return fail("q didn't close the change viewer") end
   vim.api.nvim_set_current_tabpage(fix_tab)
-  -- gd in the chat opens it again.
+  -- gd in the chat opens it again - the last commit, now that it's pushed.
   vim.api.nvim_set_current_win(wins().log)
   feed("gd")
   local reopened = vim.wait(10000, function()
@@ -934,6 +941,10 @@ do
     return b > 0 and #vim.fn.win_findbuf(b) > 0
   end, 50)
   if not reopened then return fail("gd in the chat didn't reopen the change") end
+  if not diff_focused() then return fail("gd didn't leave the focus in the diff pane") end
+  if not table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):find("FIXED-BY-AGENT", 1, true) then
+    return fail("gd after the push didn't show the pushed commit")
+  end
   cbuf = vim.fn.bufnr("azure-cli://changes")
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(vim.fn.win_findbuf(cbuf)[1])))
   vim.api.nvim_set_current_tabpage(fix_tab)
