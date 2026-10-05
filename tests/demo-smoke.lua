@@ -888,6 +888,16 @@ do
     return fail("the fix wasn't pushed: " .. subject)
   end
 
+  -- The story flow: a branch from main linked to #3001, a worktree of it,
+  -- the change pushed there (asks first - answer is still "Allow").
+  e, why = ask("implement the story")
+  if not need(e, why, "start_story: {", "Already started", "show_fix:", "commit_and_push_fix: Pushed", "create_pull_request") then return end
+  subject = vim.fn.system({ "git", "--git-dir", bare, "log", "-1", "--format=%s", "feature/3001-story" })
+  content = vim.fn.system({ "git", "--git-dir", bare, "show", "feature/3001-story:STORY.md" })
+  if not subject:find("Implement the login throttle story", 1, true) or not content:find("IMPLEMENTED-BY-AGENT", 1, true) then
+    return fail("the story wasn't pushed: " .. subject)
+  end
+
   -- Board tools, then u in gL undoes the link.
   e, why = ask("plan the work")
   if not need(e, why, "create_child_task: Created Task", "move_to_sprint: Moved #3002", "link_pr_to_work_item: Linked PR #102") then return end

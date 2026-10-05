@@ -41,6 +41,20 @@ function M.clone_path(pr)
   return ((vim.env.AZVICLI_REPO_PATH or ""):gsub("^/([a-zA-Z])/", "%1:/"))
 end
 
+-- Repository `repo`'s org, project and local clone: from a PR in that
+-- repository when there is one, else the work-item account's org/project
+-- and <clones_dir>/<repo> from any PR (one clones_dir per account).
+function M.repo_location(repo)
+  local org, project, clone, dir = "", "", "", nil
+  for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do
+    if p.repo == repo then return p.org or "", p.project or "", M.clone_path(p) end
+    dir = dir or (p.clonesDir ~= "" and p.clonesDir or nil)
+  end
+  org, project = vim.env.AZVICLI_WI_COLLECTION or "", vim.env.AZVICLI_WI_PROJECT or ""
+  if dir then clone = M.clone_path({ clonesDir = dir, repo = repo }) end
+  return org, project, clone
+end
+
 function M.pr_env(pr)
   return {
     AZVICLI_PR = tostring(pr.id), AZVICLI_REPO = pr.repo or "", AZVICLI_PROJECT = pr.project or "",
@@ -343,12 +357,7 @@ M.list = {
     }, required = { "repo", "from", "name" } },
     risk = "write",
     run = function(args, env, done)
-      -- The repository's org/project/clone: from a PR in that repository
-      -- when there is one; otherwise the work-item account's.
-      local org, project, clone = "", "", ""
-      for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do
-        if p.repo == args.repo then org, project, clone = p.org or "", p.project or "", M.clone_path(p) break end
-      end
+      local org, project, clone = M.repo_location(args.repo)
       provider({ "--wi-edit", "create-branch", tostring(args.work_item_id or 0), org, project, args.repo, args.from,
         args.name }, nil, function(ok, out, err)
         if not ok then return done(nil, "creating the branch failed: " .. err) end

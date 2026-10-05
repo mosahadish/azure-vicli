@@ -10,6 +10,9 @@ What it does depends on the message:
             active thread
   "branch"  create_branch for the work item 3001 from main in widgets
   "vote"    vote approve on the PR in view (the plugin asks the user)
+  "fix it"  start_fix, an edit, show_fix, commit_and_push_fix on PR 101
+  "implement"  start_story for work item 3001 (twice: the second reuses
+            it), a new file, show_fix, commit_and_push_fix
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and whether it was
 resumed (--resume ID).
@@ -126,6 +129,14 @@ def main():
             f.write("# FIXED-BY-AGENT\n")
         call("show_fix", {"pr_id": 101})
         call("commit_and_push_fix", {"pr_id": 101, "message": "Return a reason code on lockout"})
+    elif "implement" in asked:
+        res = json.loads(call("start_story", {"work_item_id": 3001, "repo": "widgets", "from": "main",
+                                              "name": "feature/3001-story"})[0])
+        with open(os.path.join(res["directory"], "STORY.md"), "w", encoding="utf-8") as f:
+            f.write("IMPLEMENTED-BY-AGENT\n")
+        call("start_story", {"work_item_id": 3001, "repo": "widgets", "from": "main", "name": "feature/3001-story"})
+        call("show_fix", {"work_item_id": 3001})
+        call("commit_and_push_fix", {"work_item_id": 3001, "message": "Implement the login throttle story"})
     elif "plan" in asked:
         call("create_child_task", {"parent_id": 3001, "title": "Write the lockout tests"})
         call("move_to_sprint", {"id": 3002, "sprint": "Sprint 43"})

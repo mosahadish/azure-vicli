@@ -225,7 +225,7 @@ do
   TOOLS.call("vote", { pr_id = 1, vote = "approve" }, { log = function() end }, function(t, err) said = { t, err } end)
   check("permission: a denied call is refused", said[2] == true and said[1]:find("doesn't allow", 1, true))
   require("azure-cli").setup({})
-  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.get_build_log
+  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
     and TOOLS.undoers.set_field and TOOLS.undoers.thread_status)

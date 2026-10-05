@@ -160,7 +160,8 @@ require("azure-cli").setup({
   tools without its own prompts (it can't show them in a headless run);
   which changes still ask you is azure-vicli's business, see
   [below](#what-the-agent-can-do).
-- `Edit,Write` and `--add-dir {fix_root}` are for "fix this comment": the
+- `Edit,Write` and `--add-dir {fix_root}` are for "fix this comment" and
+  "implement this work item": the
   agent edits files in a worktree under `{fix_root}`, never in your checkout
   (the instructions it's given say so). Leave them out if you don't want the
   agent changing code at all.
@@ -182,8 +183,8 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `ga` switches.
 Placeholders: `{message}` (your message, with the view description, the
 references and, on the first message, the instructions), `{text}` (just what
 you typed, prompts expanded), `{view}` (the view description),
-`{mcp_config}` (the MCP config file), `{fix_root}` (where fix worktrees
-live), `{session_id}`, `{model}`.
+`{mcp_config}` (the MCP config file), `{fix_root}` (where fix and story
+worktrees live), `{session_id}`, `{model}`.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
@@ -197,21 +198,26 @@ triage-pr-comments skill on this PR".
 ### GitHub Copilot CLI
 
 Recent Copilot CLI versions take an extra MCP config with
-`--additional-mcp-config @<file>` and continue a session with
-`copilot --resume <id>`. Check `copilot --help` for your version's flags
-(including how to allow tools without prompting), and point
-`session_pattern` at wherever it prints the session id. This example's
-pattern is a guess to adapt:
+`--additional-mcp-config @<file>`, continue a session with
+`copilot --resume <id>`, allow tools without prompting with
+`--allow-tool` (`'azure-vicli'` for all of a server's tools, `'write'` for
+file edits, `'shell(git)'` for one command) and extra directories with
+`--add-dir`. Without them a headless run refuses every edit. Check
+`copilot --help` for your version's flags, and point `session_pattern` at
+wherever it prints the session id. This example's flags and pattern are
+unverified; adapt them:
 
 ```lua
 agent = {
   label = "Copilot",
   models = { "gpt-5", "claude-sonnet-4.5" },   -- examples: use what `copilot --help` lists
-  cmd = { "copilot", "-p", "{message}", "--model", "{model}", "--additional-mcp-config", "@{mcp_config}" },
+  cmd = { "copilot", "-p", "{message}", "--model", "{model}", "--additional-mcp-config", "@{mcp_config}",
+          "--allow-tool", "azure-vicli", "--allow-tool", "write", "--add-dir", "{fix_root}" },
   session_pattern = "[Ss]ession[ %-_]?[Ii][Dd]:?%s*([%w%-]+)",
   strip = { "^\u{25CF} ", "^%s+\u{2514}" },   -- drop Copilot's own "● tool / └ result" log lines
   followup = { cmd = { "copilot", "--resume", "{session_id}", "-p", "{message}", "--model", "{model}",
-                       "--additional-mcp-config", "@{mcp_config}" } },
+                       "--additional-mcp-config", "@{mcp_config}",
+                       "--allow-tool", "azure-vicli", "--allow-tool", "write", "--add-dir", "{fix_root}" } },
 },
 ```
 
@@ -300,7 +306,8 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
 | `requeue_build` | Queues the PR's build again | no |
 | `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you as a diff); throwing it away | no |
-| `commit_and_push_fix` | Commits the change and pushes it to the PR's branch | **yes**, showing the diff |
+| `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
+| `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
 | `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description | **yes** (the description is shown) |
 | `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items); merges one | **yes** |
@@ -338,6 +345,31 @@ tasks and pushes can't be undone from here; the list says so.
    someone pushed in the meantime the push fails and nothing is lost; ask it
    to try again from the new tip.
 5. It drafts a reply ("Fixed in abc123: ...") into the batch queue.
+
+### Implement a work item
+
+1. On the work item (or naming it: "implement #3001"), ask for it. Say
+   which repository and base branch if it can't tell; it asks otherwise.
+2. The agent calls `start_story`: it creates the branch on the server from
+   the base branch (e.g. `feature/3001-login-throttle` from `develop`),
+   linked to the work item like `create_branch`, and a worktree of it under
+   `{fix_root}`. An existing branch of that name is used as it is, and
+   asking again for the same work item picks up where it left off.
+3. It edits files there, then `show_fix` shows you the diff.
+4. `commit_and_push_fix` asks, with the diff, then pushes to the branch.
+5. It offers `create_pull_request` (which asks too), linking the work item.
+
+The repository has to be cloned locally: `<clones_dir>/<repo>`, as for
+reviews. `u` in `gL` deletes the branch again as long as nothing was pushed
+to it.
+
+**The agent has to be allowed to edit there.** It runs headless, so it can't
+ask you for its own permissions: anything you didn't allow up front is
+refused, and the agent stops with something like "permission denied and
+could not request permission from user". Allow file edits in `{fix_root}`
+(Claude Code: `--add-dir {fix_root}` and `Edit,Write`; Copilot: see
+[below](#github-copilot-cli)). Allowing a shell as well (to build and run
+tests) is your call; azure-vicli never needs it.
 
 ## How it works
 
