@@ -706,6 +706,17 @@ do
   if not (wins and vim.api.nvim_win_is_valid(wins.log) and vim.api.nvim_get_current_win() == wins.input) then
     return fail("gq didn't open the chat panel with the input focused")
   end
+  -- > / < resize the panel.
+  local w0 = vim.api.nvim_win_get_width(wins.log)
+  vim.cmd("stopinsert")
+  vim.api.nvim_set_current_win(wins.log)
+  feed(">")
+  local w1 = vim.api.nvim_win_get_width(wins.log)
+  feed("<")
+  if w1 ~= w0 + 5 or vim.api.nvim_win_get_width(wins.log) ~= w0 then
+    return fail("> / < didn't resize the chat: " .. w0 .. " -> " .. w1 .. " -> " .. vim.api.nvim_win_get_width(wins.log))
+  end
+  vim.api.nvim_set_current_win(wins.input)
   if vim.api.nvim_win_get_position(wins.log)[2] <= vim.api.nvim_win_get_position(diff_win)[2] then
     return fail("the chat panel isn't on the right")
   end
@@ -889,8 +900,32 @@ do
 
   -- The fix flow: the push asks first ("Allow"), then lands on the branch.
   answer = "Allow"
+  local fix_tab = vim.api.nvim_get_current_tabpage()
   e, why = ask("fix it please")
   if not need(e, why, "start_fix:", "show_fix:", "commit_and_push_fix: Pushed") then return end
+  -- show_fix opened the change in its own tab, like the reviewer: files on
+  -- the left, the diff on the right, ]c through it, q closes.
+  local cbuf = vim.fn.bufnr("azure-cli://changes")
+  if cbuf < 0 or not table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n"):find("M  src/auth.py", 1, true) then
+    return fail("show_fix didn't open the change viewer with src/auth.py")
+  end
+  local ctab = vim.fn.win_findbuf(cbuf)[1] and vim.api.nvim_win_get_tabpage(vim.fn.win_findbuf(cbuf)[1])
+  vim.api.nvim_set_current_tabpage(ctab)
+  local dwin
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(ctab)) do
+    local wb = vim.api.nvim_win_get_buf(w)
+    if not vim.b[wb].azure_cli_chat
+        and table.concat(vim.api.nvim_buf_get_lines(wb, 0, -1, false), "\n"):find("FIXED-BY-AGENT", 1, true) then dwin = w end
+  end
+  if not dwin then return fail("the change viewer doesn't show auth.py's diff") end
+  vim.api.nvim_set_current_win(dwin)
+  vim.api.nvim_win_set_cursor(dwin, { 1, 0 })
+  feed("]c")
+  local at = vim.api.nvim_get_current_line()
+  if not at:find("FIXED-BY-AGENT", 1, true) then return fail("]c in the change viewer didn't reach the change: " .. at) end
+  feed("q")
+  if vim.api.nvim_tabpage_is_valid(ctab) then return fail("q didn't close the change viewer") end
+  vim.api.nvim_set_current_tabpage(fix_tab)
   local bare = vim.env.AZVICLI_FAKE_WS .. "/origin/widgets.git"
   local subject = vim.fn.system({ "git", "--git-dir", bare, "log", "-1", "--format=%s", "feature/login-throttle" })
   local content = vim.fn.system({ "git", "--git-dir", bare, "show", "feature/login-throttle:src/auth.py" })
@@ -902,6 +937,12 @@ do
   -- the change pushed there (asks first - answer is still "Allow").
   e, why = ask("implement the story")
   if not need(e, why, "start_story: {", "Already started", "show_fix:", "commit_and_push_fix: Pushed", "create_pull_request") then return end
+  cbuf = vim.fn.bufnr("azure-cli://changes")
+  if cbuf < 0 or not table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n"):find("A  STORY.md", 1, true) then
+    return fail("show_fix didn't list the story's new file")
+  end
+  pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(vim.fn.win_findbuf(cbuf)[1])))
+  vim.api.nvim_set_current_tabpage(fix_tab)
   subject = vim.fn.system({ "git", "--git-dir", bare, "log", "-1", "--format=%s", "feature/3001-story" })
   content = vim.fn.system({ "git", "--git-dir", bare, "show", "feature/3001-story:STORY.md" })
   if not subject:find("Implement the login throttle story", 1, true) or not content:find("IMPLEMENTED-BY-AGENT", 1, true) then

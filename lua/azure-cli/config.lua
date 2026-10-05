@@ -90,7 +90,7 @@ local DEFAULT_KEYS = {
     send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
     cancel = "<C-c>", model = "gm", agent = "ga", prompts = "gp", history = "gh", audit = "gL",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
-    back = "<BS>", hide = "q", toggle = "gq", help = "?",
+    back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
   },
 }
 

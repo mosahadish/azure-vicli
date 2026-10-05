@@ -8,8 +8,9 @@
 --   start_story          the same for implementing a work item: a new branch
 --                        on the server (linked to the work item, as
 --                        create_branch makes it) and a worktree of it
---   show_fix             the change so far, shown to the user in a diff float
---                        and returned to the agent
+--   show_fix             the change so far, shown to the user file by file in
+--                        a tab of its own (chat/changes.lua) and returned to
+--                        the agent
 --   commit_and_push_fix  commits it and pushes it to the branch - asks first,
 --                        showing the diff
 --   discard_fix          throws the change away
@@ -64,12 +65,9 @@ function M.diff(wt, cb, git)
   end)
 end
 
--- The diff in a float, for the user to read.
-function M.show(title, diff)
-  local lines = vim.split(diff ~= "" and diff or "(no changes yet)", "\n", { plain = true })
-  local win, buf = require("azure-cli.ui").open_float(lines, { big = true, title = title, focus = false })
-  if buf then vim.bo[buf].filetype = "diff" end
-  return win
+-- The change in its own tab, file by file, like a PR in the reviewer.
+function M.show(title, dir, diff)
+  return require("azure-cli.chat.changes").open(title, dir, vim.split(diff, "\n", { plain = true }))
 end
 
 setmetatable(M, { __call = function(_, T)
@@ -214,7 +212,7 @@ setmetatable(M, { __call = function(_, T)
     },
     {
       name = "show_fix",
-      description = "Shows the user the change made in the start_fix or start_story directory (a diff window) and "
+      description = "Shows the user the change made in the start_fix or start_story directory (in a tab, file by file) and "
         .. "returns the diff. Give pr_id for a fix, work_item_id for a story.",
       schema = target_schema,
       risk = "read",
@@ -223,7 +221,7 @@ setmetatable(M, { __call = function(_, T)
         if not t then return done(nil, why) end
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
-          M.show("Proposed change - " .. t.label, diff)
+          M.show("Proposed change - " .. t.label, t.dir, diff)
           if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
           done({ stat = stat, diff = diff })
         end, T.git)

@@ -53,6 +53,7 @@ until you hide it. The conversation is the same in every tab.
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `ga` / `gm` | Choose the agent / the model |
 | `<C-c>` | Stop the agent |
+| `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
 | `<BS>` | Back to the screen next to the panel |
 | `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
 | `?` | These keys |
@@ -310,7 +311,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
 | `requeue_build` | Queues the PR's build again | no |
-| `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you as a diff); throwing it away | no |
+| `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you in a tab like the reviewer: changed files on the left, `]c`/`[c` through the changes); throwing it away | no |
 | `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
@@ -344,7 +345,12 @@ tasks and pushes can't be undone from here; the list says so.
    its latest commit, under `{fix_root}` (Neovim's cache directory), never
    your own checkout.
 3. It edits the files there with its own tools, then `show_fix` opens the
-   diff for you.
+   change in a tab of its own, laid out like the reviewer: the changed files
+   on the left (moving through them previews each), the file's diff on the
+   right with the reviewer's keys - `]c` / `[c` jump between changes and on
+   into the next file, `<BS>` goes back to the files, `gf` opens the file in
+   the worktree to edit it yourself, `<` / `>` resize, `q` closes. The chat
+   comes along into that tab.
 4. `commit_and_push_fix` asks you, with the diff next to the question, then
    commits (with your git identity) and pushes to the PR's branch. If
    someone pushed in the meantime the push fails and nothing is lost; ask it
@@ -360,7 +366,7 @@ tasks and pushes can't be undone from here; the list says so.
    linked to the work item like `create_branch`, and a worktree of it under
    `{fix_root}`. An existing branch of that name is used as it is, and
    asking again for the same work item picks up where it left off.
-3. It edits files there, then `show_fix` shows you the diff.
+3. It edits files there, then `show_fix` shows you the change.
 4. `commit_and_push_fix` asks, with the diff, then pushes to the branch.
 5. It offers `create_pull_request` (which asks too), linking the work item.
 

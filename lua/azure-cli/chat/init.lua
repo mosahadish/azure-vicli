@@ -307,6 +307,8 @@ local function ensure_bufs()
     KEYS.bind(b, "chat", "prompts", function() pick_prompt() end, { desc = "run a saved prompt" })
     KEYS.bind(b, "chat", "history", function() pick_history() end, { desc = "open an earlier conversation" })
     KEYS.bind(b, "chat", "audit", function() show_audit() end, { desc = "what the agent changed (u undoes)" })
+    KEYS.bind(b, "chat", "resize_less", function() M.resize(-1) end, { desc = "make the chat smaller" })
+    KEYS.bind(b, "chat", "resize_more", function() M.resize(1) end, { desc = "make the chat bigger" })
     KEYS.bind(b, "chat", "back", function()
       local w = M.main_win()
       if w and vim.api.nvim_win_is_valid(w) then vim.api.nvim_set_current_win(w) end
@@ -353,6 +355,7 @@ end
 -- The tabs the panel belongs in: azure-vicli's own screens.
 local PLUGIN_FT = {
   ["azurecli-dashboard"] = true, ["azurecli-files"] = true, ["azurecli-workitems"] = true, ["azurecli-workitem"] = true,
+  ["azurecli-changes"] = true,
 }
 local function plugin_tab(tab)
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
@@ -387,7 +390,7 @@ local function open_here(focus)
   vim.cmd(cmd)
   local log = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(log, log_buf)
-  local size = cfg.size or (vertical and 0.35 or 0.3)
+  local size = st.size or cfg.size or (vertical and 0.35 or 0.3)
   local total = vertical and vim.o.columns or vim.o.lines
   if size <= 1 then size = math.floor(total * size) end
   size = math.max(vertical and 30 or 8, math.floor(size))
@@ -424,6 +427,23 @@ local function open_here(focus)
   pcall(vim.api.nvim_exec_autocmds, "VimResized", {})
 end
 
+-- < / >: the panel narrower or wider (shorter or taller at the top or
+-- bottom). The size sticks for the session, in every tab it follows into.
+local function resize(dir)
+  local st = STATE()
+  local w = st.wins[vim.api.nvim_get_current_tabpage()]
+  if not (w and w.log and vim.api.nvim_win_is_valid(w.log)) then return end
+  local pos = config().position or "right"
+  if pos == "right" or pos == "left" then
+    st.size = math.max(30, vim.api.nvim_win_get_width(w.log) + dir * 5)
+    pcall(vim.api.nvim_win_set_width, w.log, st.size)
+  else
+    st.size = math.max(8, vim.api.nvim_win_get_height(w.log) + dir * 2)
+    pcall(vim.api.nvim_win_set_height, w.log, st.size)
+  end
+  pcall(vim.api.nvim_exec_autocmds, "VimResized", {})
+end
+
 local function close_here()
   local st = STATE()
   local tab = vim.api.nvim_get_current_tabpage()
@@ -437,6 +457,8 @@ local function close_here()
   st.wins[tab] = nil
   pcall(vim.api.nvim_exec_autocmds, "VimResized", {})
 end
+
+M.resize = resize
 
 function M.show(focus)
   STATE().visible = true
@@ -869,6 +891,7 @@ show_help = function()
     "Panel",
     { "back", "back to the screen next to the chat" }, { "hide", "hide the chat (gq shows it again)" },
     { "toggle", "hide the chat - the same key on a screen takes you back to it" },
+    { "resize_less", "make the chat smaller" }, { "resize_more", "make the chat bigger" },
     { "help", "this help" },
   }, { notes = {
     "The agent sees what you're looking at - the PR, work item, file, line, comment thread or selection "

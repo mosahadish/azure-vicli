@@ -236,6 +236,14 @@ do
     cst.running = nil
     check("status: a spinner frame that turns with the tick", a ~= "" and b ~= "" and a ~= b and a:find(" 0s$"), a .. " / " .. b)
   end
+  do
+    local CHG = require("azure-cli.chat.changes")
+    local f = CHG.files({ "diff --git a/x.cs b/x.cs", "index 1..2 100644", "--- a/x.cs", "+++ b/x.cs", "@@ -1 +1 @@", "-a", "+b",
+      "diff --git a/n.md b/n.md", "new file mode 100644", "--- /dev/null", "+++ b/n.md", "@@ -0,0 +1 @@", "+hi",
+      "diff --git a/d.txt b/d.txt", "deleted file mode 100644", "--- a/d.txt", "+++ /dev/null", "@@ -1 +0,0 @@", "-bye" })
+    check("changes: files in diff order with their status", #f == 3 and f[1].path == "x.cs" and f[1].status == "M"
+      and f[2].path == "n.md" and f[2].status == "A" and f[3].path == "d.txt" and f[3].status == "D", vim.inspect(f))
+  end
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
