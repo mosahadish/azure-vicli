@@ -244,6 +244,17 @@ do
     check("changes: files in diff order with their status", #f == 3 and f[1].path == "x.cs" and f[1].status == "M"
       and f[2].path == "n.md" and f[2].status == "A" and f[3].path == "d.txt" and f[3].status == "D", vim.inspect(f))
   end
+  do
+    local FIX = require("azure-cli.chat.tools_fix")
+    local wt = "/c/wt/App-wi1"
+    check("delete_fix_file: paths inside the worktree", FIX.inside(wt, "src/a.cs") == "src/a.cs"
+      and FIX.inside(wt, "src\\b.cs") == "src/b.cs" and FIX.inside(wt, "./x/../y.cs") == "y.cs"
+      and FIX.inside(wt, wt .. "/docs/m.md") == "docs/m.md")
+    check("delete_fix_file: and nothing outside it", FIX.inside(wt, "../other/a.cs") == nil
+      and FIX.inside(wt, "/c/wt/App-wi10/a.cs") == nil and FIX.inside(wt, "/etc/passwd") == nil
+      and FIX.inside(wt, "x/../../a") == nil and FIX.inside(wt, ".git/config") == nil and FIX.inside(wt, ".") == nil
+      and FIX.inside(wt, "") == nil)
+  end
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft

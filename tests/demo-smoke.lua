@@ -958,7 +958,12 @@ do
   -- The story flow: a branch from main linked to #3001, a worktree of it,
   -- the change pushed there (asks first - answer is still "Allow").
   e, why = ask("implement the story")
-  if not need(e, why, "start_story: {", "Already started", "show_fix:", "commit_and_push_fix: Pushed", "create_pull_request") then return end
+  if not need(e, why, "start_story: {", "Already started", "show_fix:", "commit_and_push_fix: Pushed", "create_pull_request",
+    "delete_fix_file: Deleted SCRATCH.md", "delete_fix_file: Deleted README.md", "outside.txt isn't inside") then return end
+  local tree = vim.fn.system({ "git", "--git-dir", bare, "ls-tree", "-r", "--name-only", "feature/3001-story" })
+  if tree:find("SCRATCH.md", 1, true) or tree:find("README.md", 1, true) then
+    return fail("delete_fix_file's deletions aren't in the pushed story: " .. tree)
+  end
   cbuf = vim.fn.bufnr("azure-cli://changes")
   if cbuf < 0 or not table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n"):find("A  STORY.md", 1, true) then
     return fail("show_fix didn't list the story's new file")

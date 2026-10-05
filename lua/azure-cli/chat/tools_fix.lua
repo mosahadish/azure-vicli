@@ -14,6 +14,8 @@
 --   commit_and_push_fix  commits it and pushes it to the branch - asks first,
 --                        showing the diff
 --   discard_fix          throws the change away
+--   delete_fix_file      deletes a file inside the worktree (the agent's
+--                        own file tools can't), refusing any path outside it
 --
 -- show/commit/discard take pr_id for a PR's fix, work_item_id for a story.
 --
@@ -38,6 +40,30 @@ end
 -- detached, like a fix's, so the user's clone may have the branch out too).
 function M.story_path(repo, id)
   return M.root() .. "/" .. (tostring(repo) .. "-wi" .. tostring(id)):gsub("[^%w%._%-]", "_")
+end
+
+-- `path` (relative to worktree `wt`, or absolute inside it; / or \) as a
+-- path relative to `wt`, or nil when it points outside it. Pure.
+function M.inside(wt, path)
+  if type(path) ~= "string" or path == "" then return nil end
+  local root = (wt:gsub("\\", "/"):gsub("/+$", ""))
+  local p = path:gsub("\\", "/")
+  if p:match("^%a:/") or p:sub(1, 1) == "/" then
+    local fold = vim.fn.has("win32") == 1 and string.lower or function(x) return x end
+    if fold(p:sub(1, #root + 1)) ~= fold(root .. "/") then return nil end
+    p = p:sub(#root + 2)
+  end
+  local parts = {}
+  for seg in p:gmatch("[^/]+") do
+    if seg == ".." then
+      if #parts == 0 then return nil end
+      table.remove(parts)
+    elseif seg ~= "." then
+      parts[#parts + 1] = seg
+    end
+  end
+  if #parts == 0 or parts[1] == ".git" then return nil end
+  return table.concat(parts, "/")
 end
 
 -- Work item `id`'s story worktree, whichever repository: dir, branch.
@@ -295,6 +321,44 @@ setmetatable(M, { __call = function(_, T)
               end)
             end)
           end)
+        end)
+      end,
+    },
+    {
+      name = "delete_fix_file",
+      description = "Deletes a file in the start_fix or start_story directory (your own file tools can't delete). "
+        .. "`path` is relative to that directory (or absolute inside it); anything outside it is refused. The "
+        .. "deletion is part of the change show_fix shows and commit_and_push_fix commits. Give pr_id for a fix, "
+        .. "work_item_id for a story. Runs without asking.",
+      schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
+        work_item_id = target_schema.properties.work_item_id, path = { type = "string" } }, required = { "path" } },
+      risk = "write",
+      run = function(args, _, done)
+        local t, why = locate(args)
+        if not t then return done(nil, why) end
+        local rel = M.inside(t.dir, args.path)
+        if not rel then return done(nil, tostring(args.path) .. " isn't inside " .. t.dir .. " - refused") end
+        local full = t.dir .. "/" .. rel
+        -- Not through a symlinked directory that leads out of it either.
+        local parent = vim.fn.resolve(vim.fn.fnamemodify(full, ":h"))
+        local root = vim.fn.resolve(t.dir)
+        if parent ~= root and not M.inside(root, parent) then
+          return done(nil, tostring(args.path) .. " leads outside " .. t.dir .. " - refused")
+        end
+        if vim.fn.isdirectory(full) == 1 then return done(nil, rel .. " is a directory - delete its files one by one") end
+        if vim.fn.filereadable(full) == 0 and vim.fn.getftype(full) == "" then return done(nil, rel .. " doesn't exist") end
+        -- A tracked file through git (so it shows as deleted), an untracked
+        -- one - the agent's own new file - simply removed.
+        T.git({ "git", "-C", t.dir, "ls-files", "--error-unmatch", "--", rel }, function(tracked)
+          local function finish(ok, err)
+            if not ok then return done(nil, "deleting " .. rel .. " failed: " .. tostring(err)) end
+            done("Deleted " .. rel .. " (" .. t.label .. ").")
+          end
+          if tracked then
+            T.git({ "git", "-C", t.dir, "rm", "-q", "-f", "--", rel }, function(ok, _, err) finish(ok, err) end)
+          else
+            finish(vim.fn.delete(full) == 0, "could not remove the file")
+          end
         end)
       end,
     },

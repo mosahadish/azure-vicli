@@ -314,6 +314,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `requeue_build` | Queues the PR's build again | no |
 | `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you in a tab like the reviewer: changed files on the left, `]c`/`[c` through the changes); throwing it away | no |
 | `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
+| `delete_fix_file` | Deletes a file in the fix/story worktree (the agent's own file tools can't delete); any path outside the worktree is refused, so it needs no shell permission | no |
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
 | `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description | **yes** (the description is shown) |

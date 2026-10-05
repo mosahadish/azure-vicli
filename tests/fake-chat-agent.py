@@ -134,6 +134,11 @@ def main():
                                               "name": "feature/3001-story"})[0])
         with open(os.path.join(res["directory"], "STORY.md"), "w", encoding="utf-8") as f:
             f.write("IMPLEMENTED-BY-AGENT\n")
+        with open(os.path.join(res["directory"], "SCRATCH.md"), "w", encoding="utf-8") as f:
+            f.write("temporary\n")
+        call("delete_fix_file", {"work_item_id": 3001, "path": "SCRATCH.md"})
+        call("delete_fix_file", {"work_item_id": 3001, "path": "README.md"})
+        call("delete_fix_file", {"work_item_id": 3001, "path": "../outside.txt"})
         call("start_story", {"work_item_id": 3001, "repo": "widgets", "from": "main", "name": "feature/3001-story"})
         call("show_fix", {"work_item_id": 3001})
         call("commit_and_push_fix", {"work_item_id": 3001, "message": "Implement the login throttle story"})
