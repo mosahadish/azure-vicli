@@ -297,6 +297,34 @@ do
       grep(C.definition_patterns("Grip"), "Grip", true))
     vim.fn.delete(dir, "rf")
   end
+  do
+    -- The change viewer previews the row the cursor settles on, not every
+    -- row it passes (debounced like the reviewer's file list).
+    local CHG = require("azure-cli.chat.changes")
+    local raw = {}
+    for f = 1, 3 do
+      vim.list_extend(raw, { "diff --git a/f" .. f .. ".txt b/f" .. f .. ".txt", "--- a/f" .. f .. ".txt",
+        "+++ b/f" .. f .. ".txt", "@@ -1 +1 @@", "-old" .. f, "+new" .. f })
+    end
+    local here = vim.api.nvim_get_current_tabpage()
+    CHG.open("Proposed change - test", vim.fn.tempname(), raw)
+    local lw = vim.fn.win_findbuf(vim.fn.bufnr("azure-cli://changes"))[1]
+    local tab = vim.api.nvim_win_get_tabpage(lw)
+    local dw
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do if w ~= lw then dw = w end end
+    local function shown() return table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(dw), 0, -1, false), " ") end
+    vim.api.nvim_set_current_win(lw)
+    for _, row in ipairs({ 2, 3 }) do
+      vim.api.nvim_win_set_cursor(lw, { row, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = vim.api.nvim_win_get_buf(lw) })
+    end
+    local at_once = shown()
+    vim.wait(1000, function() return shown():find("new3", 1, true) ~= nil end, 10)
+    check("changes: j/k don't wait for each file's diff; the row it rests on is shown",
+      at_once:find("new1", 1, true) and shown():find("new3", 1, true), at_once .. " / " .. shown())
+    vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(tab))
+    vim.api.nvim_set_current_tabpage(here)
+  end
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft

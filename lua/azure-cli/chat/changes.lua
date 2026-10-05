@@ -24,6 +24,10 @@ local ns = vim.api.nvim_create_namespace("azure_cli_chat_changes")
 
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
 
+-- How long the cursor rests on a file-list row before its diff is shown -
+-- the reviewer's own preview-on-move delay.
+M.PREVIEW_MS = 80
+
 local function KEYS() return require("azure-cli.keys") end
 local function UI() return require("azure-cli.ui") end
 local function notify(msg) require("azure-cli.shell").notify(msg) end
@@ -240,14 +244,23 @@ local function setup_list(buf)
   K.bind(buf, "list", "quit", close, { desc = "close" })
   K.bind(buf, "list", "help", function() help("list", LIST_HELP) end, { desc = "keys" })
   bind_common(buf, "list")
-  -- Moving through the list previews each file's change.
+  -- Moving through the list previews each file's change, debounced like
+  -- the reviewer's file list: only the row the cursor settles on is shown,
+  -- so j/k stay instant while skipping past files.
+  local timer = vim.uv.new_timer()
   vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = buf,
     callback = function()
-      local i = under()
-      if view and i ~= view.current and view.files[i] then show(i, false) end
+      timer:stop()
+      timer:start(M.PREVIEW_MS, 0, vim.schedule_wrap(function()
+        if not (view and vim.api.nvim_buf_is_valid(buf) and valid_win(view.list_win)) then return end
+        if vim.api.nvim_win_get_buf(view.list_win) ~= buf then return end
+        local i = vim.api.nvim_win_get_cursor(view.list_win)[1]
+        if i ~= view.current and view.files[i] then show(i, false) end
+      end))
     end,
   })
+  vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, callback = function() timer:stop() timer:close() end })
 end
 
 function M.open(title, dir, raw, keep)
