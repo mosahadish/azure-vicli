@@ -285,7 +285,8 @@ end
 -- heading per turn (the name, then a dimmer " · on PR #101" / " ·
 -- working… 4s"), your text, the agent's tool calls as they happen, then
 -- its markdown answer. Returns lines, roles (line -> one of you_head, you,
--- agent_head, agent, tool_read, tool_write, tool_err, note, intro; nil for
+-- agent_head, agent, agent_log, tool_read, tool_write, tool_err, note,
+-- intro; nil for
 -- the gap between turns), name_end (heading line -> byte where its dim
 -- part starts) and entry_at (line -> index into entries). Pure.
 function M.render(entries, now, agent_label)
@@ -327,12 +328,42 @@ function M.render(entries, now, agent_label)
         add("  " .. t, role)
       end
       if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("", "agent") end
-      if e.text and e.text ~= "" then add_text(e.text, "agent") end
+      if e.text and e.text ~= "" then
+        local body = {}
+        for l in (e.text .. "\n"):gmatch("(.-)\n") do body[#body + 1] = l end
+        local kinds = M.answer_roles(body)
+        for k, l in ipairs(body) do add(l, kinds[k]) end
+      end
     else
       add_text(e.text or "", "note")
     end
   end
   return lines, roles, name_end, entry_at
+end
+
+-- An agent CLI's own log of its steps inside its answer (Copilot's
+-- "● Read x.cs" with "│ ..." / "└ 35 lines read" under it, "× Run ..." for
+-- a failed one): the role each of `lines` gets - agent_log for a step and
+-- the non-blank lines under it, tool_err for a failed one, agent for the
+-- answer itself. Pure.
+local STEP = { "^%s*\u{25CF}%s", "^%s*\u{2713}%s", "^%s*\u{2714}%s" }
+local FAILED = { "^%s*\u{00D7}%s", "^%s*\u{2717}%s", "^%s*\u{2718}%s" }
+function M.answer_roles(lines)
+  local roles, block = {}, nil
+  for i, l in ipairs(lines) do
+    local start
+    for _, p in ipairs(STEP) do if l:find(p) then start = "agent_log" end end
+    for _, p in ipairs(FAILED) do if l:find(p) then start = "tool_err" end end
+    if start then
+      block = start
+    elseif l:match("^%s*$") then
+      block = nil
+    elseif block and not l:match("^%s") and not l:find("^[\u{2502}\u{2514}\u{251C}]") then
+      block = nil  -- unindented text right after a step: the answer again
+    end
+    roles[i] = start or block or "agent"
+  end
+  return roles
 end
 
 -- A conversation's title for the history list: its first message, cut.

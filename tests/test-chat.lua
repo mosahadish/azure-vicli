@@ -325,6 +325,30 @@ do
     vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(tab))
     vim.api.nvim_set_current_tabpage(here)
   end
+  do
+    -- diffbuf.lua: what the reviewer and the change viewer both move by.
+    local D = require("azure-cli.diffbuf")
+    local c, a, d = { kind = "ctx" }, { kind = "add" }, { kind = "del" }
+    local map = { c, d, a, c, c, a, a, c }  -- blocks at 2-3 and 6-7
+    check("diffbuf: ]c / [c inside a file", D.next_change(map, 1, 1) == 2 and D.next_change(map, 2, 1) == 6
+      and D.next_change(map, 6, 1) == nil and D.next_change(map, 8, -1) == 6 and D.next_change(map, 7, -1) == 2
+      and D.next_change(map, 3, -1) == nil)
+    check("diffbuf: where ]c / [c land entering a file", D.edge_change(map, 1) == 2 and D.edge_change(map, -1) == 6
+      and D.edge_change({ c, c }, 1) == nil)
+    check("diffbuf: winbar stats", D.stats(map) == " (+3 \u{2212}1)" and D.stats(nil) == "")
+    check("diffbuf: filetype", D.ft_for_path("src/A.cs") == "cs" and D.ft_for_path("x.cshtml") ~= nil)
+  end
+  do
+    -- The agent CLI's own step log, dimmed apart from its answer.
+    local r = require("azure-cli.chat.core").answer_roles({
+      "Looking at it.", "", "\u{25CF} Read StubCamera.cs", "  \u{2502} fix-worktrees\\StubCamera.cs", "  \u{2514} 35 lines read",
+      "", "Confirmed: use the 3-arg constructor.", "\u{00D7} Run full suite (shell)", "  \u{2514} Permission denied",
+      "", "All green.",
+    })
+    check("answer_roles: steps and what's under them dimmed, failures marked, the answer left alone",
+      r[1] == "agent" and r[3] == "agent_log" and r[4] == "agent_log" and r[5] == "agent_log" and r[7] == "agent"
+        and r[8] == "tool_err" and r[9] == "tool_err" and r[11] == "agent", vim.inspect(r))
+  end
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft

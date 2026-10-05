@@ -922,31 +922,9 @@ end
 -- comment on any buffer line anchors to the correct file/side. Line numbers
 -- are derived from the hunk headers (@@ -a,b +c,d @@); header/metadata lines
 -- get a nil side (not commentable).
--- Map a repo path to a bundled Vim syntax name so diff buffers get language
--- syntax colouring (no LSP). nil = leave unhighlighted.
-local FT_BY_EXT = {
-  cs = "cs", lua = "lua", py = "python", js = "javascript", jsx = "javascriptreact",
-  ts = "typescript", tsx = "typescriptreact", c = "c", h = "c", cpp = "cpp",
-  cc = "cpp", cxx = "cpp", hpp = "cpp", java = "java", go = "go", rb = "ruby",
-  rs = "rust", php = "php", sh = "sh", bash = "sh", ps1 = "ps1", psm1 = "ps1",
-  json = "json", yaml = "yaml", yml = "yaml", xml = "xml", html = "html",
-  htm = "html", css = "css", scss = "scss", md = "markdown", sql = "sql",
-  proto = "proto", toml = "toml", ini = "dosini", vim = "vim", kt = "kotlin",
-  swift = "swift", scala = "scala", pl = "perl", r = "r", dart = "dart",
-  fs = "fsharp", gradle = "groovy", groovy = "groovy", cshtml = "html",
-}
-local function ft_for_path(path)
-  -- Neovim's own detection first (Dockerfile, Makefile, *.tf, *.vue,
-  -- *.csproj, ... - anything its filetype tables know); the extension
-  -- table is the fallback for the few it doesn't.
-  if vim.filetype and vim.filetype.match then
-    local ok, ft = pcall(vim.filetype.match, { filename = path })
-    if ok and ft and ft ~= "" then return ft end
-  end
-  local ext = (path or ""):match("%.([%w_]+)$")
-  if not ext then return nil end
-  return FT_BY_EXT[ext:lower()]
-end
+-- The filetype a diff buffer gets (its language's syntax colours) - shared
+-- with the chat's change viewer, see lua/azure-cli/diffbuf.lua.
+local ft_for_path = require("azure-cli.diffbuf").ft_for_path
 
 -- Parses one file's raw `git diff` output into display lines plus the
 -- per-line {side, lineno} map (see cache.lua).
@@ -1125,9 +1103,7 @@ end
 -- A changed line is one the diff marked as added or removed (tracked in the map,
 -- since the +/- prefixes are stripped from the displayed text).
 local function is_change_line(buf, i)
-  local m = maps_by_buf[buf]
-  local e = m and m[i]
-  return (e ~= nil and (e.kind == "add" or e.kind == "del")) or false
+  return require("azure-cli.diffbuf").is_change(maps_by_buf[buf], i)
 end
 
 -- Jump to the start of the next (dir=1) or previous (dir=-1) block of changed
@@ -1143,14 +1119,8 @@ end
 -- EXT.open_file_at, which the closing loader defines once they exist.
 local function jump_change(dir)
   local buf = vim.api.nvim_get_current_buf()
-  local total = vim.api.nvim_buf_line_count(buf)
-  local i = vim.api.nvim_win_get_cursor(0)[1]
-  while i >= 1 and i <= total and is_change_line(buf, i) do i = i + dir end
-  while i >= 1 and i <= total and not is_change_line(buf, i) do i = i + dir end
-  if i >= 1 and i <= total then
-    if dir < 0 then
-      while i - 1 >= 1 and is_change_line(buf, i - 1) do i = i - 1 end
-    end
+  local i = require("azure-cli.diffbuf").next_change(maps_by_buf[buf], vim.api.nvim_win_get_cursor(0)[1], dir)
+  if i then
     vim.api.nvim_win_set_cursor(0, { i, 0 })
     vim.cmd("normal! zz")
     return
@@ -1186,23 +1156,10 @@ local function jump_change(dir)
       vim.schedule(function()
         if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
         if vim.api.nvim_win_get_buf(diff_win) ~= dbuf then return end  -- moved on meanwhile
-        local first, last
-        for ln, m in ipairs(map) do
-          if m.kind == "add" or m.kind == "del" then
-            first = first or ln
-            last = ln
-          end
-        end
-        if not first then
+        local target = require("azure-cli.diffbuf").edge_change(map, dir)
+        if not target then
           try_index(idx + dir)
           return
-        end
-        local target = dir > 0 and first or last
-        if dir < 0 then
-          while target - 1 >= 1 and map[target - 1] and
-            (map[target - 1].kind == "add" or map[target - 1].kind == "del") do
-            target = target - 1
-          end
         end
         vim.api.nvim_win_set_cursor(diff_win, { target, 0 })
         vim.api.nvim_win_call(diff_win, function() vim.cmd("normal! zz") end)
@@ -1347,48 +1304,12 @@ if vim.g.colors_name == nil then
   end
 end
 
--- Diff add/remove markers: a gutter sign + subtle full-line background, so the
--- code keeps its language syntax colours while changes stay obvious now that the
--- +/- prefixes are stripped. Kept in its own namespace so a thread refresh
--- (which only clears comments_ns) never wipes them. Linked to the standard
--- DiffAdd/DiffDelete/DiffText groups with `default = true` (see UI.link_hl
--- for why), so plugin mode picks up the active colorscheme's own
--- diff colours and standalone/init.lua's explicit palette (applied after
--- this, non-default) still wins there.
-pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffAddBg",   { default = true, link = "DiffAdd" })
-pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffDelBg",   { default = true, link = "DiffDelete" })
-pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffAddSign", { default = true, link = "DiffAdd" })
-pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffDelSign", { default = true, link = "DiffDelete" })
--- Word-level highlight inside a changed line pair (see CACHE.word_diff):
--- the same hue as the line background, stronger and bold, so a one-token
--- edit on a long line stands out instead of the whole line reading as
--- uniformly changed. DiffText is exactly vim's own "changed text within a
--- changed line" group.
-pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffAddWord", { default = true, link = "DiffText" })
-pcall(vim.api.nvim_set_hl, 0, "AzureCliDiffDelWord", { default = true, link = "DiffText" })
-local function decorate_diff(buf, lines, map)
-  vim.api.nvim_buf_clear_namespace(buf, diff_ns, 0, -1)
-  for bl, m in ipairs(map) do
-    if m.kind == "add" or m.kind == "del" then
-      local is_add = m.kind == "add"
-      vim.api.nvim_buf_set_extmark(buf, diff_ns, bl - 1, 0, {
-        sign_text = is_add and "+" or "-",
-        sign_hl_group = is_add and "AzureCliDiffAddSign" or "AzureCliDiffDelSign",
-        line_hl_group = is_add and "AzureCliDiffAddBg" or "AzureCliDiffDelBg",
-      })
-    end
-  end
-  -- Narrow modified-block line pairs down to the bytes that actually
-  -- changed (CACHE.word_diff pairs the i-th deleted line with the i-th
-  -- added line of each such block), so a one-token change on a long line
-  -- stands out instead of the whole line reading uniformly green/red.
-  for _, w in ipairs(CACHE.word_diff(lines, map)) do
-    vim.api.nvim_buf_set_extmark(buf, diff_ns, w.line - 1, w.s, {
-      end_col = w.e,
-      hl_group = w.kind == "add" and "AzureCliDiffAddWord" or "AzureCliDiffDelWord",
-    })
-  end
-end
+-- The diff marks (+/- signs, line colours, changed words) and their
+-- highlight groups - shared with the chat's change viewer, see
+-- lua/azure-cli/diffbuf.lua. They use the same "azure_cli_diff" namespace as
+-- diff_ns, so a thread refresh (which only clears comments_ns) never wipes them.
+require("azure-cli.diffbuf").setup_hl()
+local decorate_diff = require("azure-cli.diffbuf").decorate
 
 -- Pick a thread to act on: if there's exactly one, use it; otherwise prompt.
 local function pick_thread(threads, cb, prompt)
@@ -2398,16 +2319,8 @@ end
 
 local function set_diff_winbar(path)
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
-  local stats = ""
   local entry = diff_cache[path]
-  if entry and entry.map then
-    local adds, dels = 0, 0
-    for _, m in ipairs(entry.map) do
-      if m.kind == "add" then adds = adds + 1
-      elseif m.kind == "del" then dels = dels + 1 end
-    end
-    stats = " (+" .. adds .. " \u{2212}" .. dels .. ")"
-  end
+  local stats = require("azure-cli.diffbuf").stats(entry and entry.map)
 
   UI.wo(diff_win, "winbar", UI.winbar({ path .. stats }, EXT.mode_tags()))
 end
@@ -3120,7 +3033,7 @@ vim.api.nvim_create_autocmd("CursorMoved", {
     end
     EXT.list_last_line = line
     if preview_timer then vim.fn.timer_stop(preview_timer) end
-    preview_timer = vim.fn.timer_start(80, function()
+    preview_timer = vim.fn.timer_start(require("azure-cli.diffbuf").PREVIEW_MS, function()
       if line == OVERVIEW_ROW then
         open_overview(false)
         return

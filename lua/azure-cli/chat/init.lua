@@ -130,7 +130,7 @@ end
 -- Foreground-only on purpose: the panel's background stays whatever the
 -- window's is (a group with a background painted bands across the text).
 local HL = {
-  AzureCliChatYou = "Function", AzureCliChatAgent = "String", AzureCliChatMeta = "Comment",
+  AzureCliChatYou = "Function", AzureCliChatYouText = "Function", AzureCliChatAgent = "String", AzureCliChatMeta = "Comment",
   AzureCliChatToolRead = "Comment", AzureCliChatToolWrite = "DiagnosticWarn", AzureCliChatToolErr = "DiagnosticError",
   AzureCliChatNote = "DiagnosticInfo", AzureCliChatRef = "Underlined",
 }
@@ -138,9 +138,13 @@ local BAR = {
   you_head = "AzureCliChatYou", you = "AzureCliChatYou",
   agent_head = "AzureCliChatAgent", agent = "AzureCliChatAgent",
   tool_read = "AzureCliChatAgent", tool_write = "AzureCliChatAgent", tool_err = "AzureCliChatAgent",
+  agent_log = "AzureCliChatAgent",
   note = "AzureCliChatNote", intro = "AzureCliChatAgent",
 }
 local LINE_HL = {
+  -- Your messages in your colour, the agent's own step log dimmed, so its
+  -- answer stands out from both.
+  you = "AzureCliChatYouText", agent_log = "AzureCliChatToolRead",
   tool_read = "AzureCliChatToolRead", tool_write = "AzureCliChatToolWrite", tool_err = "AzureCliChatToolErr",
   note = "AzureCliChatNote", intro = "AzureCliChatMeta",
 }

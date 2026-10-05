@@ -45,8 +45,10 @@ function M.snapshot(win, sel)
   if not (win and vim.api.nvim_win_is_valid(win)) then return { screen = "unknown" } end
   local buf = vim.api.nvim_win_get_buf(win)
   local ft = vim.bo[buf].filetype
-  local fn = views()[ft]
-  local key = ft
+  -- A buffer showing a file under its own filetype (the change viewer's
+  -- diffs) names its screen in vim.b.azure_cli_view instead.
+  local key = vim.b[buf].azure_cli_view or ft
+  local fn = views()[key]
   if not fn then
     local pr = reviewer_pr(win)
     if pr then

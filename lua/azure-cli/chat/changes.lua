@@ -1,8 +1,9 @@
 -- lua/azure-cli/chat/changes.lua: the agent's proposed change (show_fix),
 -- shown the way the reviewer shows a PR: a tab with the changed files on the
--- left and one file's diff on the right, built from the reviewer's own parts
--- (cache.lua's parse_diff/split_diff/word_diff, review/pane.lua's line
--- numbers and folds, the same diff colours) and bound through the same
+-- left and one file's diff on the right, built from the same parts as the
+-- reviewer's diff pane - diffbuf.lua (filetype, diff marks, ]c / [c, winbar
+-- stats, preview-on-move delay), cache.lua's parse_diff/split_diff,
+-- review/pane.lua's line numbers and folds - and bound through the same
 -- keys.lua surfaces ("list" for the file list, "diff" for the diff pane), so
 -- ]c / [c, <CR>, <BS>, gf, < / > and q work as they do there - remapped ones
 -- included.
@@ -20,13 +21,10 @@
 --                             status = "A"|"D"|"R"|"M" } (pure)
 local M = {}
 
-local ns = vim.api.nvim_create_namespace("azure_cli_chat_changes")
+local DIFFBUF = require("azure-cli.diffbuf")
+local current_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_current")
 
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
-
--- How long the cursor rests on a file-list row before its diff is shown -
--- the reviewer's own preview-on-move delay.
-M.PREVIEW_MS = 80
 
 local function KEYS() return require("azure-cli.keys") end
 local function UI() return require("azure-cli.ui") end
@@ -53,32 +51,6 @@ function M.files(raw)
 end
 
 local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
-
-local function is_change(map, i)
-  local m = map[i]
-  return m ~= nil and (m.kind == "add" or m.kind == "del")
-end
-
--- The same marks the reviewer puts on a diff (review/init.lua's
--- decorate_diff): a +/- sign and line colour, the changed words stronger.
-local function decorate(buf, lines, map)
-  local CACHE = require("azure-cli.cache")
-  for bl, m in ipairs(map) do
-    if m.kind == "add" or m.kind == "del" then
-      local add = m.kind == "add"
-      vim.api.nvim_buf_set_extmark(buf, ns, bl - 1, 0, {
-        sign_text = add and "+" or "-",
-        sign_hl_group = add and "AzureCliDiffAddSign" or "AzureCliDiffDelSign",
-        line_hl_group = add and "AzureCliDiffAddBg" or "AzureCliDiffDelBg",
-      })
-    end
-  end
-  for _, w in ipairs(CACHE.word_diff(lines, map)) do
-    vim.api.nvim_buf_set_extmark(buf, ns, w.line - 1, w.s, {
-      end_col = w.e, hl_group = w.kind == "add" and "AzureCliDiffAddWord" or "AzureCliDiffDelWord",
-    })
-  end
-end
 
 local LIST_HELP = {
   "Files",
@@ -120,16 +92,18 @@ local function resize(delta)
   pcall(vim.api.nvim_win_set_width, view.list_win, view.width)
 end
 
-local function set_diff_winbar(path)
+-- The reviewer's winbar: the path and its +adds -dels.
+local function set_diff_winbar(path, map)
   if not valid_win(view.diff_win) then return end
-  local K = KEYS()
-  local hints = {}
-  for _, h in ipairs({ K.label("diff", "next_hunk", "next change"), K.label("diff", "back", "files"),
-    K.label("diff", "open_file", "edit"), K.label("diff", "help", "keys") }) do
-    if h ~= "" then hints[#hints + 1] = h end
-  end
-  pcall(UI().wo, view.diff_win, "winbar", "%#Title# " .. path:gsub("%%", "%%%%") .. "%* %#Comment#  "
-    .. table.concat(hints, "  "))
+  pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) }, {}))
+end
+
+-- The file-list row of the file in the diff pane, marked as the reviewer
+-- marks it (it stays visible while the focus is in the diff pane).
+local function mark_current(idx)
+  if not (view.list_buf and vim.api.nvim_buf_is_valid(view.list_buf)) then return end
+  vim.api.nvim_buf_clear_namespace(view.list_buf, current_ns, 0, -1)
+  if idx then pcall(vim.api.nvim_buf_add_highlight, view.list_buf, current_ns, "AzureCliCurrentFile", idx - 1, 0, -1) end
 end
 
 local jump  -- forward
@@ -154,11 +128,11 @@ local function diff_buf(idx)
   vim.bo[buf].bufhidden = "hide"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
-  vim.bo[buf].filetype = "azurecli-changes"  -- the chat's describer, and its tab-follow
-  local ok, ft = pcall(vim.filetype.match, { filename = f.path })
-  if ok and ft then pcall(function() vim.bo[buf].syntax = ft end) end
-  pcall(vim.treesitter.start, buf, ok and ft and vim.treesitter.language.get_lang(ft) or nil)
-  decorate(buf, lines, map)
+  -- The file's own filetype, as the reviewer sets it; the chat finds this
+  -- screen by the buffer variable instead.
+  vim.b[buf].azure_cli_view = "azurecli-changes"
+  vim.bo[buf].filetype = DIFFBUF.ft_for_path(f.path) or "text"
+  DIFFBUF.decorate(buf, lines, map)
   require("azure-cli.review.pane").register(buf, map)
   view.bufs[f.path] = buf
   view.maps = view.maps or {}
@@ -188,8 +162,12 @@ local function show(idx, focus)
   if not (view and view.files[idx] and valid_win(view.diff_win)) then return nil end
   local buf = diff_buf(idx)
   vim.api.nvim_win_set_buf(view.diff_win, buf)
+  -- Window options reset when a window shows a buffer for the first time:
+  -- (re)applied after every switch, as the reviewer does.
+  UI().plain_window(view.diff_win, {})
   require("azure-cli.review.pane").apply(view.diff_win)
-  set_diff_winbar(view.files[idx].path)
+  set_diff_winbar(view.files[idx].path, view.maps[buf].map)
+  mark_current(idx)
   view.current = idx
   if valid_win(view.list_win) then pcall(vim.api.nvim_win_set_cursor, view.list_win, { idx, 0 }) end
   if focus then vim.api.nvim_set_current_win(view.diff_win) end
@@ -201,27 +179,20 @@ end
 jump = function(dir)
   local cur = view and view.maps and view.maps[vim.api.nvim_get_current_buf()]
   if not cur then return end
-  local function land(map, i)
-    if dir < 0 then while i > 1 and is_change(map, i - 1) do i = i - 1 end end
+  local i = DIFFBUF.next_change(cur.map, vim.api.nvim_win_get_cursor(0)[1], dir)
+  if i then
     vim.api.nvim_win_set_cursor(0, { i, 0 })
-    vim.cmd("normal! zvzz")
+    vim.cmd("normal! zz")
+    return
   end
-  local map, n = cur.map, #cur.map
-  local i = vim.api.nvim_win_get_cursor(0)[1]
-  while i >= 1 and i <= n and is_change(map, i) do i = i + dir end
-  while i >= 1 and i <= n and not is_change(map, i) do i = i + dir end
-  if i >= 1 and i <= n then return land(map, i) end
   local idx = cur.idx + dir
   while view.files[idx] do
-    local buf = diff_buf(idx)
-    local m = view.maps[buf].map
-    local first, last
-    for ln = 1, #m do
-      if is_change(m, ln) then first = first or ln; last = ln end
-    end
-    if first then
+    local target = DIFFBUF.edge_change(view.maps[diff_buf(idx)].map, dir)
+    if target then
       show(idx, true)
-      return land(m, dir > 0 and first or last)
+      vim.api.nvim_win_set_cursor(view.diff_win, { target, 0 })
+      vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zz") end)
+      return
     end
     idx = idx + dir
   end
@@ -252,7 +223,7 @@ local function setup_list(buf)
     buffer = buf,
     callback = function()
       timer:stop()
-      timer:start(M.PREVIEW_MS, 0, vim.schedule_wrap(function()
+      timer:start(DIFFBUF.PREVIEW_MS, 0, vim.schedule_wrap(function()
         if not (view and vim.api.nvim_buf_is_valid(buf) and valid_win(view.list_win)) then return end
         if vim.api.nvim_win_get_buf(view.list_win) ~= buf then return end
         local i = vim.api.nvim_win_get_cursor(view.list_win)[1]
@@ -264,11 +235,7 @@ local function setup_list(buf)
 end
 
 function M.open(title, dir, raw, keep)
-  for group, link in pairs({ AzureCliDiffAddBg = "DiffAdd", AzureCliDiffDelBg = "DiffDelete",
-    AzureCliDiffAddSign = "DiffAdd", AzureCliDiffDelSign = "DiffDelete",
-    AzureCliDiffAddWord = "DiffText", AzureCliDiffDelWord = "DiffText" }) do
-    pcall(vim.api.nvim_set_hl, 0, group, { default = true, link = link })
-  end
+  DIFFBUF.setup_hl()
   local CACHE = require("azure-cli.cache")
   local width = view and view.width or 40
   -- The previous diff buffers go once the new ones are on screen (deleting
@@ -313,9 +280,10 @@ function M.open(title, dir, raw, keep)
   elseif #view.files > 0 then
     show(1, false)
     vim.api.nvim_set_current_win(view.diff_win)
-    local m = view.maps[vim.api.nvim_win_get_buf(view.diff_win)].map
-    for ln = 1, #m do
-      if is_change(m, ln) then vim.api.nvim_win_set_cursor(view.diff_win, { ln, 0 }) vim.cmd("normal! zvzz") break end
+    local first = DIFFBUF.edge_change(view.maps[vim.api.nvim_win_get_buf(view.diff_win)].map, 1)
+    if first then
+      vim.api.nvim_win_set_cursor(view.diff_win, { first, 0 })
+      vim.cmd("normal! zz")
     end
   end
   -- The diff pane gets the focus - again after the chat panel has followed

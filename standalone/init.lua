@@ -128,6 +128,7 @@ local function apply_palette()
   -- Chat panel (lua/azure-cli/chat/init.lua): foreground only, so the
   -- panel keeps the window's own background.
   hl("AzureCliChatYou",       { fg = "#89b4fa", bold = true })
+  hl("AzureCliChatYouText",   { fg = "#89b4fa" })
   hl("AzureCliChatAgent",     { fg = "#a6e3a1", bold = true })
   hl("AzureCliChatMeta",      { fg = "#7f849c", italic = true })
   hl("AzureCliChatToolRead",  { fg = "#6c7086" })
