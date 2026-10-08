@@ -978,7 +978,7 @@ send = function(text, opts)
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,
     session_id = st.session_id or "", model = M.current_model(agent) or "",
-    mcp_config = agent.acp and "" or write_mcp_config(addr, token),
+    mcp_config = write_mcp_config(addr, token),
     mcp_server = agent.acp and acp_mcp_server(addr, token) or nil,
     view = view_text,
     fix_root = require("azure-cli.chat.tools_fix").root(),
