@@ -76,7 +76,7 @@ SH_FILES=(azure-cli install.sh tests/demo.sh)
 # pure helpers (for its tests/test-review-*.lua) and a callable
 # `require(path)(ctx)` (for review/init.lua's EXT wiring) via a __call
 # metamethod.
-ALLOWED_GLOBALS=(_G debug dofile error ipairs math os pairs pcall require select setmetatable string table tonumber tostring type vim)
+ALLOWED_GLOBALS=(_G debug dofile error ipairs math next os pairs pcall require select setmetatable string table tonumber tostring type vim)
 
 mkdir -p "$TMP/lua" "$TMP/sh"
 
