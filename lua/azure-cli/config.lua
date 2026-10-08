@@ -186,7 +186,8 @@ local CHAT_FIELDS = {
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", followup = "table", session_pattern = "string",
-  timeout_seconds = "number", model = "string", models = "table", strip = "table",
+  timeout_seconds = "number", model = "string", models = "table", strip = "table", persistent = "boolean",
+  acp = "boolean",
 }
 local function check_chat_cmd(v, where)
   if type(v) == "table" then
