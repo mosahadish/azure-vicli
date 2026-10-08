@@ -39,7 +39,8 @@ local function STATE()
     visible = false,
     wins = {},           -- tabpage -> { log = win, input = win }
     main_win = {},       -- tabpage -> the last non-chat window
-    running = nil,       -- { job, entry, timer, cancelled }
+    running = nil,       -- { job, turn, timer, tick, cancelled } - the message in flight
+    persistent_job = nil, -- { job, agent_name, conv_id, turn } - agent.persistent's warm process
     models = {},         -- agent name -> model picked with gm
     agent_name = nil,    -- picked with ga
     sent = {},           -- what was sent, for <Up>/<Down> in the input box
@@ -585,20 +586,32 @@ local function tool_env(entry)
   }
 end
 
--- The MCP config handed to the agent: one stdio server, `azure-cli.py
--- --mcp`, with the bridge's address and token in its environment.
-local function write_mcp_config(addr, token)
+-- The MCP server definition every agent gets: one stdio server,
+-- `azure-cli.py --mcp`, with the bridge's address and token in its
+-- environment. write_mcp_config (most agents: a file, `env` as an
+-- object) and acp_mcp_server (session/new's `mcpServers`: inline, `env`
+-- as a list and a `name` field required there) both build on this.
+local function mcp_server_def(addr, token)
   local CONFIG = require("azure-cli.config")
   local argv = CONFIG.provider_cmd()
-  local path = vim.fn.stdpath("cache") .. "/azure-cli/chat-mcp.json"
-  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
   local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
   for _, k in ipairs({ "AZVICLI_CONFIG", "AZVICLI_ACCOUNTS_JSON", "AZVICLI_FAKE_WS" }) do
     if vim.env[k] and vim.env[k] ~= "" then env[k] = vim.env[k] end
   end
-  local cfg = { mcpServers = { ["azure-vicli"] = {
-    command = argv[1], args = vim.list_extend(vim.list_slice(argv, 2), { "--mcp" }), env = env,
-  } } }
+  return { command = argv[1], args = vim.list_extend(vim.list_slice(argv, 2), { "--mcp" }), env = env }
+end
+
+local function acp_mcp_server(addr, token)
+  local def = mcp_server_def(addr, token)
+  local env = {}
+  for k, v in pairs(def.env) do table.insert(env, { name = k, value = v }) end
+  return { name = "azure-vicli", command = def.command, args = def.args, env = env }
+end
+
+local function write_mcp_config(addr, token)
+  local path = vim.fn.stdpath("cache") .. "/azure-cli/chat-mcp.json"
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  local cfg = { mcpServers = { ["azure-vicli"] = mcp_server_def(addr, token) } }
   vim.fn.writefile({ vim.json.encode(cfg) }, path)
   return path
 end
@@ -653,6 +666,251 @@ local function panel_visible()
   return false
 end
 
+-- agent.persistent/agent.acp agents keep one process alive across messages
+-- instead of starting a fresh one each time (see send/send_acp): stopped
+-- whenever the conversation it belongs to goes away from under it (ga, gh,
+-- a new chat) or Neovim exits. An ACP connection's `.finish` (set by
+-- send_acp's `running`) finalizes whatever message is still in flight -
+-- stopping the process on its own would otherwise leave that entry's
+-- status "running" forever, with `st.running` never cleared.
+local function stop_persistent(st)
+  local pj = st.persistent_job
+  st.persistent_job = nil
+  if not pj then return end
+  if pj.finish then pcall(pj.finish, "stopped") end
+  if pj.job then pcall(vim.fn.jobstop, pj.job) end
+end
+
+-- Whether `st.persistent_job` is a live process for `agent_name`'s current
+-- conversation - reusable as-is for the next message.
+local function persistent_alive(st, agent_name)
+  local pj = st.persistent_job
+  if not (pj and pj.agent_name == agent_name and pj.conv_id == st.conv_id) then return false end
+  if vim.fn.jobwait({ pj.job }, 0)[1] ~= -1 then return false end
+  return true
+end
+
+-- A jobstart on_stdout for one message: `get_turn()` names the turn in
+-- progress - a one-shot job's own, or (agent.persistent) whichever message
+-- is current on the warm process - and is nil once that turn is otherwise
+-- done. A persistent agent's turn ends when its stream reports a result,
+-- without the job exiting; `turn.finish` tells them apart (exited or not).
+local function turn_on_stdout(get_turn)
+  return function(_, d)
+    local turn = get_turn()
+    if not turn or turn.done then return end
+    if d and CORE.stream_feed(turn.reader, d, vim.json.decode) then
+      vim.schedule(function()
+        turn.absorb()
+        if turn.reader.final ~= nil then turn.finish(nil, false, false) end
+        render_soon()
+      end)
+    end
+  end
+end
+
+local function turn_on_stderr(get_turn)
+  return function(_, d) local turn = get_turn(); if turn and d then vim.list_extend(turn.err, d) end end
+end
+
+-- The job's on_exit: finishes whatever turn was still open (normally only
+-- a one-shot job's own, or a persistent one's dying mid-answer) and, for a
+-- persistent job, forgets it so the next message starts a fresh one.
+local function turn_on_exit(get_turn, forget)
+  return function(_, code)
+    vim.schedule(function()
+      local turn = get_turn()
+      if forget then forget() end
+      if not turn or turn.done then return end
+      CORE.stream_finish(turn.reader, vim.json.decode)
+      turn.finish(code, turn.cancelled, true)
+    end)
+  end
+end
+
+-- The spinner turns every 120ms (only the winbars and statuslines are
+-- redrawn); the whole transcript, for the seconds count, once a second.
+-- Shared by the ordinary job path and send_acp below - both just need
+-- `st.running` already set.
+local function start_spinner(st)
+  st.running.tick = 0
+  M.set_winbars()
+  st.running.timer = vim.fn.timer_start(120, function()
+    local run = st.running
+    if not run then return end
+    run.tick = run.tick + 1
+    if run.tick % 8 == 0 then render() else M.set_winbars() end
+  end, { ["repeat"] = -1 })
+end
+
+-- agent.acp: a CLI with an Agent Client Protocol server mode (`copilot
+-- --acp`) - JSON-RPC 2.0 over stdio, newline-delimited (chat/acp.lua).
+-- One connection per conversation (handshake + session/new done once,
+-- reused across messages - see `reuse`); a `session/prompt` per message,
+-- its `session/update`s streamed into `entry` as they arrive, and a
+-- `session/request_permission` shown with the same confirm() popup as
+-- azure-vicli's own tools. Unlike the stream-json path, there's no
+-- `{message}`/`stdin` templating: the prompt text goes in `session/prompt`
+-- directly, and the model (if any) through `session/set_config_option`.
+local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts)
+  local ACP = require("azure-cli.chat.acp")
+  local done = false
+  local function finish(status, extra_text)
+    if done then return end
+    done = true
+    if st.running and st.running.entry == entry then
+      if st.running.timer then pcall(vim.fn.timer_stop, st.running.timer) end
+      st.running = nil
+    end
+    entry.status = status
+    if extra_text and extra_text ~= "" then
+      entry.text = (entry.text ~= "" and (entry.text .. "\n\n") or "") .. extra_text
+    end
+    if entry.text == "" then entry.text = "_(no answer)_" end
+    render()
+    save()
+    if not panel_visible() then notify(agent_label() .. " answered in the chat (gq shows it).") end
+    if opts.on_done then pcall(opts.on_done, entry) end
+  end
+
+  local function on_update(method, params)
+    if method ~= "session/update" then return end
+    local u = params.update or {}
+    if u.sessionUpdate == "agent_message_chunk" then
+      local t = type(u.content) == "table" and u.content.text
+      if type(t) == "string" then entry.text = entry.text .. t; render_soon() end
+    elseif u.sessionUpdate == "tool_call" then
+      table.insert(entry.tools, "\u{00B7} " .. (u.title or u.name or "tool"))
+      render_soon()
+    elseif u.sessionUpdate == "tool_call_update" and u.status == "failed" then
+      table.insert(entry.tools, "\u{2717} " .. (u.title or "tool failed"))
+      render_soon()
+    end
+  end
+
+  -- The agent asking permission before a tool call: shown with the same
+  -- yes/no popup azure-vicli's own tools use, the tool call's diff (if
+  -- any) as the details. "Allow" picks the first allow_* option offered,
+  -- "Deny" the first reject_*; azure-vicli can't tell "once" from
+  -- "always" apart in that popup, so it always answers "once".
+  local function on_permission(method, params, id, conn)
+    if method ~= "session/request_permission" then return conn.respond(id, nil, "unsupported request") end
+    local options = params.options or {}
+    local tool = params.toolCall or {}
+    local details = {}
+    local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
+    if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
+    confirm((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), function(yes)
+      local pick
+      for _, o in ipairs(options) do
+        if yes and (o.kind == "allow_once" or o.kind == "allow_always") then pick = pick or o.optionId end
+        if not yes and (o.kind == "reject_once" or o.kind == "reject_always") then pick = pick or o.optionId end
+      end
+      pick = pick or (options[1] and options[1].optionId)
+      if pick then conn.respond(id, { outcome = { outcome = "selected", optionId = pick } })
+      else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
+    end, details)
+  end
+
+  local function send_prompt(pj)
+    pj.conn.request("session/prompt", { sessionId = pj.acp_session_id, prompt = { { type = "text", text = message } } },
+      function(result, err)
+        if err then return finish("failed", "```\n" .. tostring(err) .. "\n```") end
+        local reason = result and result.stopReason
+        if reason == "cancelled" then finish("stopped")
+        elseif reason and reason ~= "end_turn" then finish("failed (" .. reason .. ")")
+        else finish("done") end
+      end)
+  end
+
+  local function running(pj)
+    -- The connection's on_notification/on_request/on_exit (below) are set
+    -- up once, when it's first started, and outlive every `send_acp` call
+    -- that reuses it - so they read this message's handlers through `pj`
+    -- rather than closing over this call's `entry`/`finish`/etc, which a
+    -- later message would otherwise still be pointing at.
+    pj.on_update, pj.on_permission, pj.finish = on_update, on_permission, finish
+    st.running = { acp = true, entry = entry, job = pj.job,
+      cancel = function()
+        pcall(pj.conn.notify, "session/cancel", { sessionId = pj.acp_session_id })
+        vim.defer_fn(function()
+          if st.running and st.running.entry == entry and not done then pcall(vim.fn.jobstop, pj.job) end
+        end, 5000)
+      end }
+    start_spinner(st)
+    local timeout = tonumber(agent.timeout_seconds) or 900
+    vim.defer_fn(function()
+      if st.running and st.running.entry == entry and not done then
+        table.insert(entry.tools, "\u{2717} timed out after " .. timeout .. "s")
+        st.running.cancel()
+      end
+    end, timeout * 1000)
+  end
+
+  if reuse then
+    local pj = st.persistent_job
+    running(pj)
+    send_prompt(pj)
+    return
+  end
+
+  local cmd = {}
+  for i, a in ipairs(agent.cmd) do cmd[i] = CORE.expand(a, vars) end
+  local exe = vim.fn.exepath(cmd[1])
+  if exe == "" then entry.status, entry.text = "failed", "`" .. cmd[1] .. "` isn't on PATH."; return render() end
+  cmd[1] = exe
+  local env = {}
+  for k, v in pairs(agent.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
+
+  local pj = { acp = true, agent_name = agent_name, conv_id = st.conv_id }
+  local function live() return st.persistent_job == pj end
+  local conn, cerr = ACP.connect(cmd, { cwd = agent_cwd(snap), env = next(env) and env or nil }, {
+    on_notification = function(method, params) if live() and pj.on_update then pj.on_update(method, params) end end,
+    on_request = function(method, params, id)
+      if not live() then return end
+      if pj.on_permission then pj.on_permission(method, params, id, pj.conn) else pj.conn.respond(id, nil, "no handler") end
+    end,
+    on_exit = function(code)
+      local was_live = live()
+      if was_live then st.persistent_job = nil end
+      if was_live and pj.finish then pj.finish(code == 0 and "stopped" or ("failed (exit " .. code .. ")")) end
+    end,
+  })
+  if not conn then
+    entry.status, entry.text = "failed", tostring(cerr)
+    return render()
+  end
+  pj.conn, pj.job = conn, conn.job
+  st.persistent_job = pj
+  running(pj)
+
+  conn.request("initialize", { protocolVersion = 1, clientCapabilities = vim.empty_dict(),
+    clientInfo = { name = "azure-vicli", version = "1" } }, function(_, ierr)
+    if not live() then return end
+    if ierr then return finish("failed", tostring(ierr)) end
+    local servers = {}
+    if vars.mcp_server then table.insert(servers, vars.mcp_server) end
+    conn.request("session/new", { cwd = agent_cwd(snap), mcpServers = servers }, function(result, serr)
+      if not live() then return end
+      if serr or not (result and result.sessionId) then
+        return finish("failed", tostring(serr or "the agent didn't return a session id"))
+      end
+      pj.acp_session_id = result.sessionId
+      local model = M.current_model(agent)
+      if model then
+        pcall(conn.request, "session/set_config_option",
+          { sessionId = pj.acp_session_id, configId = "model", value = model }, function() end)
+      end
+      send_prompt(pj)
+    end)
+  end)
+end
+
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  group = group,
+  callback = function() stop_persistent(STATE()) end,
+})
+
 -- Sends `text` (default: the input box). opts.view_win overrides which
 -- window "current view" describes; opts.quiet doesn't clear the input box.
 send = function(text, opts)
@@ -698,10 +956,17 @@ send = function(text, opts)
   local history = {}
   for _, e in ipairs(st.entries) do if e.role ~= "note" then history[#history + 1] = e end end
   local first = #history == 0
-  local resume = not first and CORE.can_resume(agent, st.session_id)
+  -- A conversation's id is otherwise only assigned lazily, the first time
+  -- it's saved (after this message answers) - too late for a persistent
+  -- job started now to compare against on the next message, so it's fixed
+  -- here instead, before anything reads it.
+  if first then st.conv_id = st.conv_id or require("azure-cli.chat.store").new_id() end
+  local reuse = (agent.persistent or agent.acp) and persistent_alive(st, agent_name)
+  if (agent.persistent or agent.acp) and st.persistent_job and not reuse then stop_persistent(st) end
+  local resume = not first and (reuse or CORE.can_resume(agent, st.session_id))
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
-    label = agent.label or agent_name, mode = (not first and not resume) and "replay" or nil }
+    label = agent.label or agent_name, mode = (not first and not resume) and "replay" or nil, text = "" }
   table.insert(st.entries, entry)
   BRIDGE.handler = bridge_handler(function() return entry end)
   render()
@@ -711,98 +976,117 @@ send = function(text, opts)
     refs = require("azure-cli.chat.refs").describe(expanded),
   })
   local vars = {
-    message = message, text = expanded, session_id = st.session_id or "", model = M.current_model(agent) or "",
-    mcp_config = write_mcp_config(addr, token), view = view_text,
+    message = message, message_json = vim.json.encode(message), text = expanded,
+    session_id = st.session_id or "", model = M.current_model(agent) or "",
+    mcp_config = agent.acp and "" or write_mcp_config(addr, token),
+    mcp_server = agent.acp and acp_mcp_server(addr, token) or nil,
+    view = view_text,
     fix_root = require("azure-cli.chat.tools_fix").root(),
   }
   vim.fn.mkdir(vars.fix_root, "p")
-  local spec = resume and agent.followup or agent
-  local cmd
-  if type(spec.cmd) == "table" then
-    cmd = {}
-    for i, a in ipairs(spec.cmd) do cmd[i] = CORE.expand(a, vars) end
-    local exe = vim.fn.exepath(cmd[1])
-    if exe == "" then
-      entry.status, entry.text = "failed", "`" .. cmd[1] .. "` isn't on PATH."
-      return render()
-    end
-    cmd[1] = exe
-  else
-    cmd = CORE.expand(spec.cmd, vars, vim.fn.shellescape)
-  end
-  local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
-  for k, v in pairs(agent.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
-  for k, v in pairs(spec.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
+
+  if agent.acp then return send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts) end
+
+  -- One turn: its own reader/entry, and how it's finished, whichever of
+  -- the two ways below runs it.
   local reader = CORE.stream_new(agent.strip)
-  local seen_tools = 0
-  local err = {}
+  local seen_tools, err = 0, {}
   local function absorb()
     entry.text = CORE.stream_text(reader)
     for i = seen_tools + 1, #reader.tools do table.insert(entry.tools, "\u{00B7} " .. reader.tools[i]) end
     seen_tools = #reader.tools
   end
-  local ok, job = pcall(vim.fn.jobstart, cmd, {
-    cwd = agent_cwd(snap), env = env, stderr_buffered = true,
-    on_stdout = function(_, d)
-      if d and CORE.stream_feed(reader, d, vim.json.decode) then
-        vim.schedule(function() absorb(); render_soon() end)
+  local turn = { entry = entry, reader = reader, err = err, absorb = absorb, cancelled = false, done = false }
+  function turn.finish(code, cancelled, exited)
+    if turn.done then return end
+    turn.done = true
+    absorb()
+    local session = reader.session
+    if not session and agent.session_pattern then
+      session = CORE.find_session(agent.session_pattern, table.concat(reader.plain, "\n"), table.concat(err, "\n"))
+    end
+    if session then st.session_id = session end
+    if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
+    if cancelled then
+      entry.status = "stopped"
+    elseif code and code ~= 0 then
+      entry.status = "failed (exit " .. code .. ")"
+      local tail = vim.tbl_filter(function(l) return l ~= "" end, err)
+      if #tail > 0 then
+        entry.text = (entry.text ~= "" and (entry.text .. "\n\n") or "") .. "```\n"
+          .. table.concat(vim.list_slice(tail, math.max(1, #tail - 15)), "\n") .. "\n```"
       end
-    end,
-    on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
-    on_exit = function(_, code)
-      vim.schedule(function()
-        if st.running and st.running.timer then pcall(vim.fn.timer_stop, st.running.timer) end
-        local cancelled = st.running and st.running.cancelled
-        st.running = nil
-        CORE.stream_finish(reader, vim.json.decode)
-        absorb()
-        local session = reader.session
-        if not session and agent.session_pattern then
-          session = CORE.find_session(agent.session_pattern, table.concat(reader.plain, "\n"), table.concat(err, "\n"))
-        end
-        if session then st.session_id = session end
-        if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
-        if cancelled then
-          entry.status = "stopped"
-        elseif code ~= 0 then
-          entry.status = "failed (exit " .. code .. ")"
-          local tail = vim.tbl_filter(function(l) return l ~= "" end, err)
-          if #tail > 0 then
-            entry.text = (entry.text ~= "" and (entry.text .. "\n\n") or "") .. "```\n"
-              .. table.concat(vim.list_slice(tail, math.max(1, #tail - 15)), "\n") .. "\n```"
-          end
-        else
-          entry.status = "done"
-          if entry.text == "" then entry.text = "_(no answer)_" end
-        end
-        render()
-        save()
-        if not panel_visible() then notify(agent_label() .. " answered in the chat (gq shows it).") end
-        if opts.on_done then pcall(opts.on_done, entry) end
-      end)
-    end,
-  })
-  if not ok or job <= 0 then
-    entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
-    return render()
+    else
+      entry.status = "done"
+      if entry.text == "" then entry.text = "_(no answer)_" end
+    end
+    if st.running and st.running.turn == turn then
+      if st.running.timer then pcall(vim.fn.timer_stop, st.running.timer) end
+      st.running = nil
+    end
+    render()
+    save()
+    if not panel_visible() then notify(agent_label() .. " answered in the chat (gq shows it).") end
+    if opts.on_done then pcall(opts.on_done, entry) end
   end
-  pcall(vim.fn.chansend, job, CORE.expand(spec.stdin or "{message}", vars))
-  pcall(vim.fn.chanclose, job, "stdin")
-  st.running = { job = job, entry = entry }
-  -- The spinner turns every 120ms (only the winbars and statuslines are
-  -- redrawn); the whole transcript, for the seconds count, once a second.
-  st.running.tick = 0
-  M.set_winbars()
-  st.running.timer = vim.fn.timer_start(120, function()
-    local run = st.running
-    if not run then return end
-    run.tick = run.tick + 1
-    if run.tick % 8 == 0 then render() else M.set_winbars() end
-  end, { ["repeat"] = -1 })
+
+  local job
+  if reuse then
+    -- agent.persistent, and its process from an earlier message is still
+    -- alive for this conversation: feed it this turn instead of starting
+    -- a new one.
+    job = st.persistent_job.job
+    st.persistent_job.turn = turn
+    pcall(vim.fn.chansend, job, CORE.expand(agent.stdin or "{message}", vars) .. "\n")
+  else
+    local spec = (agent.persistent and agent) or (resume and agent.followup) or agent
+    local cmd
+    if type(spec.cmd) == "table" then
+      cmd = {}
+      for i, a in ipairs(spec.cmd) do cmd[i] = CORE.expand(a, vars) end
+      local exe = vim.fn.exepath(cmd[1])
+      if exe == "" then
+        entry.status, entry.text = "failed", "`" .. cmd[1] .. "` isn't on PATH."
+        return render()
+      end
+      cmd[1] = exe
+    else
+      cmd = CORE.expand(spec.cmd, vars, vim.fn.shellescape)
+    end
+    local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
+    for k, v in pairs(agent.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
+    for k, v in pairs(spec.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
+    -- A persistent agent's callbacks outlive this `send` call (the next
+    -- message reuses the job above), so they read the turn in progress
+    -- through `st.persistent_job` instead of closing over this one.
+    local get_turn, forget
+    if agent.persistent then
+      get_turn = function() local pj = st.persistent_job; return pj and pj.turn end
+      forget = function() if st.persistent_job and st.persistent_job.job == job then st.persistent_job = nil end end
+    else
+      get_turn = function() return turn end
+    end
+    local ok
+    ok, job = pcall(vim.fn.jobstart, cmd, {
+      cwd = agent_cwd(snap), env = env, stderr_buffered = true,
+      on_stdout = turn_on_stdout(get_turn), on_stderr = turn_on_stderr(get_turn), on_exit = turn_on_exit(get_turn, forget),
+    })
+    if not ok or job <= 0 then
+      entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
+      return render()
+    end
+    if agent.persistent then st.persistent_job = { job = job, agent_name = agent_name, conv_id = st.conv_id, turn = turn } end
+    local stdin_text = CORE.expand(spec.stdin or "{message}", vars)
+    pcall(vim.fn.chansend, job, agent.persistent and (stdin_text .. "\n") or stdin_text)
+    if not agent.persistent then pcall(vim.fn.chanclose, job, "stdin") end
+  end
+
+  st.running = { job = job, turn = turn }
+  start_spinner(st)
   local timeout = tonumber(agent.timeout_seconds) or 900
   vim.defer_fn(function()
-    if st.running and st.running.job == job then
-      st.running.cancelled = true
+    if st.running and st.running.turn == turn then
+      turn.cancelled = true
       table.insert(entry.tools, "\u{2717} timed out after " .. timeout .. "s")
       pcall(vim.fn.jobstop, job)
     end
@@ -813,7 +1097,8 @@ M.send = send
 cancel = function()
   local st = STATE()
   if not st.running then return notify("The agent isn't running.") end
-  st.running.cancelled = true
+  if st.running.acp then return st.running.cancel() end
+  if st.running.turn then st.running.turn.cancelled = true end
   pcall(vim.fn.jobstop, st.running.job)
 end
 
@@ -821,6 +1106,7 @@ end
 new_chat = function(quiet)
   local st = STATE()
   if st.running then cancel() end
+  stop_persistent(st)
   save()
   st.entries, st.session_id, st.conv_id, st.created = {}, nil, nil, nil
   require("azure-cli.chat.store").forget_current()
@@ -950,6 +1236,7 @@ pick_agent = function()
     format = function(n) return agents[n].label or n end, current = cur }, function(choice)
     if not choice or choice == cur then return end
     local st = STATE()
+    stop_persistent(st)
     st.agent_name = choice
     st.session_id = nil
     M.set_winbars()
@@ -987,6 +1274,7 @@ pick_history = function()
     current = function(c) return c.id == st.conv_id end }, function(choice)
     if not choice or choice.id == st.conv_id then return end
     if st.running then cancel() end
+    stop_persistent(st)
     local rec = STORE.load(choice.id)
     if not rec then return notify("That conversation couldn't be read.", vim.log.levels.WARN) end
     load_conversation(rec)
