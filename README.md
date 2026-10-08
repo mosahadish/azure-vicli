@@ -35,8 +35,8 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - [Running](#running)
 - [License](#license)
 - Docs: [dashboard](docs/dashboard.md) · [reviewer](docs/reviewer.md) ·
-  [work items](docs/work-items.md) · [commands and keys](docs/commands-and-keys.md) ·
-  [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
+  [work items](docs/work-items.md) · [chat](docs/chat.md) ·
+  [commands and keys](docs/commands-and-keys.md) · [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
   [development](docs/development.md)
 
 ## Requirements
@@ -154,6 +154,11 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   and follow-up views, per-commit diffs and no-LSP code navigation.
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
   assignee, priority, sprint moves, discussion and PR links.
+- **[Chat](docs/chat.md)** - an AI agent (Claude Code, the Copilot CLI, ...)
+  in a panel next to every screen (`gq`). It sees the PR, work item, file
+  or comment under your cursor, so "triage this PR's comments" or "create
+  a branch from develop for this work item" just work. Replies are drafted
+  for you to send, and votes ask first.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

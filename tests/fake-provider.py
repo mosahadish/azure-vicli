@@ -590,6 +590,19 @@ def thread_counts(threads):
     return len(active), len(live), len(my_active), len(mention_active), len(mention_all)
 
 
+def others_comments(threads, only_mine):
+    """Comments by someone other than me (in threads I've commented in, with
+    only_mine) - azure-cli.py's count_others_comments."""
+    n = 0
+    for t in threads:
+        if t.get("isDeleted") or not t["comments"]:
+            continue
+        if only_mine and not any(c["author"]["id"] == MY_ID for c in t["comments"]):
+            continue
+        n += sum(1 for c in t["comments"] if c["author"]["id"] != MY_ID)
+    return n
+
+
 def to_record(ws, pr, threads):
     active, total, my_active, mention, mention_total = thread_counts(threads)
     signed = sum(1 for r in pr["reviewers"] if int(r["vote"]) in (10, 5))
@@ -603,6 +616,7 @@ def to_record(ws, pr, threads):
         "reviewerSummary": " ".join(vote_glyph(r["vote"]) + surname(r["name"]) for r in pr["reviewers"]),
         "activeThreads": active, "closedThreads": total - active, "totalThreads": total,
         "myActiveThreads": my_active, "mentionThreads": mention, "mentionTotal": mention_total,
+        "othersComments": others_comments(threads, False), "othersCommentsInMyThreads": others_comments(threads, True),
         "description": pr["description"], "buildStatus": pr["buildStatus"], "queuePosition": pr["queuePosition"],
         "buildUrl": pr["buildUrl"], "policies": pr["policies"], "missingReviewers": pr["missingReviewers"],
         "mergeConflict": pr["mergeConflict"],
@@ -660,6 +674,16 @@ class Fake:
             if pr.get("completed"):
                 continue
             print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(str(pr["id"]), [])), ensure_ascii=False))
+        return 0
+
+    def cmd_get_pr(self):
+        # Any PR by id, completed ones included (unlike --list).
+        pid = self.env.get("AZVICLI_PR") or ""
+        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid), None)
+        if pr is None:
+            print("ERROR: HTTP 404 GET: pull request {0} not found".format(pid), file=sys.stderr)
+            return 1
+        print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(pid, [])), ensure_ascii=False))
         return 0
 
     def cmd_whoami(self, rest):
@@ -813,6 +837,66 @@ class Fake:
             if pid.isdigit() and int(pid) in w.get("prs", []):
                 print(json.dumps({k: w[k] for k in ("id", "type", "state", "title", "assignedTo")},
                                  ensure_ascii=False))
+        return 0
+
+    # -- the chat panel's PR tools -----------------------------------------
+
+    def cmd_build_log(self, rest):
+        if not self.need_pr():
+            return 1
+        pr = self.pr()
+        bid = int(rest[0]) if rest and rest[0].isdigit() else 0
+        failed = []
+        if pr["buildStatus"] == "failed":
+            failed = [{"name": "Run tests", "type": "Task",
+                       "issues": ["tests/test_util.py::test_name_flag FAILED - expected 'x', got '--name'"],
+                       "log": "collected 4 items\ntests/test_util.py ..F.\nE   AssertionError: expected 'x', got '--name'\n"
+                              "1 failed, 3 passed"}]
+        print(json.dumps({"build": bid, "failed": failed}))
+        return 0
+
+    def cmd_add_reviewer(self, rest):
+        if not self.need_pr():
+            return 1
+        who = (rest[0] if rest else "").lower()
+        people = [p for p in PEOPLE.values() if who and who in p["displayName"].lower()]
+        if len(people) != 1:
+            print("{0} people match '{1}'".format(len(people), who), file=sys.stderr)
+            return 1
+        pr = self.pr()
+        if not any(r["id"] == people[0]["id"] for r in pr["reviewers"]):
+            pr["reviewers"].append({"name": people[0]["displayName"], "id": people[0]["id"], "vote": 0})
+            self.ws.save(self.state)
+        print(json.dumps({"added": people[0]["displayName"], "id": people[0]["id"]}))
+        return 0
+
+    def cmd_set_description(self, rest):
+        if not self.need_pr():
+            return 1
+        self.pr()["description"] = rest[0] if rest else ""
+        self.ws.save(self.state)
+        print("Description updated.")
+        return 0
+
+    def cmd_create_pr(self, rest):
+        source, target, title, desc, wis = (rest + ["", "", "", "", ""])[:5]
+        if not source or not target or not title:
+            print("create-pr needs <source> <target> <title>", file=sys.stderr)
+            return 1
+        repo = self.env.get("AZVICLI_REPO") or ""
+        pid = max(p["id"] for p in self.state["prs"]) + 1
+        self.state["prs"].append({
+            "id": pid, "title": title, "repo": repo, "source": source, "target": target, "author": "me",
+            "isDraft": False, "autoComplete": False, "autoCompleteSetBy": "", "description": desc,
+            "buildStatus": "none", "queuePosition": -1, "buildUrl": "", "policies": [], "missingReviewers": [],
+            "mergeConflict": False, "reviewers": [], "updatedIso": now_iso(), "completed": False,
+        })
+        for wid in [w for w in wis.split(",") if w.strip().isdigit()]:
+            w = self.wi(wid.strip())
+            if w is not None:
+                w.setdefault("prs", []).append(pid)
+        self.ws.save(self.state)
+        print(json.dumps({"id": pid, "url": "{0}/{1}/_git/{2}/pullrequest/{3}".format(ORG, PROJECT, repo, pid)}))
         return 0
 
     def cmd_vote(self, rest):
@@ -1063,7 +1147,44 @@ class Fake:
 
     def cmd_wi_edit(self, rest):
         cmd = rest[0] if rest else ""
-        a2, a3, a4, a5, a6 = (rest[1:] + ["", "", "", "", ""])[:5]
+        a2, a3, a4, a5, a6, a7 = (rest[1:] + ["", "", "", "", "", ""])[:6]
+        if cmd == "create-branch":
+            # <wiId|0> <orgUrl> <project> <repo> <from> <new>: a real branch in
+            # the bare origin, recorded on the work item as a "Branch" link.
+            bare = self.ws.clone_url(a5)
+            if not os.path.isdir(bare):
+                print("ERROR: HTTP 404 GET: repository '{0}' not found".format(a5), file=sys.stderr)
+                return 2
+            sha = subprocess.run(["git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/" + a6],
+                                 capture_output=True, text=True).stdout.strip()
+            if not sha:
+                print("ERROR: branch '{0}' not found in {1}".format(a6, a5), file=sys.stderr)
+                return 1
+            made = subprocess.run(["git", "--git-dir", bare, "branch", a7, sha], capture_output=True, text=True)
+            if made.returncode != 0:
+                print("ERROR: could not create '{0}': {1}".format(a7, made.stderr.strip()), file=sys.stderr)
+                return 1
+            linked = None
+            w = self.wi(a2) if a2 and a2 != "0" else None
+            if w is not None:
+                w.setdefault("branches", []).append({"repo": a5, "name": a7})
+                linked = w["id"]
+                self.ws.save(self.state)
+            print(json.dumps({"branch": a7, "objectId": sha, "linked": linked}))
+            return 0
+        if cmd == "delete-branch":
+            bare = self.ws.clone_url(a4)
+            tip = subprocess.run(["git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/" + a5],
+                                 capture_output=True, text=True).stdout.strip()
+            if not tip:
+                print("ERROR: branch '{0}' doesn't exist".format(a5), file=sys.stderr)
+                return 1
+            if a6 and tip != a6:
+                print("ERROR: '{0}' has moved since it was created".format(a5), file=sys.stderr)
+                return 1
+            subprocess.run(["git", "--git-dir", bare, "branch", "-D", a5], capture_output=True)
+            print(json.dumps({"deleted": a5}))
+            return 0
         if cmd == "create":
             if not a2 or not a3:
                 print("ERROR: create needs <type> <title>", file=sys.stderr)
@@ -1190,6 +1311,11 @@ def dispatch(ws, argv, env):
         "--wi-detail": lambda: f.cmd_wi_detail(rest),
         "--wi-state": lambda: f.cmd_wi_state(rest),
         "--wi-edit": lambda: f.cmd_wi_edit(rest),
+        "--build-log": lambda: f.cmd_build_log(rest),
+        "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
+        "--set-description": lambda: f.cmd_set_description(rest),
+        "--create-pr": lambda: f.cmd_create_pr(rest),
+        "--get-pr": lambda: f.cmd_get_pr(),
     }
     handler = table.get(flag)
     if handler is None:
@@ -1246,6 +1372,15 @@ def main(argv):
         print("fake-provider: AZVICLI_FAKE_WS must point at a workspace built by "
               "`fake-provider.py setup <dir>` (tests/demo.sh does this).", file=sys.stderr)
         return 1
+    if argv[:1] == ["--mcp"]:
+        # The chat's MCP relay doesn't touch Azure DevOps at all - it only
+        # forwards to the Neovim bridge - so the real one runs as-is.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "azure_cli_real", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "azure-cli.py"))
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        return real.mcp_serve()
     ws = Workspace(root)
     if argv[:1] == ["--serve"]:
         return serve(ws)

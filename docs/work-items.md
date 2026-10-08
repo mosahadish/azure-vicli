@@ -31,6 +31,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
 | `P` | Back to the PR dashboard |
+| `gq` | Show/hide the [chat panel](chat.md); the agent knows which work item is under the cursor ("create a branch from develop for this work item") |
 | `q` | Quit |
 
 Press `?` for a popup with these keys. `ga`, `gp`, `ge` and `gi` apply to the

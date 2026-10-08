@@ -76,7 +76,7 @@ SH_FILES=(azure-cli install.sh tests/demo.sh)
 # pure helpers (for its tests/test-review-*.lua) and a callable
 # `require(path)(ctx)` (for review/init.lua's EXT wiring) via a __call
 # metamethod.
-ALLOWED_GLOBALS=(_G debug dofile error ipairs math os pairs pcall require select setmetatable string table tonumber tostring type vim)
+ALLOWED_GLOBALS=(_G debug dofile error ipairs math next os pairs pcall require select setmetatable string table tonumber tostring type vim)
 
 mkdir -p "$TMP/lua" "$TMP/sh"
 
@@ -429,6 +429,35 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token" "$out"
   fi
 
+  # The chat panel's pure helpers (chat/*.lua, review/chat.lua) need
+  # vim.json and vim.api at load, so their unit tests run in a real nvim.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat tests passed"* ]]; then
+    pass "test-chat.lua (headless nvim)"
+  else
+    fail "test-chat.lua (headless nvim)" "$out"
+  fi
+
+  # chat/init.lua's `send`: one agent process for the whole conversation
+  # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
+  # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-persistent.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-persistent tests passed"* ]]; then
+    pass "test-chat-persistent.lua (headless nvim)"
+  else
+    fail "test-chat-persistent.lua (headless nvim)" "$out"
+  fi
+
+  # agent.acp: one warm ACP session across messages, and azure-cli.py
+  # --mcp-http for an agent that only takes http MCP servers (Copilot's
+  # --acp) - tests/fake-acp-agent.py calls the tools over it.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-acp.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-acp tests passed"* ]]; then
+    pass "test-chat-acp.lua (headless nvim)"
+  else
+    fail "test-chat-acp.lua (headless nvim)" "$out"
+  fi
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua
@@ -468,6 +497,21 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
   else
     fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
+  fi
+  if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
+    pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"
+  else
+    fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
+  fi
+  if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
+    pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
+  else
+    fail "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" "$out"
+  fi
+  if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
+    pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
+  else
+    fail "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" "$out"
   fi
   if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
     pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"

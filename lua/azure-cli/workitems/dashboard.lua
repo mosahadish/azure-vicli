@@ -1591,6 +1591,18 @@ KEYS.bind(buf, "workitems", "pr_list", open_pr_list, { desc = "switch to the pul
 KEYS.bind(buf, "workitems", "copy_link", yank_link, { desc = "copy the item's link" })
 KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open the config file" })
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
+-- gq: the chat panel, told about the work item under the cursor.
+require("azure-cli.chat").bind_toggle(buf, "workitems")
+require("azure-cli.chat.view").register("azurecli-workitems", function(w)
+  local it = row_item[vim.api.nvim_win_get_cursor(w)[1]]
+  local snap = { screen = "work items dashboard" }
+  if type(it) == "table" and it.id then
+    snap.work_item = { id = it.id, type = it.type, title = it.title, state = it.state, assigned_to = it.assignedTo }
+  else
+    snap.note = "The cursor isn't on a work item; list_work_items shows the sprint."
+  end
+  return snap
+end)
 -- Same standalone-vs-plugin-tab distinction as the PR dashboard's own quit
 -- key (dashboard.lua) - this dashboard is reached from it by a same-tab
 -- swap ("W"), not a new tab, so quitting from here means the same thing.

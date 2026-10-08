@@ -21,7 +21,7 @@ local DEFAULT_KEYS = {
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL",
+    link_workitem = "gl", unlink_workitem = "gL", chat = "gq",
   },
   -- Reviewer file list.
   list = {
@@ -33,7 +33,8 @@ local DEFAULT_KEYS = {
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
+    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
+    refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
   },
   -- Reviewer diff pane.
   diff = {
@@ -49,7 +50,8 @@ local DEFAULT_KEYS = {
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
+    expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
+    refresh = "r",  -- the chat's change viewer only
   },
   -- Reviewer Overview page.
   overview = {
@@ -60,13 +62,13 @@ local DEFAULT_KEYS = {
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL",
+    link_workitem = "gl", unlink_workitem = "gL", chat = "gq",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
     goto_definition = "gd", find_references = "gr", search = "g/",
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
-    resize_more = ">", help = "?",
+    resize_more = ">", help = "?", chat = "gq",
   },
   -- Work-items dashboard.
   workitems = {
@@ -76,14 +78,22 @@ local DEFAULT_KEYS = {
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
     copy_link = "gy", config = "gO", help = "?", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
-    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
+    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
   },
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
     edit_title = "ge", move_sprint = "gi", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
-    back = "<BS>", quit = "q", help = "?",
+    back = "<BS>", quit = "q", help = "?", chat = "gq",
+  },
+  -- The chat panel (both its conversation and its input box).
+  chat = {
+    send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
+    cancel = "<C-c>", model = "gm", agent = "ga", prompts = "gp", history = "gh", audit = "gL",
+    use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
+    back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
+    changes = "gd",
   },
 }
 
@@ -159,11 +169,103 @@ local DEFAULT_COLLAPSED_SECTIONS = { "SignedOff", "Drafts" }
 -- plain line numbers; false none (and no column reserved).
 local DEFAULT_ROW_NUMBERS = "relative"
 
+local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
-  row_numbers = DEFAULT_ROW_NUMBERS,
+  row_numbers = DEFAULT_ROW_NUMBERS, chat = DEFAULTS_CHAT,
 }
+
+-- setup({chat=...}): the chat panel (lua/azure-cli/chat/) - where it sits,
+-- and the agent it talks to (none by default; docs/chat.md has examples).
+local CHAT_FIELDS = {
+  position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
+  default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
+  suggest_on_new_comments = "boolean",
+}
+local CHAT_AGENT_FIELDS = {
+  label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
+  models = "table", strip = "table", acp = "boolean",
+}
+-- Fields from when every message started a fresh process: the agent now
+-- stays running for the whole conversation, so there's nothing to resume.
+local CHAT_AGENT_REMOVED = {
+  followup = true, session_pattern = true, persistent = true,
+}
+local function check_chat_cmd(v, where)
+  if type(v) == "table" then
+    if #v == 0 then error("azure-cli.setup: " .. where .. ".cmd is an empty list") end
+    for _, part in ipairs(v) do
+      if type(part) ~= "string" then error("azure-cli.setup: " .. where .. ".cmd must be a list of strings") end
+    end
+  elseif type(v) ~= "string" or v == "" then
+    error("azure-cli.setup: " .. where .. ".cmd must be a list of strings or a shell command string")
+  end
+end
+local function validate_chat(chat)
+  if type(chat) ~= "table" then error("azure-cli.setup: `chat` must be a table") end
+  local out = vim.deepcopy(DEFAULTS_CHAT)
+  for k, v in pairs(chat) do
+    if not CHAT_FIELDS[k] then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in chat") end
+    if type(v) ~= CHAT_FIELDS[k] then error("azure-cli.setup: chat." .. k .. " must be a " .. CHAT_FIELDS[k]) end
+    out[k] = v
+  end
+  if not ({ right = true, left = true, bottom = true, top = true })[out.position] then
+    error("azure-cli.setup: chat.position must be \"right\", \"left\", \"bottom\" or \"top\"")
+  end
+  if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
+  if out.input_height < 1 then error("azure-cli.setup: chat.input_height must be at least 1") end
+  local function check_agent(a, where)
+    for k, v in pairs(a) do
+      if k == "cmd" then
+        check_chat_cmd(v, where)
+      elseif CHAT_AGENT_REMOVED[k] then
+        error("azure-cli.setup: " .. where .. "." .. k .. " is gone - the agent now stays running for the whole "
+          .. "conversation instead of starting per message; remove it (docs/chat.md has the new examples)")
+      elseif CHAT_AGENT_FIELDS[k] then
+        if type(v) ~= CHAT_AGENT_FIELDS[k] then
+          error("azure-cli.setup: " .. where .. "." .. k .. " must be a " .. CHAT_AGENT_FIELDS[k])
+        end
+      else
+        error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. where)
+      end
+    end
+    if a.cmd == nil then error("azure-cli.setup: " .. where .. " needs a `cmd`") end
+    if a.acp and type(a.cmd) ~= "table" then
+      error("azure-cli.setup: " .. where .. ".cmd must be a list of strings when acp is set")
+    end
+    for i, m in ipairs(a.models or {}) do
+      if type(m) ~= "string" and not (type(m) == "table" and type(m.value) == "string") then
+        error("azure-cli.setup: " .. where .. ".models[" .. i .. "] must be a string or { label = ..., value = ... }")
+      end
+    end
+    for i, pat in ipairs(a.strip or {}) do
+      if type(pat) ~= "string" then error("azure-cli.setup: " .. where .. ".strip[" .. i .. "] must be a Lua pattern string") end
+    end
+  end
+  if chat.agent ~= nil then check_agent(chat.agent, "chat.agent") end
+  for name, a in pairs(chat.agents or {}) do
+    if type(name) ~= "string" or type(a) ~= "table" then
+      error("azure-cli.setup: chat.agents must map a name to an agent table")
+    end
+    check_agent(a, "chat.agents." .. name)
+  end
+  if chat.default_agent and not (chat.agents and chat.agents[chat.default_agent]) then
+    error("azure-cli.setup: chat.default_agent names no agent in chat.agents")
+  end
+  for name, text in pairs(chat.prompts or {}) do
+    if type(name) ~= "string" or not name:match("^[%w_%-]+$") or (type(text) ~= "string" and text ~= false) then
+      error("azure-cli.setup: chat.prompts maps a name (letters, digits, - and _) to a prompt string, or false")
+    end
+  end
+  for name, perm in pairs(chat.permissions or {}) do
+    if perm ~= "allow" and perm ~= "ask" and perm ~= "deny" then
+      error("azure-cli.setup: chat.permissions." .. tostring(name) .. " must be \"allow\", \"ask\" or \"deny\"")
+    end
+  end
+  return out
+end
 
 local resolved = nil  -- set by M.setup(); M.get() falls back to DEFAULTS until then
 
@@ -428,6 +530,8 @@ function M.setup(opts)
     -- export from an earlier setup() call in this session must not linger).
     vim.env.AZVICLI_ACCOUNTS_JSON = nil
   end
+  local chat = DEFAULTS.chat
+  if opts.chat ~= nil then chat = validate_chat(opts.chat) end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
@@ -438,6 +542,7 @@ function M.setup(opts)
     notifications = opts.notifications or DEFAULTS.notifications,
     collapsed_sections = collapsed_sections,
     row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
+    chat = chat,
   }
   -- cached_prs/threads_ttl_seconds apply straight to cache.lua's own
   -- M.MAX_PRS/M.THREADS_TTL fields, which every read site there already
@@ -474,11 +579,11 @@ end
 -- over so the file can never drift from the code. Surfaces come out in the
 -- README's order, actions alphabetically, so a diff of two generated files
 -- is meaningful. Multi-key defaults render as Lua lists.
-local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view" }
+local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat" }
 local SURFACE_TITLES = {
   dashboard = "Pull-request dashboard", list = "Reviewer: file list", diff = "Reviewer: diff pane",
   overview = "Reviewer: Overview page", nav = "Reviewer: gd/gr/gf revision buffers and peek",
-  workitems = "Work-items dashboard", workitem_view = "Work-item detail view",
+  workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel",
 }
 local function lua_literal(v)
   if type(v) == "string" then return string.format("%q", v) end
@@ -538,6 +643,9 @@ function M.render_options()
   w("  collapsed_sections = " .. lua_literal(DEFAULTS.collapsed_sections) .. ",")
   w("  -- Row numbers inside the dashboards: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
   w("  row_numbers = " .. lua_literal(DEFAULTS.row_numbers) .. ",")
+  w("  -- The chat panel (gq): where it sits, and the agent it talks to (none by default - see docs/chat.md).")
+  w("  chat = { position = " .. lua_literal(DEFAULTS.chat.position) .. ", size = " .. lua_literal(DEFAULTS.chat.size)
+    .. ", input_height = " .. lua_literal(DEFAULTS.chat.input_height) .. " },")
   w("  -- python = \"/path/to/python\",       -- interpreter for azure-cli.py (default: python3, else python)")
   w("  -- config = \"~/other/azure-cli.yml\",  -- a different config file")
   w("}")

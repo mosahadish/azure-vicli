@@ -33,6 +33,7 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,23 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
+
+# Every PR title, comment, commit message, ... this prints can hold any
+# Unicode character Azure DevOps lets the user type. Without this, Windows
+# gives stdout/stderr its legacy console codepage (cp1252 here) instead of
+# UTF-8 whenever they aren't an interactive console - which is always true
+# once Neovim's jobstart has them on a pipe: a character like an em dash
+# round-trips as the *wrong* single byte (U+2014 encodes to 0x97 in
+# cp1252), which the Lua side then can't tell from genuinely broken input,
+# and a strict .decode("utf-8") downstream (the MCP bridge, formerly) raised
+# UnicodeDecodeError over it. This fixes it at the source instead of
+# papering over a bad byte after the fact; reconfigure() needs Python 3.7+
+# (this file already requires 3.8+) and a real stream (the test suite's
+# fake stdin/stdout for --serve/--mcp don't have it, hence the guard).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+del _stream
 
 # ---------------------------------------------------------------------------
 # Small YAML-subset parser
@@ -869,6 +887,31 @@ def count_threads(load_threads, user_id):
         return (-1, -1, -1, -1, -1)
 
 
+def count_others_comments(load_threads, user_id):
+    """(othersComments, othersCommentsInMyThreads): non-deleted text
+    comments on real threads written by someone other than user_id - in
+    all of them, and in just the ones user_id has commented in - or
+    (-1, -1) on failure. The dashboard's unread badge and "new comment"
+    notifications grow on these instead of the thread counts, which also
+    grow on a thread user_id started themselves and miss replies.
+    """
+    try:
+        want = str(user_id).lower()
+        total = mine = 0
+        for t in load_threads():
+            if not is_real_thread(t):
+                continue
+            n = sum(1 for c in t.get("comments") or []
+                    if not c.get("isDeleted") and is_text_comment(c)
+                    and str((c.get("author") or {}).get("id") or "").lower() != want)
+            total += n
+            if involves_user(t, user_id):
+                mine += n
+        return (total, mine)
+    except Exception:
+        return (-1, -1)
+
+
 def count_mentions(threads, user_id):
     """Mirrors AzureDevOpsPullRequestSource.CountMentions: counts the
     literal "@<GUID>" token ADO stores for a mention, case-insensitively,
@@ -1128,7 +1171,7 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
     if not raw_bytes:
         return {}
     try:
-        return json.loads(raw_bytes.decode("utf-8"))
+        return json.loads(raw_bytes.decode("utf-8", errors="replace"))
     except ValueError as e:
         raise AdoTransportError("expected JSON from {0} but got {1} ({2}) - is org_url pointing at Azure DevOps?"
                                 .format(full_url, ctype or "an unknown content type", e)) from e
@@ -1470,8 +1513,17 @@ class AzureDevOpsPullRequestSource:
         project = account.project
         project_id = ((pr.get("repository") or {}).get("project") or {}).get("id")
         build_info = self._get_build_status(org, pat, project, project_id, pr)
-        thread_counts = count_threads(load_threads, user_id)
-        return to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
+        # Both counts read the same threads: fetch them once.
+        loaded = []
+
+        def threads_once():
+            if not loaded:
+                loaded.append(load_threads())
+            return loaded[0]
+        thread_counts = count_threads(threads_once, user_id)
+        record = to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
+        record["othersComments"], record["othersCommentsInMyThreads"] = count_others_comments(threads_once, user_id)
+        return record
 
     def _process_assigned(self, org, pat, account, pr, user_id, user_name, repo_cache):
         holder = {}
@@ -1620,6 +1672,7 @@ PR_ACTION_FLAGS = (
     "--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
+    "--build-log", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -1864,14 +1917,16 @@ class PrActions:
         if not raw:
             print("{0}: empty response body from {1}.".format(label, url), file=sys.stderr)
             return 1
-        # Text-mode write (raw is always a JSON body, always valid UTF-8),
-        # not the raw bytes .buffer.write used to get - under dispatch()/
-        # --serve, sys.stdout is a per-thread capture (see
-        # _install_streams below) that only its .write() goes through;
-        # .buffer would bypass it and land on the daemon's real stdout,
-        # corrupting the response stream. No behaviour change for the
-        # one-shot CLI: the exact same bytes still reach the real terminal.
-        sys.stdout.write(raw.decode("utf-8"))
+        # Text-mode write (raw is always a JSON body, usually valid UTF-8 -
+        # errors="replace" covers the rare ADO response that isn't, e.g. a
+        # stray Windows-1252 byte in a comment), not the raw bytes
+        # .buffer.write used to get - under dispatch()/--serve, sys.stdout
+        # is a per-thread capture (see _install_streams below) that only
+        # its .write() goes through; .buffer would bypass it and land on
+        # the daemon's real stdout, corrupting the response stream. No
+        # behaviour change for the one-shot CLI: the exact same bytes
+        # still reach the real terminal.
+        sys.stdout.write(raw.decode("utf-8", errors="replace"))
         sys.stdout.flush()
         return 0
 
@@ -2074,6 +2129,153 @@ class PrActions:
         print("Vote set to {0}.".format(vote))
         return 0
 
+    # -- the chat panel's PR tools (lua/azure-cli/chat/tools_pr.lua) --------
+
+    def build_log(self, build_id, tail=120):
+        """Why a build failed: every failed timeline record (job/task) with
+        its error issues, then the last `tail` lines of each failed task's
+        log (Timeline - Get, then Logs - Get Build Log). Prints JSON
+        {"build", "failed": [{"name", "type", "issues", "log"}]}.
+        """
+        if not _is_uint(build_id):
+            print("Invalid build id.", file=sys.stderr)
+            return 1
+        base = "{0}/{1}/_apis/build/builds/{2}".format(self.org, self.project, build_id)
+        try:
+            timeline = self.fetch(base + "/timeline", pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST timeline failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        failed = []
+        for rec in (timeline or {}).get("records") or []:
+            if rec.get("result") != "failed":
+                continue
+            entry = {
+                "name": rec.get("name"), "type": rec.get("type"),
+                "issues": [i.get("message") for i in (rec.get("issues") or []) if i.get("type") == "error"],
+            }
+            log_id = (rec.get("log") or {}).get("id")
+            if rec.get("type") == "Task" and log_id is not None and len(failed) < 6:
+                try:
+                    body = self.fetch("{0}/logs/{1}".format(base, log_id), pat=self.pat, api_version="6.0", raw=True)
+                    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+                    try:
+                        decoded = json.loads(text)
+                        if isinstance(decoded, dict) and isinstance(decoded.get("value"), list):
+                            text = "\n".join(str(x) for x in decoded["value"])
+                    except ValueError:
+                        pass
+                    entry["log"] = "\n".join(text.splitlines()[-tail:])
+                except AdoHttpError as e:
+                    entry["log"] = "(could not read the log: HTTP {0})".format(e.status)
+            failed.append(entry)
+        print(json.dumps({"build": int(build_id), "failed": failed}, ensure_ascii=False))
+        return 0
+
+    def _identities_base(self):
+        """Identity search lives on vssps.dev.azure.com for Azure DevOps
+        Services, and on the collection itself on Azure DevOps Server."""
+        org = (self.org or "").rstrip("/")
+        m = re.match(r"^https://dev\.azure\.com/([^/]+)", org)
+        if m:
+            return "https://vssps.dev.azure.com/" + m.group(1)
+        return org
+
+    def add_reviewer(self, who, required="false"):
+        """Finds `who` (display name, account or email - Identities - Read
+        Identities, searchFilter=General) and adds them to the PR as a
+        reviewer (PUT .../reviewers/{id}, vote 0). Ambiguous or unknown
+        names are an error listing the matches."""
+        if _is_blank(who):
+            print("Who should review?", file=sys.stderr)
+            return 1
+        url = "{0}/_apis/identities?searchFilter=General&filterValue={1}&queryMembership=None".format(
+            self._identities_base(), urllib.parse.quote(who))
+        try:
+            found = self.fetch(url, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST identity search failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        people = [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
+        if len(people) != 1:
+            names = ", ".join(i.get("providerDisplayName") or "?" for i in people[:8])
+            print("{0} people match '{1}'{2}".format(len(people), who, (": " + names) if names else ""), file=sys.stderr)
+            return 1
+        person = people[0]
+        try:
+            self.fetch(self._pr_url("/reviewers/{0}".format(person["id"])), method="PUT",
+                       data={"vote": 0, "isRequired": _to_bool(required)}, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST add-reviewer failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        print(json.dumps({"added": person.get("providerDisplayName"), "id": person.get("id")}, ensure_ascii=False))
+        return 0
+
+    def set_description(self, text):
+        """Replaces the PR's description (PATCH .../pullRequests/{id})."""
+        try:
+            self.fetch(self._pr_url(), method="PATCH", data={"description": text or ""}, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST description update failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        print("Description updated.")
+        return 0
+
+    def create_pr(self, source, target, title, description="", work_items="", draft="false"):
+        """Opens a PR from `source` into `target` (POST .../pullrequests),
+        linking the comma-separated work item ids. Prints {"id", "url"}."""
+        if not source or not target or _is_blank(title):
+            print("create-pr needs <source> <target> <title>", file=sys.stderr)
+            return 1
+        ref = lambda b: b if b.startswith("refs/") else "refs/heads/" + b
+        data = {"sourceRefName": ref(source), "targetRefName": ref(target), "title": title,
+                "description": description or "", "isDraft": _to_bool(draft)}
+        ids = [w.strip() for w in (work_items or "").split(",") if w.strip().isdigit()]
+        if ids:
+            data["workItemRefs"] = [{"id": w} for w in ids]
+        try:
+            pr = self.fetch(self._url("pullrequests"), method="POST", data=data, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST create-pr failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        pid = (pr or {}).get("pullRequestId")
+        print(json.dumps({"id": pid, "url": build_pr_url(self.org, self.project, self.repo, pid) if pid else ""},
+                         ensure_ascii=False))
+        return 0
+
+    def get_pr(self):
+        """Any PR in the project by id (GET {org}/{project}/_apis/git/
+        pullrequests/{id} - no repository needed), printed as the same record
+        --list prints for a dashboard row, minus what --list works out on top
+        (thread counts, build, policies). For the chat's get_pull_request on
+        a PR that isn't on the user's dashboard."""
+        if not _is_uint(self.pr_id):
+            print("get-pr needs a numeric AZVICLI_PR", file=sys.stderr)
+            return 1
+        url = "{0}/{1}/_apis/git/pullrequests/{2}".format(self.org, self.project, self.pr_id)
+        try:
+            pr = self.fetch(url, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST get-pr failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        except Exception as e:
+            print("REST get-pr failed: {0}".format(e), file=sys.stderr)
+            return 1
+        want_org = self.org.rstrip("/").lower()
+        same_org = [a for a in self.config.accounts if (a.org_url or "").rstrip("/").lower() == want_org]
+        account = next((a for a in same_org if (a.project or "").lower() == self.project.lower()),
+                       same_org[0] if same_org else None)
+
+        class _Acct(object):
+            org_url = self.org
+            project = self.project
+            clones_dir = (getattr(account, "clones_dir", "") or "") if account else ""
+
+        record = to_record(pr or {}, _Acct, (pr or {}).get("status") or "", (None, None, None, None, None),
+                           ("none", None, "", [], []), None, None)
+        print(json.dumps(record, ensure_ascii=False))
+        return 0
+
     def complete_pr(self, strategy, del_branch="true", transition="true"):
         if strategy not in _MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
@@ -2160,7 +2362,10 @@ def cmd_pr_action(flag, rest, env=None):
     concurrently on the daemon's thread pool.
     """
     env = os.environ if env is None else env
-    for name in ("AZVICLI_ORG", "AZVICLI_PROJECT", "AZVICLI_REPO", "AZVICLI_PR"):
+    # --get-pr looks a PR up by id alone: the project-level endpoint needs no repo.
+    required = ("AZVICLI_ORG", "AZVICLI_PROJECT", "AZVICLI_PR") if flag == "--get-pr" else (
+        "AZVICLI_ORG", "AZVICLI_PROJECT", "AZVICLI_REPO", "AZVICLI_PR")
+    for name in required:
         if not env.get(name):
             print("{0} not set".format(name), file=sys.stderr)
             return 1
@@ -2203,6 +2408,16 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.complete_pr(arg(0), arg(1, "true"), arg(2, "true"))
     if flag == "--auto-complete":
         return actions.set_auto_complete(arg(0), arg(1) or None, arg(2, "true"), arg(3, "true"))
+    if flag == "--build-log":
+        return actions.build_log(arg(0))
+    if flag == "--add-reviewer":
+        return actions.add_reviewer(arg(0), arg(1, "false"))
+    if flag == "--set-description":
+        return actions.set_description(arg(0))
+    if flag == "--create-pr":
+        return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
+    if flag == "--get-pr":
+        return actions.get_pr()
 
     print("Unknown PR action: {0}".format(flag), file=sys.stderr)  # unreachable via PR_ACTION_FLAGS
     return 1
@@ -3174,6 +3389,7 @@ class WorkItemActions:
         a4 = rest[3] if len(rest) > 3 else ""
         a5 = rest[4] if len(rest) > 4 else ""
         a6 = rest[5] if len(rest) > 5 else ""
+        a7 = rest[6] if len(rest) > 6 else ""
 
         if cmd == "create":
             return self._wi_create(a2, a3, a4, a5)
@@ -3185,11 +3401,123 @@ class WorkItemActions:
             return self._wi_link_pr(a2, a3, a4, a5, a6)
         if cmd == "unlink-pr":
             return self._wi_unlink_pr(a2, a3)
+        if cmd == "create-branch":
+            return self._wi_create_branch(a2, a3, a4, a5, a6, a7)
+        if cmd == "delete-branch":
+            return self._wi_delete_branch(a2, a3, a4, a5, a6)
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | "
               "set <id> <field> <value> | comment <id> <text> | "
               "link-pr <wiId> <orgUrl> <project> <repoName> <prId> | "
-              "unlink-pr <wiId> <prId>", file=sys.stderr)
+              "unlink-pr <wiId> <prId> | "
+              "create-branch <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch> | "
+              "delete-branch <orgUrl> <project> <repoName> <branch> [sha]", file=sys.stderr)
         return 1
+
+    def _wi_delete_branch(self, org_url, project, repo_name, branch, sha=""):
+        """Deletes `branch` (Refs - Update Refs with an all-zero newObjectId)
+        - the chat's undo of create-branch. `sha` (the commit it was created
+        at) guards against deleting a branch someone has pushed to since;
+        without it the current tip is read first."""
+        org_url = org_url or self.collection
+        project = project or self.project
+        if not (org_url and project and repo_name and branch):
+            print("ERROR: delete-branch needs <orgUrl> <project> <repoName> <branch> [sha]", file=sys.stderr)
+            return 1
+        repo_url = "{0}/{1}/_apis/git/repositories/{2}".format(org_url, project, urllib.parse.quote(repo_name))
+        name = "refs/heads/" + (branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch)
+        try:
+            refs = self._get("{0}/refs?filter={1}".format(repo_url, urllib.parse.quote(name[len("refs/"):])),
+                             api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        tip = next((r.get("objectId") for r in (refs.get("value") or []) if r.get("name") == name), None)
+        if not tip:
+            print("ERROR: branch '{0}' doesn't exist".format(branch), file=sys.stderr)
+            return 1
+        if sha and tip != sha:
+            print("ERROR: '{0}' has moved since it was created (new commits) - not deleting it".format(branch),
+                  file=sys.stderr)
+            return 1
+        try:
+            d = self._post(repo_url + "/refs", [{"name": name, "oldObjectId": tip, "newObjectId": "0" * 40}],
+                           api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "POST")
+        result = (d.get("value") or [{}])[0] if isinstance(d, dict) else {}
+        if not result.get("success"):
+            print("ERROR: could not delete '{0}': {1}".format(branch, result.get("updateStatus")), file=sys.stderr)
+            return 1
+        print(json.dumps({"deleted": branch}))
+        return 0
+
+    def _wi_create_branch(self, wid, org_url, project, repo_name, from_branch, new_branch):
+        """Creates branch `new_branch` at the tip of `from_branch` on the
+        server (Refs - Update Refs: POST .../refs with an all-zero
+        oldObjectId) and, unless `wid` is empty or "0", links it to work
+        item `wid` as a "Branch" artifact link (what the work item's
+        Development section lists). Prints {"branch", "objectId", "linked"}.
+        """
+        org_url = org_url or self.collection
+        project = project or self.project
+        if not (org_url and project and repo_name and from_branch and new_branch):
+            print("ERROR: create-branch needs <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch>",
+                  file=sys.stderr)
+            return 1
+        strip = lambda b: b[len("refs/heads/"):] if b.startswith("refs/heads/") else b
+        from_branch, new_branch = strip(from_branch), strip(new_branch)
+        repo_url = "{0}/{1}/_apis/git/repositories/{2}".format(org_url, project, urllib.parse.quote(repo_name))
+        try:
+            repo = self._get(repo_url)
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        repo_guid = repo.get("id")
+        project_guid = (repo.get("project") or {}).get("id")
+        if not repo_guid or not project_guid:
+            print("ERROR: could not resolve repository/project id for '" + repo_name + "'", file=sys.stderr)
+            return 2
+        # filter= is a prefix match ("heads/develop" also finds
+        # "heads/develop-old"), so pick the exact ref out of the answer.
+        refs_url = "{0}/refs?filter={1}".format(repo_url, urllib.parse.quote("heads/" + from_branch))
+        try:
+            refs = self._get(refs_url, api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        want = "refs/heads/" + from_branch
+        sha = next((r.get("objectId") for r in (refs.get("value") or []) if r.get("name") == want), None)
+        if not sha:
+            print("ERROR: branch '{0}' not found in {1}".format(from_branch, repo_name), file=sys.stderr)
+            return 1
+        body = [{"name": "refs/heads/" + new_branch, "oldObjectId": "0" * 40, "newObjectId": sha}]
+        try:
+            d = self._post(repo_url + "/refs", body, api_version="6.0")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "POST")
+        result = (d.get("value") or [{}])[0] if isinstance(d, dict) else {}
+        if not result.get("success"):
+            print("ERROR: could not create '{0}': {1}".format(
+                new_branch, result.get("customMessage") or result.get("updateStatus") or json.dumps(d)[:300]),
+                file=sys.stderr)
+            return 1
+        linked = None
+        if wid and wid != "0":
+            artifact_url = "vstfs:///Git/Ref/{0}%2F{1}%2FGB{2}".format(
+                project_guid, repo_guid, urllib.parse.quote(new_branch, safe=""))
+            patch = [{
+                "op": "add",
+                "path": "/relations/-",
+                "value": {"rel": "ArtifactLink", "url": artifact_url, "attributes": {"name": "Branch"}},
+            }]
+            try:
+                self._patch("{0}/_apis/wit/workitems/{1}".format(self.collection, wid), patch,
+                            content_type="application/json-patch+json")
+                linked = int(wid) if str(wid).isdigit() else wid
+            except AdoHttpError as e:
+                # The branch exists now; say so rather than reporting a failure.
+                print(json.dumps({"branch": new_branch, "objectId": sha, "linked": None,
+                                  "linkError": _clip(str(e))}, ensure_ascii=False))
+                return 0
+        print(json.dumps({"branch": new_branch, "objectId": sha, "linked": linked}, ensure_ascii=False))
+        return 0
 
     def _wi_create(self, wtype, title, parent_id, iteration_path):
         if not wtype or not title:
@@ -4177,6 +4505,193 @@ def parse_args(argv):
     return args
 
 
+# ---------------------------------------------------------------------------
+# --mcp: the chat panel's tools, as an MCP server
+# ---------------------------------------------------------------------------
+#
+# The chat panel (lua/azure-cli/chat/) runs an agent CLI (Claude Code, the
+# Copilot CLI, ...) and hands it an MCP config that starts `azure-cli.py
+# --mcp`. This process speaks MCP to the agent over stdio (JSON-RPC 2.0, one
+# message per line) and forwards tools/list and tools/call to the Neovim
+# that started the chat, through the TCP bridge chat/bridge.lua listens on
+# (AZVICLI_CHAT_BRIDGE = "host:port", AZVICLI_CHAT_TOKEN authenticates each
+# request). The tools themselves live on the Lua side, where the plugin
+# already knows what is on screen and how to do every action - so this is
+# only a relay: one JSON line out, one JSON line back, per call.
+
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _bridge_call(payload, env=None, timeout=900):
+    """One request to the Neovim bridge: sends `payload` (plus the token)
+    as a JSON line and returns the decoded JSON line it answers with.
+    Raises OSError/ValueError when the bridge isn't reachable or answers
+    garbage. The timeout is long because a write tool may be waiting on
+    the user to approve it in Neovim.
+    """
+    env = os.environ if env is None else env
+    addr = env.get("AZVICLI_CHAT_BRIDGE") or ""
+    host, _, port = addr.rpartition(":")
+    if not host or not port.isdigit():
+        raise OSError("AZVICLI_CHAT_BRIDGE is not set - start the agent from azure-vicli's chat panel")
+    msg = dict(payload)
+    msg["token"] = env.get("AZVICLI_CHAT_TOKEN") or ""
+    with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+        sock.sendall((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    # A tool's answer can carry text azure-vicli only relayed (a PR
+    # comment, a commit message, ...) that isn't actually valid UTF-8 -
+    # e.g. a Windows-1252 byte that slipped in upstream. errors="replace"
+    # (every other decode in this file already does this) swaps it for
+    # U+FFFD instead of failing the whole tool call with a raw
+    # UnicodeDecodeError, as azure-vicli PR #50213's get_pr_threads once did.
+    return json.loads(buf.decode("utf-8", errors="replace"))
+
+
+def mcp_handle(msg, bridge=_bridge_call):
+    """Answers one JSON-RPC message from the agent: the response dict, or
+    None for a notification. `bridge` is injectable for tests.
+    """
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+    mid, method = msg.get("id"), msg.get("method")
+    if mid is None:
+        return None  # notifications/initialized, notifications/cancelled, ...
+
+    def ok(result):
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+    if method == "initialize":
+        params = msg.get("params") or {}
+        return ok({
+            "protocolVersion": params.get("protocolVersion") or MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "azure-vicli", "version": "1"},
+            "instructions": "Tools for the Azure DevOps pull requests and work items open in the user's "
+                            "azure-vicli (Neovim). Call current_view to see what the user is looking at.",
+        })
+    if method == "ping":
+        return ok({})
+    if method == "tools/list":
+        try:
+            answer = bridge({"method": "list"})
+        except (OSError, ValueError) as ex:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": "azure-vicli: " + str(ex)}}
+        return ok({"tools": answer.get("tools") or []})
+    if method == "tools/call":
+        params = msg.get("params") or {}
+        try:
+            answer = bridge({"method": "call", "name": params.get("name"), "arguments": params.get("arguments") or {}})
+        except (OSError, ValueError) as ex:
+            return ok({"content": [{"type": "text", "text": "azure-vicli is not reachable: " + str(ex)}], "isError": True})
+        text = answer.get("text")
+        if text is None:
+            text = json.dumps(answer.get("result"), ensure_ascii=False, indent=1)
+        return ok({"content": [{"type": "text", "text": text}], "isError": bool(answer.get("error"))})
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found: " + str(method)}}
+
+
+def mcp_serve(stdin=None, stdout=None, bridge=_bridge_call):
+    """--mcp: reads JSON-RPC messages, one per line, from stdin until EOF.
+    Each request runs on its own thread (a tool call can wait minutes for
+    the user's approval while the agent asks for something else), and
+    responses are written whole, one per line, under a lock.
+    """
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    lock = threading.Lock()
+    threads = []
+
+    def answer(line):
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+        else:
+            resp = mcp_handle(msg, bridge)
+        if resp is not None:
+            with lock:
+                stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+                stdout.flush()
+
+    for raw in stdin:
+        line = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else raw.strip()
+        if not line:
+            continue
+        t = threading.Thread(target=answer, args=(line,), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+    return 0
+
+
+def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
+    """--mcp-http: the same MCP server as --mcp, over HTTP instead of stdio
+    (MCP's "streamable HTTP" transport, JSON responses only - no SSE), for
+    an agent that only connects to http servers: GitHub Copilot's --acp
+    rejects a stdio one passed in session/new. Listens on a random
+    127.0.0.1 port, prints it as the first line on stdout, and serves
+    until stdin closes (chat/acp.lua keeps that pipe open for as long as
+    Neovim runs). Every request needs "Authorization: Bearer
+    <AZVICLI_CHAT_TOKEN>" - anything on this machine can reach the port.
+    """
+    import http.server
+    env = os.environ if env is None else env
+    token = env.get("AZVICLI_CHAT_TOKEN") or ""
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, body=None):
+            data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            if body is not None:
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            # No server-initiated stream: the spec's answer for that is 405.
+            self._send(405)
+
+        def do_DELETE(self):
+            self._send(405)
+
+        def do_POST(self):
+            if not token or self.headers.get("Authorization") != "Bearer " + token:
+                return self._send(401, {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "unauthorized"}})
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            try:
+                msg = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError:
+                return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+            if isinstance(msg, list):
+                answers = [a for a in (mcp_handle(m, bridge) for m in msg) if a is not None]
+                return self._send(200, answers) if answers else self._send(202)
+            resp = mcp_handle(msg, bridge)
+            return self._send(202) if resp is None else self._send(200, resp)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    stdout.write("{0}\n".format(server.server_address[1]))
+    stdout.flush()
+    for _ in stdin:
+        pass
+    server.shutdown()
+    return 0
+
+
 def main(argv=None):
     """Thin wrapper: --serve runs the daemon loop, an empty argv either
     branch-prefetches or launches the nvim dashboard (both stay here rather
@@ -4191,6 +4706,10 @@ def main(argv=None):
 
     if argv[:1] == ["--serve"]:
         return serve()
+    if argv[:1] == ["--mcp"]:
+        return mcp_serve()
+    if argv[:1] == ["--mcp-http"]:
+        return mcp_http_serve()
 
     if not argv:
         # No flags at all: either branch-prefetch (AZVICLI_PREFETCH=1|all -

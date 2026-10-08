@@ -207,7 +207,27 @@ local function pr_snapshot(pr)
     totalThreads = pr.totalThreads or -1,
     myActiveThreads = pr.myActiveThreads or -1,
     mentionTotal = pr.mentionTotal or -1,
+    othersComments = pr.othersComments or -1,
+    othersCommentsInMyThreads = pr.othersCommentsInMyThreads or -1,
   }
+end
+
+-- Whether somebody other than me commented on `pr` since `base` (a seen
+-- record, or the previous poll's copy): on my own PR, anywhere
+-- (othersComments); on anyone else's, in a thread I've commented in
+-- (othersCommentsInMyThreads). My own comments never count - the thread
+-- counts grew on a thread I started myself. A baseline from before the
+-- provider sent these says nothing (seed_unseen fills it in); a provider
+-- that doesn't send them falls back to the thread counts.
+local function others_commented(pr, base, is_mine)
+  local f = is_mine and "othersComments" or "othersCommentsInMyThreads"
+  local now = pr[f]
+  if type(now) == "number" and now >= 0 then
+    local before = base[f]
+    return type(before) == "number" and before >= 0 and now > before
+  end
+  local g = is_mine and "totalThreads" or "myActiveThreads"
+  return (pr[g] or -1) >= 0 and pr[g] > (base[g] or 0)
 end
 
 -- Records pr's current thread/mention counts as "seen" (called when the PR is opened).
@@ -234,16 +254,12 @@ end
 local function pr_is_unread(pr)
   local rec = seen.prs[tostring(pr.id)]
   if not rec then return false end
-  local threads_changed
-  if pr.state == "Created" then
-    threads_changed = (pr.totalThreads or -1) >= 0 and pr.totalThreads > (rec.totalThreads or 0)
-  else
-    -- Growth keeps its original baseline handling (an unknown -1 in the
-    -- record reads as 0); the shrink half needs a baseline it can trust,
-    -- since "fewer than we never knew" says nothing.
+  local threads_changed = others_commented(pr, rec, pr.state == "Created")
+  if pr.state ~= "Created" and not threads_changed then
+    -- The shrink half needs a baseline it can trust, since "fewer than we
+    -- never knew" says nothing.
     threads_changed = (pr.myActiveThreads or -1) >= 0
-      and (pr.myActiveThreads > (rec.myActiveThreads or 0)
-        or ((rec.myActiveThreads or -1) >= 0 and pr.myActiveThreads < rec.myActiveThreads))
+      and (rec.myActiveThreads or -1) >= 0 and pr.myActiveThreads < rec.myActiveThreads
   end
   local mentions_grew = (pr.mentionTotal or -1) >= 0 and pr.mentionTotal > (rec.mentionTotal or 0)
   return threads_changed or mentions_grew
@@ -256,9 +272,19 @@ end
 local function seed_unseen(fresh_prs)
   local dirty = false
   for _, pr in ipairs(fresh_prs) do
-    if not seen.prs[tostring(pr.id)] then
+    local rec = seen.prs[tostring(pr.id)]
+    if not rec then
       seen.prs[tostring(pr.id)] = pr_snapshot(pr)
       dirty = true
+    else
+      -- A record saved before the provider sent the others-comment counts:
+      -- start them from now, like a brand-new record.
+      for _, f in ipairs({ "othersComments", "othersCommentsInMyThreads" }) do
+        if (rec[f] == nil or rec[f] < 0) and (pr[f] or -1) >= 0 then
+          rec[f] = pr[f]
+          dirty = true
+        end
+      end
     end
   end
   if dirty then save_seen() end
@@ -1386,11 +1412,11 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
     if old then
       local is_mine = pr.state == "Created"
       if is_mine then
-        if (pr.totalThreads or -1) >= 0 and pr.totalThreads > (old.totalThreads or -1) then
+        if others_commented(pr, old, true) then
           mine_events[#mine_events + 1] = pr
         end
       else
-        if (pr.myActiveThreads or -1) >= 0 and pr.myActiveThreads > (old.myActiveThreads or -1) then
+        if others_commented(pr, old, false) then
           thread_events[#thread_events + 1] = pr
         -- A drop is a thread of mine somebody resolved. Worth its own line:
         -- "resolved" doesn't mean "fixed", and gu in the reviewer will say
@@ -1409,6 +1435,13 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
   for _, pr in ipairs(mine_events) do
     notify("New comment on your PR #" .. pr.id .. ": " .. (pr.title or ""))
     NOTIFY.toast("PR #" .. pr.id, "New comment on your PR: " .. (pr.title or ""))
+    -- ...and a suggestion in the chat to triage them.
+    local old = prev_by_id[pr.id]
+    pcall(function()
+      local n = (pr.othersComments or -1) >= 0 and old and (old.othersComments or -1) >= 0
+        and pr.othersComments - old.othersComments or (pr.totalThreads or 0) - ((old and old.totalThreads) or 0)
+      require("azure-cli.chat").on_new_comments(pr, n)
+    end)
   end
   for _, pr in ipairs(thread_events) do
     notify("New reply on your thread in PR #" .. pr.id .. ": " .. (pr.title or ""))
@@ -1507,6 +1540,8 @@ local function load(silent, force)
       render()
       warm_all(fresh)
       warm_workitems(fresh)
+      -- The chat's once-a-day summary (setup({chat={daily_summary=true}})).
+      pcall(function() require("azure-cli.chat").on_dashboard_loaded(win) end)
     end,
   })
 end
@@ -1838,6 +1873,20 @@ KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.workitems.dashboard").open()
 end, { desc = "switch to the work-items dashboard" })
 KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
+-- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
+-- the PR under the cursor (chat/view.lua).
+require("azure-cli.chat").bind_toggle(buf, "dashboard")
+require("azure-cli.chat.view").register("azurecli-dashboard", function(w)
+  local pr = row_pr[vim.api.nvim_win_get_cursor(w)[1]]
+  local snap = { screen = "PR dashboard" }
+  if pr then
+    snap.pr = { id = pr.id, title = pr.title, repo = pr.repo, source = pr.source, target = pr.target,
+      author = pr.author, section = pr.state, votes = pr.voteRatio, build = pr.buildStatus }
+  else
+    snap.note = "The cursor isn't on a pull request; list_pull_requests shows the whole list."
+  end
+  return snap
+end)
 -- Standalone quits Neovim entirely (today's behaviour, `qa!`) - it's the
 -- launcher's whole nvim session, nothing else to go back to. Plugin mode
 -- just closes this dashboard's own tab (opened by init.lua's
