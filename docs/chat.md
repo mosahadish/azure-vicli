@@ -179,19 +179,105 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `ga` switches.
 | `chat.agent` field | Meaning |
 |---|---|
 | `cmd` | The command (a list, or a string run through `'shell'` with every value shell-escaped). |
-| `stdin` | Written to its stdin, then closed (default `"{message}"`). |
-| `followup` | `{ cmd, stdin, env }` for every message after the first. With `{session_id}` in it, it's used once a session id is known; without a `followup`, each message replays the conversation so far instead. |
-| `session_pattern` | A Lua pattern with one capture that finds the session id in the agent's output, for an agent that prints it rather than returning Claude Code's JSON. |
-| `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}`. |
+| `stdin` | Written to its stdin (default `"{message}"`); closed right after, unless `persistent` is set. Unused when `acp` is set - the message goes in `session/prompt` instead. |
+| `followup` | `{ cmd, stdin, env }` for every message after the first. With `{session_id}` in it, it's used once a session id is known; without a `followup`, each message replays the conversation so far instead. Ignored when `persistent` or `acp` is set. |
+| `persistent` | Keep this agent's process running between messages instead of starting a fresh one each time: see [Keeping the agent warm](#keeping-the-agent-warm) below. |
+| `acp` | The process speaks the [Agent Client Protocol](https://agentclientprotocol.com) (`copilot --acp`): a warm, bidirectional session instead of `persistent`'s one-way stream. See below. |
+| `session_pattern` | A Lua pattern with one capture that finds the session id in the agent's output, for an agent that prints it rather than returning Claude Code's JSON. Unused when `acp` is set (the agent returns a session id directly). |
+| `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option` instead). |
 | `label` | The agent's name in the panel. |
-| `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls, e.g. `{ "^\u{25CF} ", "^%s+\u{2514}" }` for Copilot's `● tool` / `└ result` lines). |
-| `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900). |
+| `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls, e.g. `{ "^\u{25CF} ", "^%s+\u{2514}" }` for Copilot's `● tool` / `└ result` lines). Unused when `acp` is set. |
+| `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900). For `persistent`, a timeout stops the whole process; for `acp` it asks the agent to stop the turn first (`session/cancel`), then stops the process if that doesn't work within 5s. |
 
 Placeholders: `{message}` (your message, with the view description, the
-references and, on the first message, the instructions), `{text}` (just what
-you typed, prompts expanded), `{view}` (the view description),
-`{mcp_config}` (the MCP config file), `{fix_root}` (where fix and story
-worktrees live), `{session_id}`, `{model}`.
+references and, on the first message, the instructions), `{message_json}`
+(the same, as a JSON string - quoted and escaped - for building a JSON line
+by hand), `{text}` (just what you typed, prompts expanded), `{view}` (the
+view description), `{mcp_config}` (the MCP config file - unused when `acp`
+is set, which passes the same server directly in `session/new`), `{fix_root}`
+(where fix and story worktrees live), `{session_id}`, `{model}`.
+
+### Keeping the agent warm
+
+By default every message starts a fresh process: simple, and fine for most
+CLIs, but it pays that process's startup cost (and, without a `followup`
+with a session id, resends the whole conversation) on every message. Two
+ways to avoid that, for a CLI built for one of them - most aren't, so this
+isn't the default:
+
+**`persistent = true`** keeps one process running for the life of the
+conversation: the first message starts it as usual (`cmd`/`stdin`, not
+closed), and every later message is written straight to its stdin - no new
+process, and no need for `followup` since the same one remembers
+everything. It's only worth setting for a CLI that reads a stream of
+per-turn requests from stdin without exiting between them, and writes a
+stream of per-turn events back - a plain `-p "prompt"` CLI has nothing to
+loop on and will just exit (or hang) after the first message. Claude
+Code's `--input-format stream-json --output-format stream-json` is the one
+this has been checked against:
+
+```lua
+agent = {
+  label = "Claude",
+  persistent = true,
+  models = { "sonnet", "opus", "haiku" },
+  cmd = { "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+          "--model", "{model}", "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
+          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
+  -- Every turn, first one included, is one JSON line of Claude's own
+  -- "user message" shape - {message_json} does the quoting/escaping.
+  stdin = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}',
+},
+```
+
+**`acp = true`** is for a CLI with an [Agent Client
+Protocol](https://agentclientprotocol.com) server mode instead - GitHub
+Copilot CLI's `--acp`, checked against a real, logged-in `copilot --acp`.
+ACP is JSON-RPC, not a plain stream: azure-vicli (`chat/acp.lua`) does the
+handshake (`initialize`, `session/new` - passing the azure-vicli MCP server
+straight in its `mcpServers`, no `{mcp_config}` file needed) once, then one
+`session/prompt` per message on the same session, with the answer streamed
+in through `session/update`. There's no `cmd` templating - the prompt text
+goes in `session/prompt` directly - so `stdin`, `followup` and
+`session_pattern` don't apply:
+
+```lua
+agent = {
+  label = "Copilot",
+  acp = true,
+  models = { "claude-sonnet-5", "gpt-5.4" },   -- `copilot --help` / the Model config option lists them
+  cmd = { "copilot", "--acp" },
+},
+```
+
+**MCP tools don't currently reach the agent this way.** Confirmed against a
+real `copilot --acp` (1.0.92): its `initialize` response only advertises
+`mcpCapabilities: {http, sse}` - no stdio - and its own log says why a
+passed-in server doesn't show up: `[rust:acp::mcp_servers] Rejecting
+non-http/sse MCP server "azure-vicli" from client`. azure-vicli's MCP
+server (`azure-cli.py --mcp`) is stdio-only, so under `acp = true` Copilot
+gets none of azure-vicli's tools - no `current_view`, `draft_reply`,
+`start_fix`, and so on - just general coding help with no idea what PR or
+work item you're looking at. That's most of what this chat panel is for,
+so `acp` isn't a straight upgrade over the headless setup in [GitHub
+Copilot CLI](#github-copilot-cli) below until Copilot's ACP takes a stdio
+server (or azure-vicli grows an http/sse transport for one - it doesn't
+have one today). Claude Code's `persistent` path above doesn't have this
+problem: `--mcp-config` is a stdio server the same way the non-persistent
+setup already uses it.
+
+A tool call Copilot wants permission for (editing a file, running a
+command) pops up the same yes/no prompt as azure-vicli's own tools, with
+its diff shown when it has one; "Allow"/"Deny" there picks Copilot's
+`allow_once`/`reject_once` option. Unlike `persistent`, stopping a turn
+(`<C-c>`, a timeout) first asks the agent to stop it (`session/cancel`)
+instead of killing the process outright, so the session survives a
+cancelled message when the agent cooperates.
+
+Either way, the warm process/session is stopped (and the next message
+starts a new one) on `ga` (a different agent can't continue it), `gh` (a
+different conversation), starting a new chat, and quitting Neovim - it's
+tied to one conversation with one agent, not kept around indefinitely.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
@@ -229,6 +315,11 @@ agent = {
 ```
 
 Without a session id it still works; each message replays the conversation.
+`persistent` doesn't apply here - `-p` exits after one message regardless.
+`acp = true` (see [Keeping the agent warm](#keeping-the-agent-warm)) gives
+a warm session instead, but - as of Copilot CLI 1.0.92 - at the cost of
+azure-vicli's own tools, which its ACP implementation can't connect to
+yet; this headless setup is the one with full tool access.
 
 ### Let the agent set itself up
 
@@ -265,7 +356,15 @@ couldn't confirm.
      `{fix_root}` (Claude Code: `--add-dir {fix_root}` and `Edit,Write` in
      `--allowedTools`) - only if the user wants the agent changing code;
    - whether a non-interactive run reports a session id (stdout, stderr, or
-     a JSON field), and how to resume that session (e.g. `--resume <id>`).
+     a JSON field), and how to resume that session (e.g. `--resume <id>`);
+   - whether it has a mode built to stay running across many turns on one
+     stdin/stdout stream (not just "resume by id" - actually reading more
+     requests after answering one, without exiting), or an Agent Client
+     Protocol server mode (`--acp` or similar - check for it explicitly,
+     it won't show up as an ordinary flag doing the same thing as `-p`).
+     Either can skip starting a fresh process each message: `persistent`
+     for the former, `acp` for the latter - see [Keeping the agent
+     warm](#keeping-the-agent-warm). Most CLIs have neither; don't force it.
 2. **Decide how the prompt is passed.** azure-vicli's message has several
    lines. On Windows, an npm-installed CLI is a `.cmd` shim that cuts
    arguments at the first newline, so pass the prompt on stdin
@@ -279,7 +378,7 @@ couldn't confirm.
    everything already there.
 4. **Write the `chat` block** (the fields are in the table above), shaped like
    the examples in this file:
-   `chat = { agent = { label, models, cmd, stdin, followup, session_pattern, strip } }`.
+   `chat = { agent = { label, models, cmd, stdin, followup, persistent, session_pattern, strip } }`.
    Use `{model}` where the model flag goes, and list the model names from
    step 1 in `models`. Add `followup` (the same command plus the resume flag
    with `{session_id}`) only if step 1 found a session id. If the CLI prints
