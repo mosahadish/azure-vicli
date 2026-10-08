@@ -503,6 +503,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
   fi
+  if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
+    pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
+  else
+    fail "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" "$out"
+  fi
   if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
     pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
   else

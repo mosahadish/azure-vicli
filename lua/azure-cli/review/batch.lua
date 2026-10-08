@@ -115,72 +115,73 @@ function M.item_args(item)
   return item.args
 end
 
--- Submits every item currently in state.items, in order, through
--- run_write(args, on_ok, on_fail) (the same shape as ctx.run_write, injected
--- rather than read off a ctx so this is directly unit-testable with a fake -
--- mirrors M.apply_edit/M.apply_delete in review/comments.lua).
--- Sequential: item i+1 only starts once item i's write has returned, so a
--- submit reads top-to-bottom the same order the gQ float lists the queue in,
--- and no later item's confirm can land before an earlier one's failure is
--- known. A confirmed item is removed from state.items; a failed one is left
--- in place (still queued) so both the summary and a later gS see it.
---
--- hooks.before(item) runs right before that item's own write starts (flip
--- its tag from queued to sending); hooks.after(item, ok, err) once it
--- settles (confirm on success, restore the queued tag on failure - neither
--- of those is this function's job, it only reports what happened). Once
--- every item has settled, the vote is sent last through the same run_write -
--- only when `vote` (a { key, label } pair) is non-nil, i.e. was actually
--- chosen, never a "no vote" submit. hooks.done(results, vote_err) runs last,
--- with results = { {item = item, ok = bool, err = msg-or-nil}, ... } in
--- submission order and vote_err = nil when there was no vote to send or it
--- succeeded, the failure message otherwise.
+-- Sends every queued item and the vote (when `vote`, a { key, label }
+-- pair, is non-nil) at once, through `run_write(args, on_ok, on_fail)` -
+-- nothing waits on anything else, except that replies to the same thread
+-- go one after another so they land in the order they were written.
+-- hooks.before(item) runs as an item is sent; hooks.after(item, ok, err)
+-- as it settles (a confirmed item is removed from state.items first).
+-- hooks.done(results, vote_err) runs once, after everything settled, with
+-- results = { {item = item, ok = bool, err = msg-or-nil}, ... } in queue
+-- order and vote_err = nil when there was no vote or it went through.
+-- state.submitting is true from the first send until done().
 function M.submit(state, run_write, vote, hooks)
   hooks = hooks or {}
   local before = hooks.before or function() end
   local after = hooks.after or function() end
   local done = hooks.done or function() end
 
-  -- Snapshot the queue order up front: state.items is mutated (confirmed
-  -- items removed) as submission proceeds, so walking it directly would
-  -- skip whatever the removal just shifted into the current index.
+  -- Snapshot the queue: state.items shrinks as items are confirmed.
   local items = {}
   for _, it in ipairs(state.items) do items[#items + 1] = it end
 
-  local results = {}
-  local function do_vote()
-    if not vote then
-      done(results, nil)
-      return
-    end
-    run_write({ "--vote", vote.key }, function()
-      done(results, nil)
-    end, function(msg)
-      done(results, msg)
-    end)
+  local results, vote_err = {}, nil
+  local outstanding = #items + (vote and 1 or 0)
+  state.submitting = true
+  local function settle()
+    outstanding = outstanding - 1
+    if outstanding > 0 then return end
+    state.submitting = nil
+    local ordered = {}
+    for n = 1, #items do ordered[#ordered + 1] = results[n] end
+    done(ordered, vote_err)
+  end
+  if outstanding == 0 then
+    state.submitting = nil
+    done({}, nil)
+    return
   end
 
-  local i = 0
-  local function step()
-    i = i + 1
-    local item = items[i]
-    if not item then
-      do_vote()
-      return
-    end
+  -- One chain per reply thread (in queue order); every thread item, and
+  -- each chain, goes out independently.
+  local chains, order = {}, {}
+  for n, item in ipairs(items) do
+    local key = item.kind == "reply" and ("reply\0" .. tostring(item.thread_id)) or n
+    if not chains[key] then chains[key] = {}; order[#order + 1] = key end
+    table.insert(chains[key], n)
+  end
+  local function run_chain(chain, at)
+    local n = chain[at]
+    if not n then return end
+    local item = items[n]
     before(item)
     run_write(M.item_args(item), function()
       M.remove_item(state, item)
-      results[#results + 1] = { item = item, ok = true }
+      results[n] = { item = item, ok = true }
       after(item, true)
-      step()
+      run_chain(chain, at + 1)
+      settle()
     end, function(msg)
-      results[#results + 1] = { item = item, ok = false, err = msg }
+      results[n] = { item = item, ok = false, err = msg }
       after(item, false, msg)
-      step()
+      run_chain(chain, at + 1)
+      settle()
     end)
   end
-  step()
+  for _, key in ipairs(order) do run_chain(chains[key], 1) end
+  if vote then
+    run_write({ "--vote", vote.key }, settle, function(msg) vote_err = msg; settle() end)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -212,7 +213,7 @@ local function render_queue(state)
     lines[#lines + 1] = string.format("%-6s  %-32s  %s", item.kind, item_location(item), text)
   end
   lines[#lines + 1] = ""
-  lines[#lines + 1] = "(dd: remove   q/<Esc>: close)"
+  lines[#lines + 1] = "(moving shows it in the diff   <Tab>: go there   dd: remove   q/<Esc>: close)"
   return lines
 end
 
@@ -395,7 +396,49 @@ local function setup(ctx)
     ctx.redraw()
   end
 
-  -- gQ: float listing the queue; dd removes the item under the cursor.
+  -- Where a queued item goes: { path, side, lineno } for a line comment
+  -- (a reply: its thread's), { path } for a file comment, {} for a PR one.
+  local function item_target(item)
+    if item.kind == "reply" then
+      local t = item.thread or ctx.find_thread(item.thread_id)
+      if not t then return nil end
+      return { path = t.path, side = t.side, lineno = t.lineno }
+    end
+    if item.bucket == "general" then return {} end
+    return { path = item.path, side = item.side, lineno = item.lineno }
+  end
+
+  -- Shows `item`'s place in the reviewer's diff pane: the file, scrolled
+  -- to the line - or the Overview for a PR comment. focus = true also
+  -- moves the cursor there (<Tab>); otherwise focus stays in the gQ float.
+  local function show_item(item, focus)
+    local target = item and item_target(item)
+    if not target then return end
+    if not target.path then
+      if ctx.open_overview then ctx.open_overview(focus) end
+      return
+    end
+    ctx.open_file(target.path, focus)
+    if not target.lineno then return end
+    ctx.ensure_diff_content(target.path, function()
+      vim.schedule(function()
+        local dw = ctx.diff_win()
+        if not (dw and vim.api.nvim_win_is_valid(dw)) then return end
+        local b = vim.api.nvim_win_get_buf(dw)
+        if ctx.paths_by_buf[b] ~= target.path then return end
+        for i, m in ipairs(ctx.maps_by_buf[b] or {}) do
+          if m.side == (target.side or "R") and m.lineno == target.lineno then
+            pcall(vim.api.nvim_win_set_cursor, dw, { i, 0 })
+            vim.api.nvim_win_call(dw, function() vim.cmd("normal! zz") end)
+            return
+          end
+        end
+      end)
+    end)
+  end
+
+  -- gQ: float listing the queue; moving over an item shows its place in
+  -- the diff pane, <Tab> goes there, dd removes the item under the cursor.
   local function open_queue()
     local s = state()
     if #s.items == 0 then
@@ -416,10 +459,37 @@ local function setup(ctx)
       pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, render_queue(s))
       vim.bo[fbuf].modifiable = false
     end
+    -- Two header lines (title + blank) before the first item row.
+    local function item_at_cursor()
+      if not vim.api.nvim_win_is_valid(win) then return nil end
+      return s.items[vim.api.nvim_win_get_cursor(win)[1] - 2]
+    end
+    local shown
+    vim.api.nvim_create_autocmd("CursorMoved", {
+      buffer = fbuf,
+      callback = function()
+        local item = item_at_cursor()
+        if item and item ~= shown then
+          shown = item
+          show_item(item, false)
+        end
+      end,
+    })
+    vim.keymap.set("n", "<Tab>", function()
+      local item = item_at_cursor()
+      if not item then
+        ctx.notify("Not on a queued item.", vim.log.levels.WARN)
+        return
+      end
+      pcall(vim.api.nvim_win_close, win, true)
+      show_item(item, true)
+    end, kopts)
+    -- Start on the first item, already shown.
+    pcall(vim.api.nvim_win_set_cursor, win, { 3, 0 })
+    shown = s.items[1]
+    show_item(shown, false)
     vim.keymap.set("n", "dd", function()
-      -- Two header lines (title + blank) before the first item row.
-      local idx = vim.api.nvim_win_get_cursor(win)[1] - 2
-      local item = s.items[idx]
+      local item = item_at_cursor()
       if not item then
         ctx.notify("Not on a queued item.", vim.log.levels.WARN)
         return
@@ -436,6 +506,10 @@ local function setup(ctx)
   -- once everything landed cleanly.
   local function submit_batch()
     local s = state()
+    if s.submitting then
+      ctx.notify("Still sending the last gS - the queue's left for after it.", vim.log.levels.WARN)
+      return
+    end
     if #s.items == 0 then
       ctx.notify("No queued comments to submit.", vim.log.levels.WARN)
       return
@@ -448,9 +522,10 @@ local function setup(ctx)
     if not choice then return end
     local vote = (not choice.none) and choice or nil
 
-    ctx.notify("Submitting " .. #s.items .. " queued item(s)"
-      .. (vote and (", then voting " .. vote.label) or "") .. "\u{2026}")
-
+    -- The sends are detached jobs: leaving the reviewer while they're out
+    -- doesn't stop them (the quit guard doesn't count them as queued, see
+    -- state.submitting), and a redraw once its windows are gone is skipped.
+    local function redraw() pcall(ctx.redraw) end
     M.submit(s, ctx.run_write, vote, {
       before = function(item)
         if item.kind == "thread" and item.pending then
@@ -459,12 +534,12 @@ local function setup(ctx)
         elseif item.kind == "reply" and item.comment then
           item.comment.queued = nil
         end
-        ctx.redraw()
+        redraw()
       end,
       after = function(item, ok)
         if item.kind == "thread" then
           if ok then
-            if item.pending then ctx.confirm_pending_thread(item.pending) end
+            if item.pending then pcall(ctx.confirm_pending_thread, item.pending) end
           elseif item.pending then
             item.pending.entry.queued = true
             if item.pending.entry.comments[1] then item.pending.entry.comments[1].queued = true end
@@ -480,7 +555,7 @@ local function setup(ctx)
             item.comment.queued = true
           end
         end
-        ctx.redraw()
+        redraw()
       end,
       done = function(results, vote_err)
         local ok_n, fail_n = 0, 0
@@ -488,7 +563,7 @@ local function setup(ctx)
           if r.ok then ok_n = ok_n + 1 else fail_n = fail_n + 1 end
         end
         if fail_n == 0 then s.on = false end
-        ctx.refresh_threads()
+        pcall(ctx.refresh_threads)
         local msg = "Submitted " .. ok_n .. " comment" .. (ok_n == 1 and "" or "s")
         if vote then
           if vote_err then
@@ -501,7 +576,7 @@ local function setup(ctx)
           msg = msg .. "; " .. fail_n .. " failed and stayed queued"
         end
         ctx.notify(msg .. ".", fail_n > 0 and vim.log.levels.WARN or vim.log.levels.INFO)
-        ctx.redraw()
+        redraw()
       end,
     })
     end)

@@ -2,9 +2,10 @@
 -- helpers - the ones that never touch vim/ctx, so they run directly under
 -- plain luajit: M.tag (the winbar tag text), M.queue_thread/M.queue_reply/
 -- M.remove_item (queue add/remove/serialise), M.item_args (the argv a
--- queued item submits with), and M.submit (sequential submission order
--- against a fake run_write, a failed item staying queued while the rest
--- confirm, and the vote being sent last and only when chosen).
+-- queued item submits with), and M.submit (everything sent at once except
+-- replies to one thread, which go in order, against a fake run_write; a
+-- failed item staying queued while the rest confirm; the vote sent only
+-- when chosen).
 --
 -- Usage: luajit test-review-batch.lua <review/batch.lua path>
 
@@ -197,6 +198,44 @@ do
   check("submit (nothing to do): run_write never called", #log == 0)
   check("submit (nothing to do): done() called once with empty results", called == 1 and #results == 0)
   check("submit (nothing to do): vote_err nil", vote_err == nil)
+end
+
+do
+  -- Async: nothing waits for anything else - every thread item and the vote
+  -- are all sent before the first answer comes back - except replies to the
+  -- same thread, which go one after another in queue order. done() runs once,
+  -- after the last answer, with results in queue order; state.submitting is
+  -- set the whole time.
+  local state = { on = true, items = {
+    { kind = "thread", args = { "--post", "a.cs", "R", "1", "one" } },
+    { kind = "reply", thread_id = 7, text = "first", args = { "--reply", "7", "first" } },
+    { kind = "thread", args = { "--post", "a.cs", "R", "2", "two" } },
+    { kind = "reply", thread_id = 7, text = "second", args = { "--reply", "7", "second" } },
+  } }
+  local sent, waiting = {}, {}
+  local function run_write(args, on_ok)
+    sent[#sent + 1] = table.concat(args, " ")
+    waiting[#waiting + 1] = on_ok
+  end
+  local results, called = nil, 0
+  M.submit(state, run_write, { key = "10", label = "Approve" }, {
+    done = function(r) results, called = r, called + 1 end,
+  })
+  local function has(prefix)
+    for _, a in ipairs(sent) do if a:sub(1, #prefix) == prefix then return true end end
+    return false
+  end
+  check("submit (async): both threads, the first reply and the vote go out at once",
+    #sent == 4 and has("--post a.cs R 1") and has("--post a.cs R 2") and has("--vote 10"), table.concat(sent, " | "))
+  check("submit (async): the second reply to the same thread waits for the first", not has("--reply 7 second"))
+  check("submit (async): submitting while out", state.submitting == true)
+  -- Answer in reverse order; the reply chain's first answer releases its second.
+  while #waiting > 0 do table.remove(waiting)() end
+  check("submit (async): the second reply went once the first landed", has("--reply 7 second"))
+  check("submit (async): done() once, after everything", called == 1)
+  check("submit (async): results in queue order", results and #results == 4 and results[2].item.text == "first"
+    and results[4].item.text == "second")
+  check("submit (async): submitting cleared", state.submitting == nil and #state.items == 0)
 end
 
 print(fails == 0 and "test-review-batch: all cases pass" or ("test-review-batch: " .. fails .. " unexpected"))

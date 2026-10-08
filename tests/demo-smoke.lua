@@ -1072,5 +1072,112 @@ do
   CHAT.hide()
   print("CHATPLUS-SMOKE-OK")
 end
+-- Batch review: gQ shows the place of the queued comment under the cursor
+-- in the diff pane as it moves (focus stays in the list), <Tab> goes there;
+-- gS sends the queue - everything at once - and leaving mid-send doesn't
+-- count it as still queued.
+do
+  local STATE = require("azure-cli.state")
+  local PANE = require("azure-cli.review.pane")
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      local label = opts.format_item and opts.format_item(it) or tostring(it)
+      if label:find("No vote", 1, true) then return cb(it, i) end
+    end
+    return cb(nil)
+  end
+  local opener = STATE.review_openers and STATE.review_openers["101"]
+  if not (opener and opener()) then return fail("the reviewer for PR #101 isn't open for the batch check") end
+  local s = STATE.batch["101"]
+  for i = #s.items, 1, -1 do STATE.batch_drop["101"](s.items[i]) end
+  local function queue(path, line, text)
+    STATE.batch_live["101"]({ kind = "thread", text = text, bucket = "line", where = path .. "\tR\t" .. line,
+      path = path, side = "R", lineno = line, label = "Comment", args = { "--post", path, "R", tostring(line), text } })
+  end
+  queue("src/auth.py", 12, "batch smoke one")
+  queue("src/throttle.py", 4, "batch smoke two")
+  -- The diff pane's window, and the file/line its cursor is on.
+  local function diff_at()
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local b = vim.api.nvim_win_get_buf(w)
+      local e = PANE.entry(b)
+      if e and vim.api.nvim_win_get_config(w).relative == "" then
+        local m = e.map and e.map[vim.api.nvim_win_get_cursor(w)[1]]
+        return w, m
+      end
+    end
+  end
+  local lb = find_buf("azurecli-files")
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(lb))
+  feed("gQ")
+  local qwin = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_config(qwin).relative == "" then return fail("gQ didn't open the queue float") end
+  local function shows(lineno)
+    local _, m = diff_at()
+    return m and m.side == "R" and m.lineno == lineno
+  end
+  ok = vim.wait(10000, function() return shows(12) end, 50)
+  if not ok then return fail("gQ didn't show the first queued comment (auth.py:12) in the diff pane") end
+  if vim.api.nvim_get_current_win() ~= qwin then return fail("gQ's preview took the focus away from the queue") end
+  feed("j")
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = vim.api.nvim_win_get_buf(qwin) })
+  ok = vim.wait(10000, function() return shows(4) end, 50)
+  if not ok then return fail("moving in gQ didn't show the second queued comment (throttle.py:4)") end
+  feed("<Tab>")
+  local dw = diff_at()
+  vim.wait(5000, function() return shows(4) end, 50)
+  if vim.api.nvim_win_is_valid(qwin) or vim.api.nvim_get_current_win() ~= dw or not shows(4) then
+    return fail("<Tab> in gQ didn't go to throttle.py:4 in the diff pane")
+  end
+  -- gS: both sent; while they're out the queue counts as submitting.
+  feed("gS")
+  local was_submitting = s.submitting == true
+  ok = vim.wait(15000, function() return #s.items == 0 and not s.submitting end, 50)
+  if not ok then return fail("gS didn't send the queue: " .. vim.inspect(s.items)) end
+  local log = io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a")
+  if not (log:find("batch smoke one", 1, true) and log:find("batch smoke two", 1, true)) then
+    return fail("the queued comments never reached the provider")
+  end
+  if not was_submitting then return fail("gS didn't mark the queue as submitting while it sent") end
+  vim.ui.select = real_select
+
+  -- My own comments aren't news: on the dashboard, PR #101's row gets no
+  -- unread dot for the two comments gS just posted - and does get one once
+  -- somebody else replies to one of them.
+  local dwin = vim.fn.win_findbuf(dash)[1]
+  if not dwin then return fail("the dashboard window is gone") end
+  vim.fn.win_gotoid(dwin)
+  local function row101()
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("#101", 1, true) then return l end
+    end
+    return ""
+  end
+  feed("r")
+  ok = vim.wait(15000, function() return row101():find("/5 ", 1, true) ~= nil end, 100)
+  if not ok then return fail("the dashboard didn't pick up the two new threads on #101", dash) end
+  if row101():find("\u{25CF}", 1, true) then return fail("my own comments marked #101 unread", dash) end
+  local path = vim.env.AZVICLI_FAKE_WS .. "/state.json"
+  local st = vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
+  local other
+  for _, t in ipairs(st.threads["101"]) do
+    for _, c in ipairs(t.comments) do
+      if c.content ~= "batch smoke one" and not other and c.author.id ~= t.comments[#t.comments].author.id then other = c.author end
+    end
+  end
+  for _, t in ipairs(st.threads["101"]) do
+    if t.comments[1].content == "batch smoke one" then
+      local c = vim.deepcopy(t.comments[1])
+      c.id, c.parentCommentId, c.author, c.content = #t.comments + 1, 1, other, "a reply from someone else"
+      table.insert(t.comments, c)
+    end
+  end
+  vim.fn.writefile({ vim.json.encode(st) }, path)
+  feed("r")
+  ok = vim.wait(15000, function() return row101():find("\u{25CF}", 1, true) ~= nil end, 100)
+  if not ok then return fail("someone else's reply didn't mark #101 unread", dash) end
+  print("BATCHQ-SMOKE-OK")
+end
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

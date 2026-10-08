@@ -590,6 +590,19 @@ def thread_counts(threads):
     return len(active), len(live), len(my_active), len(mention_active), len(mention_all)
 
 
+def others_comments(threads, only_mine):
+    """Comments by someone other than me (in threads I've commented in, with
+    only_mine) - azure-cli.py's count_others_comments."""
+    n = 0
+    for t in threads:
+        if t.get("isDeleted") or not t["comments"]:
+            continue
+        if only_mine and not any(c["author"]["id"] == MY_ID for c in t["comments"]):
+            continue
+        n += sum(1 for c in t["comments"] if c["author"]["id"] != MY_ID)
+    return n
+
+
 def to_record(ws, pr, threads):
     active, total, my_active, mention, mention_total = thread_counts(threads)
     signed = sum(1 for r in pr["reviewers"] if int(r["vote"]) in (10, 5))
@@ -603,6 +616,7 @@ def to_record(ws, pr, threads):
         "reviewerSummary": " ".join(vote_glyph(r["vote"]) + surname(r["name"]) for r in pr["reviewers"]),
         "activeThreads": active, "closedThreads": total - active, "totalThreads": total,
         "myActiveThreads": my_active, "mentionThreads": mention, "mentionTotal": mention_total,
+        "othersComments": others_comments(threads, False), "othersCommentsInMyThreads": others_comments(threads, True),
         "description": pr["description"], "buildStatus": pr["buildStatus"], "queuePosition": pr["queuePosition"],
         "buildUrl": pr["buildUrl"], "policies": pr["policies"], "missingReviewers": pr["missingReviewers"],
         "mergeConflict": pr["mergeConflict"],

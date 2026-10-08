@@ -645,6 +645,29 @@ class ThreadCountingTests(unittest.TestCase):
         self.assertEqual(mention_threads, 0)
         self.assertEqual(mention_total, 0)
 
+    def test_count_others_comments_skips_mine(self):
+        def c(author, text="x", **kw):
+            d = {"content": text, "isDeleted": False, "commentType": "text", "author": {"id": author}}
+            d.update(kw)
+            return d
+        threads = [
+            # A thread I started, then somebody answered: 1 by others, in a thread of mine.
+            {"status": "active", "comments": [c(USER), c(OTHER_USER)]},
+            # Only me: nothing new for me here.
+            {"status": "active", "comments": [c(USER), c(USER)]},
+            # Somebody else's thread I never joined: counts for "all" only.
+            {"status": "active", "comments": [c(OTHER_USER), c(OTHER_USER)]},
+            # Deleted and system comments never count.
+            {"status": "active", "comments": [c(OTHER_USER, isDeleted=True), c(OTHER_USER, commentType="system"),
+                                              c(USER)]},
+        ]
+        self.assertEqual(ac.count_others_comments(lambda: threads, USER), (3, 1))
+
+    def test_count_others_comments_failure(self):
+        def boom():
+            raise RuntimeError("network down")
+        self.assertEqual(ac.count_others_comments(boom, USER), (-1, -1))
+
     def test_count_threads_failure_returns_all_minus_one(self):
         def boom():
             raise RuntimeError("network down")

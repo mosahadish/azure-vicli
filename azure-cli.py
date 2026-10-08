@@ -887,6 +887,31 @@ def count_threads(load_threads, user_id):
         return (-1, -1, -1, -1, -1)
 
 
+def count_others_comments(load_threads, user_id):
+    """(othersComments, othersCommentsInMyThreads): non-deleted text
+    comments on real threads written by someone other than user_id - in
+    all of them, and in just the ones user_id has commented in - or
+    (-1, -1) on failure. The dashboard's unread badge and "new comment"
+    notifications grow on these instead of the thread counts, which also
+    grow on a thread user_id started themselves and miss replies.
+    """
+    try:
+        want = str(user_id).lower()
+        total = mine = 0
+        for t in load_threads():
+            if not is_real_thread(t):
+                continue
+            n = sum(1 for c in t.get("comments") or []
+                    if not c.get("isDeleted") and is_text_comment(c)
+                    and str((c.get("author") or {}).get("id") or "").lower() != want)
+            total += n
+            if involves_user(t, user_id):
+                mine += n
+        return (total, mine)
+    except Exception:
+        return (-1, -1)
+
+
 def count_mentions(threads, user_id):
     """Mirrors AzureDevOpsPullRequestSource.CountMentions: counts the
     literal "@<GUID>" token ADO stores for a mention, case-insensitively,
@@ -1488,8 +1513,17 @@ class AzureDevOpsPullRequestSource:
         project = account.project
         project_id = ((pr.get("repository") or {}).get("project") or {}).get("id")
         build_info = self._get_build_status(org, pat, project, project_id, pr)
-        thread_counts = count_threads(load_threads, user_id)
-        return to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
+        # Both counts read the same threads: fetch them once.
+        loaded = []
+
+        def threads_once():
+            if not loaded:
+                loaded.append(load_threads())
+            return loaded[0]
+        thread_counts = count_threads(threads_once, user_id)
+        record = to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
+        record["othersComments"], record["othersCommentsInMyThreads"] = count_others_comments(threads_once, user_id)
+        return record
 
     def _process_assigned(self, org, pat, account, pr, user_id, user_name, repo_cache):
         holder = {}

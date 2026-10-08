@@ -147,7 +147,11 @@ local function leave(force)
   -- to close a tab over (they're still there when the PR is reopened this
   -- session), lost with the process in standalone mode - either way, say
   -- so before closing rather than after.
-  local queued = (STATE.batch and STATE.batch[ID] and STATE.batch[ID].items) and #STATE.batch[ID].items or 0
+  -- Items gS is already sending don't count when this is a tab: the shared
+  -- daemon (rpc.lua) finishes them after the tab closes. Standalone, quitting
+  -- exits Neovim and stops the daemon with them, so they still ask.
+  local b = STATE.batch and STATE.batch[ID]
+  local queued = (b and b.items and not (b.submitting and EMBED)) and #b.items or 0
   local drafts = 0
   for k in pairs(STATE.editor_drafts or {}) do
     if k:sub(1, #ID + 1) == ID .. "\0" then drafts = drafts + 1 end
@@ -645,13 +649,17 @@ local function save_seen_threads()
 end
 
 -- True when `t` is "new": in my scope (my own PR, or a thread I've
--- participated in - same rule as the poll notifications) AND has more
--- comments than were recorded the last time I looked at it.
+-- participated in - same rule as the poll notifications) AND somebody else
+-- commented on it since the last time I looked at it. My own comments
+-- never count (same as find_new_comments): a reply I just posted, or a
+-- thread I started, isn't news to me.
 local function thread_is_new(t)
   if t.pending then return false end  -- my own, still being sent
   if not (IS_MY_PR or thread_involves_me(t)) then return false end
-  local seen_count = seen_threads[tostring(t.id)]
-  return (seen_count or 0) < #t.comments
+  for i = (seen_threads[tostring(t.id)] or 0) + 1, #t.comments do
+    if t.comments[i].authorId ~= my_id then return true end
+  end
+  return false
 end
 
 -- Records `t`'s current comment count as seen, clearing its "new" highlight.
@@ -3851,6 +3859,7 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   ctx.overview_buf = function() return overview_buf end
   ctx.threads_to_lines = threads_to_lines
   ctx.build_overview = build_overview
+  ctx.open_overview = open_overview
   ctx.post_new_thread = post_new_thread
   ctx.add_pending_thread = add_pending_thread
 
