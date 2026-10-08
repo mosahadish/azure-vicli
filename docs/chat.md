@@ -116,14 +116,18 @@ a diff carries the change (the run of added/removed lines) around the cursor.
 
 ## Conversations, agents and models
 
+The agent stays running for the whole conversation: the first message
+starts it, and every later one goes to the same process, which already
+knows everything said so far - no new process, no waiting for it to start.
+
 Conversations are saved (under Neovim's data directory, the last 50): the
 one in the panel is still there after a restart, `gn` starts a new one, and
-`gh` brings back an earlier one, its session included.
+`gh` brings back an earlier one.
 
 With several agents configured (`chat.agents`, below), `ga` switches
-between them; the new one can't resume the other's session, so your next
-message replays the conversation to it. `gm` picks the model for the current
-agent.
+between them. `gm` picks the model for the current agent. Switching agent
+or model, going back to an older conversation with `gh`, or a restart
+starts a new process, and your next message replays the conversation to it.
 
 **Proactive.** When the dashboard sees new comments on one of your PRs, a
 note appears in the conversation suggesting `/triage` (no agent runs;
@@ -134,7 +138,22 @@ in a fresh conversation and tells you when it's ready.
 ## Setting it up
 
 The panel's placement, and the agent it talks to, go in `setup()` (or the
-standalone launcher's `azure-cli.lua`):
+standalone launcher's `azure-cli.lua`). The agent has to be a CLI that can
+stay running across many messages - azure-vicli doesn't start one per
+message. Two kinds work:
+
+- **`acp = true`**: a CLI with an [Agent Client
+  Protocol](https://agentclientprotocol.com) mode - GitHub Copilot CLI's
+  `copilot --acp`.
+- **Anything else**: a CLI reading one JSON request per message on stdin and
+  streaming JSON events back, without exiting in between - Claude Code's
+  `-p --input-format stream-json --output-format stream-json`.
+
+A plain one-shot CLI (`copilot -p "..."`, answering once and exiting)
+doesn't work: its first answer arrives, then the chat reports that it
+exited.
+
+### GitHub Copilot CLI
 
 ```lua
 require("azure-cli").setup({
@@ -143,134 +162,96 @@ require("azure-cli").setup({
     size = 0.35,            -- a fraction of the screen, or a number of columns/lines
     input_height = 3,       -- lines in the input box
     agent = {
-      label = "Claude",
-      models = { "sonnet", "opus", "haiku" },   -- gm picks one; the first is the default
-      cmd = { "claude", "-p", "--output-format", "stream-json", "--verbose", "--model", "{model}",
-              "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
-              "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
-      stdin = "{message}",
-      followup = {          -- later messages continue the same session
-        cmd = { "claude", "-p", "--output-format", "stream-json", "--verbose", "--model", "{model}",
-                "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
-                "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write",
-                "--resume", "{session_id}" },
-        stdin = "{message}",
-      },
+      label = "Copilot",
+      acp = true,
+      models = { "claude-sonnet-5", "gpt-5.5" },   -- examples: use the names your `copilot --help` lists
+      cmd = { "copilot", "--acp", "--add-dir", "{fix_root}", "--allow-tool", "azure-vicli" },
     },
   },
 })
 ```
 
-- `--output-format stream-json --verbose` streams the answer into the panel
-  as it's written (`--output-format json` works too, all at once).
+azure-vicli (`chat/acp.lua`) does the ACP handshake (`initialize`,
+`session/new`) once, then sends one `session/prompt` per message on that
+session, with the answer streamed in through `session/update`. The message
+goes in `session/prompt` directly, so `stdin` doesn't apply; the model `gm`
+picks goes through `session/set_config_option`.
+
+- **azure-vicli's tools.** Copilot's `--acp` (1.0.92) only takes http/sse
+  MCP servers - its `initialize` advertises `mcpCapabilities: {http, sse}`,
+  and it rejects a stdio one ("Rejecting non-http/sse MCP server
+  "azure-vicli" from client"). So for an agent that advertises `http`,
+  azure-vicli starts `azure-cli.py --mcp-http` - the same tools as `--mcp`,
+  over HTTP on a random 127.0.0.1 port, with the chat's token required on
+  every request - once per Neovim, and passes that in `session/new`. An
+  agent that doesn't advertise `http` gets the stdio server.
+- **Permissions.** A tool call Copilot wants permission for (editing a file,
+  running a command) pops up the same yes/no prompt as azure-vicli's own
+  tools, with its diff when it has one; "Allow"/"Deny" picks Copilot's
+  `allow_once`/`reject_once`. `--allow-tool azure-vicli` saves Copilot
+  asking before each of azure-vicli's tools - the ones that change
+  something visible still ask you on azure-vicli's side.
+- **`--add-dir {fix_root}`** is for "fix this comment" and "implement this
+  work item": the agent edits files in a worktree under `{fix_root}`, never
+  in your checkout. Leave it out if you don't want the agent changing code.
+- **Stopping** a message (`<C-c>`, a timeout) first asks Copilot to stop the
+  turn (`session/cancel`), and only stops the process if that doesn't work
+  within 5s - so the session normally survives it.
+
+Check `--add-dir` and `--allow-tool` against your `copilot --help`; if
+Copilot rejects a flag, the error shows in the chat.
+
+### Claude Code
+
+```lua
+agent = {
+  label = "Claude",
+  models = { "sonnet", "opus", "haiku" },   -- gm picks one; the first is the default
+  cmd = { "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+          "--model", "{model}", "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
+          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
+},
+```
+
+- Each message goes to its stdin as one line of Claude Code's stream-json
+  "user message" (the default `stdin`), and its events stream into the
+  panel as they're written.
 - `--allowedTools "mcp__azure-vicli"` lets Claude Code use azure-vicli's
   tools without its own prompts (it can't show them in a headless run);
   which changes still ask you is azure-vicli's business, see
   [below](#what-the-agent-can-do).
-- `Edit,Write` and `--add-dir {fix_root}` are for "fix this comment" and
-  "implement this work item": the
-  agent edits files in a worktree under `{fix_root}`, never in your checkout
-  (the instructions it's given say so). Leave them out if you don't want the
-  agent changing code at all.
+- `Edit,Write` and `--add-dir {fix_root}` are for the fix and story flows,
+  as above.
+
+### Fields
 
 **Several agents.** Instead of `agent`, give `agents = { claude = {...},
 copilot = {...} }` and optionally `default_agent = "claude"`; `ga` switches.
 
 | `chat.agent` field | Meaning |
 |---|---|
-| `cmd` | The command (a list, or a string run through `'shell'` with every value shell-escaped). |
-| `stdin` | Written to its stdin (default `"{message}"`); closed right after, unless `persistent` is set. Unused when `acp` is set - the message goes in `session/prompt` instead. |
-| `followup` | `{ cmd, stdin, env }` for every message after the first. With `{session_id}` in it, it's used once a session id is known; without a `followup`, each message replays the conversation so far instead. Ignored when `persistent` or `acp` is set. |
-| `persistent` | Keep this agent's process running between messages instead of starting a fresh one each time: see [Keeping the agent warm](#keeping-the-agent-warm) below. |
-| `acp` | The process speaks the [Agent Client Protocol](https://agentclientprotocol.com) (`copilot --acp`): a warm, bidirectional session instead of `persistent`'s one-way stream. See below. |
-| `session_pattern` | A Lua pattern with one capture that finds the session id in the agent's output, for an agent that prints it rather than returning Claude Code's JSON. Unused when `acp` is set (the agent returns a session id directly). |
-| `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option` instead). |
+| `cmd` | The command (a list, or a string run through `'shell'` with every value shell-escaped; `acp` needs a list). |
+| `acp` | The process speaks the Agent Client Protocol (`copilot --acp`). |
+| `stdin` | What each message writes to its stdin, as one line (default: Claude Code's stream-json user message, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}`). Unused with `acp`. |
+| `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option`). |
 | `label` | The agent's name in the panel. |
-| `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls, e.g. `{ "^\u{25CF} ", "^%s+\u{2514}" }` for Copilot's `● tool` / `└ result` lines). Unused when `acp` is set. |
-| `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900). For `persistent`, a timeout stops the whole process; for `acp` it asks the agent to stop the turn first (`session/cancel`), then stops the process if that doesn't work within 5s. |
+| `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls). Unused with `acp`. |
+| `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900) - a timeout stops the process (`acp`: asks the agent to stop the turn first). |
+
+`followup`, `session_pattern` and `persistent` are gone: they were for
+starting a process per message and resuming a session each time. A config
+that still has them gets an error saying so.
 
 Placeholders: `{message}` (your message, with the view description, the
 references and, on the first message, the instructions), `{message_json}`
-(the same, as a JSON string - quoted and escaped - for building a JSON line
-by hand), `{text}` (just what you typed, prompts expanded), `{view}` (the
-view description), `{mcp_config}` (the MCP config file - unused when `acp`
-is set, which passes the same server directly in `session/new`), `{fix_root}`
-(where fix and story worktrees live), `{session_id}`, `{model}`.
+(the same as a JSON string - quoted and escaped), `{text}` (just what you
+typed, prompts expanded), `{view}` (the view description), `{mcp_config}`
+(the MCP config file - `acp` passes the server in `session/new` instead),
+`{fix_root}` (where fix and story worktrees live), `{model}`.
 
-### Keeping the agent warm
-
-By default every message starts a fresh process: simple, and fine for most
-CLIs, but it pays that process's startup cost (and, without a `followup`
-with a session id, resends the whole conversation) on every message. Two
-ways to avoid that, for a CLI built for one of them - most aren't, so this
-isn't the default:
-
-**`persistent = true`** keeps one process running for the life of the
-conversation: the first message starts it as usual (`cmd`/`stdin`, not
-closed), and every later message is written straight to its stdin - no new
-process, and no need for `followup` since the same one remembers
-everything. It's only worth setting for a CLI that reads a stream of
-per-turn requests from stdin without exiting between them, and writes a
-stream of per-turn events back - a plain `-p "prompt"` CLI has nothing to
-loop on and will just exit (or hang) after the first message. Claude
-Code's `--input-format stream-json --output-format stream-json` is the one
-this has been checked against:
-
-```lua
-agent = {
-  label = "Claude",
-  persistent = true,
-  models = { "sonnet", "opus", "haiku" },
-  cmd = { "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-          "--model", "{model}", "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
-          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
-  -- Every turn, first one included, is one JSON line of Claude's own
-  -- "user message" shape - {message_json} does the quoting/escaping.
-  stdin = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}',
-},
-```
-
-**`acp = true`** is for a CLI with an [Agent Client
-Protocol](https://agentclientprotocol.com) server mode instead - GitHub
-Copilot CLI's `--acp`, checked against a real, logged-in `copilot --acp`.
-ACP is JSON-RPC, not a plain stream: azure-vicli (`chat/acp.lua`) does the
-handshake (`initialize`, `session/new` - passing the azure-vicli MCP server
-straight in its `mcpServers`, no `{mcp_config}` file needed) once, then one
-`session/prompt` per message on the same session, with the answer streamed
-in through `session/update`. There's no `cmd` templating - the prompt text
-goes in `session/prompt` directly - so `stdin`, `followup` and
-`session_pattern` don't apply:
-
-```lua
-agent = {
-  label = "Copilot",
-  acp = true,
-  models = { "claude-sonnet-5", "gpt-5.4" },   -- `copilot --help` / the Model config option lists them
-  cmd = { "copilot", "--acp" },
-},
-```
-
-**azure-vicli's tools over ACP.** Copilot's `--acp` (1.0.92) only takes
-http/sse MCP servers - its `initialize` advertises `mcpCapabilities: {http,
-sse}`, and it rejects a stdio one ("Rejecting non-http/sse MCP server
-"azure-vicli" from client"). So for an agent that advertises `http`,
-azure-vicli starts `azure-cli.py --mcp-http` - the same tools as `--mcp`,
-over HTTP on a random 127.0.0.1 port, with the chat's token required on
-every request - once per Neovim, and passes that in `session/new` instead.
-An agent that doesn't advertise `http` gets the stdio server as before.
-
-A tool call Copilot wants permission for (editing a file, running a
-command) pops up the same yes/no prompt as azure-vicli's own tools, with
-its diff shown when it has one; "Allow"/"Deny" there picks Copilot's
-`allow_once`/`reject_once` option. Unlike `persistent`, stopping a turn
-(`<C-c>`, a timeout) first asks the agent to stop it (`session/cancel`)
-instead of killing the process outright, so the session survives a
-cancelled message when the agent cooperates.
-
-Either way, the warm process/session is stopped (and the next message
-starts a new one) on `ga` (a different agent can't continue it), `gh` (a
-different conversation), starting a new chat, and quitting Neovim - it's
-tied to one conversation with one agent, not kept around indefinitely.
+The process is stopped (and the next message starts a new one, with the
+conversation replayed) on `ga`, `gm`, `gh`, a new chat, and quitting Neovim -
+it's tied to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
@@ -280,38 +261,6 @@ The agent runs in the local clone of the PR you're looking at, when there is
 one, so a repository's own agent instructions and skills apply. A skill
 checked into the repository works from the chat too: "use the
 triage-pr-comments skill on this PR".
-
-### GitHub Copilot CLI
-
-Recent Copilot CLI versions take an extra MCP config with
-`--additional-mcp-config @<file>`, continue a session with
-`copilot --resume <id>`, allow tools without prompting with
-`--allow-tool` (`'azure-vicli'` for all of a server's tools, `'write'` for
-file edits, `'shell(git)'` for one command) and extra directories with
-`--add-dir`. Without them a headless run refuses every edit. Check
-`copilot --help` for your version's flags, and point `session_pattern` at
-wherever it prints the session id. This example's flags and pattern are
-unverified; adapt them:
-
-```lua
-agent = {
-  label = "Copilot",
-  models = { "gpt-5", "claude-sonnet-4.5" },   -- examples: use what `copilot --help` lists
-  cmd = { "copilot", "-p", "{message}", "--model", "{model}", "--additional-mcp-config", "@{mcp_config}",
-          "--allow-tool", "azure-vicli", "--allow-tool", "write", "--add-dir", "{fix_root}" },
-  session_pattern = "[Ss]ession[ %-_]?[Ii][Dd]:?%s*([%w%-]+)",
-  strip = { "^\u{25CF} ", "^%s+\u{2514}" },   -- drop Copilot's own "● tool / └ result" log lines
-  followup = { cmd = { "copilot", "--resume", "{session_id}", "-p", "{message}", "--model", "{model}",
-                       "--additional-mcp-config", "@{mcp_config}",
-                       "--allow-tool", "azure-vicli", "--allow-tool", "write", "--add-dir", "{fix_root}" } },
-},
-```
-
-Without a session id it still works; each message replays the conversation.
-`persistent` doesn't apply here - `-p` exits after one message regardless.
-`acp = true` (see [Keeping the agent warm](#keeping-the-agent-warm)) gives
-a warm session instead - no new process per message - with the same
-azure-vicli tools, over http.
 
 ### Let the agent set itself up
 
@@ -324,66 +273,51 @@ agent. Do every step, check every flag against the installed CLI instead of
 guessing, and finish by telling the user what you wrote and anything you
 couldn't confirm.
 
-1. **Find your own CLI flags** (`<your-cli> --help`, plus your docs) for this
-   installed version:
-   - a one-shot, non-interactive prompt (e.g. `-p`), and whether the prompt
-     can come from stdin instead of an argument;
-   - adding an MCP server config from a JSON file for one run. azure-vicli
-     writes `{"mcpServers": {"azure-vicli": {"command", "args", "env"}}}`
-     and passes its path as `{mcp_config}`. Claude Code uses
-     `--mcp-config {mcp_config}`; Copilot's equivalent is likely
-     `--additional-mcp-config @{mcp_config}`;
+1. **Find how your CLI stays running across many messages** (`<your-cli>
+   --help`, plus your docs) for this installed version. azure-vicli keeps
+   one process for the whole conversation, so you need one of:
+   - an Agent Client Protocol server mode (`--acp` or similar - check for
+     it explicitly). Then the config is `acp = true` and `cmd` is just that
+     command (GitHub Copilot: `copilot --acp`);
+   - a mode reading one JSON request per line on stdin and streaming JSON
+     events back without exiting between them (Claude Code: `-p
+     --input-format stream-json --output-format stream-json --verbose`).
+     If its request format isn't Claude Code's, set `stdin` to it, with
+     `{message_json}` where the message goes.
+
+   If it has neither, say so and stop - a one-shot CLI doesn't work.
+2. **Find the rest of its flags:**
+   - (not for `acp`, which gets the server in `session/new`) adding an MCP
+     server config from a JSON file. azure-vicli writes `{"mcpServers":
+     {"azure-vicli": {"command", "args", "env"}}}` and passes its path as
+     `{mcp_config}` (Claude Code: `--mcp-config {mcp_config}`);
    - allowing every tool of the MCP server named `azure-vicli` without
-     prompting. A headless run can't prompt, so this is required. Prefer a
-     per-server allow (Claude Code: `--allowedTools mcp__azure-vicli`) over
-     allowing all tools, and never allow shell tools for this. azure-vicli
-     asks the user itself before pushes, votes and other visible changes;
-   - if the CLI prints its own log of tool calls into its answer, the
-     patterns that match those lines (for `strip`);
-   - choosing a model, and the valid model names;
-   - streaming output, if it has any (Claude Code: `--output-format
-     stream-json --verbose`); azure-vicli shows plain text as it arrives
-     either way;
+     prompting (Claude Code: `--allowedTools mcp__azure-vicli`; Copilot:
+     `--allow-tool azure-vicli`). Never allow shell tools for this.
+     azure-vicli asks the user itself before pushes, votes and other
+     visible changes;
+   - choosing a model, and the valid model names (`acp` agents get it over
+     ACP - no flag needed);
    - for "fix this comment": letting it edit files in an extra directory,
      `{fix_root}` (Claude Code: `--add-dir {fix_root}` and `Edit,Write` in
-     `--allowedTools`) - only if the user wants the agent changing code;
-   - whether a non-interactive run reports a session id (stdout, stderr, or
-     a JSON field), and how to resume that session (e.g. `--resume <id>`);
-   - whether it has a mode built to stay running across many turns on one
-     stdin/stdout stream (not just "resume by id" - actually reading more
-     requests after answering one, without exiting), or an Agent Client
-     Protocol server mode (`--acp` or similar - check for it explicitly,
-     it won't show up as an ordinary flag doing the same thing as `-p`).
-     Either can skip starting a fresh process each message: `persistent`
-     for the former, `acp` for the latter - see [Keeping the agent
-     warm](#keeping-the-agent-warm). Most CLIs have neither; don't force it.
-2. **Decide how the prompt is passed.** azure-vicli's message has several
-   lines. On Windows, an npm-installed CLI is a `.cmd` shim that cuts
-   arguments at the first newline, so pass the prompt on stdin
-   (`stdin = "{message}"`) whenever the CLI can read it from there.
-   Otherwise put `"{message}"` in `cmd`.
+     `--allowedTools`; Copilot: `--add-dir {fix_root}`) - only if the user
+     wants the agent changing code.
 3. **Find where the user's options live.** If their Neovim config calls
    `require("azure-cli").setup({...})`, edit that call. Otherwise it's the
    standalone launcher's `azure-cli.lua` next to `azure-cli.yml`:
    `%APPDATA%\azure-cli.lua` on Windows, `~/.config/azure-cli.lua`
    elsewhere. Create it with `return { ... }` if it doesn't exist. Keep
-   everything already there.
+   everything already there, but remove `followup`, `session_pattern` and
+   `persistent` from an existing agent - they're gone.
 4. **Write the `chat` block** (the fields are in the table above), shaped like
-   the examples in this file:
-   `chat = { agent = { label, models, cmd, stdin, followup, persistent, session_pattern, strip } }`.
-   Use `{model}` where the model flag goes, and list the model names from
-   step 1 in `models`. Add `followup` (the same command plus the resume flag
-   with `{session_id}`) only if step 1 found a session id. If the CLI prints
-   it rather than returning JSON, also add a `session_pattern`: a Lua
-   pattern whose one capture is the id. Without a session id, leave
-   `followup` out; every message then replays the conversation, which
-   works.
-5. **Test the command by hand**: run it once with a short prompt and the
-   flags you chose (no MCP config needed for this), to see that it answers
-   and, if it should, prints a session id where you expect it.
-6. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `gq`
-   on the PR dashboard and ask "what am I looking at?". The answer should
-   name the PR under the cursor, which shows the azure-vicli tools work.
+   the examples in this file: `chat = { agent = { label, acp, models, cmd } }`.
+   Use `{model}` where the model flag goes (not for `acp`), and list the
+   model names from step 2 in `models`.
+5. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `gq`
+   on the PR dashboard and ask "what am I looking at?", then something
+   else. The first answer should name the PR under the cursor, which shows
+   the azure-vicli tools work; the second should come back without the
+   startup wait, which shows the process stayed running.
 
 ## What the agent can do
 
@@ -471,24 +405,27 @@ The repository has to be cloned locally: `<clones_dir>/<repo>`, as for
 reviews. `u` in `gL` deletes the branch again as long as nothing was pushed
 to it.
 
-**The agent has to be allowed to edit there.** It runs headless, so it can't
-ask you for its own permissions: anything you didn't allow up front is
-refused, and the agent stops with something like "permission denied and
+**The agent has to be allowed to edit there.** Claude Code runs headless, so
+it can't ask you for its own permissions: anything you didn't allow up front
+is refused, and the agent stops with something like "permission denied and
 could not request permission from user". Allow file edits in `{fix_root}`
-(Claude Code: `--add-dir {fix_root}` and `Edit,Write`; Copilot: see
-[below](#github-copilot-cli)). Allowing a shell as well (to build and run
+(Claude Code: `--add-dir {fix_root}` and `Edit,Write`). Copilot over ACP
+asks you through azure-vicli's yes/no prompt instead, but still needs
+`--add-dir {fix_root}` to reach that directory (see
+[above](#github-copilot-cli)). Allowing a shell as well (to build and run
 tests) is your call; azure-vicli never needs it.
 
 ## How it works
 
 ```
-Neovim (chat panel) --stdin--> agent CLI --stdio MCP--> azure-cli.py --mcp
-       ^                                                       |
-       '------------- 127.0.0.1 bridge (JSON + token) <--------'
+Neovim (chat panel) --stdin/ACP--> agent CLI --MCP--> azure-cli.py --mcp / --mcp-http
+       ^                                                          |
+       '--------------- 127.0.0.1 bridge (JSON + token) <---------'
 ```
 
-Each message runs the agent headless. `{mcp_config}` points it at
-`azure-cli.py --mcp`, a small relay that answers MCP over stdio and forwards
+The agent runs headless, one process for the whole conversation.
+`{mcp_config}` (or, for `acp`, `session/new`'s `mcpServers`) points it at
+`azure-cli.py --mcp` (or `--mcp-http`), a small relay that answers MCP and forwards
 every `tools/list` and `tools/call` to a bridge the panel opens on
 127.0.0.1. The bridge checks a random per-session token, which only the
 relay knows from its environment. The tools themselves run inside Neovim

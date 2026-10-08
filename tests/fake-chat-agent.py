@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """tests/fake-chat-agent.py - a stand-in for Claude Code in the chat panel
-(tests/demo-smoke.lua). It behaves like `claude -p --output-format json
---mcp-config <file>`: reads the message on stdin, starts the MCP server the
-config names (azure-cli.py --mcp), speaks MCP to it over stdio, and prints a
-JSON envelope {"result", "session_id"}.
+(tests/demo-smoke.lua). It behaves like `claude -p --input-format
+stream-json --output-format stream-json --mcp-config <file>`: starts the
+MCP server the config names (azure-cli.py --mcp) once, then reads one
+stream-json user message per line on stdin until it closes, speaks MCP to
+the server for each, and answers each with stream-json events ending in a
+"result" - the same process for the whole conversation.
 
 What it does depends on the message:
   "triage"  current_view, get_pr_threads, then draft_reply on the first
@@ -14,10 +16,10 @@ What it does depends on the message:
   "implement"  start_story for work item 3001 (twice: the second reuses
             it), a new file, show_fix, commit_and_push_fix
   anything else: current_view only
-It always reports the tools it saw, the model (--model) and whether it was
-resumed (--resume ID).
+It always reports the tools it saw, the model (--model) and which turn of
+this process it is ("turn: 1" for a fresh process).
 
-Usage: fake-chat-agent.py --mcp-config FILE [--model M] [--resume ID]
+Usage: fake-chat-agent.py --mcp-config FILE [--model M]
 """
 import json
 import os
@@ -77,14 +79,26 @@ def main():
 
     with open(opt("--mcp-config"), encoding="utf-8") as f:
         server = json.load(f)["mcpServers"]["azure-vicli"]
-    message = sys.stdin.read()
-    asked = message.split("## Message\n", 1)[-1].strip()
-    out = ["model: " + str(opt("--model")), "resumed: " + str(opt("--resume"))]
-
     mcp = Mcp(server)
     init = mcp.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                       "clientInfo": {"name": "fake-chat-agent", "version": "1"}})
     mcp.notify("notifications/initialized")
+    session = "fake-chat-1"
+    turn = 0
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        turn += 1
+        req = json.loads(line)
+        message = req["message"]["content"][0]["text"]
+        answer_turn(mcp, init, message, turn, opt("--model"), session)
+    mcp.close()
+
+
+def answer_turn(mcp, init, message, turn, model, session):
+    asked = message.split("## Message\n", 1)[-1].strip()
+    out = ["model: " + str(model), "turn: " + str(turn)]
     tools = [t["name"] for t in mcp.request("tools/list")["result"]["tools"]]
     out.append("server: " + init["result"]["serverInfo"]["name"] + ", tools: " + str(len(tools)))
     view = json.loads(mcp.call("current_view")[0])
@@ -92,12 +106,12 @@ def main():
         view.get("screen"), (view.get("pr") or {}).get("id"), view.get("file"), view.get("line"),
         (view.get("thread") or {}).get("id")))
     out.append("message had the view: " + str("## Current view" in message))
+    out.append("message had the history: " + str("## The conversation so far" in message))
 
     def call(name, args=None):
         text, err = mcp.call(name, args)
         out.append(name + ": " + text + (" (error)" if err else ""))
         return text, err
-
     out.append("selection: " + str(view.get("selection_lines")) + " " + str((view.get("selection") or "")[:40]))
     out.append("hunk: " + str(bool(view.get("hunk"))))
     out.append("refs: " + ("PR !102" in message and "Referenced in the message" in message and "yes" or "no"))
@@ -152,26 +166,23 @@ def main():
         call("create_child_task", {"parent_id": 3001, "title": "Write the lockout tests"})
         call("move_to_sprint", {"id": 3002, "sprint": "Sprint 43"})
         call("link_pr_to_work_item", {"pr_id": 102, "work_item_id": 3002})
-    mcp.close()
     out.append("FAKE-CHAT-RAN")
     text = "\n".join("- " + l for l in out)
-    session = opt("--resume") or "fake-chat-1"
-    if "--stream" in args:
-        # Claude Code's --output-format stream-json: events, one per line,
-        # flushed as they happen; the answer arrives in two parts.
-        def emit_event(ev):
-            sys.stdout.write(json.dumps(ev) + "\n")
-            sys.stdout.flush()
+
+    # Claude Code's --output-format stream-json: events, one per line,
+    # flushed as they happen; the answer arrives in two parts.
+    def emit_event(ev):
+        sys.stdout.write(json.dumps(ev) + "\n")
+        sys.stdout.flush()
+    if turn == 1:
         emit_event({"type": "system", "subtype": "init", "session_id": session})
-        emit_event({"type": "assistant", "message": {"content": [
-            {"type": "tool_use", "name": "Read", "input": {"file_path": "src/auth.py"}}]}})
-        half = len(out) // 2
-        emit_event({"type": "assistant", "message": {"content": [{"type": "text", "text": "\n".join("- " + l for l in out[:half])}]}})
-        time.sleep(0.3)
-        emit_event({"type": "assistant", "message": {"content": [{"type": "text", "text": "\n".join("- " + l for l in out[half:])}]}})
-        emit_event({"type": "result", "subtype": "success", "result": text, "session_id": session})
-        return
-    print(json.dumps({"type": "result", "result": text, "session_id": session}))
+    emit_event({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "src/auth.py"}}]}})
+    half = len(out) // 2
+    emit_event({"type": "assistant", "message": {"content": [{"type": "text", "text": "\n".join("- " + l for l in out[:half])}]}})
+    time.sleep(0.3)
+    emit_event({"type": "assistant", "message": {"content": [{"type": "text", "text": "\n".join("- " + l for l in out[half:])}]}})
+    emit_event({"type": "result", "subtype": "success", "result": text, "session_id": session})
 
 
 if __name__ == "__main__":

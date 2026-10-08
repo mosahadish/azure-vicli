@@ -1,5 +1,5 @@
 -- test-chat.lua: unit tests for the chat panel's pure helpers -
--- chat/init.lua (compose, parse_answer, can_resume, render, models,
+-- chat/init.lua (compose, parse_answer, render, models,
 -- current_model, expand), chat/view.lua (text), chat/tools.lua
 -- (simplify_threads, args_label, the tool list's shape, the ask/write split)
 -- and review/chat.lua (thread). They need vim.json and vim.api at load, so
@@ -32,7 +32,7 @@ do
     replay:find(CHAT.PREAMBLE, 1, true) and replay:find("## The conversation so far\n\nUser: q1\n\nYou: a1\n\n## Current view", 1, true))
 end
 
--- --- parse_answer / can_resume / expand ---------------------------------------
+-- --- parse_answer / expand ---------------------------------------
 do
   local text, sid = CHAT.parse_answer('{"type":"result","result":"  Hello\\n","session_id":"s-1"}', "", vim.json.decode)
   check("parse: claude envelope", text == "Hello" and sid == "s-1")
@@ -45,10 +45,6 @@ do
   text = CHAT.parse_answer("{not json", "", vim.json.decode)
   check("parse: broken json stays text", text == "{not json")
 
-  local agent = { cmd = { "x" }, followup = { cmd = { "x", "--resume", "{session_id}" } } }
-  check("can_resume: needs the session", not CHAT.can_resume(agent, nil) and CHAT.can_resume(agent, "s"))
-  check("can_resume: no followup", not CHAT.can_resume({ cmd = { "x" } }, "s"))
-  check("can_resume: --continue style needs none", CHAT.can_resume({ followup = { cmd = { "x", "-c" } } }, nil))
   check("expand", CHAT.expand("{a} {b} {zz}", { a = "1", b = "x y" }, function(v) return "'" .. v .. "'" end)
     == "'1' 'x y' {zz}")
 end

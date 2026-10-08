@@ -630,7 +630,6 @@ do
   local agent_cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}" }
   require("azure-cli").setup({ chat = { agent = {
     label = "Fake Claude", cmd = agent_cmd, models = { "fast", "smart" }, timeout_seconds = 60,
-    followup = { cmd = vim.list_extend(vim.deepcopy(agent_cmd), { "--resume", "{session_id}" }) },
   } } })
   local answer
   local real_select = vim.ui.select
@@ -739,14 +738,16 @@ do
     if l:find("--reply", 1, true) then return fail("a drafted reply was posted: " .. l) end
   end
 
-  -- gm: the next turn uses "smart", and resumes the session.
+  -- gm: the next turn uses "smart" - a new process started with it, which
+  -- gets the conversation so far replayed.
   answer = "smart"
   vim.api.nvim_set_current_win(wins.log)
   feed("gm")
   vim.api.nvim_set_current_win(diff_win)
   e, why = ask("create a branch from main for 3001")
   if not e then return fail(why) end
-  if not e.text:find("model: smart", 1, true) or not e.text:find("resumed: fake-chat-1", 1, true)
+  if not e.text:find("model: smart", 1, true) or not e.text:find("turn: 1", 1, true)
+      or not e.text:find("message had the history: True", 1, true) or e.mode ~= "replay"
       or not e.text:find("Created branch feature/3001-throttle-login from main in widgets and linked it to #3001", 1, true) then
     return fail("the branch turn went wrong:\n" .. e.text)
   end
@@ -794,12 +795,11 @@ do
   local CHAT = require("azure-cli.chat")
   local STATE = require("azure-cli.state")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
-  local streamed = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}", "--stream" }
+  local streamed = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}" }
   require("azure-cli").setup({ chat = {
     default_agent = "claude",
     agents = {
-      claude = { label = "Fake Claude", cmd = streamed, models = { "fast", "smart" }, timeout_seconds = 60,
-        followup = { cmd = vim.list_extend(vim.deepcopy(streamed), { "--resume", "{session_id}" }) } },
+      claude = { label = "Fake Claude", cmd = streamed, models = { "fast", "smart" }, timeout_seconds = 60 },
       plain = { label = "Plain", cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" }, timeout_seconds = 60 },
     },
   } })
@@ -871,7 +871,8 @@ do
 
   -- /build: the saved prompt, about the PR with the failing build.
   e, why = ask("/build")
-  if not need(e, why, "get_build_log:", "expected 'x', got '--name'", "resumed: fake-chat-1") then return end
+  -- The same process as the first message: its turn 2, nothing replayed.
+  if not need(e, why, "get_build_log:", "expected 'x', got '--name'", "turn: 2", "message had the history: False") then return end
   if st.entries[#st.entries - 1].text ~= "/build" then return fail("the prompt name should show as typed") end
 
   -- open_in_ui: throttle.py line 4 in the reviewer.
@@ -1050,7 +1051,7 @@ do
   vim.api.nvim_set_current_win(wins().log)
   feed("ga")
   e, why = ask("hello")
-  if not need(e, why, "resumed: None") then return end
+  if not need(e, why, "turn: 1", "message had the history: True") then return end
   if e.label ~= "Plain" or e.mode ~= "replay" then return fail("ga didn't switch agents: " .. vim.inspect({ e.label, e.mode })) end
 
   -- A note from the dashboard, then gn and back with gh.

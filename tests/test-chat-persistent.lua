@@ -1,7 +1,7 @@
--- test-chat-persistent.lua: agent.persistent (chat/init.lua) actually
--- keeps one process alive across messages instead of starting a fresh one
--- each time, and the ordinary one-shot/followup path still works the same
--- now that both share their turn-finishing code.
+-- test-chat-persistent.lua: the chat (chat/init.lua) keeps one agent
+-- process alive across messages instead of starting a fresh one each
+-- time; gm starts a new one (with the conversation replayed), and a CLI
+-- that exits after one answer is reported as one that can't stay running.
 --
 -- tests/fake-persistent-agent.py stands in for a CLI that supports Claude
 -- Code's `-p --input-format stream-json --output-format stream-json`: it
@@ -10,7 +10,7 @@
 -- turn 1 then turn 2) from a respawned one, and a --marker-file records
 -- every pid a process of this test run ever had so "only one was ever
 -- started" doesn't rely on pids never repeating. tests/fake-oneshot-agent.py
--- stands in for a plain `-p`/`--resume` CLI for the other path.
+-- stands in for a plain `-p` CLI that answers once and exits.
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-chat-persistent.lua
 local fails = 0
@@ -25,9 +25,8 @@ local marker = vim.fn.tempname()
 local py = vim.fn.executable("python3") == 1 and "python3" or "python"
 
 require("azure-cli").setup({ chat = { agent = {
-  label = "Fake Persistent", persistent = true, timeout_seconds = 20,
+  label = "Fake Persistent", timeout_seconds = 20, models = { "fast", "smart" },
   cmd = { py, fake, "--marker-file", marker },
-  stdin = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}',
 } } })
 
 local CHAT = require("azure-cli.chat")
@@ -73,27 +72,39 @@ check("and forgets it", STATE.chat.persistent_job == nil)
 
 os.remove(marker)
 
--- The ordinary one-shot path (no `persistent`): a fresh process per
--- message, `followup` picking up the session id - unaffected by sharing
--- turn-finishing code with the persistent path above.
+-- gm: the running process was started with the old model, so the next
+-- message starts a new one, which gets the conversation replayed.
 do
-  local oneshot = plugin_root .. "/tests/fake-oneshot-agent.py"
+  CHAT.new_chat(true)
+  local g1 = send_and_wait("before gm")
+  local before = STATE.chat.persistent_job
+  local real_select = require("azure-cli.prompt").select
+  require("azure-cli.prompt").select = function(o, cb) for _, it in ipairs(o.items) do if it.value == "smart" then return cb(it) end end end
+  CHAT.pick_model()
+  require("azure-cli.prompt").select = real_select
+  local g2, gerr = send_and_wait("after gm")
+  check("gm: answers", g2 ~= nil and g2.status == "done", gerr)
+  check("gm: a new process, its turn 1", g2 ~= nil and g2.text:match("^turn 1,") ~= nil, g2 and g2.text)
+  check("gm: the conversation is replayed to it", g2 ~= nil and g2.mode == "replay", g2 and g2.mode)
+  check("gm: the old process is stopped", g1 ~= nil and before ~= nil and vim.fn.jobwait({ before.job }, 1000)[1] ~= -1)
+  CHAT.new_chat(true)
+end
+
+-- A plain one-shot CLI (answers one message, exits) can't stay running:
+-- the message fails with an explanation instead of hanging.
+do
   require("azure-cli").setup({ chat = { agent = {
     label = "Fake One-shot", timeout_seconds = 20,
-    cmd = { py, oneshot }, stdin = "{message}",
-    followup = { cmd = { py, oneshot, "--resume", "{session_id}" }, stdin = "{message}" },
+    cmd = { py, plugin_root .. "/tests/fake-oneshot-agent.py" }, stdin = "{message}",
   } } })
   CHAT.new_chat(true)
-
-  local o1, oerr1 = send_and_wait("first")
-  check("one-shot: first message answers", o1 ~= nil and o1.status == "done", oerr1)
-  check("one-shot: first message isn't resumed", o1 ~= nil and o1.text == "resumed: False, asked: first", o1 and o1.text)
-  check("one-shot: no persistent job for a non-persistent agent", STATE.chat.persistent_job == nil)
-
-  local o2, oerr2 = send_and_wait("second")
-  check("one-shot: second message answers", o2 ~= nil and o2.status == "done", oerr2)
-  check("one-shot: second message resumes the session via followup",
-    o2 ~= nil and o2.text == "resumed: True, asked: second", o2 and o2.text)
+  local o1, oerr = send_and_wait("first")
+  check("one-shot: the message finishes", o1 ~= nil, oerr)
+  check("one-shot: reported as a CLI that can't stay running",
+    o1 ~= nil and (o1.status == "done" or o1.status == "failed (the agent exited)"), o1 and o1.status)
+  vim.wait(3000, function() return STATE.chat.persistent_job == nil end, 20)
+  check("one-shot: no process left behind once it exits", STATE.chat.persistent_job == nil)
+  CHAT.new_chat(true)
 end
 
 if fails > 0 then

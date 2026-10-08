@@ -8,13 +8,15 @@
 -- if needed); gq/q inside it hides it. gq on a visual selection sends the
 -- selected lines along with the next message.
 --
--- Sending a message runs the chosen agent headless (chat.agent, or one of
--- chat.agents - ga switches), its stdout read as it arrives
--- (chat/core.lua's stream reader: Claude Code's stream-json, its json
--- envelope, or plain text), with a description of what's under the cursor
--- (chat/view.lua) and of the PRs/work items the message names
--- (chat/refs.lua). Later messages resume the agent's session (followup +
--- {session_id}) or replay the conversation. Conversations are saved
+-- The chosen agent (chat.agent, or one of chat.agents - ga switches) runs
+-- headless and stays running for the whole conversation: either a CLI
+-- reading one stream-json request per message on stdin (Claude Code's
+-- --input-format stream-json), its events read as they arrive by
+-- chat/core.lua's stream reader, or (agent.acp) an Agent Client Protocol
+-- session (chat/acp.lua). Each message carries a description of what's
+-- under the cursor (chat/view.lua) and of the PRs/work items it names
+-- (chat/refs.lua); a process started mid-conversation (ga, gh, gm) gets
+-- the conversation so far replayed to it. Conversations are saved
 -- (chat/store.lua): the last one comes back after a restart, gh opens an
 -- older one.
 --
@@ -26,7 +28,7 @@
 local M = {}
 
 local CORE = require("azure-cli.chat.core")
-for _, k in ipairs({ "PREAMBLE", "compose", "parse_answer", "can_resume", "expand", "render", "models" }) do
+for _, k in ipairs({ "PREAMBLE", "compose", "parse_answer", "expand", "render", "models" }) do
   M[k] = CORE[k]
 end
 
@@ -40,7 +42,7 @@ local function STATE()
     wins = {},           -- tabpage -> { log = win, input = win }
     main_win = {},       -- tabpage -> the last non-chat window
     running = nil,       -- { job, turn, timer, tick, cancelled } - the message in flight
-    persistent_job = nil, -- { job, agent_name, conv_id, turn } - agent.persistent's warm process
+    persistent_job = nil, -- { job, agent_name, conv_id, turn, stale } - the agent's running process
     models = {},         -- agent name -> model picked with gm
     agent_name = nil,    -- picked with ga
     sent = {},           -- what was sent, for <Up>/<Down> in the input box
@@ -666,9 +668,8 @@ local function panel_visible()
   return false
 end
 
--- agent.persistent/agent.acp agents keep one process alive across messages
--- instead of starting a fresh one each time (see send/send_acp): stopped
--- whenever the conversation it belongs to goes away from under it (ga, gh,
+-- Every agent keeps one process alive across messages (see send/send_acp):
+-- stopped whenever the conversation it belongs to goes away from under it (ga, gh,
 -- a new chat) or Neovim exits. An ACP connection's `.finish` (set by
 -- send_acp's `running`) finalizes whatever message is still in flight -
 -- stopping the process on its own would otherwise leave that entry's
@@ -682,19 +683,18 @@ local function stop_persistent(st)
 end
 
 -- Whether `st.persistent_job` is a live process for `agent_name`'s current
--- conversation - reusable as-is for the next message.
+-- conversation - reusable as-is for the next message. `stale` (gm picked
+-- another model) means the next message starts a new one instead.
 local function persistent_alive(st, agent_name)
   local pj = st.persistent_job
-  if not (pj and pj.agent_name == agent_name and pj.conv_id == st.conv_id) then return false end
+  if not (pj and not pj.stale and pj.agent_name == agent_name and pj.conv_id == st.conv_id) then return false end
   if vim.fn.jobwait({ pj.job }, 0)[1] ~= -1 then return false end
   return true
 end
 
--- A jobstart on_stdout for one message: `get_turn()` names the turn in
--- progress - a one-shot job's own, or (agent.persistent) whichever message
--- is current on the warm process - and is nil once that turn is otherwise
--- done. A persistent agent's turn ends when its stream reports a result,
--- without the job exiting; `turn.finish` tells them apart (exited or not).
+-- A jobstart on_stdout for the agent's process: `get_turn()` names the
+-- message in progress on it. A turn ends when the stream reports a
+-- result, without the process exiting.
 local function turn_on_stdout(get_turn)
   return function(_, d)
     local turn = get_turn()
@@ -702,7 +702,7 @@ local function turn_on_stdout(get_turn)
     if d and CORE.stream_feed(turn.reader, d, vim.json.decode) then
       vim.schedule(function()
         turn.absorb()
-        if turn.reader.final ~= nil then turn.finish(nil, false, false) end
+        if turn.reader.final ~= nil then turn.finish(nil, false) end
         render_soon()
       end)
     end
@@ -713,9 +713,8 @@ local function turn_on_stderr(get_turn)
   return function(_, d) local turn = get_turn(); if turn and d then vim.list_extend(turn.err, d) end end
 end
 
--- The job's on_exit: finishes whatever turn was still open (normally only
--- a one-shot job's own, or a persistent one's dying mid-answer) and, for a
--- persistent job, forgets it so the next message starts a fresh one.
+-- The process's on_exit: finishes the turn still open, if it died
+-- mid-answer, and forgets the process so the next message starts a new one.
 local function turn_on_exit(get_turn, forget)
   return function(_, code)
     vim.schedule(function()
@@ -723,15 +722,14 @@ local function turn_on_exit(get_turn, forget)
       if forget then forget() end
       if not turn or turn.done then return end
       CORE.stream_finish(turn.reader, vim.json.decode)
-      turn.finish(code, turn.cancelled, true)
+      turn.finish(code, turn.cancelled)
     end)
   end
 end
 
 -- The spinner turns every 120ms (only the winbars and statuslines are
 -- redrawn); the whole transcript, for the seconds count, once a second.
--- Shared by the ordinary job path and send_acp below - both just need
--- `st.running` already set.
+-- Shared by send and send_acp below - both just need `st.running` set.
 local function start_spinner(st)
   st.running.tick = 0
   M.set_winbars()
@@ -750,7 +748,7 @@ end
 -- its `session/update`s streamed into `entry` as they arrive, and a
 -- `session/request_permission` shown with the same confirm() popup as
 -- azure-vicli's own tools. Unlike the stream-json path, there's no
--- `{message}`/`stdin` templating: the prompt text goes in `session/prompt`
+-- `stdin` templating: the prompt text goes in `session/prompt`
 -- directly, and the model (if any) through `session/set_config_option`.
 local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts)
   local ACP = require("azure-cli.chat.acp")
@@ -973,27 +971,30 @@ send = function(text, opts)
   for _, e in ipairs(st.entries) do if e.role ~= "note" then history[#history + 1] = e end end
   local first = #history == 0
   -- A conversation's id is otherwise only assigned lazily, the first time
-  -- it's saved (after this message answers) - too late for a persistent
-  -- job started now to compare against on the next message, so it's fixed
+  -- it's saved (after this message answers) - too late for the process
+  -- started now to compare against on the next message, so it's fixed
   -- here instead, before anything reads it.
   if first then st.conv_id = st.conv_id or require("azure-cli.chat.store").new_id() end
-  local reuse = (agent.persistent or agent.acp) and persistent_alive(st, agent_name)
-  if (agent.persistent or agent.acp) and st.persistent_job and not reuse then stop_persistent(st) end
-  local resume = not first and (reuse or CORE.can_resume(agent, st.session_id))
+  -- The agent's process from an earlier message of this conversation takes
+  -- this one too; otherwise a new one starts, and - unless this is the
+  -- first message - gets the conversation so far replayed to it.
+  local reuse = persistent_alive(st, agent_name)
+  if st.persistent_job and not reuse then stop_persistent(st) end
+  local replay = not first and not reuse
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
-    label = agent.label or agent_name, mode = (not first and not resume) and "replay" or nil, text = "" }
+    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "" }
   table.insert(st.entries, entry)
   BRIDGE.handler = bridge_handler(function() return entry end)
   render()
 
   local message = CORE.compose(expanded, view_text, {
-    first = first, history = (not first and not resume) and history or nil,
+    first = first, history = replay and history or nil,
     refs = require("azure-cli.chat.refs").describe(expanded),
   })
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,
-    session_id = st.session_id or "", model = M.current_model(agent) or "",
+    model = M.current_model(agent) or "",
     mcp_config = write_mcp_config(addr, token),
     mcp_server = agent.acp and acp_mcp_server(addr, token) or nil,
     view = view_text,
@@ -1003,8 +1004,6 @@ send = function(text, opts)
 
   if agent.acp then return send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts) end
 
-  -- One turn: its own reader/entry, and how it's finished, whichever of
-  -- the two ways below runs it.
   local reader = CORE.stream_new(agent.strip)
   local seen_tools, err = 0, {}
   local function absorb()
@@ -1013,15 +1012,11 @@ send = function(text, opts)
     seen_tools = #reader.tools
   end
   local turn = { entry = entry, reader = reader, err = err, absorb = absorb, cancelled = false, done = false }
-  function turn.finish(code, cancelled, exited)
+  function turn.finish(code, cancelled)
     if turn.done then return end
     turn.done = true
     absorb()
-    local session = reader.session
-    if not session and agent.session_pattern then
-      session = CORE.find_session(agent.session_pattern, table.concat(reader.plain, "\n"), table.concat(err, "\n"))
-    end
-    if session then st.session_id = session end
+    if reader.session then st.session_id = reader.session end
     if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
     if cancelled then
       entry.status = "stopped"
@@ -1031,6 +1026,15 @@ send = function(text, opts)
       if #tail > 0 then
         entry.text = (entry.text ~= "" and (entry.text .. "\n\n") or "") .. "```\n"
           .. table.concat(vim.list_slice(tail, math.max(1, #tail - 15)), "\n") .. "\n```"
+      end
+    elseif code then
+      -- The process exited cleanly, but in the middle of a turn: a CLI
+      -- that answers one message and quits isn't one that can stay running.
+      entry.status = "failed (the agent exited)"
+      if entry.text == "" then
+        entry.text = "The agent exited after one message - its `cmd` has to keep it running and reading "
+          .. "one request per line on stdin (Claude Code: `--input-format stream-json --output-format stream-json`), "
+          .. "or set `acp = true` for a CLI with an ACP mode (`copilot --acp`)."
       end
     else
       entry.status = "done"
@@ -1046,20 +1050,16 @@ send = function(text, opts)
     if opts.on_done then pcall(opts.on_done, entry) end
   end
 
+  local stdin_text = CORE.expand(agent.stdin or CORE.STREAM_JSON_STDIN, vars) .. "\n"
   local job
   if reuse then
-    -- agent.persistent, and its process from an earlier message is still
-    -- alive for this conversation: feed it this turn instead of starting
-    -- a new one.
     job = st.persistent_job.job
     st.persistent_job.turn = turn
-    pcall(vim.fn.chansend, job, CORE.expand(agent.stdin or "{message}", vars) .. "\n")
   else
-    local spec = (agent.persistent and agent) or (resume and agent.followup) or agent
     local cmd
-    if type(spec.cmd) == "table" then
+    if type(agent.cmd) == "table" then
       cmd = {}
-      for i, a in ipairs(spec.cmd) do cmd[i] = CORE.expand(a, vars) end
+      for i, a in ipairs(agent.cmd) do cmd[i] = CORE.expand(a, vars) end
       local exe = vim.fn.exepath(cmd[1])
       if exe == "" then
         entry.status, entry.text = "failed", "`" .. cmd[1] .. "` isn't on PATH."
@@ -1067,38 +1067,30 @@ send = function(text, opts)
       end
       cmd[1] = exe
     else
-      cmd = CORE.expand(spec.cmd, vars, vim.fn.shellescape)
+      cmd = CORE.expand(agent.cmd, vars, vim.fn.shellescape)
     end
     local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
     for k, v in pairs(agent.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
-    for k, v in pairs(spec.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
-    -- A persistent agent's callbacks outlive this `send` call (the next
-    -- message reuses the job above), so they read the turn in progress
-    -- through its own `pj` instead of closing over this one - not through
-    -- `st.persistent_job`, which stop_persistent clears before the job's
-    -- on_exit runs, and that turn would then never finish.
-    local get_turn, forget, pj
-    if agent.persistent then
-      pj = { agent_name = agent_name, conv_id = st.conv_id, turn = turn }
-      get_turn = function() return pj.turn end
-      forget = function() if st.persistent_job == pj then st.persistent_job = nil end end
-    else
-      get_turn = function() return turn end
-    end
+    -- The process's callbacks outlive this `send` call (the next message
+    -- reuses it), so they read the turn in progress through its own `pj` -
+    -- not through `st.persistent_job`, which stop_persistent clears before
+    -- the process's on_exit runs, and that turn would then never finish.
+    local pj = { agent_name = agent_name, conv_id = st.conv_id, turn = turn }
+    local function get_turn() return pj.turn end
     local ok
     ok, job = pcall(vim.fn.jobstart, cmd, {
-      cwd = agent_cwd(snap), env = env, stderr_buffered = true,
-      on_stdout = turn_on_stdout(get_turn), on_stderr = turn_on_stderr(get_turn), on_exit = turn_on_exit(get_turn, forget),
+      cwd = agent_cwd(snap), env = env, stderr_buffered = false,
+      on_stdout = turn_on_stdout(get_turn), on_stderr = turn_on_stderr(get_turn),
+      on_exit = turn_on_exit(get_turn, function() if st.persistent_job == pj then st.persistent_job = nil end end),
     })
     if not ok or job <= 0 then
       entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
       return render()
     end
-    if agent.persistent then pj.job = job; st.persistent_job = pj end
-    local stdin_text = CORE.expand(spec.stdin or "{message}", vars)
-    pcall(vim.fn.chansend, job, agent.persistent and (stdin_text .. "\n") or stdin_text)
-    if not agent.persistent then pcall(vim.fn.chanclose, job, "stdin") end
+    pj.job = job
+    st.persistent_job = pj
   end
+  pcall(vim.fn.chansend, job, stdin_text)
 
   st.running = { job = job, turn = turn }
   start_spinner(st)
@@ -1225,21 +1217,25 @@ pick_model = function()
     return notify("No models to choose from - list them in the agent's `models` and put {model} in its cmd.",
       vim.log.levels.WARN)
   end
-  local uses = false
-  for _, spec in ipairs({ agent, agent.followup or {} }) do
-    for _, part in ipairs(type(spec.cmd) == "table" and spec.cmd or { spec.cmd or "" }) do
-      if tostring(part):find("{model}", 1, true) then uses = true end
-    end
+  -- An ACP agent gets the model through session/set_config_option.
+  local uses = agent.acp == true
+  for _, part in ipairs(type(agent.cmd) == "table" and agent.cmd or { agent.cmd or "" }) do
+    if tostring(part):find("{model}", 1, true) then uses = true end
   end
   local cur = M.current_model(agent)
   require("azure-cli.prompt").select({ prompt = "Model for " .. (agent.label or name), items = list,
     current = function(m) return m.value == cur end }, function(choice)
     if not choice then return end
-    STATE().models[name] = choice.value
+    local st = STATE()
+    st.models[name] = choice.value
+    -- The running process was started with the old model: the next
+    -- message starts one with this model (the conversation replayed).
+    if st.persistent_job then st.persistent_job.stale = true end
     M.set_winbars()
     notify("Chat model: " .. choice.label .. (uses and "" or " - but the agent's cmd has no {model}, so it can't pass it on."))
   end)
 end
+M.pick_model = pick_model
 
 -- ga: switch agents. The other agent can't resume this one's session, so
 -- the next message replays the conversation to it.

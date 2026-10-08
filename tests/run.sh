@@ -438,10 +438,9 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
-  # chat/init.lua's `send`: agent.persistent keeps one process alive across
-  # messages (tests/fake-persistent-agent.py), and the ordinary one-shot
-  # path (tests/fake-oneshot-agent.py, with a followup/resume) still works
-  # the same as before the two paths shared their turn-finishing code.
+  # chat/init.lua's `send`: one agent process for the whole conversation
+  # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
+  # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.
   out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-persistent.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all chat-persistent tests passed"* ]]; then
     pass "test-chat-persistent.lua (headless nvim)"

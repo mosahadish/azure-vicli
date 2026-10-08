@@ -8,7 +8,7 @@
 --                  --output-format stream-json events, its single json
 --                  envelope, or plain text, line by line
 --   parse_answer   the same over a finished run's whole output
---   can_resume     whether a message continues the agent's session
+--   STREAM_JSON_STDIN  the default chat.agent.stdin: one stream-json request
 --   expand         {placeholder} templates
 --   render         the transcript's lines and what each one is
 --   prompts        saved prompts ("/triage ...")
@@ -187,18 +187,11 @@ function M.find_session(pattern, ...)
   return nil
 end
 
--- Whether a message can resume the agent's session: a followup is set and
--- either doesn't need {session_id} or there is one.
-function M.can_resume(agent, session)
-  local f = agent and agent.followup
-  if not f then return false end
-  local needs = false
-  for _, part in ipairs(type(f.cmd) == "table" and f.cmd or { f.cmd }) do
-    if tostring(part):find("{session_id}", 1, true) then needs = true end
-  end
-  if (f.stdin or ""):find("{session_id}", 1, true) then needs = true end
-  return not needs or (session ~= nil and session ~= "")
-end
+-- The default chat.agent.stdin: each message as one line of Claude Code's
+-- --input-format stream-json "user message", which a CLI started with it
+-- reads until stdin closes - the agent's process stays running between
+-- messages. {message_json} is the message already JSON-quoted.
+M.STREAM_JSON_STDIN = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}'
 
 function M.expand(template, vars, quote)
   if type(template) ~= "string" then return template end

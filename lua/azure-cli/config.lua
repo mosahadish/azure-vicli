@@ -185,9 +185,13 @@ local CHAT_FIELDS = {
   suggest_on_new_comments = "boolean",
 }
 local CHAT_AGENT_FIELDS = {
-  label = "string", stdin = "string", env = "table", followup = "table", session_pattern = "string",
-  timeout_seconds = "number", model = "string", models = "table", strip = "table", persistent = "boolean",
-  acp = "boolean",
+  label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
+  models = "table", strip = "table", acp = "boolean",
+}
+-- Fields from when every message started a fresh process: the agent now
+-- stays running for the whole conversation, so there's nothing to resume.
+local CHAT_AGENT_REMOVED = {
+  followup = true, session_pattern = true, persistent = true,
 }
 local function check_chat_cmd(v, where)
   if type(v) == "table" then
@@ -216,6 +220,9 @@ local function validate_chat(chat)
     for k, v in pairs(a) do
       if k == "cmd" then
         check_chat_cmd(v, where)
+      elseif CHAT_AGENT_REMOVED[k] then
+        error("azure-cli.setup: " .. where .. "." .. k .. " is gone - the agent now stays running for the whole "
+          .. "conversation instead of starting per message; remove it (docs/chat.md has the new examples)")
       elseif CHAT_AGENT_FIELDS[k] then
         if type(v) ~= CHAT_AGENT_FIELDS[k] then
           error("azure-cli.setup: " .. where .. "." .. k .. " must be a " .. CHAT_AGENT_FIELDS[k])
@@ -225,18 +232,8 @@ local function validate_chat(chat)
       end
     end
     if a.cmd == nil then error("azure-cli.setup: " .. where .. " needs a `cmd`") end
-    if a.followup ~= nil then
-      for k, v in pairs(a.followup) do
-        if k == "cmd" then check_chat_cmd(v, where .. ".followup")
-        elseif k == "stdin" or k == "env" then
-          if type(v) ~= (k == "stdin" and "string" or "table") then
-            error("azure-cli.setup: " .. where .. ".followup." .. k .. " must be a " .. (k == "stdin" and "string" or "table"))
-          end
-        else
-          error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in " .. where .. ".followup")
-        end
-      end
-      if a.followup.cmd == nil then error("azure-cli.setup: " .. where .. ".followup needs a `cmd`") end
+    if a.acp and type(a.cmd) ~= "table" then
+      error("azure-cli.setup: " .. where .. ".cmd must be a list of strings when acp is set")
     end
     for i, m in ipairs(a.models or {}) do
       if type(m) ~= "string" and not (type(m) == "table" and type(m.value) == "string") then

@@ -439,9 +439,9 @@ do
   local good = {
     position = "bottom", size = 12, daily_summary = true, suggest_on_new_comments = false, default_agent = "claude",
     agents = {
-      claude = { cmd = { "claude", "-p" }, models = { "sonnet", { label = "Opus", value = "opus" } },
-        followup = { cmd = { "claude", "--resume", "{session_id}" }, stdin = "{message}" } },
-      copilot = { cmd = "copilot -p {message}", session_pattern = "id: (%S+)", strip = { "^\u{25CF}" } },
+      claude = { cmd = { "claude", "-p", "--input-format", "stream-json" }, models = { "sonnet", { label = "Opus", value = "opus" } },
+        strip = { "^\u{25CF}" } },
+      copilot = { cmd = { "copilot", "--acp" }, acp = true },
     },
     prompts = { mine = "Do X", standup = false },
     permissions = { vote = "deny", create_branch = "ask" },
@@ -462,7 +462,9 @@ do
   rejects("a bad strip pattern", { agent = { cmd = { "a" }, strip = { 1 } } }, "strip[1]")
   rejects("a bad prompt", { prompts = { ["bad name"] = "x" } }, "chat.prompts")
   rejects("a bad permission", { permissions = { vote = "maybe" } }, "chat.permissions.vote")
-  rejects("a bad followup", { agent = { cmd = { "a" }, followup = { model = "x" } } }, "unknown field `model` in chat.agent.followup")
+  rejects("a followup (gone)", { agent = { cmd = { "a" }, followup = { cmd = { "a" } } } }, "chat.agent.followup is gone")
+  rejects("a session_pattern (gone)", { agent = { cmd = { "a" }, session_pattern = "x" } }, "chat.agent.session_pattern is gone")
+  rejects("acp with a string cmd", { agent = { cmd = "copilot --acp", acp = true } }, "must be a list of strings when acp is set")
   config.setup({})
 end
 
