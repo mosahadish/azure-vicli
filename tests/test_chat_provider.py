@@ -325,6 +325,34 @@ class BridgeCallTests(unittest.TestCase):
         with self.assertRaises(OSError):
             ac._bridge_call({"method": "list"}, env={})
 
+    def test_a_non_utf8_byte_in_the_answer_is_replaced_not_fatal(self):
+        # A PR comment or similar text azure-vicli only relayed can carry a
+        # byte that isn't valid UTF-8 (e.g. azure-vicli #50213's
+        # get_pr_threads: a lone 0x97, a Windows-1252 em dash upstream) -
+        # this used to raise UnicodeDecodeError and surface as "azure-vicli
+        # is not reachable" for the whole tool call instead of just that
+        # one character.
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def serve_one():
+            conn, _ = srv.accept()
+            data = b""
+            while not data.endswith(b"\n"):
+                data += conn.recv(4096)
+            conn.sendall(b'{"text": "an em dash \x97 here"}\n')
+            conn.close()
+        t = threading.Thread(target=serve_one)
+        t.start()
+        res = ac._bridge_call({"method": "call"}, env={"AZVICLI_CHAT_BRIDGE": "127.0.0.1:{0}".format(port),
+                                                     "AZVICLI_CHAT_TOKEN": "secret"})
+        t.join()
+        srv.close()
+        self.assertIn("an em dash", res["text"])
+        self.assertIn("\ufffd", res["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

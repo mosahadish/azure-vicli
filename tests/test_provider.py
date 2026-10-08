@@ -70,6 +70,25 @@ def make_account(project="proj", org_url="https://dev.azure.com/org", pat="tok",
 
 
 # ---------------------------------------------------------------------------
+# stdout/stderr forced to UTF-8
+# ---------------------------------------------------------------------------
+
+
+class OutputEncodingTests(unittest.TestCase):
+    """Loading azure-cli.py must leave stdout/stderr at UTF-8 regardless of
+    the platform's default - on Windows, redirected to a pipe (exactly
+    what Neovim's jobstart does for --serve/--mcp), they otherwise default
+    to the legacy console codepage (cp1252 here), which silently mangles
+    any non-ASCII character a PR title/comment/commit message can hold
+    (an em dash round-trips as the single byte 0x97 instead of valid UTF-8)
+    - this is what azure-vicli #50213's get_pr_threads hit."""
+
+    def test_stdout_and_stderr_are_utf8(self):
+        self.assertEqual(sys.stdout.encoding.lower(), "utf-8")
+        self.assertEqual(sys.stderr.encoding.lower(), "utf-8")
+
+
+# ---------------------------------------------------------------------------
 # YAML-subset parser
 # ---------------------------------------------------------------------------
 
