@@ -46,6 +46,23 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
+# Every PR title, comment, commit message, ... this prints can hold any
+# Unicode character Azure DevOps lets the user type. Without this, Windows
+# gives stdout/stderr its legacy console codepage (cp1252 here) instead of
+# UTF-8 whenever they aren't an interactive console - which is always true
+# once Neovim's jobstart has them on a pipe: a character like an em dash
+# round-trips as the *wrong* single byte (U+2014 encodes to 0x97 in
+# cp1252), which the Lua side then can't tell from genuinely broken input,
+# and a strict .decode("utf-8") downstream (the MCP bridge, formerly) raised
+# UnicodeDecodeError over it. This fixes it at the source instead of
+# papering over a bad byte after the fact; reconfigure() needs Python 3.7+
+# (this file already requires 3.8+) and a real stream (the test suite's
+# fake stdin/stdout for --serve/--mcp don't have it, hence the guard).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+del _stream
+
 # ---------------------------------------------------------------------------
 # Small YAML-subset parser
 # ---------------------------------------------------------------------------
@@ -1129,7 +1146,7 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
     if not raw_bytes:
         return {}
     try:
-        return json.loads(raw_bytes.decode("utf-8"))
+        return json.loads(raw_bytes.decode("utf-8", errors="replace"))
     except ValueError as e:
         raise AdoTransportError("expected JSON from {0} but got {1} ({2}) - is org_url pointing at Azure DevOps?"
                                 .format(full_url, ctype or "an unknown content type", e)) from e
@@ -1866,14 +1883,16 @@ class PrActions:
         if not raw:
             print("{0}: empty response body from {1}.".format(label, url), file=sys.stderr)
             return 1
-        # Text-mode write (raw is always a JSON body, always valid UTF-8),
-        # not the raw bytes .buffer.write used to get - under dispatch()/
-        # --serve, sys.stdout is a per-thread capture (see
-        # _install_streams below) that only its .write() goes through;
-        # .buffer would bypass it and land on the daemon's real stdout,
-        # corrupting the response stream. No behaviour change for the
-        # one-shot CLI: the exact same bytes still reach the real terminal.
-        sys.stdout.write(raw.decode("utf-8"))
+        # Text-mode write (raw is always a JSON body, usually valid UTF-8 -
+        # errors="replace" covers the rare ADO response that isn't, e.g. a
+        # stray Windows-1252 byte in a comment), not the raw bytes
+        # .buffer.write used to get - under dispatch()/--serve, sys.stdout
+        # is a per-thread capture (see _install_streams below) that only
+        # its .write() goes through; .buffer would bypass it and land on
+        # the daemon's real stdout, corrupting the response stream. No
+        # behaviour change for the one-shot CLI: the exact same bytes
+        # still reach the real terminal.
+        sys.stdout.write(raw.decode("utf-8", errors="replace"))
         sys.stdout.flush()
         return 0
 
@@ -4491,7 +4510,13 @@ def _bridge_call(payload, env=None, timeout=900):
             if not chunk:
                 break
             buf += chunk
-    return json.loads(buf.decode("utf-8"))
+    # A tool's answer can carry text azure-vicli only relayed (a PR
+    # comment, a commit message, ...) that isn't actually valid UTF-8 -
+    # e.g. a Windows-1252 byte that slipped in upstream. errors="replace"
+    # (every other decode in this file already does this) swaps it for
+    # U+FFFD instead of failing the whole tool call with a raw
+    # UnicodeDecodeError, as azure-vicli PR #50213's get_pr_threads once did.
+    return json.loads(buf.decode("utf-8", errors="replace"))
 
 
 def mcp_handle(msg, bridge=_bridge_call):
