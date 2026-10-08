@@ -1058,11 +1058,14 @@ send = function(text, opts)
     for k, v in pairs(spec.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
     -- A persistent agent's callbacks outlive this `send` call (the next
     -- message reuses the job above), so they read the turn in progress
-    -- through `st.persistent_job` instead of closing over this one.
-    local get_turn, forget
+    -- through its own `pj` instead of closing over this one - not through
+    -- `st.persistent_job`, which stop_persistent clears before the job's
+    -- on_exit runs, and that turn would then never finish.
+    local get_turn, forget, pj
     if agent.persistent then
-      get_turn = function() local pj = st.persistent_job; return pj and pj.turn end
-      forget = function() if st.persistent_job and st.persistent_job.job == job then st.persistent_job = nil end end
+      pj = { agent_name = agent_name, conv_id = st.conv_id, turn = turn }
+      get_turn = function() return pj.turn end
+      forget = function() if st.persistent_job == pj then st.persistent_job = nil end end
     else
       get_turn = function() return turn end
     end
@@ -1075,7 +1078,7 @@ send = function(text, opts)
       entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
       return render()
     end
-    if agent.persistent then st.persistent_job = { job = job, agent_name = agent_name, conv_id = st.conv_id, turn = turn } end
+    if agent.persistent then pj.job = job; st.persistent_job = pj end
     local stdin_text = CORE.expand(spec.stdin or "{message}", vars)
     pcall(vim.fn.chansend, job, agent.persistent and (stdin_text .. "\n") or stdin_text)
     if not agent.persistent then pcall(vim.fn.chanclose, job, "stdin") end
