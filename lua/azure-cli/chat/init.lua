@@ -885,23 +885,39 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   running(pj)
 
   conn.request("initialize", { protocolVersion = 1, clientCapabilities = vim.empty_dict(),
-    clientInfo = { name = "azure-vicli", version = "1" } }, function(_, ierr)
+    clientInfo = { name = "azure-vicli", version = "1" } }, function(init, ierr)
     if not live() then return end
     if ierr then return finish("failed", tostring(ierr)) end
-    local servers = {}
-    if vars.mcp_server then table.insert(servers, vars.mcp_server) end
-    conn.request("session/new", { cwd = agent_cwd(snap), mcpServers = servers }, function(result, serr)
-      if not live() then return end
-      if serr or not (result and result.sessionId) then
-        return finish("failed", tostring(serr or "the agent didn't return a session id"))
-      end
-      pj.acp_session_id = result.sessionId
-      local model = M.current_model(agent)
-      if model then
-        pcall(conn.request, "session/set_config_option",
-          { sessionId = pj.acp_session_id, configId = "model", value = model }, function() end)
-      end
-      send_prompt(pj)
+    -- An agent that only takes http MCP servers (Copilot's --acp: no stdio
+    -- in its mcpCapabilities) gets azure-cli.py --mcp-http instead.
+    local caps = type(init) == "table" and type(init.agentCapabilities) == "table"
+      and init.agentCapabilities.mcpCapabilities
+    local function with_servers(next_step)
+      if not vars.mcp_server then return next_step({}) end
+      if not (type(caps) == "table" and caps.http) then return next_step({ vars.mcp_server }) end
+      ACP.http_server(vars.mcp_server, function(server, herr)
+        if not live() then return end
+        if not server then
+          table.insert(entry.tools, "\u{2717} azure-vicli's tools: " .. tostring(herr))
+          return next_step({})
+        end
+        next_step({ server })
+      end)
+    end
+    with_servers(function(servers)
+      conn.request("session/new", { cwd = agent_cwd(snap), mcpServers = servers }, function(result, serr)
+        if not live() then return end
+        if serr or not (result and result.sessionId) then
+          return finish("failed", tostring(serr or "the agent didn't return a session id"))
+        end
+        pj.acp_session_id = result.sessionId
+        local model = M.current_model(agent)
+        if model then
+          pcall(conn.request, "session/set_config_option",
+            { sessionId = pj.acp_session_id, configId = "model", value = model }, function() end)
+        end
+        send_prompt(pj)
+      end)
     end)
   end)
 end

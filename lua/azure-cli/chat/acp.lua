@@ -92,4 +92,56 @@ function M.connect(cmd, opts, callbacks)
   return conn
 end
 
+-- `azure-cli.py --mcp-http` for an agent that only takes http MCP servers
+-- (Copilot's --acp rejects a stdio one: "Rejecting non-http/sse MCP server
+-- ... from client"). `stdio` is the session/new entry the stdio server
+-- would have had - same command, args ending in --mcp, env as a list.
+-- One server per Neovim, started on first use (it lives until Neovim
+-- exits and closes its stdin); cb(entry) gets the http entry to pass in
+-- `mcpServers` instead, or cb(nil, err).
+local http = { job = nil, port = nil, waiting = {} }
+
+function M.http_server(stdio, cb)
+  local env, token = {}, nil
+  for _, e in ipairs(stdio.env or {}) do
+    env[e.name] = e.value
+    if e.name == "AZVICLI_CHAT_TOKEN" then token = e.value end
+  end
+  local function entry()
+    return { type = "http", name = stdio.name, url = "http://127.0.0.1:" .. http.port .. "/mcp",
+      headers = { { name = "Authorization", value = "Bearer " .. (token or "") } } }
+  end
+  if http.job and vim.fn.jobwait({ http.job }, 0)[1] == -1 then
+    if http.port then return cb(entry()) end
+    return table.insert(http.waiting, function(err) if err then cb(nil, err) else cb(entry()) end end)
+  end
+  local argv = { stdio.command }
+  for _, a in ipairs(stdio.args or {}) do table.insert(argv, a == "--mcp" and "--mcp-http" or a) end
+  http.port, http.waiting = nil, { function(err) if err then cb(nil, err) else cb(entry()) end end }
+  local err_lines = {}
+  local function settle(err)
+    local waiting = http.waiting
+    http.waiting = {}
+    for _, w in ipairs(waiting) do pcall(w, err) end
+  end
+  local ok, job = pcall(vim.fn.jobstart, argv, {
+    env = env,
+    on_stdout = function(_, d)
+      if http.port or not d then return end
+      local port = tonumber(vim.trim(d[1] or ""))
+      if port then http.port = port; settle(nil) end
+    end,
+    on_stderr = function(_, d) if d then vim.list_extend(err_lines, d) end end,
+    on_exit = function(_, code)
+      http.job, http.port = nil, nil
+      settle("azure-vicli's http MCP server exited (" .. code .. "): " .. table.concat(err_lines, "\n"))
+    end,
+  })
+  if not ok or job <= 0 then
+    http.job = nil
+    return settle("could not start azure-vicli's http MCP server: " .. tostring(job))
+  end
+  http.job = job
+end
+
 return M

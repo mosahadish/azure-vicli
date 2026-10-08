@@ -4597,6 +4597,67 @@ def mcp_serve(stdin=None, stdout=None, bridge=_bridge_call):
     return 0
 
 
+def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
+    """--mcp-http: the same MCP server as --mcp, over HTTP instead of stdio
+    (MCP's "streamable HTTP" transport, JSON responses only - no SSE), for
+    an agent that only connects to http servers: GitHub Copilot's --acp
+    rejects a stdio one passed in session/new. Listens on a random
+    127.0.0.1 port, prints it as the first line on stdout, and serves
+    until stdin closes (chat/acp.lua keeps that pipe open for as long as
+    Neovim runs). Every request needs "Authorization: Bearer
+    <AZVICLI_CHAT_TOKEN>" - anything on this machine can reach the port.
+    """
+    import http.server
+    env = os.environ if env is None else env
+    token = env.get("AZVICLI_CHAT_TOKEN") or ""
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, body=None):
+            data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            if body is not None:
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            # No server-initiated stream: the spec's answer for that is 405.
+            self._send(405)
+
+        def do_DELETE(self):
+            self._send(405)
+
+        def do_POST(self):
+            if not token or self.headers.get("Authorization") != "Bearer " + token:
+                return self._send(401, {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "unauthorized"}})
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            try:
+                msg = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError:
+                return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+            if isinstance(msg, list):
+                answers = [a for a in (mcp_handle(m, bridge) for m in msg) if a is not None]
+                return self._send(200, answers) if answers else self._send(202)
+            resp = mcp_handle(msg, bridge)
+            return self._send(202) if resp is None else self._send(200, resp)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    stdout.write("{0}\n".format(server.server_address[1]))
+    stdout.flush()
+    for _ in stdin:
+        pass
+    server.shutdown()
+    return 0
+
+
 def main(argv=None):
     """Thin wrapper: --serve runs the daemon loop, an empty argv either
     branch-prefetches or launches the nvim dashboard (both stay here rather
@@ -4613,6 +4674,8 @@ def main(argv=None):
         return serve()
     if argv[:1] == ["--mcp"]:
         return mcp_serve()
+    if argv[:1] == ["--mcp-http"]:
+        return mcp_http_serve()
 
     if not argv:
         # No flags at all: either branch-prefetch (AZVICLI_PREFETCH=1|all -

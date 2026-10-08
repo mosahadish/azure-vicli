@@ -449,6 +449,16 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-persistent.lua (headless nvim)" "$out"
   fi
 
+  # agent.acp: one warm ACP session across messages, and azure-cli.py
+  # --mcp-http for an agent that only takes http MCP servers (Copilot's
+  # --acp) - tests/fake-acp-agent.py calls the tools over it.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-acp.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-acp tests passed"* ]]; then
+    pass "test-chat-acp.lua (headless nvim)"
+  else
+    fail "test-chat-acp.lua (headless nvim)" "$out"
+  fi
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua

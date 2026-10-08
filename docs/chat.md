@@ -250,21 +250,14 @@ agent = {
 },
 ```
 
-**MCP tools don't currently reach the agent this way.** Confirmed against a
-real `copilot --acp` (1.0.92): its `initialize` response only advertises
-`mcpCapabilities: {http, sse}` - no stdio - and its own log says why a
-passed-in server doesn't show up: `[rust:acp::mcp_servers] Rejecting
-non-http/sse MCP server "azure-vicli" from client`. azure-vicli's MCP
-server (`azure-cli.py --mcp`) is stdio-only, so under `acp = true` Copilot
-gets none of azure-vicli's tools - no `current_view`, `draft_reply`,
-`start_fix`, and so on - just general coding help with no idea what PR or
-work item you're looking at. That's most of what this chat panel is for,
-so `acp` isn't a straight upgrade over the headless setup in [GitHub
-Copilot CLI](#github-copilot-cli) below until Copilot's ACP takes a stdio
-server (or azure-vicli grows an http/sse transport for one - it doesn't
-have one today). Claude Code's `persistent` path above doesn't have this
-problem: `--mcp-config` is a stdio server the same way the non-persistent
-setup already uses it.
+**azure-vicli's tools over ACP.** Copilot's `--acp` (1.0.92) only takes
+http/sse MCP servers - its `initialize` advertises `mcpCapabilities: {http,
+sse}`, and it rejects a stdio one ("Rejecting non-http/sse MCP server
+"azure-vicli" from client"). So for an agent that advertises `http`,
+azure-vicli starts `azure-cli.py --mcp-http` - the same tools as `--mcp`,
+over HTTP on a random 127.0.0.1 port, with the chat's token required on
+every request - once per Neovim, and passes that in `session/new` instead.
+An agent that doesn't advertise `http` gets the stdio server as before.
 
 A tool call Copilot wants permission for (editing a file, running a
 command) pops up the same yes/no prompt as azure-vicli's own tools, with
@@ -317,9 +310,8 @@ agent = {
 Without a session id it still works; each message replays the conversation.
 `persistent` doesn't apply here - `-p` exits after one message regardless.
 `acp = true` (see [Keeping the agent warm](#keeping-the-agent-warm)) gives
-a warm session instead, but - as of Copilot CLI 1.0.92 - at the cost of
-azure-vicli's own tools, which its ACP implementation can't connect to
-yet; this headless setup is the one with full tool access.
+a warm session instead - no new process per message - with the same
+azure-vicli tools, over http.
 
 ### Let the agent set itself up
 

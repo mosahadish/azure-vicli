@@ -296,6 +296,67 @@ class McpHandleTests(unittest.TestCase):
         self.assertTrue(any(a.get("error", {}).get("code") == -32700 for a in answers))
 
 
+class McpHttpServeTests(unittest.TestCase):
+    """--mcp-http: the same relay over HTTP, for Copilot's --acp (which
+    rejects a stdio MCP server)."""
+
+    def setUp(self):
+        def bridge(payload):
+            if payload["method"] == "list":
+                return {"tools": [{"name": "current_view", "description": "d", "inputSchema": {"type": "object"}}]}
+            return {"text": "on the PR dashboard"}
+        r, w = socket.socketpair()
+        self.stdin_w = w
+        self.out = StringIO()
+        self.thread = threading.Thread(target=ac.mcp_http_serve,
+                                       args=(r.makefile("rb"), self.out, bridge, {"AZVICLI_CHAT_TOKEN": "secret"}))
+        self.thread.start()
+        for _ in range(200):
+            if self.out.getvalue().endswith("\n"):
+                break
+            threading.Event().wait(0.01)
+        self.port = int(self.out.getvalue().strip())
+
+    def tearDown(self):
+        self.stdin_w.close()
+        self.thread.join(5)
+        self.assertFalse(self.thread.is_alive(), "closing stdin should stop the server")
+
+    def post(self, body, token="secret", method="POST"):
+        import urllib.request
+        import urllib.error
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        req = urllib.request.Request("http://127.0.0.1:{0}/mcp".format(self.port), method=method,
+                                     data=None if body is None else json.dumps(body).encode(), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read()
+                return resp.status, json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            return e.code, json.loads(raw) if raw else None
+
+    def test_initialize_list_and_call(self):
+        code, r = self.post({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        self.assertEqual((code, r["result"]["serverInfo"]["name"]), (200, "azure-vicli"))
+        code, r = self.post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        self.assertEqual(r["result"]["tools"][0]["name"], "current_view")
+        code, r = self.post({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "current_view"}})
+        self.assertEqual(r["result"]["content"][0]["text"], "on the PR dashboard")
+
+    def test_a_notification_is_accepted_without_a_body(self):
+        self.assertEqual(self.post({"jsonrpc": "2.0", "method": "notifications/initialized"}), (202, None))
+
+    def test_the_token_is_required(self):
+        self.assertEqual(self.post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, token=None)[0], 401)
+        self.assertEqual(self.post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, token="wrong")[0], 401)
+
+    def test_no_server_stream(self):
+        self.assertEqual(self.post(None, method="GET")[0], 405)
+
+
 class BridgeCallTests(unittest.TestCase):
     def test_round_trip_with_the_token(self):
         srv = socket.socket()
