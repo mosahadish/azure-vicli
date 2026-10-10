@@ -55,7 +55,8 @@ lua/azure-cli/
   editor.lua      floating comment editor (drafts, @ mentions)
   chat/           the chat panel: init.lua (panel, agent runs), view.lua (what's on screen),
                   tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
-                  plan.lua (the plan window, its gate on start_fix/start_story), threads.lua (ga: a
+                  plan.lua (the plan: storage, its gate on start_fix/start_story, the tools - with
+                  plan_text.lua's pure helpers and plan_view.lua's tab), threads.lua (ga: a
                   question answered under a line - the plan's and the change viewer's), agents.lua
                   (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen)
   rpc.lua         shared azure-cli.py --serve daemon client
