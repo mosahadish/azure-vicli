@@ -784,7 +784,7 @@ function M.open(title, dir, raw, keep)
   local tests_tag = TR.label(TR.load(dir), view.fp, TR.running(dir))
   if tests_tag then ctags[#ctags + 1] = tests_tag end
   if view.check and #view.check.unplanned > 0 then ctags[#ctags + 1] = "[" .. #view.check.unplanned .. " off plan]" end
-  if view.check and #view.check.missing > 0 then ctags[#ctags + 1] = "[" .. #view.check.missing .. " planned, untouched]" end
+  if view.check and #view.check.missing > 0 then ctags[#ctags + 1] = "[" .. #view.check.missing .. " untouched]" end
   pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) }, ctags))
   local at
   for i, f in ipairs(view.files) do if keep and f.path == keep.path then at = i end end

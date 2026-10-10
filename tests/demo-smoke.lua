@@ -1265,7 +1265,7 @@ do
   local listed = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
   if not (listed:find("In the plan, not changed:", 1, true) and listed:find("    src/throttle.py", 1, true))
       or not e.text:find('"planned_not_changed":["src/throttle.py"]', 1, true)
-      or not vim.wo[cwin].winbar:find("1 planned, untouched", 1, true) then
+      or not vim.wo[cwin].winbar:find("1 untouched", 1, true) then
     return fail("the change wasn't checked against the plan:\n" .. listed .. "\n" .. e.text)
   end
   vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(cwin))

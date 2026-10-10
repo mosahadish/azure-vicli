@@ -422,7 +422,7 @@ their line when the text around them changes.
 (`show_fix`, `gd`), the change viewer compares it with the plan's Files
 section: a changed file the plan doesn't list is marked `✗ not in the plan`,
 and the files the plan lists but the change didn't touch are listed under
-the changed ones ("In the plan, not changed"); the winbar counts both. The
+the changed ones ("In the plan, not changed"); the winbar counts both (`[1 off plan]`, `[2 untouched]`). The
 agent gets the same list back from `show_fix`, so it can explain or fix it.
 
 **Asking for changes, line by line.** `gc` on a line (or a selection)
