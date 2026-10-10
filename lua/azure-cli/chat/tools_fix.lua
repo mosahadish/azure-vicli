@@ -442,7 +442,7 @@ setmetatable(M, { __call = function(_, T)
           env.log("$ " .. cmd)
           TR.run(t.dir, cmd, TR.fingerprint(diff or ""), function(r, err)
             if not r then return done(nil, err) end
-            pcall(require("azure-cli.chat.changes").refresh)
+            pcall(require("azure-cli.chat.changes").refresh, t.dir)
             done({ exit_code = r.code, passed = r.code == 0, timed_out = r.timed_out, seconds = r.seconds,
               output = table.concat(TR.tail(r.output, 80), "\n") })
           end)

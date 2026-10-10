@@ -38,7 +38,12 @@ local list_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_list")
 local link_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_links")
 local hunk_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_hunks")
 
+-- One view per change (per worktree) - its own tab - so several agents'
+-- changes can be open at once. `view` is the one being worked on: every
+-- key, autocmd and callback points it at its own change's view first.
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
+local views = {}  -- worktree dir -> its view
+local by_buf = {} -- buffer -> the view it belongs to
 
 local function KEYS() return require("azure-cli.keys") end
 local function THREADS() return require("azure-cli.chat.threads") end
@@ -156,7 +161,35 @@ local function help(surface, tbl)
     { fixed = { KEYS().line_raw("j / k", "move") } }), { title = "Keys" })
 end
 
+local function alive(v)
+  return v and v.tab and vim.api.nvim_tabpage_is_valid(v.tab) and v.list_win and vim.api.nvim_win_is_valid(v.list_win)
+    and v.diff_win and vim.api.nvim_win_is_valid(v.diff_win)
+end
+
+local function use_buf(buf) if by_buf[buf] then view = by_buf[buf] end end
+
+-- Points `view` at worktree `dir`'s view: true when it's open.
+local function use_dir(dir)
+  if not alive(views[dir]) then return false end
+  view = views[dir]
+  return true
+end
+
+local function view_of_tab(tab)
+  for _, v in pairs(views) do if v.tab == tab and alive(v) then return v end end
+  return nil
+end
+
+-- KEYS().bind on a buffer of one change's view: the key works on that view.
+local function bind(buf, surface, action, fn, opts)
+  KEYS().bind(buf, surface, action, function(...)
+    use_buf(buf)
+    return fn(...)
+  end, opts)
+end
+
 local function close()
+  if view then views[view.dir] = nil end
   if view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab) then
     if #vim.api.nvim_list_tabpages() > 1 then
       pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(view.tab))
@@ -348,7 +381,7 @@ local function reject_hunk(idx)
       if not ok then return notify("Couldn't take it out: " .. tostring(err), vim.log.levels.WARN) end
       require("azure-cli.chat").note("You took a change out of the agent's work: " .. label .. ".")
       pcall(require("azure-cli.chat.plan").event_for_worktree, dir, "took_out", "You took out a change to " .. label)
-      M.refresh()
+      M.refresh(dir)
     end)
   end)
 end
@@ -422,7 +455,7 @@ local function comment_here(idx, from, to)
     title = "Change \u{00B7} " .. vim.fn.fnamemodify(f.path, ":t") .. ":" .. m.lineno .. " (queued for gS)",
     initial = "", anchor = { win = vim.api.nvim_get_current_win(), row = to }, context_lines = lines,
     on_submit = function(text)
-      if not (view and view.dir == dir) then return end
+      if not use_dir(dir) then return end
       table.insert(view.threads, { id = tostring(os.time()) .. "-" .. math.random(1000, 9999), kind = "request",
         file = f.path, line = m.lineno, side = m.side, anchor = vim.trim(lines[#lines] or ""), question = text,
         status = "queued", at = os.time() })
@@ -453,10 +486,10 @@ local function run_tests()
       end
       require("azure-cli.chat").note("Tests on " .. title:gsub("^Proposed change %- ", "") .. " (" .. cmd .. "): "
         .. (TR.label(r) or ""):gsub("^%[", ""):gsub("%]$", "") .. ".")
-      if view and view.dir == dir then M.refresh() end
+      if use_dir(dir) then M.refresh(dir) end
       if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
     end)
-    if view and view.dir == dir and view.current then
+    if use_dir(dir) and view.current then
       local f = view.files[view.current]
       set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
     end
@@ -482,7 +515,7 @@ local function submit_changes()
     title = "Send " .. #queued .. " change" .. (#queued == 1 and "" or "s") .. " to the agent",
     initial = "Please make these changes.", anchor = "center",
     on_submit = function(note)
-      if not (view and view.dir == dir) then return end
+      if not use_dir(dir) then return end
       local entry = CHAT.send(M.fix_message(what_label(), note, queued), {
         view_win = valid_win(view.diff_win) and view.diff_win or nil,
         display = note .. " (+" .. #queued .. " on lines of the change)" })
@@ -530,7 +563,7 @@ local function ask_here(idx)
     label = name .. ":" .. m.lineno,
     threads = view.threads,
     changed = function()
-      if not (view and view.dir == dir) then return end
+      if not use_dir(dir) then return end
       why_save()
       if view.current then draw_threads(view.current) end
     end,
@@ -554,12 +587,11 @@ local jump  -- forward
 
 -- gq / r on both panes.
 local function bind_common(buf, surface)
-  local K = KEYS()
-  K.bind(buf, surface, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
-  K.bind(buf, surface, "chat", function() require("azure-cli.chat").capture_selection() end,
+  bind(buf, surface, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
+  bind(buf, surface, "chat", function() require("azure-cli.chat").capture_selection() end,
     { desc = "send the selected lines to the chat", mode = "x" })
-  K.bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
-  K.bind(buf, surface, "run_tests", function() run_tests() end, { desc = "run the plan's tests on the change" })
+  bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
+  bind(buf, surface, "run_tests", function() run_tests() end, { desc = "run the plan's tests on the change" })
 end
 
 -- The diff buffer for file `idx` (built once per open).
@@ -581,49 +613,49 @@ local function diff_buf(idx)
   DIFFBUF.decorate(buf, lines, map)
   require("azure-cli.review.pane").register(buf, map)
   view.bufs[f.path] = buf
+  by_buf[buf] = view
   view.maps = view.maps or {}
   view.maps[buf] = { idx = idx, map = map }
-  local K = KEYS()
-  K.bind(buf, "diff", "next_hunk", function() jump(1) end, { desc = "next change" })
-  K.bind(buf, "diff", "prev_hunk", function() jump(-1) end, { desc = "previous change" })
-  K.bind(buf, "diff", "back", function()
+  bind(buf, "diff", "next_hunk", function() jump(1) end, { desc = "next change" })
+  bind(buf, "diff", "prev_hunk", function() jump(-1) end, { desc = "previous change" })
+  bind(buf, "diff", "back", function()
     if valid_win(view.list_win) then vim.api.nvim_set_current_win(view.list_win) end
   end, { desc = "back to the file list" })
-  K.bind(buf, "diff", "open_file", function()
+  bind(buf, "diff", "open_file", function()
     local m = map[vim.api.nvim_win_get_cursor(0)[1]] or {}
     local line = m.side == "R" and m.lineno or 1
     vim.cmd("tabedit " .. vim.fn.fnameescape(view.dir .. "/" .. f.path))
     pcall(vim.api.nvim_win_set_cursor, 0, { line, 0 })
   end, { desc = "edit the file in the worktree" })
-  K.bind(buf, "diff", "resize_less", function() resize(-5) end, { desc = "shrink the file list" })
-  K.bind(buf, "diff", "resize_more", function() resize(5) end, { desc = "grow the file list" })
-  K.bind(buf, "diff", "quit", close, { desc = "close" })
-  K.bind(buf, "diff", "help", function() help("diff", DIFF_HELP) end, { desc = "keys" })
-  K.bind(buf, "diff", "ask", function() ask_here(idx) end, { desc = "ask the agent about this line" })
-  K.bind(buf, "diff", "goto_plan", function() goto_plan(idx) end, { desc = "the plan line this carries out" })
-  K.bind(buf, "diff", "comment", function()
+  bind(buf, "diff", "resize_less", function() resize(-5) end, { desc = "shrink the file list" })
+  bind(buf, "diff", "resize_more", function() resize(5) end, { desc = "grow the file list" })
+  bind(buf, "diff", "quit", close, { desc = "close" })
+  bind(buf, "diff", "help", function() help("diff", DIFF_HELP) end, { desc = "keys" })
+  bind(buf, "diff", "ask", function() ask_here(idx) end, { desc = "ask the agent about this line" })
+  bind(buf, "diff", "goto_plan", function() goto_plan(idx) end, { desc = "the plan line this carries out" })
+  bind(buf, "diff", "comment", function()
     local r = vim.api.nvim_win_get_cursor(0)[1]
     comment_here(idx, r, r)
   end, { desc = "queue a change on this line for the agent" })
-  K.bind(buf, "diff", "comment_range", function()
+  bind(buf, "diff", "comment_range", function()
     local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
     if a > b then a, b = b, a end
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
     comment_here(idx, a, b)
   end, { desc = "queue a change on these lines for the agent", mode = "x" })
-  K.bind(buf, "diff", "batch_submit", submit_changes, { desc = "send the queued changes to the agent" })
-  K.bind(buf, "diff", "accept_hunk", function() accept_hunk(idx) end, { desc = "accept this change (again: undo)" })
-  K.bind(buf, "diff", "reject_hunk", function() reject_hunk(idx) end, { desc = "take this change out of the worktree" })
-  K.bind(buf, "diff", "delete_thread", function() delete_here(idx) end, { desc = "forget what's under this line" })
-  K.bind(buf, "diff", "expand_thread", function()
+  bind(buf, "diff", "batch_submit", submit_changes, { desc = "send the queued changes to the agent" })
+  bind(buf, "diff", "accept_hunk", function() accept_hunk(idx) end, { desc = "accept this change (again: undo)" })
+  bind(buf, "diff", "reject_hunk", function() reject_hunk(idx) end, { desc = "take this change out of the worktree" })
+  bind(buf, "diff", "delete_thread", function() delete_here(idx) end, { desc = "forget what's under this line" })
+  bind(buf, "diff", "expand_thread", function()
     local th = thread_here(idx)
     if not th then return notify("No question on this line (ga asks one).") end
     THREADS().toggle(th)
     draw_threads(idx)
   end, { desc = "show all of the answer / fold it" })
-  K.bind(buf, "diff", "view_comments", function() THREADS().show(thread_here(idx)) end, { desc = "the question and answer" })
-  K.bind(buf, "diff", "next_comment", function() jump_thread(idx, 1) end, { desc = "next question" })
-  K.bind(buf, "diff", "prev_comment", function() jump_thread(idx, -1) end, { desc = "previous question" })
+  bind(buf, "diff", "view_comments", function() THREADS().show(thread_here(idx)) end, { desc = "the question and answer" })
+  bind(buf, "diff", "next_comment", function() jump_thread(idx, 1) end, { desc = "next question" })
+  bind(buf, "diff", "prev_comment", function() jump_thread(idx, -1) end, { desc = "previous question" })
   bind_common(buf, "diff")
   return buf
 end
@@ -708,13 +740,12 @@ end
 local function list_lines() return M.list_lines(view.files, view.check) end
 
 local function setup_list(buf)
-  local K = KEYS()
   local function under() return vim.api.nvim_win_get_cursor(0)[1] end
-  K.bind(buf, "list", "open", function() show(under(), true) end, { desc = "show the file's change" })
-  K.bind(buf, "list", "resize_less", function() resize(-5) end, { desc = "shrink the file list" })
-  K.bind(buf, "list", "resize_more", function() resize(5) end, { desc = "grow the file list" })
-  K.bind(buf, "list", "quit", close, { desc = "close" })
-  K.bind(buf, "list", "help", function() help("list", LIST_HELP) end, { desc = "keys" })
+  bind(buf, "list", "open", function() show(under(), true) end, { desc = "show the file's change" })
+  bind(buf, "list", "resize_less", function() resize(-5) end, { desc = "shrink the file list" })
+  bind(buf, "list", "resize_more", function() resize(5) end, { desc = "grow the file list" })
+  bind(buf, "list", "quit", close, { desc = "close" })
+  bind(buf, "list", "help", function() help("list", LIST_HELP) end, { desc = "keys" })
   bind_common(buf, "list")
   -- Moving through the list previews each file's change, debounced like
   -- the reviewer's file list: only the row the cursor settles on is shown,
@@ -725,6 +756,7 @@ local function setup_list(buf)
     callback = function()
       timer:stop()
       timer:start(DIFFBUF.PREVIEW_MS, 0, vim.schedule_wrap(function()
+        use_buf(buf)
         if not (view and vim.api.nvim_buf_is_valid(buf) and valid_win(view.list_win)) then return end
         if vim.api.nvim_win_get_buf(view.list_win) ~= buf then return end
         local i = vim.api.nvim_win_get_cursor(view.list_win)[1]
@@ -739,15 +771,16 @@ function M.open(title, dir, raw, keep)
   DIFFBUF.setup_hl()
   local CACHE = require("azure-cli.cache")
   local width = view and view.width or 40
-  -- The previous diff buffers go once the new ones are on screen (deleting
-  -- the one a window shows would close that window).
-  local stale = view and vim.tbl_values(view.bufs or {}) or {}
-  local reuse = view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab) and valid_win(view.list_win)
-    and valid_win(view.diff_win)
-  local old = reuse and view or nil
+  -- This worktree's tab when it's open (a refresh), else a new one - the
+  -- other changes' tabs stay as they are. Its previous diff buffers go
+  -- once the new ones are on screen (deleting the one a window shows would
+  -- close that window).
+  local old = alive(views[dir]) and views[dir] or nil
+  local stale = old and vim.tbl_values(old.bufs or {}) or {}
   view = { files = M.files(raw), diffs = CACHE.split_diff(raw), bufs = {}, maps = {}, title = title, dir = dir,
     width = width, threads = (old and old.dir == dir) and old.threads or why_load(dir),
     accepted = (old and old.dir == dir) and old.accepted or hunks_load(dir) }
+  views[dir] = view
   reanchor()
   -- The plan this change was made from, if any: which files it doesn't list.
   local paths = {}
@@ -758,16 +791,23 @@ function M.open(title, dir, raw, keep)
   view.check = okp and PLAN.check_change(view.plan, paths) or nil
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
+    by_buf[view.list_buf] = view
     vim.api.nvim_set_current_tabpage(view.tab)
   else
     vim.cmd("tabnew")
     view.tab = vim.api.nvim_get_current_tabpage()
     view.list_win = vim.api.nvim_get_current_win()
     view.list_buf = vim.api.nvim_get_current_buf()
+    by_buf[view.list_buf] = view
     vim.bo[view.list_buf].buftype = "nofile"
     vim.bo[view.list_buf].bufhidden = "wipe"
     vim.bo[view.list_buf].filetype = "azurecli-changes"
-    pcall(vim.api.nvim_buf_set_name, view.list_buf, "azure-cli://changes")
+    pcall(vim.api.nvim_buf_set_name, view.list_buf, "azure-cli://changes/" .. vim.fn.fnamemodify(dir, ":t"))
+    local lb = view.list_buf
+    vim.api.nvim_create_autocmd("BufWipeout", { buffer = lb, once = true, callback = function()
+      by_buf[lb] = nil
+      if views[dir] and views[dir].list_buf == lb then views[dir] = nil end
+    end })
     setup_list(view.list_buf)
     vim.cmd("belowright vsplit")
     view.diff_win = vim.api.nvim_get_current_win()
@@ -849,7 +889,10 @@ function M.jump_to(path, line)
   return false
 end
 
-function M.refresh()
+-- `dir`: the worktree whose change to refresh (default: the one being
+-- worked on - the key's own).
+function M.refresh(dir)
+  if dir and not use_dir(dir) then return end
   if not (view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab)) then return end
   local cur = view.files[view.current or 0]
   local keep = {
@@ -857,7 +900,8 @@ function M.refresh()
     line = valid_win(view.diff_win) and vim.api.nvim_win_get_cursor(view.diff_win)[1] or 1,
     list = vim.api.nvim_get_current_win() == view.list_win,
   }
-  local title, dir = view.title:gsub(" %(last commit%)$", ""), view.dir
+  local title = view.title:gsub(" %(last commit%)$", "")
+  dir = view.dir
   require("azure-cli.chat.tools_fix").load(dir, require("azure-cli.chat.tools").git, function(ok, diff, last)
     if not ok then return notify("Refreshing failed: " .. tostring(diff)) end
     M.open(title .. (last and " (last commit)" or ""), dir, vim.split(diff, "\n", { plain = true }), keep)
@@ -868,7 +912,9 @@ end
 -- The chat's description of this screen: the change, and the file and line
 -- under the cursor (the line number in the new version of the file).
 function M.describe(win)
-  if not view then return nil end
+  local v = by_buf[vim.api.nvim_win_get_buf(win)] or view_of_tab(vim.api.nvim_win_get_tabpage(win))
+  if not v then return nil end
+  view = v
   local files = {}
   for _, f in ipairs(view.files) do files[#files + 1] = f.status .. " " .. f.path end
   local snap = { screen = "change viewer", change = view.title, worktree = view.dir, files = files,

@@ -573,7 +573,13 @@ end
 -- ---------------------------------------------------------------------------
 -- The viewer.
 
+-- One view per plan - its own tab - so several plans can be open at once.
+-- `view` is the one being worked on: every key, autocmd and callback
+-- points it at its own plan's view first (use_buf / with_view), and the
+-- functions below read it.
 local view = nil  -- { tab, list_win, plan_win, list_buf, plan_buf, key, rec, sections, rows, width }
+local views = {}  -- plan key -> its view
+local by_buf = {} -- buffer -> the view it belongs to
 local goto_code  -- forward
 local list_ns = vim.api.nvim_create_namespace("azure_cli_plan_list")
 
@@ -624,6 +630,35 @@ local function help(tbl)
   UI().open_float(KEYS().help_lines("plan", "Plan keys", tbl, { notes = {
     "The agent waits for you: it can't start changing code (start_fix / start_story) until you approve the plan.",
   } }), { title = "Keys", min_width = 60 })
+end
+
+local function alive(v)
+  return v and v.tab and vim.api.nvim_tabpage_is_valid(v.tab) and valid_win(v.list_win) and valid_win(v.plan_win)
+end
+
+local function use_buf(buf) if by_buf[buf] then view = by_buf[buf] end end
+
+-- Runs fn with `view` = v, then puts back the view that was current.
+local function with_view(v, fn)
+  local keep = view
+  view = v
+  local ok, err = pcall(fn)
+  view = keep
+  if not ok then error(err, 0) end
+end
+
+local function view_of_tab(tab)
+  for _, v in pairs(views) do if v.tab == tab and alive(v) then return v end end
+  return nil
+end
+
+-- KEYS().bind for the plan surface, on a buffer of one plan's view: the
+-- key works on that view.
+local function bind(buf, action, fn, opts)
+  KEYS().bind(buf, "plan", action, function(...)
+    use_buf(buf)
+    return fn(...)
+  end, opts)
 end
 
 local function close()
@@ -821,11 +856,14 @@ end
 -- Saves the plan and redraws the viewer if it shows it.
 local function changed(rec)
   M.save(rec)
-  if view and view.key == rec.key then
-    view.rec = rec
-    render_list()
-    set_winbars()
-    draw_threads()
+  local v = views[rec.key]
+  if alive(v) then
+    with_view(v, function()
+      view.rec = rec
+      render_list()
+      set_winbars()
+      draw_threads()
+    end)
   end
 end
 
@@ -850,9 +888,11 @@ local function approve()
   local has_cmd = M.test_command(current_lines(rec)) ~= nil
   local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
     or "Approve, and let it push without asking"
+  local v = view
   require("azure-cli.prompt").select({ prompt = "Approve the plan for " .. M.target_label(rec.target),
     items = { plain, with_push } }, function(choice)
     if not choice then return end
+    view = v
     rec.status = "approved"
     rec.approved_rev = #rec.revisions
     rec.approved_at = os.time()
@@ -879,6 +919,7 @@ local function revise()
     title = "What should change in the plan?" .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or ""),
     initial = #queued > 0 and "See my comments on its lines." or "", anchor = "center",
     on_submit = function(text)
+      view = views[rec.key] or view
       if send(M.revise_message(rec, text, queued), "Changes to the plan: " .. text
           .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or "")) then
         rec.status = "changes_requested"
@@ -946,9 +987,11 @@ vim.api.nvim_create_autocmd("BufWritePost", {
     local was = rec.status
     add_revision(rec, text, "you")
     M.save(rec)
-    if view and view.key == key then
-      view.rec = rec
-      render()
+    if alive(views[key]) then
+      with_view(views[key], function()
+        view.rec = rec
+        render()
+      end)
     end
     notify("Plan saved as your version" .. ((was == "approved") and " - approve it again (gA) for the agent to use it." or "."))
   end,
@@ -1013,18 +1056,17 @@ goto_code = function()
 end
 
 local function bind_common(buf)
-  local K = KEYS()
-  K.bind(buf, "plan", "approve", approve, { desc = "approve the plan" })
-  K.bind(buf, "plan", "revise", revise, { desc = "ask for changes to the plan" })
-  K.bind(buf, "plan", "open_file", open_file, { desc = "edit the plan by hand" })
-  K.bind(buf, "plan", "refresh", function() M.refresh() end, { desc = "reload the plan" })
-  K.bind(buf, "plan", "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
-  K.bind(buf, "plan", "chat", function() require("azure-cli.chat").capture_selection() end,
+  bind(buf, "approve", approve, { desc = "approve the plan" })
+  bind(buf, "revise", revise, { desc = "ask for changes to the plan" })
+  bind(buf, "open_file", open_file, { desc = "edit the plan by hand" })
+  bind(buf, "refresh", function() M.refresh() end, { desc = "reload the plan" })
+  bind(buf, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
+  bind(buf, "chat", function() require("azure-cli.chat").capture_selection() end,
     { desc = "send the selected lines to the chat", mode = "x" })
-  K.bind(buf, "plan", "resize_less", function() resize(-5) end, { desc = "shrink the section list" })
-  K.bind(buf, "plan", "resize_more", function() resize(5) end, { desc = "grow the section list" })
-  K.bind(buf, "plan", "quit", close, { desc = "close" })
-  K.bind(buf, "plan", "run_log", function() M.open_run_log(view.key) end, { desc = "everything that happened, as one page" })
+  bind(buf, "resize_less", function() resize(-5) end, { desc = "shrink the section list" })
+  bind(buf, "resize_more", function() resize(5) end, { desc = "grow the section list" })
+  bind(buf, "quit", close, { desc = "close" })
+  bind(buf, "run_log", function() M.open_run_log(view.key) end, { desc = "everything that happened, as one page" })
 end
 
 local function goto_section(s, focus)
@@ -1035,16 +1077,16 @@ local function goto_section(s, focus)
 end
 
 local function setup_list(buf)
-  local K = KEYS()
-  K.bind(buf, "plan", "open", function()
+  bind(buf, "open", function()
     goto_section(view.rows[vim.api.nvim_win_get_cursor(0)[1]], true)
   end, { desc = "go to the section" })
-  K.bind(buf, "plan", "help", function() help(LIST_HELP) end, { desc = "keys" })
+  bind(buf, "help", function() help(LIST_HELP) end, { desc = "keys" })
   bind_common(buf)
   -- Moving through the sections scrolls the plan to each one.
   vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = buf,
     callback = function()
+      use_buf(buf)
       local s = view and view.rows and view.rows[vim.api.nvim_win_get_cursor(0)[1]]
       if s then goto_section(s, false) end
     end,
@@ -1052,48 +1094,47 @@ local function setup_list(buf)
 end
 
 local function setup_plan(buf)
-  local K = KEYS()
-  K.bind(buf, "plan", "ask", function()
+  bind(buf, "ask", function()
     local r = vim.api.nvim_win_get_cursor(0)[1]
     ask(r, r)
   end, { desc = "ask the agent about this line" })
-  K.bind(buf, "plan", "ask", function()
+  bind(buf, "ask", function()
     local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
     if a > b then a, b = b, a end
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
     ask(a, b)
   end, { desc = "ask the agent about these lines", mode = "x" })
-  K.bind(buf, "plan", "expand_thread", function()
+  bind(buf, "expand_thread", function()
     local th = thread_at_cursor()
     if not th then return notify("No question on this line (" .. (key_of("plan", "ask") or "ga") .. " asks one).") end
     THREADS().toggle(th)
     draw_threads()
   end, { desc = "show all of the answer / fold it" })
-  K.bind(buf, "plan", "view_thread", function() THREADS().show(thread_at_cursor()) end, { desc = "the question and answer" })
-  K.bind(buf, "plan", "request", function()
+  bind(buf, "view_thread", function() THREADS().show(thread_at_cursor()) end, { desc = "the question and answer" })
+  bind(buf, "request", function()
     local r = vim.api.nvim_win_get_cursor(0)[1]
     request(r, r)
   end, { desc = "queue a change on this line" })
-  K.bind(buf, "plan", "request", function()
+  bind(buf, "request", function()
     local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
     if a > b then a, b = b, a end
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
     request(a, b)
   end, { desc = "queue a change on these lines", mode = "x" })
-  K.bind(buf, "plan", "delete_thread", delete_here, { desc = "forget the question / change under this line" })
-  K.bind(buf, "plan", "since", function()
+  bind(buf, "delete_thread", delete_here, { desc = "forget the question / change under this line" })
+  bind(buf, "since", function()
     view.since_off = not view.since_off
     render()
     notify(view.since_off and "Not marking what changed." or (view.changes and "Marking what changed since revision "
       .. (#view.rec.revisions - 1) .. ".") or "This is the first revision.")
   end, { desc = "mark what this revision changed (toggle)" })
-  K.bind(buf, "plan", "next_thread", function() jump_thread(1) end, { desc = "next question" })
-  K.bind(buf, "plan", "prev_thread", function() jump_thread(-1) end, { desc = "previous question" })
-  K.bind(buf, "plan", "back", function()
+  bind(buf, "next_thread", function() jump_thread(1) end, { desc = "next question" })
+  bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "previous question" })
+  bind(buf, "back", function()
     if valid_win(view.list_win) then vim.api.nvim_set_current_win(view.list_win) end
   end, { desc = "back to the section list" })
-  K.bind(buf, "plan", "goto_code", function() goto_code() end, { desc = "the code this line became" })
-  K.bind(buf, "plan", "help", function() help(PLAN_HELP) end, { desc = "keys" })
+  bind(buf, "goto_code", function() goto_code() end, { desc = "the code this line became" })
+  bind(buf, "help", function() help(PLAN_HELP) end, { desc = "keys" })
   bind_common(buf)
 end
 
@@ -1103,21 +1144,23 @@ function M.open(key, line)
   local rec = M.load(key)
   if not rec then return nil, "no plan " .. tostring(key) end
   UI().theme()
-  if view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab) and valid_win(view.list_win)
-      and valid_win(view.plan_win) then
-    view.key, view.rec = key, rec
+  if alive(views[key]) then
+    view = views[key]
+    view.rec = rec
     vim.api.nvim_set_current_tabpage(view.tab)
   else
     local width = view and view.width or 32
     view = { key = key, rec = rec, width = width, sections = {}, rows = {} }
+    views[key] = view
     vim.cmd("tabnew")
     view.tab = vim.api.nvim_get_current_tabpage()
     view.list_win = vim.api.nvim_get_current_win()
     view.list_buf = vim.api.nvim_get_current_buf()
+    by_buf[view.list_buf] = view
     vim.bo[view.list_buf].buftype = "nofile"
     vim.bo[view.list_buf].bufhidden = "wipe"
     vim.bo[view.list_buf].filetype = "azurecli-plan"
-    pcall(vim.api.nvim_buf_set_name, view.list_buf, "azure-cli://plan")
+    pcall(vim.api.nvim_buf_set_name, view.list_buf, "azure-cli://plan/" .. key .. "/sections")
     setup_list(view.list_buf)
     vim.cmd("belowright vsplit")
     view.plan_win = vim.api.nvim_get_current_win()
@@ -1127,6 +1170,7 @@ function M.open(key, line)
     vim.bo[view.plan_buf].filetype = "markdown"
     vim.b[view.plan_buf].azure_cli_view = "azurecli-plan"
     vim.b[view.plan_buf].azure_cli_title = "Plan"
+    by_buf[view.plan_buf] = view
     pcall(vim.api.nvim_buf_set_name, view.plan_buf, "azure-cli://plan/" .. key)
     vim.api.nvim_win_set_buf(view.plan_win, view.plan_buf)
     pcall(vim.treesitter.start, view.plan_buf, "markdown")
@@ -1140,10 +1184,20 @@ function M.open(key, line)
     UI().wo(view.plan_win, "concealcursor", "")
     UI().wo(view.plan_win, "signcolumn", "yes:2")
     pcall(vim.api.nvim_win_set_width, view.list_win, width)
+    local v = view
     vim.api.nvim_create_autocmd("WinResized", {
       buffer = view.list_buf,
-      callback = function() vim.schedule(function() if view then render_list() draw_threads() end end) end,
+      callback = function()
+        vim.schedule(function() if alive(v) then with_view(v, function() render_list() draw_threads() end) end end)
+      end,
     })
+    -- The tab went: forget its view.
+    for _, b in ipairs({ view.list_buf, view.plan_buf }) do
+      vim.api.nvim_create_autocmd("BufWipeout", { buffer = b, once = true, callback = function()
+        by_buf[b] = nil
+        if views[key] == v then views[key] = nil end
+      end })
+    end
   end
   vim.t[view.tab].azure_cli_title = "Plan " .. M.target_label(rec.target)
   vim.t[view.tab].azure_cli_plan_key = key
@@ -1171,12 +1225,27 @@ function M.refresh()
   render()
 end
 
--- The open viewer (tests): { tab, list_win, plan_win, list_buf, plan_buf, key, rec }.
-function M.current() return view end
+-- The plan view in the current tab, else the last one used (tests): {
+-- tab, list_win, plan_win, list_buf, plan_buf, key, rec }.
+function M.current() return view_of_tab(vim.api.nvim_get_current_tabpage()) or view end
+
+-- Every open plan's view, by key.
+function M.open_views()
+  local out = {}
+  for k, v in pairs(views) do if alive(v) then out[k] = v end end
+  return out
+end
 
 -- The chat's description of the plan window.
 function M.describe(win)
-  if not view then return nil end
+  local v = by_buf[vim.api.nvim_win_get_buf(win)] or view_of_tab(vim.api.nvim_win_get_tabpage(win))
+  if not v then return nil end
+  local snap
+  with_view(v, function() snap = M.describe_view(win) end)
+  return snap
+end
+
+function M.describe_view(win)
   local rec = view.rec
   local snap = { screen = "plan", plan = { key = rec.key, title = rec.title, status = rec.status,
     revision = #rec.revisions, file = M.path(rec.key) } }
@@ -1357,7 +1426,7 @@ function M.tools(T)
         -- you into its plan; it says it's ready instead.
         if env and env.background and env.background() then
           notify("The plan for " .. M.target_label(target) .. " is ready for you - the Agents screen opens it.")
-          if view and view.key == key then render() end
+          if alive(views[key]) then with_view(views[key], function() view.rec = rec; render() end) end
         else
           M.open(key)
         end

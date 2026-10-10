@@ -1471,10 +1471,49 @@ do
   if #STATE.chat.entries ~= main_turns then return fail("the main conversation got the agents' turns") end
   if vim.api.nvim_get_current_tabpage() ~= board_tab then return fail("a background agent pulled the focus into its plan") end
   if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
-  -- Opening a plan shows its own agent's conversation in the panel.
+  -- Two plans open at once, a tab each; each tab's keys, description and
+  -- chat are its own plan's.
   PLAN.open("wi-3001")
+  local t1 = vim.api.nvim_get_current_tabpage()
   if STATE.chat.active ~= "wi-3001" then return fail("the plan's tab doesn't show its own conversation") end
-  vim.cmd("tabclose")
+  PLAN.open("wi-3002")
+  local t2 = vim.api.nvim_get_current_tabpage()
+  local open = PLAN.open_views()
+  if t1 == t2 or not (open["wi-3001"] and open["wi-3002"]) then return fail("the second plan replaced the first one's tab") end
+  if STATE.chat.active ~= "wi-3002" then return fail("the second plan's tab doesn't show its own conversation") end
+  local d1 = require("azure-cli.chat.view").snapshot(open["wi-3001"].plan_win)
+  if not (d1.plan and d1.plan.key == "wi-3001") then return fail("the first plan's window describes another plan: " .. vim.inspect(d1.plan)) end
+  vim.api.nvim_set_current_tabpage(t1)
+  vim.api.nvim_set_current_win(open["wi-3001"].plan_win)
+  CHAT.sync_active()
+  if PLAN.current().key ~= "wi-3001" or STATE.chat.active ~= "wi-3001" then
+    return fail("back in the first plan's tab, it isn't the current plan / conversation")
+  end
+  feed("gi")  -- a key acts on this tab's plan
+  if not open["wi-3001"].since_off or open["wi-3002"].since_off then return fail("gi in one plan's tab toggled another's") end
+  feed("gi")
+  -- Two changes open at once, too.
+  local TF = require("azure-cli.chat.tools_fix")
+  local opened = 0
+  TF.open_at({ work_item_id = 3002 }, "src/auth.py", nil, function(err) if not err then opened = opened + 1 end end)
+  TF.open_at({ pr_id = 101 }, "src/auth.py", nil, function(err) if not err then opened = opened + 1 end end)
+  vim.wait(10000, function() return opened == 2 end, 50)
+  local tabs = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(b)
+    if name:find("azure-cli://changes/", 1, true) and #vim.fn.win_findbuf(b) > 0 then
+      tabs[vim.api.nvim_win_get_tabpage(vim.fn.win_findbuf(b)[1])] = require("azure-cli.chat.view").snapshot(vim.fn.win_findbuf(b)[1]).worktree
+    end
+  end
+  local worktrees = vim.tbl_values(tabs)
+  table.sort(worktrees)
+  if #worktrees ~= 2 or worktrees[1] == worktrees[2] then
+    return fail("two changes didn't get a tab each: " .. vim.inspect(worktrees))
+  end
+  for tab in pairs(tabs) do pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(tab)) end
+  for _, tab in ipairs({ t1, t2 }) do
+    if vim.api.nvim_tabpage_is_valid(tab) then pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(tab)) end
+  end
   vim.api.nvim_set_current_tabpage(board_tab)
   CHAT.sync_active()
   if STATE.chat.active ~= nil then return fail("back on the board, the panel should show the main conversation") end

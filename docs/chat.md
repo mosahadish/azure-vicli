@@ -487,6 +487,10 @@ the rest wait and start as the others finish. An agent working in the
 background doesn't pull you into its plan when it's done: the status
 strip counts the plans waiting for you.
 
+Every plan opens in a tab of its own, and so does every change - opening
+another doesn't replace the one you were reading, and `r`, `gA` or `ga`
+in a tab always act on that tab's plan or change.
+
 Each plan's tabs (its plan window, its change viewer) show that plan's
 agent in the chat panel - its winbar names it (`Chat · Claude · #3001`) -
 so asking why, approving or asking for changes there goes to the agent
