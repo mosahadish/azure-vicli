@@ -153,11 +153,13 @@ local function open_plan(r)
 end
 
 local HELP = {
-  "Agents",
+  "This agent",
   { "open", "the row's plan" }, { "changes", "its change, file by file" }, { "run_log", "its run log" },
   { "chat", "its plan's tab, with that agent's conversation in the chat" },
+  "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
+  "Window",
   { "refresh", "redraw" }, { "quit", "close" }, { "help", "this help" },
 }
 

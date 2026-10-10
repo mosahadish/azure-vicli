@@ -125,6 +125,25 @@ function M.bind(buf, surface, action, fn, opts)
   end
 end
 
+-- The actions that change something on Azure DevOps, per surface: `?`
+-- marks them (M.help_lines), and tests/test-keys.lua keeps a key from being
+-- one of these on one screen and something harmless on another. A
+-- comment in batch mode only queues - it's still marked, gS posts it.
+M.WRITES = {
+  dashboard = { complete = true, link_workitem = true, unlink_workitem = true, requeue_build = true, vote = true },
+  list = { batch_submit = true, comment_file = true, pr_comment = true, complete = true, link_workitem = true,
+    unlink_workitem = true, vote = true },
+  diff = { comment = true, comment_range = true, comment_file = true, reply = true, status = true, vote = true,
+    complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
+  overview = { comment = true, reply = true, status = true, edit_comment = true, delete_comment = true, vote = true,
+    complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
+  workitems = { assign = true, edit_title = true, link_pr = true, unlink_pr = true, move_sprint = true, new = true,
+    priority = true, state = true },
+  workitem_view = { assign = true, comment = true, edit_title = true, link_pr = true, unlink_pr = true,
+    move_sprint = true, priority = true, state = true },
+}
+local WRITE_MARK = "\u{2191}"
+
 -- One `?`-popup line for surface/action ("  key[, key2]    desc"), or nil
 -- when the action is unbound (so a popup builder can just skip a nil line).
 -- One popup line from an already-resolved key string (a module's
@@ -154,9 +173,13 @@ end
 -- motions this tool doesn't bind); `opts.extra` ({ key, desc } entries
 -- from feature modules) goes under `opts.extra_title`; `opts.notes`
 -- (strings) close the popup. Unbound actions are skipped, and a group
--- with nothing left in it is skipped too.
+-- with nothing left in it is skipped too. An action in M.WRITES[surface]
+-- (or `opts.writes`, for a screen sharing a surface whose same actions stay
+-- local - the agent's change viewer) gets a "↑" before its key.
 function M.help_lines(surface, title, table_, opts)
   opts = opts or {}
+  local writes = opts.writes or M.WRITES[surface] or {}
+  local marked = false
   local lines = { title }
   if opts.now and #opts.now > 0 then
     lines[#lines + 1] = "  now: " .. table.concat(opts.now, "  ")
@@ -174,6 +197,10 @@ function M.help_lines(surface, title, table_, opts)
       group_open = false
     else
       local line = M.line(surface, a[1], a[2])
+      if line and writes[a[1]] then
+        line = WRITE_MARK .. " " .. line:sub(3)
+        marked = true
+      end
       if line then
         if pending_group and not group_open then open_group(pending_group) end
         if first and opts.fixed then
@@ -187,6 +214,10 @@ function M.help_lines(surface, title, table_, opts)
   if opts.extra and #opts.extra > 0 then
     open_group(opts.extra_title or "Features")
     for _, e in ipairs(opts.extra) do lines[#lines + 1] = M.line_raw(e.key, e.desc) end
+  end
+  if marked then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = WRITE_MARK .. " changes Azure DevOps"
   end
   local pal = M.first(surface, "palette")
   if pal then

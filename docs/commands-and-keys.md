@@ -28,7 +28,10 @@ directly, in the current window, the same way it always has (see
 
 ## Keys
 
-Two keys work on every screen: `?` lists that screen's keys, and `g.` (the
+Two keys work on every screen: `?` lists that screen's keys, grouped by what
+they're for, with `↑` before the ones that change something on Azure DevOps
+(a vote, a comment, a link, a work item's state - a comment in batch mode
+only once `gS` sends it); and `g.` (the
 `palette` action) lists every action bound there by what it does, through
 `vim.ui.select` - so with Telescope's, fzf-lua's or another picker standing
 in for it, you can type "approve" or "unlink" instead of remembering the key.

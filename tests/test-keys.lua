@@ -157,5 +157,18 @@ do
 end
 config.setup({})
 
+-- 10. `?` marks what changes Azure DevOps, with a legend; a screen whose
+-- same actions stay local (opts.writes = {}) has neither.
+do
+  local tbl = { "Act", { "vote", "vote" }, { "refresh", "refresh" } }
+  local lines = keys.help_lines("dashboard", "T", tbl)
+  local text = table.concat(lines, "\n")
+  check("help_lines: a write is marked", text:find("\n\u{2191} gv          vote", 1, true) ~= nil, text)
+  check("help_lines: the rest isn't", text:find("\n  r           refresh", 1, true) ~= nil, text)
+  check("help_lines: legend when something is marked", text:find("\u{2191} changes Azure DevOps", 1, true) ~= nil)
+  text = table.concat(keys.help_lines("diff", "T", { "Ask", { "comment", "queue" } }, { writes = {} }), "\n")
+  check("help_lines: opts.writes = {} marks nothing", not text:find("\u{2191}", 1, true), text)
+end
+
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

@@ -124,9 +124,11 @@ local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
 local LIST_HELP = {
   "Files",
   { "open", "show the file's change" },
-  { "refresh", "refresh (the agent may have changed more)" },
+  "The change",
   { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
+  { "refresh", "refresh (the agent may have changed more)" },
   { "chat", "go to the chat" },
+  "Window",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
 }
@@ -134,23 +136,23 @@ local DIFF_HELP = {
   "Navigate",
   { "next_hunk", "next change (continues into the next file)" },
   { "prev_hunk", "previous change (continues into the previous file)" },
+  { "next_comment", "next question" }, { "prev_comment", "previous question" },
+  { "goto_plan", "the plan line this code carries out (or the plan's entry for the file)" },
   { "back", "back to the file list" },
   { "open_file", "edit the file in the worktree, at this line" },
   "Ask the agent",
-  { "comment", "queue a change on this line (in visual mode: these lines) for the agent" },
-  { "batch_submit", "send the queued changes to the agent, in one message" },
-  { "delete_thread", "forget the question or queued change under this line" },
-  "Hunks",
-  { "accept_hunk", "accept the change under the cursor - a \u{2713} beside it (again: take it back)" },
-  { "reject_hunk", "take the change under the cursor out of the worktree (asks)" },
-  { "goto_plan", "the plan line this code carries out (or the plan's entry for the file)" },
   { "ask", "ask about this line (\"why did you choose this here?\") - the answer shows under it" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_comments", "the question and answer in a popup" },
-  { "next_comment", "next question" }, { "prev_comment", "previous question" },
-  { "refresh", "refresh (the agent may have changed more)" },
-  { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
+  { "comment", "queue a change on this line (in visual mode: these lines) for the agent" },
+  { "batch_submit", "send the queued changes to the agent, in one message" },
+  { "delete_thread", "forget the question or queued change under this line" },
   { "chat", "go to the chat (in visual mode: send the selected lines)" },
+  "The change",
+  { "accept_hunk", "accept the change under the cursor - a \u{2713} beside it (again: take it back)" },
+  { "reject_hunk", "take the change under the cursor out of the worktree (asks)" },
+  { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
+  { "refresh", "refresh (the agent may have changed more)" },
   "Window",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
@@ -158,7 +160,8 @@ local DIFF_HELP = {
 
 local function help(surface, tbl)
   UI().open_float(KEYS().help_lines(surface, "Proposed change keys", tbl,
-    { fixed = { KEYS().line_raw("j / k", "move") } }), { title = "Keys" })
+    -- The reviewer's surfaces, but nothing here touches Azure DevOps.
+    { fixed = { KEYS().line_raw("j / k", "move") }, writes = {} }), { title = "Keys" })
 end
 
 local function alive(v)
