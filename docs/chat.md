@@ -437,6 +437,15 @@ then every question with its answer, the last test output, and the plan
 as it is now. It's a markdown file next to the plan (`<key>.log.md`),
 written fresh each time - handy to attach to the PR, or to read later.
 
+**The pull request's description.** When the agent opens the pull
+request (`create_pull_request`) without writing a description, it gets
+the approved plan's - its Goal, Approach, Risks and Test plan, and a line
+saying which plan revision it came from - so reviewers see the reasoning.
+With a description of its own and `from_plan`, the plan's sections follow
+it. The plan is found through the work items the PR links, or the story
+branch it's opened from; the question before it opens shows the
+description.
+
 Pushing the change (`commit_and_push_fix`) marks its plan done, so the next
 change on that PR or work item needs a plan of its own. A plan the agent
 revises needs approving again.
@@ -476,7 +485,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
 | `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description | **yes** (the description is shown) |
-| `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items); merges one | **yes** |
+| `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items; its description from the approved plan unless it writes one); merges one | **yes** |
 | `vote` | Votes on a PR | **yes** |
 | `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
 

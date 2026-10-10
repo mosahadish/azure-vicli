@@ -127,14 +127,22 @@ return function(T)
     {
       name = "create_pull_request",
       description = "Opens a pull request from one branch into another in a repository, optionally linking work "
-        .. "items. Asks first.",
+        .. "items. Leave description out to use your approved plan's (its Goal, Approach, Risks and Test plan), or "
+        .. "give both description and from_plan = true for yours followed by the plan's. Asks first.",
       schema = { type = "object", properties = { repo = { type = "string" }, source = { type = "string" },
         target = { type = "string" }, title = { type = "string" }, description = { type = "string" },
+        from_plan = { type = "boolean", description = "add the plan's sections after description" },
         work_item_ids = { type = "array", items = { type = "integer" } }, draft = { type = "boolean" } },
         required = { "repo", "source", "target", "title" } },
       risk = "ask",
       confirm = function(a) return "open a pull request \"" .. tostring(a.title) .. "\" from " .. tostring(a.source) .. " into " .. tostring(a.target) .. " in " .. tostring(a.repo) end,
+      details = function(a, cb)
+        local d = require("azure-cli.chat.plan").description_for(a.description, a.from_plan, a.work_item_ids, a.source)
+        cb(d ~= "" and vim.list_extend({ "Description:", "" }, vim.split(d, "\n", { plain = true })) or nil)
+      end,
       run = function(args, _, done)
+        args.description = require("azure-cli.chat.plan").description_for(args.description, args.from_plan,
+          args.work_item_ids, args.source)
         local org, project
         for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do
           if p.repo == args.repo then org, project = p.org, p.project break end

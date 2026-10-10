@@ -364,6 +364,78 @@ function M.revise_message(rec, feedback, requests)
   return table.concat(parts, "\n")
 end
 
+-- The text under heading `title` (any level 2 heading containing it,
+-- case ignored), up to the next heading at that level or above. Pure.
+function M.section_text(lines, title)
+  local out, inside, fenced = {}, false, false
+  for _, l in ipairs(lines) do
+    local fence = l:match("^%s*```")
+    local hashes, t = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced and #hashes <= 2 then
+      if inside then break end
+      inside = #hashes == 2 and t:lower():find(title:lower(), 1, true) ~= nil
+    elseif inside then
+      out[#out + 1] = l
+    end
+    if fence then fenced = not fenced end
+  end
+  while #out > 0 and vim.trim(out[1]) == "" do table.remove(out, 1) end
+  while #out > 0 and vim.trim(out[#out]) == "" do table.remove(out) end
+  return out
+end
+
+-- A pull request's description from the plan behind it: its Goal,
+-- Approach, Risks and Test plan, and a line saying where it came from.
+-- Pure.
+M.PR_SECTIONS = { "Goal", "Approach", "Risks", "Test plan" }
+function M.pr_description(rec, lines)
+  local out = {}
+  for _, s in ipairs(M.PR_SECTIONS) do
+    local body = M.section_text(lines, s)
+    if #body > 0 then
+      if #out > 0 then out[#out + 1] = "" end
+      out[#out + 1] = "## " .. s
+      vim.list_extend(out, body)
+    end
+  end
+  local q = 0
+  for _, th in ipairs(rec.threads or {}) do if th.kind ~= "request" and th.answer then q = q + 1 end end
+  out[#out + 1] = ""
+  out[#out + 1] = "_From the plan for " .. M.target_label(rec.target) .. " (revision " .. #(rec.revisions or {})
+    .. (q > 0 and (", " .. q .. " question" .. (q == 1 and "" or "s") .. " answered") or "") .. ")._"
+  return table.concat(out, "\n")
+end
+
+-- The approved (or done) plan behind a pull request: the first of
+-- `work_item_ids` with one, else the story whose branch is `source`.
+function M.for_pull_request(work_item_ids, source)
+  local function usable(rec) return rec and (rec.status == "approved" or rec.status == "done") end
+  for _, id in ipairs(work_item_ids or {}) do
+    local rec = M.load("wi-" .. tostring(id))
+    if usable(rec) then return rec end
+  end
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/wi-*.json", false, true)) do
+    local id = vim.fn.fnamemodify(f, ":t:r"):match("^wi%-(%d+)$")
+    local _, branch = require("azure-cli.chat.tools_fix").find_story(id)
+    if branch and branch == source then
+      local rec = M.load("wi-" .. id)
+      if usable(rec) then return rec end
+    end
+  end
+  return nil
+end
+
+-- create_pull_request's description: `given` as it is, the plan's when
+-- there's none, or both with `from_plan`.
+function M.description_for(given, from_plan, work_item_ids, source)
+  given = given and vim.trim(given) or ""
+  if given ~= "" and not from_plan then return given end
+  local rec = M.for_pull_request(work_item_ids, source)
+  if not rec then return given end
+  local planned = M.pr_description(rec, M.lines(rec))
+  return given ~= "" and (given .. "\n\n" .. planned) or planned
+end
+
 -- The run log: everything that happened to a plan and its change, as
 -- markdown (gL in the plan opens it). `o` = { threads = the change
 -- viewer's questions and requests, tests = the last test run, audit = the

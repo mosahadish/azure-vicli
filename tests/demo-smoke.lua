@@ -1347,6 +1347,22 @@ do
   end, 50)
   if not stale then return fail("the tests' result isn't marked as before the last change: " .. vim.wo[v_list_win()].winbar) end
   vim.ui.select = real_select
+  -- create_pull_request without a description gets the plan's; with one
+  -- and from_plan, both; the question shows it.
+  local desc = PLAN.description_for(nil, false, { 3002 }, "feature/3002-planned")
+  if not (desc:find("## Goal\nSay why a login was refused.", 1, true) and desc:find("_From the plan for #3002", 1, true)) then
+    return fail("the PR description isn't the plan's: " .. desc)
+  end
+  if not PLAN.description_for("Mine.", true, nil, "feature/3002-planned"):find("^Mine%.\n\n## Goal") then
+    return fail("from_plan didn't add the plan after the description (found by its branch)")
+  end
+  if PLAN.description_for("Mine.", false, { 3002 }, "x") ~= "Mine." then return fail("a given description was changed") end
+  local shown
+  require("azure-cli.chat.tools").by_name.create_pull_request.details({ work_item_ids = { 3002 } }, function(l) shown = l end)
+  if not (shown and table.concat(shown, "\n"):find("Description:\n\n## Goal", 1, true)) then
+    return fail("create_pull_request's question doesn't show the description")
+  end
+
   -- gL in the plan: the run log, with everything that happened.
   vim.api.nvim_set_current_tabpage(v.tab)
   vim.api.nvim_set_current_win(v.plan_win)

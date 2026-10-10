@@ -136,6 +136,21 @@ do
     and log:find("`make test` - exit 0, t50", 1, true) and log:find("\n## T\n### Goal\ng", 1, true))
 end
 
+-- --- pull request description ------------------------------------------------------------
+do
+  local lines = { "# T", "", "## Goal", "", "Do x.", "", "## Approach", "Like this.", "### Detail", "more", "```sh",
+    "## not a heading", "```", "", "## Files", "- a.py", "## Test plan", "Run it." }
+  check("section_text: up to the next heading, sub-headings and fences kept",
+    table.concat(PLAN.section_text(lines, "approach"), "|") == "Like this.|### Detail|more|```sh|## not a heading|```",
+    table.concat(PLAN.section_text(lines, "approach"), "|"))
+  local d = PLAN.pr_description({ target = { work_item_id = 4 }, revisions = { {}, {} },
+    threads = { { answer = "a" }, { kind = "request", question = "q" } } }, lines)
+  check("pr_description: Goal, Approach, Test plan (no Files), and where it came from",
+    d:find("^## Goal\nDo x.\n\n## Approach\nLike this.") and not d:find("## Files", 1, true)
+      and d:sub(-#"## Test plan\nRun it.\n\n_From the plan for #4 (revision 2, 1 question answered)._")
+        == "## Test plan\nRun it.\n\n_From the plan for #4 (revision 2, 1 question answered)._", d)
+end
+
 -- --- messages -------------------------------------------------------------------------
 do
   local rec = { target = { work_item_id = 3 }, revisions = { { by = "agent", markdown = "a" } } }
