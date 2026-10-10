@@ -195,9 +195,7 @@ do
     ["workitem_view.comment"] = "opens the editor",
     ["overview.delete_comment"] = "confirms",
     ["plan.approve"] = "asks how (and whether to let it push)", ["agents.approve"] = "asks how",
-    -- Not asking, but harmless to press by mistake: it only runs the PR's
-    -- build again.
-    ["dashboard.requeue_build"] = "only re-runs the build",
+    ["dashboard.requeue_build"] = "confirms (UI.confirm's popup)",
   }
   local function find_clashes()
     local by_key = {}

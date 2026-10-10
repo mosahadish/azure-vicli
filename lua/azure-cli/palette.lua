@@ -93,6 +93,8 @@ M.GROUPS = {
   { "AzureCliThreadRequest", { fg = "#fab387" } },
   { "AzureCliPlanChanged", { fg = "#94e2d5" } },
   { "AzureCliPlanRemoved", { fg = "#6c7086", strikethrough = true } },
+  { "AzureCliButton", { fg = "#cdd6f4", bg = "#313244" } },
+  { "AzureCliButtonActive", { fg = "#1e1e2e", bg = "#89b4fa", bold = true } },
 
   -- Reviewer diff-pane decorations (lua/azure-cli/review/init.lua).
   { "AzureCliDiffAddBg", { bg = "#20302a" } },

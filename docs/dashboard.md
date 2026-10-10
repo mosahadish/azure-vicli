@@ -53,7 +53,7 @@ solves the widths; see its own header comment for the exact rules).
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
-| `gr` | Re-queue build validation |
+| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't) |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
 | `zM` | Collapse every section |

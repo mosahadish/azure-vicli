@@ -1794,10 +1794,8 @@ local function complete_pr()
   end)
 end
 
--- Re-queue the build validation (e.g. an expired build) for the PR under the cursor.
-local function requeue_pr()
-  local pr = current_pr()
-  if not pr then return end
+-- Re-queues the build validation of `pr` (once confirmed).
+local function requeue_now(pr)
   notify("Re-queuing build for PR #" .. pr.id .. " \u{2026}")
   local out = {}
   local requeue_args = CONFIG.provider_argv()
@@ -1818,6 +1816,21 @@ local function requeue_pr()
       end
     end,
   })
+end
+
+-- Re-queue the build validation (e.g. an expired build) for the PR under the cursor.
+local function requeue_pr()
+  local pr = current_pr()
+  if not pr then return end
+  local body = { "PR #" .. pr.id .. "  " .. (pr.title or "") }
+  if pr.buildStatus and pr.buildStatus ~= "" and pr.buildStatus ~= "none" then
+    body[#body + 1] = "Build: " .. pr.buildStatus
+  end
+  body[#body + 1] = ""
+  body[#body + 1] = "Runs its build validation again on Azure DevOps."
+  UI.confirm({ title = "Re-queue the build?", lines = body, yes = "Re-queue", no = "Cancel" }, function(yes)
+    if yes then requeue_now(pr) end
+  end)
 end
 
 -- Set up the dashboard buffer, window, and keymaps.

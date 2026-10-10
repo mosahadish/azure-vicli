@@ -461,6 +461,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-bridge.lua (headless nvim)" "$out"
   fi
 
+  # The yes/no popup (UI.confirm): its layout and every way out.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-confirm.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all confirm tests passed"* ]]; then
+    pass "test-confirm.lua (headless nvim)"
+  else
+    fail "test-confirm.lua (headless nvim)" "$out"
+  fi
+
   # The action palette (g.): a buffer's actions, run in its window.
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-keys-palette.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all palette tests passed"* ]]; then

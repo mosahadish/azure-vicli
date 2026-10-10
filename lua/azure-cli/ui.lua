@@ -163,6 +163,7 @@ M.THEME = {
   AzureCliThreadBar = "Special", AzureCliThreadQuestion = "Function", AzureCliThreadAnswer = "Normal",
   AzureCliThreadMeta = "Comment", AzureCliThreadRequest = "DiagnosticWarn",
   AzureCliPlanChanged = "DiagnosticHint", AzureCliPlanRemoved = "Comment",
+  AzureCliButton = "Pmenu", AzureCliButtonActive = "PmenuSel",
 }
 
 local themed = false
@@ -644,6 +645,82 @@ function M.layout(columns, available_width)
   end
 
   return { widths = widths, dropped = dropped, narrow = narrow }
+end
+
+-- The yes/no popup's lines and highlights: the body, a blank line, the two
+-- buttons (the focused one AzureCliButtonActive), and the keys, muted.
+-- Returns lines, hls ({ row, from, to, group }), width. Pure.
+function M.confirm_lines(body, yes, no, yes_focused)
+  local lines, hls = {}, {}
+  for _, l in ipairs(body or {}) do lines[#lines + 1] = " " .. l end
+  lines[#lines + 1] = ""
+  local y, n = "  " .. yes .. "  ", "  " .. no .. "  "
+  lines[#lines + 1] = " " .. y .. "   " .. n
+  local row = #lines - 1
+  hls[#hls + 1] = { row, 1, 1 + #y, yes_focused and "AzureCliButtonActive" or "AzureCliButton" }
+  hls[#hls + 1] = { row, 1 + #y + 3, 1 + #y + 3 + #n, yes_focused and "AzureCliButton" or "AzureCliButtonActive" }
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = " y " .. yes:lower() .. " \u{00B7} n / Esc " .. no:lower() .. " \u{00B7} Tab switches"
+  hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
+  local width = 0
+  for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l) + 1) end
+  return lines, hls, width
+end
+
+-- A yes/no question as a popup in the middle of the screen: opts.title,
+-- opts.lines (what it's about), two buttons (opts.yes / opts.no, default
+-- "Yes" / "Cancel"). <Tab> / h / l / the arrows move between them, <CR>
+-- presses the focused one (yes, unless opts.default = "no"), y and n press
+-- one straight away; q, <Esc> or leaving the popup is no. cb(true) only for
+-- yes, and once.
+function M.confirm(opts, cb)
+  opts = opts or {}
+  M.theme()
+  local yes, no = opts.yes or "Yes", opts.no or "Cancel"
+  local focused_yes = opts.default ~= "no"
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  local ns = vim.api.nvim_create_namespace("azure_cli_confirm")
+  local done = false
+  local function draw()
+    local lines, hls = M.confirm_lines(opts.lines, yes, no, focused_yes)
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modifiable = false
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    for _, h in ipairs(hls) do
+      pcall(vim.api.nvim_buf_set_extmark, buf, ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
+    end
+  end
+  draw()
+  local lines, _, width = M.confirm_lines(opts.lines, yes, no, focused_yes)
+  width = math.min(math.max(width, 30), vim.o.columns - 4)
+  local cfg = { relative = "editor", row = math.max(0, math.floor((vim.o.lines - #lines) / 2) - 1),
+    col = math.max(0, math.floor((vim.o.columns - width) / 2)), width = width, height = #lines,
+    style = "minimal", border = M.border(), zindex = 200 }
+  if opts.title then cfg.title, cfg.title_pos = " " .. opts.title .. " ", "center" end
+  local ok, win = pcall(vim.api.nvim_open_win, buf, true, cfg)
+  if not ok then
+    cfg.title, cfg.title_pos = nil, nil
+    win = vim.api.nvim_open_win(buf, true, cfg)
+  end
+  M.float_hl(win)
+  pcall(vim.api.nvim_win_set_cursor, win, { #lines - 2, 0 })
+  local function finish(answer)
+    if done then return end
+    done = true
+    if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+    cb(answer)
+  end
+  local kopts = { buffer = buf, silent = true, nowait = true }
+  local function switch() focused_yes = not focused_yes; draw() end
+  for _, k in ipairs({ "<Tab>", "<S-Tab>", "h", "l", "<Left>", "<Right>" }) do vim.keymap.set("n", k, switch, kopts) end
+  vim.keymap.set("n", "<CR>", function() finish(focused_yes) end, kopts)
+  vim.keymap.set("n", "y", function() finish(true) end, kopts)
+  for _, k in ipairs({ "n", "q", "<Esc>" }) do vim.keymap.set("n", k, function() finish(false) end, kopts) end
+  vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true,
+    callback = function() vim.schedule(function() finish(false) end) end })
+  return win
 end
 
 return M
