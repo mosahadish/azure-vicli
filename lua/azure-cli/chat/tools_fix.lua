@@ -399,6 +399,8 @@ setmetatable(M, { __call = function(_, T)
               pcall(require("azure-cli.chat.plan").mark_done,
                 t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id })
               T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
+                pcall(require("azure-cli.chat.plan").event_for_worktree, wt, "pushed",
+                  "Pushed " .. vim.trim(sha) .. " to " .. t.branch .. ": " .. tostring(args.message))
                 done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")."
                   .. (t.wi and " Offer to open a pull request for it (create_pull_request, linking the work item)." or ""))
               end)

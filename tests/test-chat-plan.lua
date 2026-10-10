@@ -114,6 +114,28 @@ do
   check("push_check: tests passed on this change", PLAN.push_check(rec, true, { code = 0, fingerprint = "f" }, "f") == true)
 end
 
+-- --- run_log ---------------------------------------------------------------------------
+do
+  local rec = { target = { work_item_id = 9 }, title = "T", status = "approved", allow_push = true,
+    revisions = { {}, {} },
+    events = { { at = 30, text = "Approved revision 2" }, { at = 10, text = "Revision 1, by the agent" } },
+    threads = { { at = 20, line = 4, question = "Why?", answer = "Because.", anchor = "x = 1" },
+      { at = 25, kind = "request", line = 5, question = "Rename it" } } }
+  local log = table.concat(PLAN.run_log(rec, {
+    threads = { { at = 40, file = "a.py", line = 3, question = "And here?", answer = "So." } },
+    audit = { { at = 15, tool = "start_story", summary = "{...}" } },
+    tests = { cmd = "make test", code = 0, at = 50, output = { "ok" } },
+    lines = { "# T", "## Goal", "g" },
+  }, function(ts) return "t" .. ts end), "\n")
+  check("run_log: one timeline, in order", log:find("- t10  Revision 1, by the agent\n- t15  Agent: start_story - {...}\n"
+    .. "- t20  You asked about plan line 4: Why?\n- t25  You asked for a change on plan line 5: Rename it\n"
+    .. "- t30  Approved revision 2\n- t40  You asked about a.py:3: And here?", 1, true) ~= nil, log)
+  check("run_log: questions with their answers", log:find("### Plan line 4: Why?\n\n> x = 1\n\nBecause.", 1, true)
+    and log:find("### a.py:3: And here?\n\nSo.", 1, true))
+  check("run_log: status, tests, the plan one level down", log:find("Status: Approved (pushing allowed) · 2 revisions", 1, true)
+    and log:find("`make test` - exit 0, t50", 1, true) and log:find("\n## T\n### Goal\ng", 1, true))
+end
+
 -- --- messages -------------------------------------------------------------------------
 do
   local rec = { target = { work_item_id = 3 }, revisions = { { by = "agent", markdown = "a" } } }

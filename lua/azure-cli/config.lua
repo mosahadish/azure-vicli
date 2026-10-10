@@ -106,7 +106,7 @@ local DEFAULT_KEYS = {
     open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
     refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", quit = "q",
-    goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi",
+    goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gL",
   },
 }
 

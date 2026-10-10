@@ -343,6 +343,7 @@ local function reject_hunk(idx)
       pcall(vim.fn.delete, tmp)
       if not ok then return notify("Couldn't take it out: " .. tostring(err), vim.log.levels.WARN) end
       require("azure-cli.chat").note("You took a change out of the agent's work: " .. label .. ".")
+      pcall(require("azure-cli.chat.plan").event_for_worktree, dir, "took_out", "You took out a change to " .. label)
       M.refresh()
     end)
   end)

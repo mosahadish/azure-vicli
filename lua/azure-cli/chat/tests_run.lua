@@ -83,6 +83,8 @@ function M.run(dir, cmd, fp, cb)
         local r = { cmd = cmd, code = code, timed_out = timed_out or nil, output = keep, at = os.time(),
           seconds = os.time() - started, fingerprint = fp }
         save(dir, r)
+        pcall(require("azure-cli.chat.plan").event_for_worktree, dir, "tests",
+          "Tests (" .. cmd .. "): " .. (M.label(r) or ""):gsub("^%[", ""):gsub("%]$", ""))
         cb(r)
       end)
     end,

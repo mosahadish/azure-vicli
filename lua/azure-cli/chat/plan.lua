@@ -364,6 +364,80 @@ function M.revise_message(rec, feedback, requests)
   return table.concat(parts, "\n")
 end
 
+-- The run log: everything that happened to a plan and its change, as
+-- markdown (gL in the plan opens it). `o` = { threads = the change
+-- viewer's questions and requests, tests = the last test run, audit = the
+-- agent's tool calls for this PR / work item (store.audit's), lines = the
+-- plan as it is now }. Pure (`date` formats a timestamp).
+function M.run_log(rec, o, date)
+  o = o or {}
+  date = date or function(ts) return tostring(ts) end
+  local out = { "# Run log: " .. M.target_label(rec.target) .. " " .. tostring(rec.title or ""), "" }
+  local st = M.status_label(rec)
+  out[#out + 1] = "Status: " .. st:gsub("^%S+ ", "") .. (rec.allow_push and " (pushing allowed)" or "") .. " · "
+    .. #rec.revisions .. " revision" .. (#rec.revisions == 1 and "" or "s")
+  out[#out + 1] = ""
+  -- One timeline: the plan's events, the questions, the agent's tool calls.
+  local tl = {}
+  for _, e in ipairs(rec.events or {}) do tl[#tl + 1] = { at = e.at or 0, text = e.text } end
+  local function q_items(list, where)
+    for _, th in ipairs(list or {}) do
+      if th.kind == "request" then
+        tl[#tl + 1] = { at = th.at or 0, text = "You asked for a change on " .. where(th) .. ": " .. tostring(th.question) }
+      else
+        tl[#tl + 1] = { at = th.at or 0, text = "You asked about " .. where(th) .. ": " .. tostring(th.question) }
+      end
+    end
+  end
+  q_items(rec.threads, function(th) return "plan line " .. tostring(th.line) end)
+  q_items(o.threads, function(th) return tostring(th.file) .. ":" .. tostring(th.line) end)
+  for _, a in ipairs(o.audit or {}) do
+    tl[#tl + 1] = { at = a.at or 0, text = "Agent: " .. tostring(a.tool) .. (a.summary and (" - " .. a.summary) or "") }
+  end
+  table.sort(tl, function(a, b) return a.at < b.at end)
+  out[#out + 1] = "## Timeline"
+  out[#out + 1] = ""
+  for _, x in ipairs(tl) do out[#out + 1] = "- " .. date(x.at) .. "  " .. x.text end
+  if #tl == 0 then out[#out + 1] = "- (nothing yet)" end
+  local function qa(list, where)
+    local any = false
+    for _, th in ipairs(list or {}) do
+      if th.kind ~= "request" then
+        if not any then out[#out + 1] = "" any = true end
+        out[#out + 1] = "### " .. where(th) .. ": " .. tostring(th.question)
+        out[#out + 1] = ""
+        if th.anchor and th.anchor ~= "" then out[#out + 1] = "> " .. th.anchor out[#out + 1] = "" end
+        for l in ((th.answer or ("(" .. tostring(th.status) .. ")")) .. "\n"):gmatch("(.-)\n") do out[#out + 1] = l end
+      end
+    end
+    return any
+  end
+  out[#out + 1] = ""
+  out[#out + 1] = "## Questions"
+  local any = qa(rec.threads, function(th) return "Plan line " .. tostring(th.line) end)
+  any = qa(o.threads, function(th) return tostring(th.file) .. ":" .. tostring(th.line) end) or any
+  if not any then out[#out + 1] = "" out[#out + 1] = "(none)" end
+  if o.tests then
+    out[#out + 1] = ""
+    out[#out + 1] = "## Last test run"
+    out[#out + 1] = ""
+    out[#out + 1] = "`" .. tostring(o.tests.cmd) .. "` - exit " .. tostring(o.tests.code) .. ", " .. date(o.tests.at or 0)
+    out[#out + 1] = ""
+    out[#out + 1] = "```"
+    local tail = o.tests.output or {}
+    for i = math.max(1, #tail - 30), #tail do out[#out + 1] = tail[i] end
+    out[#out + 1] = "```"
+  end
+  out[#out + 1] = ""
+  out[#out + 1] = "## The plan (as it is now)"
+  out[#out + 1] = ""
+  for _, l in ipairs(o.lines or {}) do
+    -- One level down, so its headings sit under this one.
+    out[#out + 1] = l:match("^#") and ("#" .. l) or l
+  end
+  return out
+end
+
 -- ---------------------------------------------------------------------------
 -- Storage.
 
@@ -405,6 +479,9 @@ end
 -- back to waiting for the user.
 local function add_revision(rec, markdown, by)
   rec.revisions[#rec.revisions + 1] = { at = os.time(), by = by, markdown = markdown }
+  rec.events = rec.events or {}
+  table.insert(rec.events, { at = os.time(), kind = "revision", text = "Revision " .. #rec.revisions
+    .. (by == "you" and ", edited by you" or ", by the agent") })
   local lines = vim.split(markdown, "\n", { plain = true })
   if by == "agent" then
     vim.fn.mkdir(M.root(), "p")
@@ -440,6 +517,7 @@ local LIST_HELP = {
   { "revise", "ask for changes (you say what)" },
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
   { "refresh", "reload it" },
+  { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "chat", "go to the chat" },
   { "resize_less", "shrink the section list" }, { "resize_more", "grow the section list" },
   { "quit", "close" }, { "help", "this help" },
@@ -460,6 +538,7 @@ local PLAN_HELP = {
   { "goto_code", "the code this line became (a linked step, or a Files entry's file)" },
   { "back", "back to the section list" },
   { "refresh", "reload it" },
+  { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "chat", "go to the chat (in visual mode: send the selected lines)" },
   { "quit", "close" }, { "help", "this help" },
 }
@@ -701,6 +780,8 @@ local function approve()
     rec.approved_rev = #rec.revisions
     rec.approved_at = os.time()
     rec.allow_push = choice == with_push or nil
+    M.add_event(rec, "approved", "Approved revision " .. #rec.revisions
+      .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
     changed(rec)
     send(M.approval_message(rec), "Approved the plan for " .. M.target_label(rec.target)
       .. (rec.allow_push and " (it may push once the tests pass)." or "."))
@@ -725,6 +806,8 @@ local function revise()
           .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or "")) then
         rec.status = "changes_requested"
         for _, th in ipairs(queued) do th.status = "sent" end
+        M.add_event(rec, "changes", "You asked for changes: " .. text
+          .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or ""))
         changed(rec)
       end
     end,
@@ -864,6 +947,7 @@ local function bind_common(buf)
   K.bind(buf, "plan", "resize_less", function() resize(-5) end, { desc = "shrink the section list" })
   K.bind(buf, "plan", "resize_more", function() resize(5) end, { desc = "grow the section list" })
   K.bind(buf, "plan", "quit", close, { desc = "close" })
+  K.bind(buf, "plan", "run_log", function() M.open_run_log(view.key) end, { desc = "everything that happened, as one page" })
 end
 
 local function goto_section(s, focus)
@@ -1037,6 +1121,53 @@ require("azure-cli.chat.view").register("azurecli-plan", function(win) return M.
 
 -- The plan's text as it is now (the user's edits included).
 function M.lines(rec) return current_lines(rec) end
+
+-- Records event `text` (kind: revision, approved, changes, tests, pushed,
+-- took_out, ...) on plan `rec` (not saved - the caller saves).
+function M.add_event(rec, kind, text)
+  rec.events = rec.events or {}
+  table.insert(rec.events, { at = os.time(), kind = kind, text = text })
+end
+
+-- The same for the plan of the change in worktree `dir`, saved.
+function M.event_for_worktree(dir, kind, text)
+  local rec = M.for_worktree(dir)
+  if not rec then return end
+  M.add_event(rec, kind, text)
+  changed(rec)
+end
+
+-- gL: the run log, written to <plans>/<key>.log.md and opened in a tab.
+function M.open_run_log(key)
+  local rec = M.load(key)
+  if not rec then return notify("No plan " .. tostring(key) .. ".") end
+  local TF = require("azure-cli.chat.tools_fix")
+  local dir = TF.dir_for(rec.target)
+  local threads = {}
+  if dir then
+    local p = require("azure-cli.chat.store").root() .. "/why/" .. vim.fn.fnamemodify(dir, ":t"):gsub("[^%w%._%-]", "_") .. ".json"
+    local ok, l = pcall(vim.fn.readfile, p)
+    local okd, list = pcall(vim.json.decode, ok and table.concat(l, "\n") or "")
+    if okd and type(list) == "table" then threads = list end
+  end
+  local audit = {}
+  local id = tostring(rec.target.work_item_id or rec.target.pr_id)
+  local field = rec.target.work_item_id and "work_item_id" or "pr_id"
+  for _, a in ipairs(require("azure-cli.chat.store").audit()) do
+    local args = a.args or {}
+    if tostring(args[field] or (field == "work_item_id" and args.parent_id) or "") == id and (a.at or 0) >= (rec.created or 0) then
+      audit[#audit + 1] = a
+    end
+  end
+  local lines = M.run_log(rec, { threads = threads, tests = dir and require("azure-cli.chat.tests_run").load(dir),
+    audit = audit, lines = current_lines(rec) }, function(ts) return os.date("%m-%d %H:%M", ts) end)
+  local path = M.root() .. "/" .. key .. ".log.md"
+  vim.fn.writefile(lines, path)
+  vim.cmd("tabedit " .. vim.fn.fnameescape(path))
+  vim.bo.modifiable = false
+  vim.b.azure_cli_title = "Run log " .. M.target_label(rec.target)
+  return path
+end
 
 -- show_fix's `steps`: which lines of the change carry out which plan
 -- lines. Replaces the plan's links; returns how many were kept (a step

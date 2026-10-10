@@ -395,6 +395,7 @@ their line when the text around them changes.
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
 | `gd` | The code this line became (in the change viewer; `gp` there comes back) |
+| `gL` | The run log: everything that happened to the plan and its change, as one page |
 | `gf` | Edit the plan's file yourself; saving it makes your version the one the agent gets (and it needs approving again) |
 | `<CR>` (section list) | Go to the section; moving through the list scrolls the plan |
 | `<BS>` | Back to the section list |
@@ -427,6 +428,14 @@ Files entry always opens its file. Those lines are marked in both places
 (`→ auth.py:13` in the plan, `◂ plan:7` in the change), and `gp` on a line
 of the change goes to the plan line it belongs to (the nearest step above
 it, else the file's Files entry).
+
+**The run log.** `gL` in the plan opens one page with everything that
+happened to it: a timeline of its revisions (the agent's and yours), your
+questions and change requests, the approval, the test runs, the hunks you
+took out, the agent's tool calls for that PR or work item, and the push;
+then every question with its answer, the last test output, and the plan
+as it is now. It's a markdown file next to the plan (`<key>.log.md`),
+written fresh each time - handy to attach to the PR, or to read later.
 
 Pushing the change (`commit_and_push_fix`) marks its plan done, so the next
 change on that PR or work item needs a plan of its own. A plan the agent

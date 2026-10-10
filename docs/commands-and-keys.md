@@ -332,6 +332,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `revise` | `gR` |
+| `run_log` | `gL` |
 | `since` | `gi` |
 | `view_thread` | `K` |
 

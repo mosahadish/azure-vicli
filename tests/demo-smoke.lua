@@ -1347,6 +1347,18 @@ do
   end, 50)
   if not stale then return fail("the tests' result isn't marked as before the last change: " .. vim.wo[v_list_win()].winbar) end
   vim.ui.select = real_select
+  -- gL in the plan: the run log, with everything that happened.
+  vim.api.nvim_set_current_tabpage(v.tab)
+  vim.api.nvim_set_current_win(v.plan_win)
+  feed("gL")
+  local logtext = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+  for _, s in ipairs({ "# Run log: #3002 Lockout reason codes", "## Timeline", "Revision 1, by the agent", "Revision 2, edited by you",
+    "You asked about plan line", "You asked for a change on plan line 8", "You asked for changes: See my comments",
+    "Approved revision 3 - pushing allowed", "Agent: submit_plan", "Tests (grep -q PLANNED_CHANGE src/auth.py): \u{2713} tests passed",
+    "You took out a change to src/auth.py", "You asked about src/auth.py:", "## Last test run", "## The plan (as it is now)" }) do
+    if not logtext:find(s, 1, true) then return fail("the run log lacks \"" .. s .. "\":\n" .. logtext) end
+  end
+  vim.cmd("tabclose")
   -- gw on one of the agent's steps in the conversation: asked about it.
   CHAT.show(false)
   local lw = st.wins[vim.api.nvim_get_current_tabpage()].log
