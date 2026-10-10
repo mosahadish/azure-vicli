@@ -221,7 +221,11 @@ function M.tabline()
     local hl = tab == cur and "%#TabLineSel#" or "%#TabLine#"
     out[#out + 1] = hl .. "%" .. i .. "T " .. (M.tab_title(tab):gsub("%%", "%%%%")) .. " "
   end
-  return table.concat(out) .. "%#TabLineFill#%T"
+  -- The chat's status strip on the right: the agent working, a question
+  -- waiting for you, plans waiting for your review.
+  local ok, strip = pcall(function() return require("azure-cli.chat").strip() end)
+  local right = (ok and strip ~= "") and ("%=%#AzureCliWinbarTag# " .. strip:gsub("%%", "%%%%") .. " ") or ""
+  return table.concat(out) .. "%#TabLineFill#%T" .. right
 end
 
 -- 'statusline' for the standalone launcher: what the window is, and where

@@ -79,6 +79,16 @@ seconds. With the panel hidden, put it in your statusline:
 works and `""` otherwise (lualine: `{ function() return
 require("azure-cli.chat").status() end }`).
 
+**The status strip.** One line says what needs you, from any tab: the
+agent working (`⠹ Copilot 42s`), a question waiting for your yes or no
+(`⚠ a question waits for you` - a push, a vote), and the plans waiting for
+your review (`● plan #3002 waits for you`). The standalone launcher shows
+it at the right end of its tab line; in your own Neovim,
+`require("azure-cli.chat").strip()` returns it for a statusline (lualine:
+`{ function() return require("azure-cli.chat").strip() end }`), or use
+azure-vicli's tab line: `vim.o.tabline =
+"%!v:lua.require'azure-cli.ui'.tabline()"`.
+
 Once a turn is done, more than three tool calls fold into one line (`· 6
 lookups, 2 changes`) - the ones that failed, were declined or were
 allowed without asking stay on their own lines - and an answer longer

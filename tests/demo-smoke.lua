@@ -1117,6 +1117,10 @@ do
   if not (v and vim.api.nvim_tabpage_is_valid(v.tab) and vim.api.nvim_win_is_valid(v.plan_win)) then
     return fail("submit_plan didn't open the plan")
   end
+  if not CHAT.strip():find("plan #3002 waits for you", 1, true)
+      or not require("azure-cli.ui").tabline():find("plan #3002 waits for you", 1, true) then
+    return fail("the status strip doesn't say the plan waits: " .. CHAT.strip())
+  end
   local outline = table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n")
   for _, s in ipairs({ "#3002  Lockout reason codes", "Waiting for your review", "Approach", "Files", "Test plan", "gA  approve" }) do
     if not outline:find(s, 1, true) then return fail("the section list lacks \"" .. s .. "\":\n" .. outline) end
@@ -1230,6 +1234,10 @@ do
   pick = "let it push once the tests pass"
   feed("gA")
   pick = "Allow"  -- the agent's run_tests asks next
+  local strip_running = CHAT.strip()
+  if not strip_running:find("Fake Claude", 1, true) or strip_running:find("waits for you", 1, true) then
+    return fail("while it works the strip should name the agent, with no plan waiting: " .. strip_running)
+  end
   e = answered(n)
   if not e then return fail("no answer after approving") end
   if not PLAN.load("wi-3002").allow_push or not vim.wo[v.plan_win].winbar:find("may push", 1, true) then

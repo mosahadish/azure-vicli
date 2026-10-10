@@ -527,7 +527,12 @@ function M.load(key)
   return rec
 end
 
+-- key -> { status, label }, for the status strip: built from the files
+-- once, kept up to date by M.save.
+local index = nil
+
 function M.save(rec)
+  if index then index[rec.key] = { status = rec.status, label = M.target_label(rec.target) } end
   vim.fn.mkdir(M.root(), "p")
   vim.fn.writefile({ vim.json.encode(rec) }, M.root() .. "/" .. rec.key .. ".json")
 end
@@ -1190,6 +1195,23 @@ function M.describe(win)
 end
 
 require("azure-cli.chat.view").register("azurecli-plan", function(win) return M.describe(win) end)
+
+-- The labels of the plans waiting for your review (submitted, not yet
+-- approved or sent back), e.g. { "#3002" }.
+function M.waiting()
+  if not index then
+    index = {}
+    for _, f in ipairs(vim.fn.glob(M.root() .. "/*.json", false, true)) do
+      local key = vim.fn.fnamemodify(f, ":t:r")
+      local rec = M.load(key)
+      if rec and rec.target then index[key] = { status = rec.status, label = M.target_label(rec.target) } end
+    end
+  end
+  local out = {}
+  for _, v in pairs(index) do if v.status == "draft" then out[#out + 1] = v.label end end
+  table.sort(out)
+  return out
+end
 
 -- The plan's text as it is now (the user's edits included).
 function M.lines(rec) return current_lines(rec) end

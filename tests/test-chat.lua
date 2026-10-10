@@ -170,6 +170,15 @@ do
   check("render: a few calls stay listed", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} c", 1, true) ~= nil)
 end
 
+-- --- the status strip ---------------------------------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  check("strip_text: nothing to say", CORE.strip_text({}) == "")
+  check("strip_text: all three", CORE.strip_text({ running = { frame = "*", label = "Copilot", seconds = 4 }, question = true,
+    waiting = { "#3002" } }) == "* Copilot 4s  \u{00B7}  \u{26A0} a question waits for you  \u{00B7}  \u{25CF} plan #3002 waits for you")
+  check("strip_text: several plans", CORE.strip_text({ waiting = { "#1", "PR !2" } }) == "\u{25CF} 2 plans wait for you")
+end
+
 -- --- why_message ---------------------------------------------------------------
 do
   local CORE = require("azure-cli.chat.core")

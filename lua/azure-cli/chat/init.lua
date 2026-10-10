@@ -230,6 +230,22 @@ function M.status()
   return spinner() .. " " .. agent_label() .. " " .. math.max(0, os.time() - (run.entry.started or os.time())) .. "s"
 end
 
+-- The status strip: the agent working, a question waiting for your yes or
+-- no, plans waiting for your review - "" when there's none. The standalone
+-- launcher's tab line shows it on the right; for your own statusline:
+-- { function() return require("azure-cli.chat").strip() end }.
+function M.strip()
+  local st = STATE()
+  local s = { question = st.question ~= nil }
+  if st.running then
+    s.running = { frame = spinner(), label = agent_label(),
+      seconds = math.max(0, os.time() - ((st.running.entry or {}).started or os.time())) }
+  end
+  local ok, waiting = pcall(function() return require("azure-cli.chat.plan").waiting() end)
+  s.waiting = ok and waiting or {}
+  return CORE.strip_text(s)
+end
+
 function M.set_winbars()
   local st = STATE()
   local tags = {}
@@ -252,7 +268,8 @@ function M.set_winbars()
         .. " \u{00B7} /prompt \u{00B7} !PR #item \u{00B7} ? keys%<")
     end
   end
-  pcall(vim.cmd, "redrawstatus!")  -- for M.status() in a statusline
+  pcall(vim.cmd, "redrawstatus!")  -- for M.status() / M.strip() in a statusline
+  pcall(vim.cmd, "redrawtabline")
 end
 
 -- The window the user was last in, in the current tab (never the panel).
@@ -585,7 +602,11 @@ local function confirm(question, cb, details)
     if buf and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) then vim.bo[buf].filetype = "diff" end
   end
   notify(question .. " (answer in the prompt)")
+  STATE().question = question
+  M.set_winbars()
   require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, function(yes)
+    STATE().question = nil
+    M.set_winbars()
     if win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
     cb(yes)
   end)
@@ -1121,7 +1142,7 @@ send = function(text, opts)
   end
   pcall(vim.fn.chansend, job, stdin_text)
 
-  st.running = { job = job, turn = turn }
+  st.running = { job = job, turn = turn, entry = entry }
   start_spinner(st)
   local timeout = tonumber(agent.timeout_seconds) or 900
   vim.defer_fn(function()

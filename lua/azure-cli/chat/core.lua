@@ -21,6 +21,26 @@ Use the azure-vicli tools to look things up and to act. Drafted replies and comm
 
 Refer to pull requests as !<id> and work items as #<id>, so the user can open them from the chat. Answer briefly, in markdown.]]
 
+-- The status strip (the tab line's right end, or a statusline): `s` = {
+-- running = { frame, label, seconds } while the agent works, question =
+-- true while a yes/no waits for you, waiting = labels of the plans waiting
+-- for your review }. "" when there's nothing to say. Pure.
+function M.strip_text(s)
+  s = s or {}
+  local parts = {}
+  if s.running then
+    parts[#parts + 1] = s.running.frame .. " " .. s.running.label .. " " .. tostring(s.running.seconds) .. "s"
+  end
+  if s.question then parts[#parts + 1] = "\u{26A0} a question waits for you" end
+  local w = s.waiting or {}
+  if #w == 1 then
+    parts[#parts + 1] = "\u{25CF} plan " .. w[1] .. " waits for you"
+  elseif #w > 1 then
+    parts[#parts + 1] = "\u{25CF} " .. #w .. " plans wait for you"
+  end
+  return table.concat(parts, "  \u{00B7}  ")
+end
+
 -- What gw sends: a question about one of the agent's steps (a tool call
 -- it made, `kind` "step") or a line of its answer ("line"), with the
 -- message it was answering. Pure.
