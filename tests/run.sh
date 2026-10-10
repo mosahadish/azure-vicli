@@ -438,6 +438,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
+  # The comment editor leaves insert mode behind it (needs the main loop).
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-editor-mode.lua" 2>&1)"
+  if [[ "$out" == *EDITOR-MODE-OK* ]]; then
+    pass "test-editor-mode.lua (headless nvim, real input)"
+  else
+    fail "test-editor-mode.lua (headless nvim, real input)" "$out"
+  fi
+
   # The plan, the questions under a line, the change viewer's file list.
   out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-plan.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all chat-plan tests passed"* ]]; then

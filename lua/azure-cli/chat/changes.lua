@@ -187,6 +187,10 @@ local function set_diff_winbar(path, map)
   if nq > 0 then tags[#tags + 1] = "[" .. THREADS().count_label(nq) .. "]" end
   if queued > 0 then tags[#tags + 1] = "[\u{270E}" .. queued .. " queued - gS sends]" end
   if na > 0 then tags[#tags + 1] = "[\u{2713} " .. na .. "/" .. nh .. " accepted]" end
+  -- The plan's tests (gb), here rather than above the narrow file list.
+  local TR = require("azure-cli.chat.tests_run")
+  local tests_tag = TR.label(TR.load(view.dir), view.fp, TR.running(view.dir))
+  if tests_tag then tags[#tags + 1] = tests_tag end
   pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) }, tags))
 end
 
@@ -452,9 +456,9 @@ local function run_tests()
       if view and view.dir == dir then M.refresh() end
       if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
     end)
-    if view and view.dir == dir then
-      pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) },
-        { TR.label(nil, nil, true) }))
+    if view and view.dir == dir and view.current then
+      local f = view.files[view.current]
+      set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
     end
   end
   if not last then return go() end
@@ -780,9 +784,6 @@ function M.open(title, dir, raw, keep)
     pcall(vim.api.nvim_buf_set_extmark, view.list_buf, list_ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
   end
   local ctags = {}
-  local TR = require("azure-cli.chat.tests_run")
-  local tests_tag = TR.label(TR.load(dir), view.fp, TR.running(dir))
-  if tests_tag then ctags[#ctags + 1] = tests_tag end
   if view.check and #view.check.unplanned > 0 then ctags[#ctags + 1] = "[" .. #view.check.unplanned .. " off plan]" end
   if view.check and #view.check.missing > 0 then ctags[#ctags + 1] = "[" .. #view.check.missing .. " untouched]" end
   pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) }, ctags))

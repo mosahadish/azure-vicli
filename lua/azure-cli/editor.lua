@@ -321,6 +321,10 @@ function M.open(opts)
   local function close()
     if closed then return end
     closed = true
+    -- Submitted (or cancelled) while typing: insert mode would otherwise
+    -- carry over into the window underneath - a read-only diff or plan,
+    -- where the next key typed as text fails with E21.
+    if vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then vim.cmd("stopinsert") end
     if vim.api.nvim_win_is_valid(win) then
       pcall(vim.api.nvim_win_close, win, true)
     end

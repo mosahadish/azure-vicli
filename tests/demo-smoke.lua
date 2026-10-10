@@ -1258,8 +1258,14 @@ do
   local function v_list_win()
     return vim.fn.win_findbuf(vim.fn.bufnr("azure-cli://changes"))[1]
   end
-  if not vim.wo[cwin].winbar:find("tests passed", 1, true) then
-    return fail("the change viewer doesn't show the tests' result: " .. vim.wo[cwin].winbar)
+  local function diff_winbar()
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(cwin))) do
+      if w ~= cwin and (vim.wo[w].winbar or ""):find("src/", 1, true) then return vim.wo[w].winbar end
+    end
+    return ""
+  end
+  if not diff_winbar():find("tests passed", 1, true) then
+    return fail("the change viewer doesn't show the tests' result: " .. diff_winbar())
   end
   -- The plan listed src/throttle.py too: the viewer and show_fix say so.
   local listed = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
@@ -1353,9 +1359,10 @@ do
   if not noted then return fail("taking the hunk out left no note in the chat") end
   -- The tests ran on the change as it was: the list says so now.
   local stale = vim.wait(5000, function()
-    return vim.wo[v_list_win()].winbar:find("tests passed, before the last change", 1, true) ~= nil
+    cwin = v_list_win()
+    return cwin and diff_winbar():find("tests passed, before the last change", 1, true) ~= nil
   end, 50)
-  if not stale then return fail("the tests' result isn't marked as before the last change: " .. vim.wo[v_list_win()].winbar) end
+  if not stale then return fail("the tests' result isn't marked as before the last change: " .. diff_winbar()) end
   vim.ui.select = real_select
   -- create_pull_request without a description gets the plan's; with one
   -- and from_plan, both; the question shows it.
