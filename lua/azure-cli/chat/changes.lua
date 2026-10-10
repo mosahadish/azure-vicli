@@ -14,6 +14,8 @@
 --                             the cursor back where it was
 --   M.refresh()               the same worktree again (r), staying on the
 --                             file and line
+--   M.jump_to(path, line)        file `path` at line `line` of its new version
+--                             (the plan's gd)
 --
 -- gq goes to the chat, as on every other screen, and the chat describes
 -- the file and line under the cursor here (M.describe). ga on a line asks
@@ -33,6 +35,7 @@ local M = {}
 local DIFFBUF = require("azure-cli.diffbuf")
 local current_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_current")
 local list_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_list")
+local link_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_links")
 
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
 
@@ -78,6 +81,7 @@ local DIFF_HELP = {
   { "back", "back to the file list" },
   { "open_file", "edit the file in the worktree, at this line" },
   "Ask the agent",
+  { "goto_plan", "the plan line this code carries out (or the plan's entry for the file)" },
   { "ask", "ask about this line (\"why did you choose this here?\") - the answer shows under it" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_comments", "the question and answer in a popup" },
@@ -158,6 +162,45 @@ local function thread_row(idx, th)
     end
   end
   return near
+end
+
+-- "◂ plan:7" at the end of each line a step of the plan starts at
+-- (show_fix's `steps`, kept on the plan).
+local function draw_links(idx)
+  local f = view and view.files[idx]
+  local buf = f and view.bufs[f.path]
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then return end
+  vim.api.nvim_buf_clear_namespace(buf, link_ns, 0, -1)
+  if not view.plan then return end
+  local PLAN = require("azure-cli.chat.plan")
+  local lines = PLAN.lines(view.plan)
+  local map = view.maps[buf].map
+  for _, k in ipairs(view.plan.links or {}) do
+    if k.file == f.path then
+      local pl = PLAN.resolve_line(lines, k.plan_line, k.plan_anchor)
+      for row, m in ipairs(map) do
+        if m.side == "R" and m.lineno == k.line and pl then
+          pcall(vim.api.nvim_buf_set_extmark, buf, link_ns, row - 1, 0, {
+            virt_text = { { "  \u{25C2} plan:" .. pl .. (k.note and (" " .. k.note) or ""), "AzureCliMuted" } },
+            virt_text_pos = "eol" })
+        end
+      end
+    end
+  end
+end
+
+-- gp on a line of the change: the plan line it carries out - the step
+-- link at or above it in this file, else the file's Files entry.
+local function goto_plan(idx)
+  if not view.plan then return notify("This change has no plan.") end
+  local PLAN = require("azure-cli.chat.plan")
+  local f = view.files[idx]
+  local m = view.maps[view.bufs[f.path]].map[vim.api.nvim_win_get_cursor(0)[1]] or {}
+  local lines = PLAN.lines(view.plan)
+  local k = m.lineno and m.side == "R" and PLAN.link_for_code(view.plan.links, f.path, m.lineno)
+  local line = k and PLAN.resolve_line(lines, k.plan_line, k.plan_anchor) or PLAN.file_entry_line(lines, f.path)
+  if not line then return notify("The plan doesn't mention " .. f.path .. ".") end
+  PLAN.open(view.plan.key, line)
 end
 
 local function draw_threads(idx)
@@ -278,6 +321,7 @@ local function diff_buf(idx)
   K.bind(buf, "diff", "quit", close, { desc = "close" })
   K.bind(buf, "diff", "help", function() help("diff", DIFF_HELP) end, { desc = "keys" })
   K.bind(buf, "diff", "ask", function() ask_here(idx) end, { desc = "ask the agent about this line" })
+  K.bind(buf, "diff", "goto_plan", function() goto_plan(idx) end, { desc = "the plan line this carries out" })
   K.bind(buf, "diff", "expand_thread", function()
     local th = thread_here(idx)
     if not th then return notify("No question on this line (ga asks one).") end
@@ -304,6 +348,7 @@ local function show(idx, focus)
   mark_current(idx)
   view.current = idx
   draw_threads(idx)
+  draw_links(idx)
   -- Again once the window has drawn its gutter: the answers wrap to what's
   -- left of the width.
   vim.schedule(function() if view and view.current == idx then draw_threads(idx) end end)
@@ -413,7 +458,8 @@ function M.open(title, dir, raw, keep)
   local paths = {}
   for _, f in ipairs(view.files) do paths[#paths + 1] = f.path end
   local okp, PLAN = pcall(require, "azure-cli.chat.plan")
-  view.check = okp and PLAN.check_change(PLAN.for_worktree(dir), paths) or nil
+  view.plan = okp and PLAN.for_worktree(dir) or nil
+  view.check = okp and PLAN.check_change(view.plan, paths) or nil
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
     vim.api.nvim_set_current_tabpage(view.tab)
@@ -477,6 +523,32 @@ function M.open(title, dir, raw, keep)
   focus()
   vim.schedule(function() vim.schedule(focus) end)
   return view.tab
+end
+
+-- Shows file `path` of the open change, at line `line` of its new version
+-- (else its first change). False when the change has no such file.
+function M.jump_to(path, line)
+  if not view then return false end
+  for i, f in ipairs(view.files) do
+    if f.path == path or f.path:sub(-#path - 1) == "/" .. path then
+      local buf = show(i, true)
+      local map = view.maps[buf].map
+      local row = DIFFBUF.edge_change(map, 1) or 1
+      if line then
+        local best
+        for r, m in ipairs(map) do
+          if m.side == "R" and m.lineno and (not best or math.abs(m.lineno - line) < math.abs(map[best].lineno - line)) then
+            best = r
+          end
+        end
+        row = best or row
+      end
+      pcall(vim.api.nvim_win_set_cursor, view.diff_win, { row, 0 })
+      vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zvzz") end)
+      return true
+    end
+  end
+  return false
 end
 
 function M.refresh()

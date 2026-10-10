@@ -136,6 +136,30 @@ function M.open_latest(git, cb)
   end)
 end
 
+-- The worktree of the change for `target` ({ work_item_id } / { pr_id }),
+-- or nil when none was started.
+function M.dir_for(target)
+  if target.work_item_id then return (M.find_story(target.work_item_id)) end
+  local pr = require("azure-cli.chat.tools").pr_record(target.pr_id)
+  local d = pr and M.path(pr)
+  return (d and is_repo(d)) and d or nil
+end
+
+-- Opens the change for `target` in the change viewer at `path` (and line
+-- `line` of its new version, else its first change): the plan's gd.
+-- cb(err) when there's no change to show.
+function M.open_at(target, path, line, cb)
+  local dir = M.dir_for(target)
+  local label = require("azure-cli.chat.plan").target_label(target)
+  if not dir then return cb("There's no change for " .. label .. " yet - the agent hasn't started it.") end
+  M.load(dir, require("azure-cli.chat.tools").git, function(ok, diff, last)
+    if not ok then return cb(diff) end
+    M.show("Proposed change - " .. label .. (last and " (last commit)" or ""), dir, diff)
+    local found = require("azure-cli.chat.changes").jump_to(path, line)
+    cb(not found and (path .. " isn't part of the change.") or nil)
+  end)
+end
+
 setmetatable(M, { __call = function(_, T)
   local function need_clone(args, done)
     local pr = T.need_pr(args, done)
@@ -286,11 +310,21 @@ setmetatable(M, { __call = function(_, T)
         .. "returns the diff, plus plan_check when the change and its plan's Files section disagree (files changed "
         .. "that the plan doesn't list, files it lists that weren't changed). Give pr_id for a fix, work_item_id for "
         .. "a story.",
-      schema = target_schema,
+      schema = { type = "object", properties = {
+        pr_id = target_schema.properties.pr_id, work_item_id = target_schema.properties.work_item_id,
+        steps = { type = "array", description = "optional: which lines of the change carry out which lines of the "
+          .. "plan (submit_plan's markdown, 1-based lines), so the user can jump between them",
+          items = { type = "object", properties = {
+            file = { type = "string" }, line = { type = "integer", description = "line in the file's new version" },
+            plan_line = { type = "integer" }, note = { type = "string" },
+          }, required = { "file", "line", "plan_line" } } },
+      } },
       risk = "read",
       run = function(args, env, done)
         local t, why = locate(args)
         if not t then return done(nil, why) end
+        local target = t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id }
+        local linked = args.steps and require("azure-cli.chat.plan").set_links(target, args.steps) or nil
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
           M.show("Proposed change - " .. t.label, t.dir, diff)
@@ -311,7 +345,7 @@ setmetatable(M, { __call = function(_, T)
               .. #check.missing .. " planned file(s) not changed")
           end
           if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
-          done({ stat = stat, diff = diff, plan_check = plan_check })
+          done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked })
         end, T.git)
       end,
     },

@@ -46,6 +46,24 @@ do
   check("check_files: partial names don't match", #PLAN.check_files({ "auth.py" }, { "src/oauth.py" }).missing == 1)
 end
 
+-- --- step links ------------------------------------------------------------------------
+do
+  check("resolve_line: by its text, nearest", PLAN.resolve_line({ "a", "x", "b", "x" }, 3, "x") == 2
+    or PLAN.resolve_line({ "a", "x", "b", "x" }, 3, "x") == 4)
+  check("resolve_line: text gone -> the line, if inside", PLAN.resolve_line({ "a", "b" }, 2, "zzz") == 2
+    and PLAN.resolve_line({ "a" }, 5, "zzz") == nil)
+  check("file_entry_line", PLAN.file_entry_line(plan, "throttle.py") == 12 and PLAN.file_entry_line(plan, "src/other.py") == nil,
+    PLAN.file_entry_line(plan, "throttle.py"))
+  check("file_at_line", PLAN.file_at_line(plan, 11) == "src/auth.py" and PLAN.file_at_line(plan, 7) == nil)
+  local links = { { file = "src/a.py", line = 10, plan_line = 7, plan_anchor = "- one" },
+    { file = "src/a.py", line = 30, plan_line = 8, plan_anchor = "- two" },
+    { file = "b.py", line = 1, plan_line = 7, plan_anchor = "- one" } }
+  check("links_on_plan_line", #PLAN.links_on_plan_line(links, plan, 7) == 2 and #PLAN.links_on_plan_line(links, plan, 9) == 0)
+  check("link_for_code: the step at or above the line",
+    PLAN.link_for_code(links, "src/a.py", 25).line == 10 and PLAN.link_for_code(links, "src/a.py", 30).line == 30
+      and PLAN.link_for_code(links, "src/a.py", 5) == nil and PLAN.link_for_code(links, "a.py", 12).line == 10)
+end
+
 -- --- gate_check -------------------------------------------------------------------------
 do
   local wi, pr = { work_item_id = 7 }, { pr_id = 9 }

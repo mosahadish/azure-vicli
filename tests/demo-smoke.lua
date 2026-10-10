@@ -1212,6 +1212,28 @@ do
   feed("K")
   if not float_text():find("BECAUSE-PLANNED_CHANGE", 1, true) then return fail("K didn't show the question") end
   feed("q")
+  -- show_fix's steps: the line is marked with its plan line (the step
+  -- pointing outside the plan was dropped), gp goes there, gd comes back.
+  if not e.text:find('"steps_linked":1', 1, true) then return fail("show_fix didn't keep exactly the one good step: " .. e.text) end
+  local lns = vim.api.nvim_get_namespaces()["azure_cli_chat_changes_links"]
+  local marked
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(dbuf, lns, 0, -1, { details = true })) do
+    if (m[4].virt_text or {})[1] and m[4].virt_text[1][1]:find("plan:7 the reason code", 1, true) then marked = m[2] + 1 end
+  end
+  if marked ~= drow then return fail("the planned line isn't marked with its plan line: " .. tostring(marked)) end
+  vim.api.nvim_set_current_win(dwin)
+  vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
+  feed("gp")
+  v = PLAN.current()
+  if vim.api.nvim_get_current_win() ~= v.plan_win or vim.api.nvim_win_get_cursor(v.plan_win)[1] ~= 7 then
+    return fail("gp didn't open the plan at line 7: " .. vim.api.nvim_win_get_cursor(0)[1])
+  end
+  feed("gd")
+  local back = vim.wait(10000, function()
+    return vim.api.nvim_get_current_line() == "PLANNED_CHANGE = True"
+  end, 50)
+  if not back then return fail("gd on the plan line didn't come back to the code: " .. vim.api.nvim_get_current_line()) end
+  dwin = vim.api.nvim_get_current_win()
   print("== the plan ==")
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))

@@ -150,6 +150,7 @@ paste the output here after changing a default.
 | `find_references` | `gr` |
 | `followup` | `gu` |
 | `goto_definition` | `gd` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
@@ -302,5 +303,27 @@ paste the output here after changing a default.
 | `send_insert` | `<C-s>` |
 | `toggle` | `gq` |
 | `use_as_reply` | `gr` |
+
+#### plan
+
+| Action | Default key(s) |
+|---|---|
+| `approve` | `gA` |
+| `ask` | `ga` |
+| `back` | `<BS>` |
+| `chat` | `gq` |
+| `expand_thread` | `<Tab>` |
+| `goto_code` | `gd` |
+| `help` | `?` |
+| `next_thread` | `]t` |
+| `open` | `<CR>` |
+| `open_file` | `gf` |
+| `prev_thread` | `[t` |
+| `quit` | `q` |
+| `refresh` | `r` |
+| `resize_less` | `<` |
+| `resize_more` | `>` |
+| `revise` | `gR` |
+| `view_thread` | `K` |
 
 <!-- END GENERATED KEYS TABLE -->

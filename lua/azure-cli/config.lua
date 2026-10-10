@@ -53,6 +53,7 @@ local DEFAULT_KEYS = {
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
+    goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
   },
   -- Reviewer Overview page.
   overview = {
@@ -101,6 +102,7 @@ local DEFAULT_KEYS = {
     open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
     refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", quit = "q",
+    goto_code = "gd",
   },
 }
 

@@ -144,6 +144,67 @@ function M.check_files(planned, changed)
   return out
 end
 
+-- The plan line that carries out a step: the line whose text is `anchor`
+-- nearest to `line` (the plan may have changed since the link was made),
+-- else `line` itself while it's inside the plan. Pure.
+function M.resolve_line(lines, line, anchor)
+  local want = anchor and vim.trim(anchor) or ""
+  if want ~= "" then
+    local best
+    for i, l in ipairs(lines) do
+      if vim.trim(l) == want and (not best or math.abs(i - line) < math.abs(best - line)) then best = i end
+    end
+    if best then return best end
+  end
+  if line and line >= 1 and line <= #lines then return line end
+  return nil
+end
+
+-- The Files entry for `path` in the plan: its line, or nil. Pure.
+function M.file_entry_line(lines, path)
+  local inside, fenced = false, false
+  for i, l in ipairs(lines) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("file", 1, true) ~= nil
+    elseif inside and not fenced then
+      local item = l:match("^%s*[-*+]%s+(.+)$")
+      local p = item and (item:match("`([^`]+)`") or item:match("^(%S+)"))
+      p = p and p:gsub("^%./", ""):gsub("[,:;]$", "")
+      if p and same_path(p, path) then return i end
+    end
+  end
+  return nil
+end
+
+-- The path a Files entry on plan line `line` names, or nil. Pure.
+function M.file_at_line(lines, line)
+  for _, p in ipairs(M.planned_files(lines)) do
+    if M.file_entry_line(lines, p) == line then return p end
+  end
+  return nil
+end
+
+-- The step links (show_fix's `steps`, kept on the plan as rec.links: {
+-- file, line, plan_line, plan_anchor, note }) on plan line `line`, and the
+-- one nearest above-or-at diff line `line` of `file`. Pure.
+function M.links_on_plan_line(links, lines, line)
+  local out = {}
+  for _, k in ipairs(links or {}) do
+    if M.resolve_line(lines, k.plan_line, k.plan_anchor) == line then out[#out + 1] = k end
+  end
+  return out
+end
+
+function M.link_for_code(links, file, line)
+  local best
+  for _, k in ipairs(links or {}) do
+    if same_path(k.file or "", file) and k.line and k.line <= line and (not best or k.line > best.line) then best = k end
+  end
+  return best
+end
+
 -- The plan for the change in worktree `dir` (start_fix's <repo>-<pr id>,
 -- start_story's <repo>-wi<id>): its record, or nil.
 function M.for_worktree(dir)
@@ -207,7 +268,8 @@ function M.approval_message(rec)
   local label = M.target_label(rec.target)
   local rev = last_rev(rec)
   local text = "I approve the plan for " .. label .. " (revision " .. #rec.revisions .. "). Go ahead and make the "
-    .. "change as planned, then show_fix it to me."
+    .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
+    .. "they carry out."
   if rev and rev.by == "you" then
     text = text .. "\n\nI edited the plan before approving - follow this version:\n\n" .. rev.markdown
   end
@@ -275,6 +337,7 @@ end
 -- The viewer.
 
 local view = nil  -- { tab, list_win, plan_win, list_buf, plan_buf, key, rec, sections, rows, width }
+local goto_code  -- forward
 local list_ns = vim.api.nvim_create_namespace("azure_cli_plan_list")
 
 local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
@@ -308,6 +371,7 @@ local PLAN_HELP = {
   { "approve", "approve it - the agent goes ahead" },
   { "revise", "ask for changes (you say what)" },
   { "open_file", "edit the plan by hand" },
+  { "goto_code", "the code this line became (a linked step, or a Files entry's file)" },
   { "back", "back to the section list" },
   { "refresh", "reload it" },
   { "chat", "go to the chat (in visual mode: send the selected lines)" },
@@ -332,9 +396,32 @@ local function resize(delta)
   pcall(vim.api.nvim_win_set_width, view.list_win, view.width)
 end
 
+local link_ns = vim.api.nvim_create_namespace("azure_cli_plan_links")
+
+-- "→ auth.py:13" at the end of each plan line a step of the change carries
+-- out (show_fix's `steps`).
+local function draw_links()
+  if not (view and valid_buf(view.plan_buf)) then return end
+  vim.api.nvim_buf_clear_namespace(view.plan_buf, link_ns, 0, -1)
+  local lines = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
+  local by_line = {}
+  for _, k in ipairs(view.rec.links or {}) do
+    local l = M.resolve_line(lines, k.plan_line, k.plan_anchor)
+    if l then
+      by_line[l] = by_line[l] or {}
+      table.insert(by_line[l], vim.fn.fnamemodify(k.file or "?", ":t") .. ":" .. tostring(k.line))
+    end
+  end
+  for l, where in pairs(by_line) do
+    pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, link_ns, l - 1, 0, {
+      virt_text = { { "  \u{2192} " .. table.concat(where, ", "), "AzureCliMuted" } }, virt_text_pos = "eol" })
+  end
+end
+
 local function draw_threads()
   if not (view and valid_buf(view.plan_buf)) then return end
   THREADS().draw(view.plan_buf, view.plan_win, view.rec.threads, function(th) return th.line end)
+  draw_links()
 end
 
 local function set_winbars()
@@ -544,6 +631,29 @@ local function ask(from, to)
   })
 end
 
+-- gd on a plan line: the code it became - a step of the change linked to
+-- this line (show_fix's `steps`), or the file a Files entry names.
+goto_code = function()
+  local rec = view.rec
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local lines = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
+  local links = M.links_on_plan_line(rec.links, lines, row)
+  local function go(path, line)
+    require("azure-cli.chat.tools_fix").open_at(rec.target, path, line, function(err)
+      if err then notify(err, vim.log.levels.WARN) end
+    end)
+  end
+  if #links == 1 then return go(links[1].file, links[1].line) end
+  if #links > 1 then
+    return require("azure-cli.prompt").select({ prompt = "Which part of the change", items = links,
+      format = function(k) return k.file .. ":" .. tostring(k.line) .. (k.note and ("  " .. k.note) or "") end },
+      function(k) if k then go(k.file, k.line) end end)
+  end
+  local file = M.file_at_line(lines, row)
+  if file then return go(file, nil) end
+  notify("Nothing in the change is linked to this line (a Files entry opens its file).")
+end
+
 local function bind_common(buf)
   local K = KEYS()
   K.bind(buf, "plan", "approve", approve, { desc = "approve the plan" })
@@ -606,12 +716,14 @@ local function setup_plan(buf)
   K.bind(buf, "plan", "back", function()
     if valid_win(view.list_win) then vim.api.nvim_set_current_win(view.list_win) end
   end, { desc = "back to the section list" })
+  K.bind(buf, "plan", "goto_code", function() goto_code() end, { desc = "the code this line became" })
   K.bind(buf, "plan", "help", function() help(PLAN_HELP) end, { desc = "keys" })
   bind_common(buf)
 end
 
--- Opens (or brings to the front, reloaded) the plan `key`.
-function M.open(key)
+-- Opens (or brings to the front, reloaded) the plan `key`, at plan line
+-- `line` when given.
+function M.open(key, line)
   local rec = M.load(key)
   if not rec then return nil, "no plan " .. tostring(key) end
   UI().theme()
@@ -664,6 +776,10 @@ function M.open(key)
   local function focus()
     if view and valid_win(view.plan_win) then vim.api.nvim_set_current_win(view.plan_win) end
   end
+  if line then
+    pcall(vim.api.nvim_win_set_cursor, view.plan_win, { line, 0 })
+    vim.api.nvim_win_call(view.plan_win, function() vim.cmd("normal! zz") end)
+  end
   focus()
   vim.schedule(function() vim.schedule(focus) end)
   return view.tab
@@ -703,6 +819,29 @@ function M.describe(win)
 end
 
 require("azure-cli.chat.view").register("azurecli-plan", function(win) return M.describe(win) end)
+
+-- The plan's text as it is now (the user's edits included).
+function M.lines(rec) return current_lines(rec) end
+
+-- show_fix's `steps`: which lines of the change carry out which plan
+-- lines. Replaces the plan's links; returns how many were kept (a step
+-- needs a file, a line and a plan line inside the plan).
+function M.set_links(target, steps)
+  local rec = M.load(M.key(target))
+  if not rec or type(steps) ~= "table" then return 0 end
+  local lines = current_lines(rec)
+  local links = {}
+  for _, s in ipairs(steps) do
+    local pl = tonumber(type(s) == "table" and s.plan_line)
+    if type(s.file) == "string" and tonumber(s.line) and pl and pl >= 1 and pl <= #lines then
+      links[#links + 1] = { file = s.file, line = tonumber(s.line), plan_line = pl, plan_anchor = lines[pl],
+        note = type(s.note) == "string" and s.note or nil }
+    end
+  end
+  rec.links = links
+  changed(rec)
+  return #links
+end
 
 -- ---------------------------------------------------------------------------
 -- The gate (chat/tools_fix.lua).
