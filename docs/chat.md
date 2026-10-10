@@ -355,6 +355,12 @@ queued in one message ("please change these: auth.py line 13 ..."), with a
 note of your own. `dd` forgets one. The agent fixes them in the worktree
 and shows the change again.
 
+**Hunk by hunk.** `gy` on a change marks it accepted (a `✓` beside it,
+and `✓ 2/5 accepted` in the winbar - press it again to take that back);
+`gn` takes that one change out of the worktree (after asking - the
+agent's other changes stay), and a note in the chat says what you took
+out.
+
 Questions are kept: they're
 still there next time you open the plan or the change, and they move with
 their line when the text around them changes.

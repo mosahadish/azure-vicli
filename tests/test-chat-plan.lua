@@ -169,5 +169,22 @@ do
       .. "- b.py line 2 (a line you removed): keep this\n\nThanks.\n\nThen show_fix", 1, true) ~= nil, m)
 end
 
+-- --- hunks ------------------------------------------------------------------------------------
+do
+  local raw = { "diff --git a/x.lua b/x.lua", "index 1..2 100644", "--- a/x.lua", "+++ b/x.lua",
+    "@@ -1,3 +1,3 @@", " a", "-b", "+B", " c", "@@ -10,2 +10,3 @@", " j", "+new", " k", "\\ No newline at end of file" }
+  local parsed = CH.hunks(raw)
+  local shown = require("azure-cli.cache").parse_diff(raw)
+  check("hunks: two, on the rows parse_diff shows them", #parsed.hunks == 2 and parsed.hunks[1].first == 1
+    and parsed.hunks[1].last == 4 and parsed.hunks[2].first == 5 and parsed.hunks[2].last == 7 and #shown == 7,
+    vim.inspect({ parsed.hunks[1].first, parsed.hunks[1].last, parsed.hunks[2].first, parsed.hunks[2].last, #shown }))
+  check("hunk_at", CH.hunk_at(parsed, 6) == parsed.hunks[2] and CH.hunk_at(parsed, 8) == nil)
+  local patch = CH.hunk_patch(parsed, parsed.hunks[2])
+  check("hunk_patch: the header and that hunk only", patch == table.concat({ "diff --git a/x.lua b/x.lua",
+    "index 1..2 100644", "--- a/x.lua", "+++ b/x.lua", "@@ -10,2 +10,3 @@", " j", "+new", " k",
+    "\\ No newline at end of file" }, "\n") .. "\n", patch)
+  check("hunks: keys differ", parsed.hunks[1].key ~= parsed.hunks[2].key)
+end
+
 print(fails == 0 and "all chat-plan tests passed" or (fails .. " chat-plan test(s) failed"))
 vim.cmd(fails == 0 and "qa!" or "cq!")

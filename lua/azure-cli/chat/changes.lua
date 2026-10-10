@@ -36,6 +36,7 @@ local DIFFBUF = require("azure-cli.diffbuf")
 local current_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_current")
 local list_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_list")
 local link_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_links")
+local hunk_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_hunks")
 
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
 
@@ -64,6 +65,55 @@ function M.files(raw)
   return out
 end
 
+-- One file's diff (`raw`: its section of `git diff`, header included) cut
+-- into hunks: { header = { lines before the first @@ }, hunks = { { lines
+-- (the @@ line and its body, as git wrote them), first, last (the rows
+-- cache.parse_diff shows it on), key (stable across refreshes: its text) } } }.
+-- Counts rows exactly as parse_diff does (the same lines dropped), so a
+-- row of the diff pane finds its hunk. Pure.
+local function is_meta(l)
+  return l:match("^%+%+%+") or l:match("^%-%-%-") or l:match("^diff ") or l:match("^index ")
+    or l:match("^new file") or l:match("^deleted file") or l:match("^old mode") or l:match("^new mode")
+    or l:match("^rename ") or l:match("^similarity ") or l:match("^copy ") or l:match("^Binary files ")
+    or l:match("^\\")
+end
+
+function M.hunks(raw)
+  local out = { header = {}, hunks = {} }
+  local row, cur = 0, nil
+  for _, l in ipairs(raw or {}) do
+    if l:match("^@@") then
+      cur = { lines = { l }, first = row + 1, last = row }
+      out.hunks[#out.hunks + 1] = cur
+    elseif not cur then
+      out.header[#out.header + 1] = l
+      if not is_meta(l) then row = row + 1 end
+    else
+      cur.lines[#cur.lines + 1] = l
+      if not is_meta(l) then
+        row = row + 1
+        cur.last = row
+      end
+    end
+  end
+  for _, h in ipairs(out.hunks) do h.key = table.concat(h.lines, "\n") end
+  return out
+end
+
+-- The hunk shown on `row`, or nil. Pure.
+function M.hunk_at(parsed, row)
+  for i, h in ipairs(parsed.hunks) do
+    if row >= h.first and row <= h.last then return h, i end
+  end
+  return nil
+end
+
+-- A patch of just hunk `h` of `parsed` (git apply takes it). Pure.
+function M.hunk_patch(parsed, h)
+  local out = vim.list_extend(vim.list_slice(parsed.header, 1, #parsed.header), h.lines)
+  return table.concat(out, "\n") .. "\n"
+end
+
 local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
 
 local LIST_HELP = {
@@ -84,6 +134,9 @@ local DIFF_HELP = {
   { "comment", "queue a change on this line (in visual mode: these lines) for the agent" },
   { "batch_submit", "send the queued changes to the agent, in one message" },
   { "delete_thread", "forget the question or queued change under this line" },
+  "Hunks",
+  { "accept_hunk", "accept the change under the cursor - a \u{2713} beside it (again: take it back)" },
+  { "reject_hunk", "take the change under the cursor out of the worktree (asks)" },
   { "goto_plan", "the plan line this code carries out (or the plan's entry for the file)" },
   { "ask", "ask about this line (\"why did you choose this here?\") - the answer shows under it" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
@@ -122,9 +175,17 @@ local function set_diff_winbar(path, map)
   for _, th in ipairs(view.threads or {}) do if th.file == path then mine[#mine + 1] = th end end
   local nq = THREADS().counts(mine)
   local _, queued = THREADS().counts(view.threads)
-  pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) },
-    { nq > 0 and ("[" .. THREADS().count_label(nq) .. "]") or nil,
-      queued > 0 and ("[\u{270E}" .. queued .. " queued - gS sends]") or nil }))
+  local nh, na = 0, 0
+  local accepted = view.accepted and view.accepted[path] or {}
+  for _, h in ipairs(M.hunks(view.diffs[path] or {}).hunks) do
+    nh = nh + 1
+    if accepted[h.key] then na = na + 1 end
+  end
+  local tags = {}
+  if nq > 0 then tags[#tags + 1] = "[" .. THREADS().count_label(nq) .. "]" end
+  if queued > 0 then tags[#tags + 1] = "[\u{270E}" .. queued .. " queued - gS sends]" end
+  if na > 0 then tags[#tags + 1] = "[\u{2713} " .. na .. "/" .. nh .. " accepted]" end
+  pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) }, tags))
 end
 
 -- The file-list row of the file in the diff pane, marked as the reviewer
@@ -207,6 +268,82 @@ local function goto_plan(idx)
   local line = k and PLAN.resolve_line(lines, k.plan_line, k.plan_anchor) or PLAN.file_entry_line(lines, f.path)
   if not line then return notify("The plan doesn't mention " .. f.path .. ".") end
   PLAN.open(view.plan.key, line)
+end
+
+-- The hunks you accepted (gy), per worktree: { [path] = { [hunk key] = true } }.
+local function hunks_path(dir) return (why_path(dir):gsub("%.json$", ".hunks.json")) end
+local function hunks_load(dir)
+  local ok, lines = pcall(vim.fn.readfile, hunks_path(dir))
+  local okd, t = pcall(vim.json.decode, ok and table.concat(lines, "\n") or "")
+  return okd and type(t) == "table" and t or {}
+end
+local function hunks_save()
+  local path = hunks_path(view.dir)
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  pcall(vim.fn.writefile, { vim.json.encode(view.accepted) }, path)
+end
+
+-- File `idx`'s hunks, and how many of them you accepted.
+local function file_hunks(idx)
+  local f = view.files[idx]
+  local parsed = M.hunks(view.diffs[f.path] or {})
+  local mine, n = view.accepted[f.path] or {}, 0
+  for _, h in ipairs(parsed.hunks) do if mine[h.key] then n = n + 1 end end
+  return parsed, n
+end
+
+-- A ✓ beside each hunk you accepted.
+local function draw_hunks(idx)
+  local f = view and view.files[idx]
+  local buf = f and view.bufs[f.path]
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then return end
+  vim.api.nvim_buf_clear_namespace(buf, hunk_ns, 0, -1)
+  local parsed = file_hunks(idx)
+  local mine = view.accepted[f.path] or {}
+  for _, h in ipairs(parsed.hunks) do
+    if mine[h.key] then
+      for r = h.first, h.last do
+        pcall(vim.api.nvim_buf_set_extmark, buf, hunk_ns, r - 1, 0,
+          { sign_text = r == h.first and "\u{2713}" or "\u{2502}", sign_hl_group = "AzureCliStatusOk", priority = 20 })
+      end
+    end
+  end
+end
+
+-- gy: accept the hunk under the cursor (gy again takes it back).
+local function accept_hunk(idx)
+  local f = view.files[idx]
+  local h = M.hunk_at(file_hunks(idx), vim.api.nvim_win_get_cursor(0)[1])
+  if not h then return notify("Put the cursor on a change.") end
+  view.accepted[f.path] = view.accepted[f.path] or {}
+  view.accepted[f.path][h.key] = (not view.accepted[f.path][h.key]) or nil
+  hunks_save()
+  draw_hunks(idx)
+  set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
+end
+
+-- gn: take the hunk under the cursor back out of the worktree (asks).
+local function reject_hunk(idx)
+  local f = view.files[idx]
+  if view.title:find("(last commit)", 1, true) then
+    return notify("This is the pushed commit - there's nothing uncommitted to take back.", vim.log.levels.WARN)
+  end
+  local parsed = file_hunks(idx)
+  local h = M.hunk_at(parsed, vim.api.nvim_win_get_cursor(0)[1])
+  if not h then return notify("Put the cursor on a change.") end
+  local dir, label = view.dir, f.path .. " (" .. h.lines[1]:match("^(@@.-@@)") .. ")"
+  require("azure-cli.prompt").confirm({ prompt = "Take this change to " .. label .. " out of the worktree?",
+    yes = "Take it out", no = "Keep it" }, function(yes)
+    if not yes then return end
+    local tmp = vim.fn.tempname()
+    vim.fn.writefile(vim.split(M.hunk_patch(parsed, h), "\n", { plain = true }), tmp)
+    require("azure-cli.chat.tools").git({ "git", "-C", dir, "apply", "-R", tmp }, function(ok, _, err)
+      pcall(vim.fn.delete, tmp)
+      if not ok then return notify("Couldn't take it out: " .. tostring(err), vim.log.levels.WARN) end
+      require("azure-cli.chat").note("You took a change out of the agent's work: " .. label .. ".")
+      M.refresh()
+    end)
+  end)
 end
 
 local function draw_threads(idx)
@@ -432,6 +569,8 @@ local function diff_buf(idx)
     comment_here(idx, a, b)
   end, { desc = "queue a change on these lines for the agent", mode = "x" })
   K.bind(buf, "diff", "batch_submit", submit_changes, { desc = "send the queued changes to the agent" })
+  K.bind(buf, "diff", "accept_hunk", function() accept_hunk(idx) end, { desc = "accept this change (again: undo)" })
+  K.bind(buf, "diff", "reject_hunk", function() reject_hunk(idx) end, { desc = "take this change out of the worktree" })
   K.bind(buf, "diff", "delete_thread", function() delete_here(idx) end, { desc = "forget what's under this line" })
   K.bind(buf, "diff", "expand_thread", function()
     local th = thread_here(idx)
@@ -460,6 +599,7 @@ local function show(idx, focus)
   view.current = idx
   draw_threads(idx)
   draw_links(idx)
+  draw_hunks(idx)
   -- Again once the window has drawn its gutter: the answers wrap to what's
   -- left of the width.
   vim.schedule(function() if view and view.current == idx then draw_threads(idx) end end)
@@ -563,7 +703,8 @@ function M.open(title, dir, raw, keep)
     and valid_win(view.diff_win)
   local old = reuse and view or nil
   view = { files = M.files(raw), diffs = CACHE.split_diff(raw), bufs = {}, maps = {}, title = title, dir = dir,
-    width = width, threads = (old and old.dir == dir) and old.threads or why_load(dir) }
+    width = width, threads = (old and old.dir == dir) and old.threads or why_load(dir),
+    accepted = (old and old.dir == dir) and old.accepted or hunks_load(dir) }
   reanchor()
   -- The plan this change was made from, if any: which files it doesn't list.
   local paths = {}

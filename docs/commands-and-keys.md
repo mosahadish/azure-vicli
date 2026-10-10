@@ -132,6 +132,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `accept_hunk` | `gy` |
 | `active_filter` | `gA` |
 | `ask` | `ga` |
 | `back` | `<BS>` |
@@ -165,6 +166,7 @@ paste the output here after changing a default.
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `reject_hunk` | `gn` |
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |

@@ -1296,6 +1296,35 @@ do
   e = answered(n)
   if not (e and e.text:find("fix requests: 1", 1, true)) then return fail("gS didn't send the queued change: " .. vim.inspect(e and e.text)) end
   if not drawn(dbuf, "sent with your change request") then return fail("the sent change isn't marked as sent") end
+  -- gy accepts the hunk (a ✓, counted), gy again takes that back; gn
+  -- takes it out of the worktree after asking.
+  vim.api.nvim_set_current_win(dwin)
+  vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
+  local hns = vim.api.nvim_get_namespaces()["azure_cli_chat_changes_hunks"]
+  feed("gy")
+  if #vim.api.nvim_buf_get_extmarks(dbuf, hns, 0, -1, {}) == 0 or not vim.wo[dwin].winbar:find("1/1 accepted", 1, true) then
+    return fail("gy didn't accept the hunk: " .. vim.wo[dwin].winbar)
+  end
+  feed("gy")
+  if #vim.api.nvim_buf_get_extmarks(dbuf, hns, 0, -1, {}) ~= 0 then return fail("gy again didn't take the accept back") end
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      if (opts.format_item and opts.format_item(it) or tostring(it)):find("Take it out", 1, true) then return cb(it, i) end
+    end
+    cb(nil)
+  end
+  feed("gn")
+  vim.ui.select = real_select
+  local wt = require("azure-cli.chat.tools_fix").find_story(3002)
+  local gone = vim.wait(10000, function()
+    return not table.concat(vim.fn.readfile(wt .. "/src/auth.py"), "\n"):find("PLANNED_CHANGE", 1, true)
+  end, 50)
+  if not gone then return fail("gn didn't take the hunk out of the worktree") end
+  local noted = vim.wait(5000, function()
+    return st.entries[#st.entries].role == "note" and st.entries[#st.entries].text:find("took a change out", 1, true) ~= nil
+  end, 50)
+  if not noted then return fail("taking the hunk out left no note in the chat") end
   print("== the plan ==")
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))
