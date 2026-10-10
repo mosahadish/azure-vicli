@@ -312,7 +312,6 @@ function M.set_winbars()
   local model = M.current_model(agent)
   if model then tags[#tags + 1] = "[" .. model .. "]" end
   if st.running then tags[#tags + 1] = "[" .. spinner() .. " working]" end
-  if st.session_id then tags[#tags + 1] = "[session]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
   for _, w in pairs(st.wins) do
@@ -766,10 +765,28 @@ end
 -- agent instructions and skills apply), else Neovim's cache directory.
 local function agent_cwd(snap)
   local pr = snap and snap.pr
+  local TOOLS = require("azure-cli.chat.tools")
   if type(pr) == "table" then
-    local TOOLS = require("azure-cli.chat.tools")
     local clone = TOOLS.clone_path(TOOLS.pr_record(pr.id) or pr)
     if clone ~= "" and vim.fn.isdirectory(clone) == 1 then return clone end
+  end
+  -- A work item (an agent started from the board for one): the clone of a
+  -- PR linked to it, else any local clone - so the agent can read the code
+  -- it plans for, not just search it through azure-vicli's tools.
+  local wi = snap and type(snap.work_item) == "table" and snap.work_item.id
+  if wi then
+    local PW = require("azure-cli.pr_workitems")
+    local first
+    for _, p in ipairs((require("azure-cli.state").PR_LIST_CACHE or {}).prs or {}) do
+      local clone = TOOLS.clone_path(p)
+      if clone ~= "" and vim.fn.isdirectory(clone) == 1 then
+        first = first or clone
+        for _, w in ipairs(PW.cached(p.id) or {}) do
+          if tostring(w.id) == tostring(wi) then return clone end
+        end
+      end
+    end
+    if first then return first end
   end
   local dir = vim.fn.stdpath("cache") .. "/azure-cli"
   vim.fn.mkdir(dir, "p")

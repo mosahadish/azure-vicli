@@ -327,7 +327,8 @@ setmetatable(M, { __call = function(_, T)
         local linked = args.steps and require("azure-cli.chat.plan").set_links(target, args.steps) or nil
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
-          if env.background and env.background() then
+          local hidden = env.background and env.background()
+          if hidden then
             M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
             require("azure-cli.shell").notify(t.label .. "'s change is ready for you - the Agents screen opens it.")
           else
@@ -350,7 +351,10 @@ setmetatable(M, { __call = function(_, T)
               .. #check.missing .. " planned file(s) not changed")
           end
           if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
-          done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked })
+          done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked,
+            shown = not hidden,
+            note = hidden and ("The user is looking at something else: the change isn't on screen, but it waits for "
+              .. "them on the Agents screen - say it's ready, not that you opened it.") or nil })
         end, T.git)
       end,
     },

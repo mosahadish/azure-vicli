@@ -1435,6 +1435,7 @@ function M.tools(T)
           missing_sections = M.missing(args.markdown, M.template()),
           next = "Stop here and wait for the user: they read the plan, may ask about lines of it, then approve it "
             .. "(you'll get a message) or ask for changes. Don't call start_fix / start_story before it's approved.",
+          shown = not (env and env.background and env.background()),
         })
       end,
     },

@@ -1478,6 +1478,10 @@ do
     return fail("each agent's calls didn't reach its own conversation:\n" .. answer(c1) .. "\n" .. answer(c2))
   end
   if #STATE.chat.entries ~= main_turns then return fail("the main conversation got the agents' turns") end
+  -- They run in the repository's clone, so they can read the code they plan for.
+  if not (answer(c1):find(" in widgets", 1, true) and answer(c2):find(" in widgets", 1, true)) then
+    return fail("a board agent didn't start in the widgets clone:\n" .. answer(c1) .. "\n" .. answer(c2))
+  end
   if vim.api.nvim_get_current_tabpage() ~= vim.api.nvim_win_get_tabpage(av.win) then
     return fail("a background agent pulled the focus into its plan")
   end

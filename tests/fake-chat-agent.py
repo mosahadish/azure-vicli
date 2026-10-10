@@ -133,7 +133,8 @@ def answer_turn(mcp, init, message, turn, model, session):
         call("submit_plan", {"work_item_id": wid, "title": "Plan for {0}".format(wid), "markdown": "\n".join([
             "# Plan for {0}".format(wid), "", "## Goal", "G", "", "## Approach", "A", "", "## Files",
             "- `src/auth.py` - x"])})
-        out[:] = ["planned #{0} as agent {1}".format(wid, os.environ.get("AZVICLI_CHAT_AGENT"))]
+        out[:] = ["planned #{0} as agent {1} in {2}".format(wid, os.environ.get("AZVICLI_CHAT_AGENT"),
+                                                            os.path.basename(os.getcwd()))]
     elif "I approve the plan" in asked:
         res = json.loads(call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main",
                                               "name": "feature/3002-planned"})[0])
