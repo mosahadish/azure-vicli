@@ -162,6 +162,8 @@ do
   P.confirm({ title = "Delete?", prompt = "It goes.", yes = "Delete", no = "Keep", danger = true }, function(b) yes = b end)
   check("popup: confirm", yes == true and popup_call.title == "Delete?" and popup_call.lines[1] == "It goes."
     and popup_call.yes == "Delete" and popup_call.default == "no")
+  P.confirm({ title = "Reject PR #7?", yes = "Reject", no = "Cancel" }, function() end)
+  check("popup: a title alone is the whole question", popup_call.title == "Reject PR #7?" and #popup_call.lines == 0)
   ui_style = "select"
 end
 

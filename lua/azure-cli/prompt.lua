@@ -138,7 +138,9 @@ function M.confirm(opts, cb)
   local yes = opts.yes or "Yes"
   local no = opts.no or "Cancel"
   if popup_style() then
-    return require("azure-cli.ui").confirm({ title = opts.title, lines = { opts.prompt or "Are you sure?" }, yes = yes,
+    -- With a title, the question can be the title alone (no prompt).
+    local body = opts.prompt and { opts.prompt } or (opts.title and {} or { "Are you sure?" })
+    return require("azure-cli.ui").confirm({ title = opts.title, lines = body, yes = yes,
       no = no, default = opts.danger and "no" or nil, details = opts.details, details_ft = opts.details_ft }, cb)
   end
   M.select({ prompt = opts.prompt or "Are you sure?", items = { yes, no }, silent = true }, function(choice)

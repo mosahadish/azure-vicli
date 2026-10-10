@@ -1826,8 +1826,6 @@ local function requeue_pr()
   if pr.buildStatus and pr.buildStatus ~= "" and pr.buildStatus ~= "none" then
     body[#body + 1] = "Build: " .. pr.buildStatus
   end
-  body[#body + 1] = ""
-  body[#body + 1] = "Runs its build validation again on Azure DevOps."
   UI.confirm({ title = "Re-queue the build?", lines = body, yes = "Re-queue", no = "Cancel" }, function(yes)
     if yes then requeue_now(pr) end
   end)

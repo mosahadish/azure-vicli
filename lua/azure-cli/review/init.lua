@@ -1751,8 +1751,8 @@ local function cast_vote()
   })
   end
   if vote.key == "-10" then
-    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?", prompt = "Your vote becomes Rejected.",
-      yes = "Reject", no = "Cancel", danger = true },
+    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?", yes = "Reject", no = "Cancel",
+      danger = true },
       function(yes) if yes then go() end end)
   else
     go()
