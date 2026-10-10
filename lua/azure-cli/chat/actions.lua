@@ -228,7 +228,7 @@ pick_history = function()
   local list = STORE.list()
   if #list == 0 then return notify("No saved conversations yet.") end
   local st = STATE()
-  require("azure-cli.prompt").select({ prompt = "Conversation", items = list,
+  require("azure-cli.prompt").select({ prompt = "Conversation", items = list, search = true,
     format = function(c)
       return os.date("%m-%d %H:%M", c.updated) .. "  " .. c.title .. "  (" .. c.turns .. " turns"
         .. (c.agent and (", " .. c.agent) or "") .. ")"

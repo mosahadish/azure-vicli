@@ -649,10 +649,11 @@ end
 
 -- The question popup's lines and highlights (M.choose): the body wrapped
 -- to `width`, a blank line, the buttons - in a row when they fit, else one
--- per line - the focused one AzureCliButtonActive (all of them plain while
--- `waiting`, the first moment keys don't count yet), then `hint`, muted.
--- Returns lines, hls ({ row, from, to, group }), the buttons' rows. Pure.
-function M.choose_lines(body, labels, focused, width, hint, waiting)
+-- per line (always with `stack`, a menu), as wide as the popup - the
+-- focused one AzureCliButtonActive (all of them plain while `waiting`, the
+-- first moment keys don't count yet), then `hint`, muted. Returns lines,
+-- hls ({ row, from, to, group }), the buttons' rows. Pure.
+function M.choose_lines(body, labels, focused, width, hint, waiting, stack)
   local lines, hls = {}, {}
   -- `l` as lines of the popup: as it is when it fits (spacing and all),
   -- else wrapped at word boundaries, one cell of margin on each side.
@@ -677,7 +678,7 @@ function M.choose_lines(body, labels, focused, width, hint, waiting)
   local row_text = " " .. table.concat(caps, "   ")
   local rows = {}
   local function group(i) return (i == focused and not waiting) and "AzureCliButtonActive" or "AzureCliButton" end
-  if vim.fn.strdisplaywidth(row_text) <= width then
+  if not stack and vim.fn.strdisplaywidth(row_text) <= width then
     lines[#lines + 1] = row_text
     local col = 1
     for i, c in ipairs(caps) do
@@ -686,7 +687,11 @@ function M.choose_lines(body, labels, focused, width, hint, waiting)
     end
     for i = 1, #caps do rows[i] = #lines end
   else
-    for i, c in ipairs(caps) do
+    -- As wide as the popup (or the widest label), so they read as a list.
+    local widest = width - 6
+    for _, l in ipairs(labels) do widest = math.max(widest, vim.fn.strdisplaywidth(l)) end
+    for i, l in ipairs(labels) do
+      local c = "  " .. l .. string.rep(" ", widest - vim.fn.strdisplaywidth(l)) .. "  "
       lines[#lines + 1] = " " .. c
       hls[#hls + 1] = { #lines - 1, 1, 1 + #c, group(i) }
       rows[i] = #lines
@@ -705,7 +710,10 @@ end
 --   title, lines    what it's about (wrapped)
 --   buttons         their labels; default = the one focused first (1)
 --   keys            shortcuts: { y = 1, n = 2 } presses that button
---   cancel          what q / <Esc> / leaving the popup answers (the last)
+--   cancel          what q / <Esc> / leaving the popup answers (the last;
+--                   false: nothing - cb(nil), for a menu with no Cancel)
+--   stack           one button per line, numbered keys up to the caller
+--                   (prompt.lua's menus)
 --   details         longer text (a diff, the text a tool would send) in a
 --                   window above, details_ft its filetype - scrolled from the
 --                   popup with <C-d> / <C-u> / <C-e> / <C-y>
@@ -722,7 +730,8 @@ function M.choose(opts, cb)
   opts = opts or {}
   M.theme()
   local labels = opts.buttons or { "Yes", "Cancel" }
-  local cancel = opts.cancel or #labels
+  local cancel = opts.cancel
+  if cancel == nil then cancel = #labels elseif cancel == false then cancel = nil end
   local done = false
   local details_win
   local function finish(i)
@@ -742,7 +751,7 @@ function M.choose(opts, cb)
   local function as_select()
     details_float({ big = true, title = "Details", focus = false })
     local prompt = (opts.title or "") .. ((opts.lines and opts.lines[1]) and (": " .. opts.lines[1]) or "")
-    require("azure-cli.prompt").select({ prompt = prompt, items = labels, silent = true }, function(_, i)
+    require("azure-cli.prompt").select({ prompt = prompt, items = labels, silent = true, search = true }, function(_, i)
       finish(i or cancel)
     end)
   end
@@ -758,7 +767,7 @@ function M.choose(opts, cb)
   for k, i in pairs(opts.keys or {}) do shortcuts[#shortcuts + 1] = { k = k, i = i } end
   table.sort(shortcuts, function(a, b) return a.i < b.i or (a.i == b.i and a.k < b.k) end)
   for _, s in ipairs(shortcuts) do hint_parts[#hint_parts + 1] = s.k .. " " .. labels[s.i]:lower() end
-  hint_parts[#hint_parts + 1] = "Esc " .. labels[cancel]:lower()
+  hint_parts[#hint_parts + 1] = cancel and ("Esc " .. labels[cancel]:lower()) or "Esc cancels"
   if #labels > 1 then hint_parts[#hint_parts + 1] = "Tab moves" end
   if opts.details and #opts.details > 0 then hint_parts[#hint_parts + 1] = "C-d / C-u scroll above" end
   local hint = opts.hint or table.concat(hint_parts, " \u{00B7} ")
@@ -772,7 +781,7 @@ function M.choose(opts, cb)
   local rows = {}
   local function draw()
     local lines, hls
-    lines, hls, rows = M.choose_lines(opts.lines, labels, focused, width, hint, not armed())
+    lines, hls, rows = M.choose_lines(opts.lines, labels, focused, width, hint, not armed(), opts.stack)
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false

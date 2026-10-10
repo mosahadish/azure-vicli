@@ -1036,7 +1036,7 @@ local function pick_assignee(current, cb)
     local items = { { label = "(me)", value = "" } }
     for _, m in ipairs(members) do items[#items + 1] = { label = m.name, value = m.name } end
     items[#items + 1] = { label = "(type a name\u{2026})", typed = true }
-    PROMPT.select({ prompt = "Assign to", items = items,
+    PROMPT.select({ prompt = "Assign to", items = items, search = true,
       current = function(x) return x.value ~= nil and x.value ~= "" and x.value == current end }, function(choice)
       if not choice then return end
       if choice.typed then

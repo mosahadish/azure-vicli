@@ -164,9 +164,10 @@ local function leave(force)
   if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") .. " (gS submits)" end
   if drafts > 0 then what[#what + 1] = drafts .. " unsent draft" .. (drafts == 1 and "" or "s") end
   require("azure-cli.prompt").confirm({
+    title = EMBED and "Close the reviewer?" or "Quit?",
     prompt = "PR #" .. ID .. " has " .. table.concat(what, " and ")
-      .. (EMBED and ". Close the reviewer? (kept until Neovim exits)" or ". Quit? (they will be lost)"),
-    yes = EMBED and "Close" or "Quit", no = "Stay",
+      .. (EMBED and " - kept until Neovim exits." or " - they will be lost."),
+    yes = EMBED and "Close" or "Quit", no = "Stay", danger = not EMBED,
   }, function(yes) if yes then go() end end)
 end
 
@@ -1750,7 +1751,8 @@ local function cast_vote()
   })
   end
   if vote.key == "-10" then
-    require("azure-cli.prompt").confirm({ prompt = "Reject PR #" .. ID .. "?", yes = "Reject", no = "Cancel" },
+    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?", prompt = "Your vote becomes Rejected.",
+      yes = "Reject", no = "Cancel", danger = true },
       function(yes) if yes then go() end end)
   else
     go()

@@ -26,6 +26,15 @@ vim = {
   },
 }
 package.loaded["azure-cli.notify"] = { flash = function(msg) flashes[#flashes + 1] = msg end }
+-- ui.confirm: "select" for the vim.ui.* cases, "popup" for the last ones -
+-- with ui.lua stubbed, recording what the popup was asked for.
+local ui_style = "select"
+package.loaded["azure-cli.config"] = { get = function() return { ui = { confirm = ui_style } } end }
+local popup_call, popup_answer
+package.loaded["azure-cli.ui"] = {
+  choose = function(o, cb) popup_call = o cb(popup_answer) end,
+  confirm = function(o, cb) popup_call = o cb(popup_answer == 1) end,
+}
 
 local P = dofile(path)
 
@@ -122,6 +131,38 @@ do
   got = "unset"
   P.confirm({ prompt = "Merge?" }, function(b) got = b end)
   check("confirm: Esc is false", got == false)
+end
+
+-- ui.confirm = "popup": a short menu and a yes/no question are the popup;
+-- a long list, or one marked `search`, stays vim.ui.select.
+do
+  ui_style = "popup"
+  last_select = nil
+  popup_answer = 2
+  local got, idx
+  P.select({ prompt = "Vote:", items = { "Approve", "Wait", "Reject" }, current = "Wait" }, function(c, i) got, idx = c, i end)
+  check("popup: a short menu", popup_call and popup_call.stack and popup_call.title == "Vote"
+    and popup_call.buttons[1] == "1  Approve" and popup_call.buttons[2] == "2  Wait  (current)"
+    and popup_call.keys["3"] == 3 and popup_call.default == 2 and popup_call.cancel == false and last_select == nil)
+  check("popup: its answer is the item", got == "Wait" and idx == 2)
+  popup_answer = nil
+  got = "unset"
+  P.select({ items = { "a", "b" } }, function(c) got = c end)
+  check("popup: Esc is cb(nil)", got == nil)
+  popup_call = nil
+  local many = {}
+  for i = 1, P.POPUP_MAX + 1 do many[i] = "x" .. i end
+  P.select({ items = many }, function() end)
+  check("popup: a long list stays vim.ui.select", popup_call == nil and last_select and #last_select.items == #many)
+  last_select = nil
+  P.select({ items = { "a" }, search = true }, function() end)
+  check("popup: search = true stays vim.ui.select", popup_call == nil and last_select ~= nil)
+  popup_answer = 1
+  local yes
+  P.confirm({ title = "Delete?", prompt = "It goes.", yes = "Delete", no = "Keep", danger = true }, function(b) yes = b end)
+  check("popup: confirm", yes == true and popup_call.title == "Delete?" and popup_call.lines[1] == "It goes."
+    and popup_call.yes == "Delete" and popup_call.default == "no")
+  ui_style = "select"
 end
 
 print(fails == 0 and "test-prompt: all cases pass" or ("test-prompt: " .. fails .. " unexpected"))

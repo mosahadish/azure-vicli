@@ -36,7 +36,8 @@ for _, l in ipairs(long_hint) do if vim.fn.strdisplaywidth(l) > 30 then fits = f
 check("lines: a long hint wraps too", fits and #long_hint >= 5, vim.inspect(long_hint))
 local stacked, shls, srows = UI.choose_lines({}, { "Approve", "Approve, and let it push without asking", "Cancel" }, 2, 40)
 check("lines: buttons that don't fit in a row go one per line", srows[1] == 2 and srows[2] == 3 and srows[3] == 4
-  and stacked[3] == "   Approve, and let it push without asking  " and shls[2][4] == "AzureCliButtonActive",
+  and vim.trim(stacked[3]) == "Approve, and let it push without asking" and shls[2][4] == "AzureCliButtonActive"
+  and shls[1][3] - shls[1][2] == shls[2][3] - shls[2][2],
   vim.inspect(stacked))
 
 -- The popup: opens it, presses `keys` (after `wait` ms), returns its answers.

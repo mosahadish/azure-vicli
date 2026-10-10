@@ -65,7 +65,7 @@ function M.palette(buf)
     if a.action ~= "palette" then items[#items + 1] = a end
   end
   local win = vim.api.nvim_get_current_win()
-  require("azure-cli.prompt").select({ items = items, prompt = "Do", silent = true,
+  require("azure-cli.prompt").select({ items = items, prompt = "Do", silent = true, search = true,
     format = function(a) return a.desc .. "  (" .. a.key .. ")" end }, function(a)
     if not a then return end
     vim.schedule(function()
