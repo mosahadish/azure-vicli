@@ -487,6 +487,13 @@ the rest wait and start as the others finish. An agent working in the
 background doesn't pull you into its plan when it's done: the status
 strip counts the plans waiting for you.
 
+**Questions, one at a time.** A yes/no question from a plan's agent says
+whose it is - `[#3001] The agent wants to commit "..." and push it` - and
+when two agents ask at once, the second waits until you've answered the
+first, so an answer never goes to a question you didn't read. The status
+strip counts what's going on: `⠹ 2 agents working · ⌛ 1 queued · ⚠ a
+question waits for you · ● 2 plans wait for you`.
+
 **The Agents screen** (`A` on either dashboard, `gA` in the chat,
 `:AzureCli agents`) lists every plan's agent - what it's doing (working,
 with its latest step; waiting for a free agent; its plan waiting for you;

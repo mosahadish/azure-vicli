@@ -177,6 +177,25 @@ do
   check("strip_text: all three", CORE.strip_text({ running = { frame = "*", label = "Copilot", seconds = 4 }, question = true,
     waiting = { "#3002" } }) == "* Copilot 4s  \u{00B7}  \u{26A0} a question waits for you  \u{00B7}  \u{25CF} plan #3002 waits for you")
   check("strip_text: several plans", CORE.strip_text({ waiting = { "#1", "PR !2" } }) == "\u{25CF} 2 plans wait for you")
+  check("strip_text: one agent of several", CORE.strip_text({ frame = "*", working = { { label = "Claude #7", seconds = 3 } } })
+    == "* Claude #7 3s")
+  check("strip_text: agents, queue, questions", CORE.strip_text({ frame = "*", working = { {}, {} }, queued = 1, question = true,
+    more_questions = 1 }) == "* 2 agents working  \u{00B7}  \u{231B} 1 queued  \u{00B7}  \u{26A0} 2 questions wait for you")
+  -- One question at a time: a second one waits for the first's answer.
+  local PROMPT = require("azure-cli.prompt")
+  local real = PROMPT.confirm
+  local asked = {}
+  PROMPT.confirm = function(o, cb) asked[#asked + 1] = { o.prompt, cb } end
+  local answers = {}
+  CHAT.confirm("[#1] push?", function(y) answers[#answers + 1] = "1:" .. tostring(y) end)
+  CHAT.confirm("[#2] vote?", function(y) answers[#answers + 1] = "2:" .. tostring(y) end)
+  check("confirm: the second question waits", #asked == 1 and asked[1][1] == "[#1] push? Allow?")
+  asked[1][2](true)
+  vim.wait(200, function() return #asked == 2 end, 10)
+  check("confirm: then it's asked", #asked == 2 and asked[2][1] == "[#2] vote? Allow?" and answers[1] == "1:true")
+  asked[2][2](false)
+  check("confirm: each answer to its own question", answers[2] == "2:false")
+  PROMPT.confirm = real
 end
 
 -- --- why_message ---------------------------------------------------------------

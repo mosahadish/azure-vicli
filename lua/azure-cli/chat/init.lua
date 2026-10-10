@@ -288,12 +288,18 @@ end
 -- launcher's tab line shows it on the right; for your own statusline:
 -- { function() return require("azure-cli.chat").strip() end }.
 function M.strip()
-  local st = STATE()
-  local s = { question = st.question ~= nil }
-  if st.running then
-    s.running = { frame = spinner(), label = agent_label(),
-      seconds = math.max(0, os.time() - ((st.running.entry or {}).started or os.time())) }
+  local main = MAIN()
+  local s = { question = main.question ~= nil, more_questions = main.questions_waiting or 0, working = {} }
+  for _, c in ipairs(M.conversations()) do
+    if c.running then
+      local label = agent_label() .. (c.label and (" " .. c.label) or "")
+      table.insert(s.working, { label = label,
+        seconds = math.max(0, os.time() - ((c.running.entry or {}).started or os.time())) })
+    end
   end
+  s.frame = SPINNER[math.floor(vim.uv.now() / 120) % #SPINNER + 1]
+  local okq, q = pcall(function() return #require("azure-cli.chat.agents").queued() end)
+  s.queued = okq and q or 0
   local ok, waiting = pcall(function() return require("azure-cli.chat.plan").waiting() end)
   s.waiting = ok and waiting or {}
   return CORE.strip_text(s)
@@ -663,7 +669,18 @@ vim.api.nvim_create_autocmd("WinClosed", {
 
 -- A float with `lines` next to a yes/no question (the diff a push would
 -- send, the text a comment would post), closed once answered.
+-- One question at a time: with several agents, another one asking while
+-- you answer waits here, so each answer goes to the question you read.
+local asking, waiting_questions = false, {}
+
 local function confirm(question, cb, details)
+  if asking then
+    table.insert(waiting_questions, { question, cb, details })
+    MAIN().questions_waiting = #waiting_questions
+    M.set_winbars()
+    return
+  end
+  asking = true
   local win
   if details and #details > 0 then
     win = require("azure-cli.ui").open_float(details, { big = true, title = "Details", focus = false })
@@ -671,16 +688,27 @@ local function confirm(question, cb, details)
     if buf and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) then vim.bo[buf].filetype = "diff" end
   end
   notify(question .. " (answer in the prompt)")
-  STATE().question = question
+  MAIN().question = question
   M.set_winbars()
   require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, function(yes)
-    STATE().question = nil
-    M.set_winbars()
+    MAIN().question = nil
+    asking = false
     if win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
     cb(yes)
+    local nxt = table.remove(waiting_questions, 1)
+    MAIN().questions_waiting = #waiting_questions
+    M.set_winbars()
+    if nxt then vim.schedule(function() confirm(nxt[1], nxt[2], nxt[3]) end) end
   end)
 end
 M.confirm = confirm
+
+-- A question from conversation `conv`'s agent says whose it is: "[#3001] ...".
+local function confirm_for(conv)
+  return function(question, cb, details)
+    confirm(((conv and conv.label) and ("[" .. conv.label .. "] ") or "") .. question, cb, details)
+  end
+end
 
 local function tool_env(entry, conv)
   return {
@@ -698,7 +726,7 @@ local function tool_env(entry, conv)
       table.insert(entry.tools, line)
       render_soon()
     end,
-    confirm = confirm,
+    confirm = confirm_for(conv),
   }
 end
 
@@ -918,7 +946,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     local details = {}
     local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
     if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
-    confirm((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), function(yes)
+    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), function(yes)
       local pick
       for _, o in ipairs(options) do
         if yes and (o.kind == "allow_once" or o.kind == "allow_always") then pick = pick or o.optionId end

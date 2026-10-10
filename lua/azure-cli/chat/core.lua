@@ -25,13 +25,26 @@ Refer to pull requests as !<id> and work items as #<id>, so the user can open th
 -- running = { frame, label, seconds } while the agent works, question =
 -- true while a yes/no waits for you, waiting = labels of the plans waiting
 -- for your review }. "" when there's nothing to say. Pure.
+-- With several agents, `working` = { { label, seconds } } and `frame`:
+-- one shows like `running`, more as "⠹ 3 agents working"; `queued` counts
+-- the ones waiting for a free agent, `more_questions` the questions
+-- waiting behind the one asked.
 function M.strip_text(s)
   s = s or {}
   local parts = {}
-  if s.running then
+  local w = s.working or {}
+  if #w > 1 then
+    parts[#parts + 1] = (s.frame or "*") .. " " .. #w .. " agents working"
+  elseif #w == 1 then
+    parts[#parts + 1] = (s.frame or "*") .. " " .. w[1].label .. " " .. tostring(w[1].seconds) .. "s"
+  elseif s.running then
     parts[#parts + 1] = s.running.frame .. " " .. s.running.label .. " " .. tostring(s.running.seconds) .. "s"
   end
-  if s.question then parts[#parts + 1] = "\u{26A0} a question waits for you" end
+  if (s.queued or 0) > 0 then parts[#parts + 1] = "\u{231B} " .. s.queued .. " queued" end
+  if s.question then
+    parts[#parts + 1] = "\u{26A0} " .. ((s.more_questions or 0) > 0 and ((s.more_questions + 1) .. " questions wait")
+      or "a question waits") .. " for you"
+  end
   local w = s.waiting or {}
   if #w == 1 then
     parts[#parts + 1] = "\u{25CF} plan " .. w[1] .. " waits for you"
