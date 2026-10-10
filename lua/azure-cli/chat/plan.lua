@@ -215,6 +215,28 @@ function M.for_worktree(dir)
   return pr and M.load("pr-" .. pr) or nil
 end
 
+-- What revision `new` changed against `old` (both lists of lines), from
+-- `hunks` = vim.diff's { start_old, count_old, start_new, count_new }
+-- indices: { changed = { [new line] = true }, removed = { [new line] =
+-- old lines gone just above it } } - removed lines at the very end sit on
+-- line #new + 1. Pure.
+function M.revision_changes(old, new, hunks)
+  local out = { changed = {}, removed = {} }
+  for _, h in ipairs(hunks or {}) do
+    local so, co, sn, cn = h[1], h[2], h[3], h[4]
+    for i = sn, sn + cn - 1 do if cn > 0 then out.changed[i] = true end end
+    if co > cn then
+      -- More lines went than came: the extra old ones show as removed,
+      -- above the line after the hunk.
+      local at = cn > 0 and (sn + cn) or (sn + 1)
+      local gone = {}
+      for i = so + cn, so + co - 1 do gone[#gone + 1] = old[i] end
+      out.removed[at] = gone
+    end
+  end
+  return out
+end
+
 -- The template's "## " headings `markdown` doesn't have. Pure.
 function M.missing(markdown, template)
   local have = {}
@@ -378,6 +400,7 @@ local PLAN_HELP = {
   { "ask", "ask the agent about this line (in visual mode: these lines) - the answer shows under it" },
   { "request", "queue a change on this line (in visual mode: these lines) - gR sends them together" },
   { "delete_thread", "forget the question or change under this line" },
+  { "since", "mark what this revision changed against the one before (on by default; toggles)" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_thread", "the question and answer in a popup" },
   { "next_thread", "next question" }, { "prev_thread", "previous question" },
@@ -432,6 +455,45 @@ local function draw_links()
   end
 end
 
+local since_ns = vim.api.nvim_create_namespace("azure_cli_plan_since")
+
+-- What this revision changed against the one before it, or nil (the first
+-- revision, or gi turned it off): revision_changes' { changed, removed }.
+local function since()
+  local revs = view.rec.revisions
+  if view.since_off or #revs < 2 then return nil end
+  local old = vim.split(revs[#revs - 1].markdown or "", "\n", { plain = true })
+  local new = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
+  local diff = (vim.text and vim.text.diff) or vim.diff
+  local ok, hunks = pcall(diff, table.concat(old, "\n") .. "\n", table.concat(new, "\n") .. "\n",
+    { result_type = "indices" })
+  return M.revision_changes(old, new, ok and hunks or {})
+end
+
+-- The bar beside each line this revision changed, and the lines it took
+-- out (struck through, where they were).
+local function draw_since()
+  if not (view and valid_buf(view.plan_buf)) then return end
+  vim.api.nvim_buf_clear_namespace(view.plan_buf, since_ns, 0, -1)
+  local ch = since()
+  view.changes = ch
+  if not ch then return end
+  local n = vim.api.nvim_buf_line_count(view.plan_buf)
+  for l in pairs(ch.changed) do
+    pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, since_ns, l - 1, 0,
+      { sign_text = "\u{258E}", sign_hl_group = "AzureCliPlanChanged", priority = 5 })
+  end
+  for at, gone in pairs(ch.removed) do
+    local vl = {}
+    for _, g in ipairs(gone) do vl[#vl + 1] = { { "\u{2212} " .. g, "AzureCliPlanRemoved" } } end
+    if at <= n then
+      pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, since_ns, at - 1, 0, { virt_lines = vl, virt_lines_above = true })
+    else
+      pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, since_ns, n - 1, 0, { virt_lines = vl })
+    end
+  end
+end
+
 local function draw_threads()
   if not (view and valid_buf(view.plan_buf)) then return end
   THREADS().draw(view.plan_buf, view.plan_win, view.rec.threads, function(th) return th.line end)
@@ -447,6 +509,7 @@ local function set_winbars()
   if nq > 0 then tags[#tags + 1] = "[?" .. nq .. "]" end
   if nr > 0 then tags[#tags + 1] = "[\u{270E}" .. nr .. " queued]" end
   if last_rev(rec) and last_rev(rec).by == "you" then tags[#tags + 1] = "[edited by you]" end
+  if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. (#rec.revisions - 1) .. "]" end
   if valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. M.target_label(rec.target),
       #rec.revisions > 1 and ("rev " .. #rec.revisions) or nil }, tags))
@@ -454,6 +517,19 @@ local function set_winbars()
   if valid_win(view.list_win) then
     pcall(UI().wo, view.list_win, "winbar", UI().winbar({ "Sections" }, {}))
   end
+end
+
+-- Whether section `s` has lines this revision changed or took out.
+local function section_changed(s)
+  local ch = view.changes
+  if not ch then return false end
+  local stop = math.huge
+  for _, o in ipairs(view.sections) do
+    if o.line > s.line and o.level <= s.level then stop = o.line break end
+  end
+  for l in pairs(ch.changed) do if l >= s.line and l < stop then return true end end
+  for l in pairs(ch.removed) do if l > s.line and l <= stop then return true end end
+  return false
 end
 
 -- The section list: the plan's title and status, its sections (with how
@@ -482,6 +558,7 @@ local function render_list()
       local badge = ""
       if per[s.line] then badge = "?" .. per[s.line] end
       if per_req[s.line] then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{270E}" .. per_req[s.line] end
+      if section_changed(s) then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{00B1}" end
       if s.items > 0 and s.title:lower():find("file", 1, true) then badge = (badge ~= "" and (badge .. " ") or "") .. s.items end
       local indent = string.rep("  ", math.max(0, s.level - 2))
       local name = UI().fit(indent .. s.title, math.max(8, width - 4 - vim.fn.strdisplaywidth(badge)))
@@ -529,6 +606,7 @@ end
 
 local function render()
   render_plan()
+  draw_since()
   render_list()
   set_winbars()
 end
@@ -780,6 +858,12 @@ local function setup_plan(buf)
     request(a, b)
   end, { desc = "queue a change on these lines", mode = "x" })
   K.bind(buf, "plan", "delete_thread", delete_here, { desc = "forget the question / change under this line" })
+  K.bind(buf, "plan", "since", function()
+    view.since_off = not view.since_off
+    render()
+    notify(view.since_off and "Not marking what changed." or (view.changes and "Marking what changed since revision "
+      .. (#view.rec.revisions - 1) .. ".") or "This is the first revision.")
+  end, { desc = "mark what this revision changed (toggle)" })
   K.bind(buf, "plan", "next_thread", function() jump_thread(1) end, { desc = "next question" })
   K.bind(buf, "plan", "prev_thread", function() jump_thread(-1) end, { desc = "previous question" })
   K.bind(buf, "plan", "back", function()
@@ -831,7 +915,7 @@ function M.open(key, line)
     UI().wo(view.plan_win, "breakindent", true)
     UI().wo(view.plan_win, "conceallevel", 2)
     UI().wo(view.plan_win, "concealcursor", "")
-    UI().wo(view.plan_win, "signcolumn", "yes:1")
+    UI().wo(view.plan_win, "signcolumn", "yes:2")
     pcall(vim.api.nvim_win_set_width, view.list_win, width)
     vim.api.nvim_create_autocmd("WinResized", {
       buffer = view.list_buf,

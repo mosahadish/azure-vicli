@@ -326,6 +326,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `revise` | `gR` |
+| `since` | `gi` |
 | `view_thread` | `K` |
 
 <!-- END GENERATED KEYS TABLE -->

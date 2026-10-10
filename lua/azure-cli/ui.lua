@@ -162,6 +162,7 @@ M.THEME = {
   AzureCliStatusDone = "Comment",
   AzureCliThreadBar = "Special", AzureCliThreadQuestion = "Function", AzureCliThreadAnswer = "Normal",
   AzureCliThreadMeta = "Comment", AzureCliThreadRequest = "DiagnosticWarn",
+  AzureCliPlanChanged = "DiagnosticHint", AzureCliPlanRemoved = "Comment",
 }
 
 local themed = false

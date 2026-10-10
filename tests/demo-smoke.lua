@@ -1193,6 +1193,26 @@ do
       or not drawn(v.plan_buf, "sent with your change request") then
     return fail("the plan pane doesn't show the new revision with the sent change")
   end
+  -- What revision 3 changed against yours: line 8 marked, your Open
+  -- questions shown as taken out; gi turns the marks off.
+  local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]
+  local bar8, removed = false, false
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, { details = true })) do
+    if m[2] == 7 and m[4].sign_text then bar8 = true end
+    for _, vl in ipairs(m[4].virt_lines or {}) do
+      if vl[1][1]:find("Should admins be exempt?", 1, true) then removed = true end
+    end
+  end
+  if not (bar8 and removed and vim.wo[v.plan_win].winbar:find("since rev 2", 1, true)) then
+    return fail("revision 3's changes aren't marked: " .. vim.inspect({ bar8, removed, vim.wo[v.plan_win].winbar }))
+  end
+  if not table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"):match("Approach[^\n]*\u{00B1}") then
+    return fail("the section list doesn't mark Approach as changed")
+  end
+  vim.api.nvim_set_current_win(v.plan_win)
+  feed("gi")
+  if #vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, {}) ~= 0 then return fail("gi didn't turn the marks off") end
+  feed("gi")
   -- gA: approved; the agent starts the story now and shows the change.
   vim.api.nvim_set_current_win(v.plan_win)
   n = #st.entries

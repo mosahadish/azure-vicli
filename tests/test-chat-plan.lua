@@ -64,6 +64,26 @@ do
       and PLAN.link_for_code(links, "src/a.py", 5) == nil and PLAN.link_for_code(links, "a.py", 12).line == 10)
 end
 
+-- --- revision_changes -----------------------------------------------------------------
+do
+  local diff = vim.text and vim.text.diff or vim.diff
+  local function changes(old, new)
+    local h = diff(table.concat(old, "\n") .. "\n", table.concat(new, "\n") .. "\n", { result_type = "indices" })
+    return PLAN.revision_changes(old, new, h)
+  end
+  local c = changes({ "a", "b", "c" }, { "a", "B", "c", "d" })
+  check("revision_changes: changed and added lines", c.changed[2] and c.changed[4] and not c.changed[1]
+    and next(c.removed) == nil, vim.inspect(c))
+  c = changes({ "a", "b", "c" }, { "a", "c" })
+  check("revision_changes: a removed line shows above the next one", c.removed[2] and c.removed[2][1] == "b"
+    and next(c.changed) == nil, vim.inspect(c))
+  c = changes({ "a", "b", "c" }, { "a" })
+  check("revision_changes: removed at the end", c.removed[2] and #c.removed[2] == 2, vim.inspect(c))
+  c = changes({ "a", "b", "c", "d" }, { "a", "X", "d" })
+  check("revision_changes: two lines became one", c.changed[2] and c.removed[3] and c.removed[3][1] == "c",
+    vim.inspect(c))
+end
+
 -- --- gate_check -------------------------------------------------------------------------
 do
   local wi, pr = { work_item_id = 7 }, { pr_id = 9 }

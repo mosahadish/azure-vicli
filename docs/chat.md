@@ -358,6 +358,7 @@ their line when the text around them changes.
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
 | `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
 | `dd` | Forget the question or change under this line |
+| `gi` | Mark what this revision changed against the one before (on by default; toggles) |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
@@ -380,6 +381,12 @@ decorator here`), like a review comment waiting in the batch queue. `gR`
 then sends them all in one message - with a note of your own - and the
 agent answers with a new revision. Sent ones stay under their lines,
 marked as sent, until you clear them with `dd`.
+
+**What changed since the last revision.** When the agent sends a new
+revision (or you save your own), the lines it changed get a bar beside
+them, the lines it took out show struck through where they were, and the
+section list marks the sections that changed (`±`); the winbar says which
+revision it compares with. `gi` turns the marks off and on.
 
 **From the plan to the code and back.** `gd` on a plan line opens the
 code it became: the agent ties the parts of its change to the plan lines
