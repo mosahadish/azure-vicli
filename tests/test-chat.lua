@@ -231,6 +231,28 @@ do
   TOOLS.call("vote", { pr_id = 1, vote = "approve" }, { log = function() end }, function(t, err) said = { t, err } end)
   check("permission: a denied call is refused", said[2] == true and said[1]:find("doesn't allow", 1, true))
   require("azure-cli").setup({})
+  -- An "ask" tool that's been allowed some other way (preapproved) runs
+  -- without the question - unless chat.permissions says "ask" for it.
+  do
+    local stub = { name = "stub_push", risk = "ask", schema = { type = "object" },
+      preapproved = function(_, cb) cb(true, "the plan") end,
+      run = function(_, _, done) done("pushed") end }
+    TOOLS.by_name.stub_push = stub
+    local asked, logged, got = 0, {}, nil
+    local env = { log = function(l) logged[#logged + 1] = l end, confirm = function(_, cb) asked = asked + 1; cb(true) end }
+    TOOLS.call("stub_push", {}, env, function(text) got = text end)
+    check("preapproved: no question, says why", asked == 0 and got == "pushed"
+      and table.concat(logged, "|"):find("allowed by the plan", 1, true) ~= nil, table.concat(logged, "|"))
+    stub.preapproved = function(_, cb) cb(false) end
+    TOOLS.call("stub_push", {}, env, function() end)
+    check("preapproved: not this time -> asks", asked == 1)
+    stub.preapproved = function(_, cb) cb(true, "the plan") end
+    require("azure-cli").setup({ chat = { agent = { cmd = { "x" } }, permissions = { stub_push = "ask" } } })
+    TOOLS.call("stub_push", {}, env, function() end)
+    check("preapproved: an explicit \"ask\" in chat.permissions still asks", asked == 2)
+    TOOLS.by_name.stub_push = nil
+  end
+  require("azure-cli").setup({})
   do
     local CH = require("azure-cli.chat")
     check("status: empty while idle", CH.status() == "")

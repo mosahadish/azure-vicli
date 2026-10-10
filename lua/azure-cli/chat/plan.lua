@@ -303,6 +303,22 @@ function M.gate_check(rec, mode, target)
     .. "(or what to change)."
 end
 
+-- Whether an approved plan lets its change be pushed without asking:
+-- you chose that when approving (rec.allow_push), it's still approved (a
+-- new revision takes it back), and - when the plan has a test command -
+-- the tests passed on exactly the change being pushed (`result` = the last
+-- run, `fp` = the change's fingerprint now). ok, why-not. Pure.
+function M.push_check(rec, has_cmd, result, fp)
+  if not (rec and rec.allow_push) then return false, "you didn't allow pushes for this plan" end
+  if rec.status ~= "approved" then return false, "the plan isn't approved (any more)" end
+  if has_cmd then
+    if not result then return false, "the plan's tests haven't run on this change" end
+    if result.fingerprint ~= fp then return false, "the tests ran on an earlier version of the change" end
+    if result.code ~= 0 then return false, "the tests failed" end
+  end
+  return true
+end
+
 local STATUS = {
   draft = { "\u{25CF} Waiting for your review", "AzureCliStatusDraft" },
   approved = { "\u{2713} Approved", "AzureCliStatusOk" },
@@ -397,6 +413,7 @@ local function add_revision(rec, markdown, by)
   THREADS().reanchor(rec.threads, lines)
   rec.status = "draft"
   rec.approved_rev = nil
+  rec.allow_push = nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -541,6 +558,7 @@ local function set_winbars()
   if nq > 0 then tags[#tags + 1] = "[?" .. nq .. "]" end
   if nr > 0 then tags[#tags + 1] = "[\u{270E}" .. nr .. " queued]" end
   if last_rev(rec) and last_rev(rec).by == "you" then tags[#tags + 1] = "[edited by you]" end
+  if rec.allow_push and rec.status == "approved" then tags[#tags + 1] = "[may push]" end
   if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. (#rec.revisions - 1) .. "]" end
   if valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. M.target_label(rec.target),
@@ -577,6 +595,7 @@ local function render_list()
   end
   add(" " .. UI().fit(M.target_label(rec.target) .. "  " .. (rec.title or ""), width - 2), "AzureCliSection")
   local st, st_hl = M.status_label(rec)
+  if rec.allow_push and rec.status == "approved" then st = st .. " \u{00B7} may push" end
   add(" " .. st .. (#rec.revisions > 1 and ("  \u{00B7} revision " .. #rec.revisions) or ""), st_hl)
   add("")
   local per, per_req = {}, {}
@@ -665,17 +684,28 @@ local function send(text, display)
     ~= nil
 end
 
+-- gA: approve - and, if you say so, let the change be pushed without
+-- asking once the plan's tests pass on it (M.push_check).
 local function approve()
   local rec = view and view.rec
   if not rec then return end
   if rec.status == "approved" then return notify("Already approved.") end
   if rec.status == "done" then return notify("This plan was implemented already.") end
-  rec.status = "approved"
-  rec.approved_rev = #rec.revisions
-  rec.approved_at = os.time()
-  changed(rec)
-  send(M.approval_message(rec), "Approved the plan for " .. M.target_label(rec.target) .. ".")
-  notify("Plan approved - the agent can change the code now.")
+  local has_cmd = M.test_command(current_lines(rec)) ~= nil
+  local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
+    or "Approve, and let it push without asking"
+  require("azure-cli.prompt").select({ prompt = "Approve the plan for " .. M.target_label(rec.target),
+    items = { plain, with_push } }, function(choice)
+    if not choice then return end
+    rec.status = "approved"
+    rec.approved_rev = #rec.revisions
+    rec.approved_at = os.time()
+    rec.allow_push = choice == with_push or nil
+    changed(rec)
+    send(M.approval_message(rec), "Approved the plan for " .. M.target_label(rec.target)
+      .. (rec.allow_push and " (it may push once the tests pass)." or "."))
+    notify("Plan approved - the agent can change the code now.")
+  end)
 end
 
 -- gR: ask for changes - what you write here, plus every change queued on
@@ -1033,6 +1063,19 @@ end
 
 function M.gate(target)
   return M.gate_check(M.load(M.key(target)), config().plan_first, target)
+end
+
+-- Whether commit_and_push_fix may skip its question for `target`'s change
+-- in worktree `dir`: cb(ok, why).
+function M.push_allowed(target, dir, cb)
+  local rec = M.load(M.key(target))
+  if not (rec and rec.allow_push) then return cb(false, "not allowed") end
+  local TR = require("azure-cli.chat.tests_run")
+  local has_cmd = M.test_command(current_lines(rec)) ~= nil
+  require("azure-cli.chat.tools_fix").diff(dir, function(ok, diff)
+    if not ok then return cb(false, diff) end
+    cb(M.push_check(rec, has_cmd, TR.load(dir), TR.fingerprint(diff)))
+  end, require("azure-cli.chat.tools").git)
 end
 
 -- commit_and_push_fix pushed the change: its plan is done.

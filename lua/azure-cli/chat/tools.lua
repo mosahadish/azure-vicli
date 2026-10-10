@@ -9,7 +9,10 @@
 -- Neovim first, and a "no" is returned to the agent as the tool's answer.
 --
 -- Every tool is { name, description, schema (JSON Schema for arguments),
--- risk = "read"|"write"|"ask", run = function(args, env, done) }, where
+-- risk = "read"|"write"|"ask", run = function(args, env, done) } (an "ask"
+-- one can also have confirm(args) -> what it would do, details(args, cb)
+-- -> lines shown with the question, preapproved(args, cb(ok, by_what))
+-- -> whether the question can be skipped), where
 -- done(result) answers with a table (sent as JSON) or a string, and
 -- done(nil, err) reports a failure. `env` is chat/init.lua's: main_win()
 -- (the window the user was last in), log(line) (a line in the chat
@@ -618,7 +621,22 @@ function M.call(name, args, env, cb)
         end
       end, details)
     end
-    if tool.details then tool.details(args, ask) else ask(nil) end
+    local function asking() if tool.details then tool.details(args, ask) else ask(nil) end end
+    -- A tool can skip the question when you've already said yes some other
+    -- way (commit_and_push_fix under a plan you approved with pushing
+    -- allowed) - never when chat.permissions says "ask" for it outright.
+    local explicit = (perms() or {})[name] == "ask"
+    if tool.preapproved and not explicit then
+      return tool.preapproved(args, function(ok, why)
+        if ok then
+          env.log("\u{2713} " .. name .. ": allowed by " .. tostring(why or "you"))
+          go()
+        else
+          asking()
+        end
+      end)
+    end
+    asking()
   else
     go()
   end

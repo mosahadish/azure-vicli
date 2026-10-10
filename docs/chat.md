@@ -366,6 +366,14 @@ the last output again. The agent can run them too (`run_tests`, which
 asks you the same way), and `commit_and_push_fix`'s question shows how
 the tests last went on exactly that change.
 
+**Letting an approved plan push.** `gA` offers two ways to approve: just
+approve, or approve *and let it push once the tests pass*. With the
+second, `commit_and_push_fix` doesn't ask you - the chat says it was
+allowed by the plan - as long as the plan is still approved (a new
+revision takes it back), and, when the plan has a test command, the tests
+passed on exactly the change being pushed. Anything else, it asks as
+usual; `chat.permissions = { commit_and_push_fix = "ask" }` always asks.
+
 **Hunk by hunk.** `gy` on a change marks it accepted (a `✓` beside it,
 and `✓ 2/5 accepted` in the winbar - press it again to take that back);
 `gn` takes that one change out of the worktree (after asking - the
@@ -378,7 +386,7 @@ their line when the text around them changes.
 
 | Key (plan window) | Action |
 |---|---|
-| `gA` | Approve the plan - the agent is told to go ahead |
+| `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push once the tests pass) |
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
 | `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
 | `dd` | Forget the question or change under this line |

@@ -375,6 +375,14 @@ setmetatable(M, { __call = function(_, T)
           cb(lines)
         end, T.git)
       end,
+      preapproved = function(a, cb)
+        local t = locate(a)
+        if not t then return cb(false) end
+        local target = t.wi and { work_item_id = t.wi } or { pr_id = a.pr_id }
+        require("azure-cli.chat.plan").push_allowed(target, t.dir, function(ok)
+          cb(ok, "the approved plan (pushing allowed, tests passed)")
+        end)
+      end,
       run = function(args, env, done)
         local t, why = locate(args)
         if not t then return done(nil, why) end

@@ -102,6 +102,18 @@ do
   check("gate: done needs a new plan", ok == false and why:find("new plan", 1, true))
 end
 
+-- --- push_check ------------------------------------------------------------------------
+do
+  local rec = { allow_push = true, status = "approved" }
+  check("push_check: allowed, no test command", PLAN.push_check(rec, false) == true)
+  check("push_check: not allowed", PLAN.push_check({ status = "approved" }, false) == false)
+  check("push_check: not approved any more", PLAN.push_check({ allow_push = true, status = "draft" }, false) == false)
+  check("push_check: tests needed but never ran", PLAN.push_check(rec, true, nil, "f") == false)
+  check("push_check: tests on an older change", PLAN.push_check(rec, true, { code = 0, fingerprint = "old" }, "f") == false)
+  check("push_check: tests failed", PLAN.push_check(rec, true, { code = 1, fingerprint = "f" }, "f") == false)
+  check("push_check: tests passed on this change", PLAN.push_check(rec, true, { code = 0, fingerprint = "f" }, "f") == true)
+end
+
 -- --- messages -------------------------------------------------------------------------
 do
   local rec = { target = { work_item_id = 3 }, revisions = { { by = "agent", markdown = "a" } } }
