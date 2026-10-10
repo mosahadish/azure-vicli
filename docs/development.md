@@ -55,7 +55,8 @@ lua/azure-cli/
   chat/           the chat panel: init.lua (panel, agent runs), view.lua (what's on screen),
                   tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
                   plan.lua (the plan window, its gate on start_fix/start_story), threads.lua (ga: a
-                  question answered under a line - the plan's and the change viewer's)
+                  question answered under a line - the plan's and the change viewer's), agents.lua
+                  (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard
   review/

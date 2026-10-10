@@ -169,7 +169,7 @@ do
   check("agents rows: a plan waiting for you, titled from the plan", rows[2].state:find("plan waits for you", 1, true)
     and rows[2].title == "Two" and rows[2].ago == "1m")
   check("agents rows: a failed answer", rows[3].state:find("failed (exit 1)", 1, true) ~= nil)
-  check("agents rows: queued", rows[4].label == "#3" and rows[4].state:find("waiting for a free agent", 1, true) ~= nil)
+  check("agents rows: queued", rows[4].label == "#3" and rows[4].state:find("waiting for an agent", 1, true) ~= nil)
 end
 
 -- --- messages -------------------------------------------------------------------------

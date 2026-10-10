@@ -99,7 +99,7 @@ function M.start_for_items(items)
   M.pump()
   local waiting = #queue
   notify("Planning " .. table.concat(added, ", ") .. " - one agent each"
-    .. (waiting > 0 and (", " .. waiting .. " waiting for a free agent (chat.max_agents = " .. M.max() .. ")") or "")
+    .. (waiting > 0 and (", " .. waiting .. " waiting for an agent (chat.max_agents = " .. M.max() .. ")") or "")
     .. ". The Agents screen lists them.")
 end
 

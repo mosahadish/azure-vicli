@@ -22,7 +22,7 @@ The sequence in SHOTS is the whole story of a review: dashboard -> open
 PR #101 -> its first file's diff -> the inline thread expanded -> the
 complete dialog -> the work-items dashboard -> a work item -> the chat's
 plan window and a question under a line of a change (those two scenes are
-seeded by tests/shot-plan.lua and tests/shot-change.lua). Each entry is
+seeded by tests/shot-plan.lua, tests/shot-change.lua and tests/shot-agents.lua). Each entry is
 (name, keys to send, text to wait for, seconds to let toasts fade). Add a
 step here to add a screenshot; the fixtures it relies on live in
 tests/fake-provider.py. The workspace is fresh every run, so the pictures
@@ -57,6 +57,7 @@ SHOTS = [
     # change: scenes seeded by tests/shot-*.lua, not typed.
     ("chat-plan", [":luafile " + os.path.join(ROOT, "tests", "shot-plan.lua"), "Enter"], "Waiting for your review", 4),
     ("chat-ask-why", [":luafile " + os.path.join(ROOT, "tests", "shot-change.lua"), "Enter"], "Why here and not", 4),
+    ("chat-agents", [":luafile " + os.path.join(ROOT, "tests", "shot-agents.lua"), "Enter"], "plan waits for you", 3),
 ]
 
 ANSI16 = ["#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",

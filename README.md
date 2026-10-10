@@ -25,6 +25,10 @@ instant.
 <td width="50%"><a href="docs/chat.md#plans-and-asking-why"><img src="docs/images/chat-plan.png" alt="The agent's plan: sections on the left, the rendered plan with questions answered under its lines, the chat panel on the right"></a><br><sub><b>Plan</b> - the agent plans before it touches code; ask "why?" about any line (<code>ga</code>), approve with <code>gA</code>.</sub></td>
 <td width="50%"><a href="docs/chat.md#plans-and-asking-why"><img src="docs/images/chat-ask-why.png" alt="The agent's change, file by file, with a question answered under one of its lines"></a><br><sub><b>Ask why</b> - the same <code>ga</code> on any line of the agent's change; the answer sits under the line.</sub></td>
 </tr>
+<tr>
+<td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: one row per plan's agent and what it's doing"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen shows what each is doing.</sub></td>
+<td width="50%"></td>
+</tr>
 </table>
 
 _Every screenshot is generated from the test suite's [fake provider](docs/development.md#trying-it-without-azure-devops), so the people and PRs in them are made up._
@@ -163,7 +167,9 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   or comment under your cursor, so "triage this PR's comments" or "create
   a branch from develop for this work item" just work. Before it changes
   code it writes a plan you review like a PR: ask it why about any line,
-  then approve. Replies are drafted for you to send, and votes ask first.
+  then approve. Several agents can work at once, one per work item, each
+  in its own conversation. Replies are drafted for you to send, and votes
+  ask first.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

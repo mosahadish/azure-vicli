@@ -1460,7 +1460,7 @@ do
   local av = require("azure-cli.chat.agents_view").current()
   if not av or vim.api.nvim_get_current_buf() ~= av.buf then return fail("A on the board didn't open the Agents screen") end
   local function screen() return table.concat(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false), "\n") end
-  if not (screen():match("#3001[^\n]*working") and screen():match("#3002[^\n]*waiting for a free agent")) then
+  if not (screen():match("#3001[^\n]*working") and screen():match("#3002[^\n]*waiting for an agent")) then
     return fail("the Agents screen doesn't show one working and one waiting:\n" .. screen())
   end
   if not vim.wo[av.win].winbar:find("1 working", 1, true) then return fail("the Agents winbar: " .. vim.wo[av.win].winbar) end
@@ -1547,6 +1547,27 @@ do
   vim.api.nvim_set_current_tabpage(board_tab)
   CHAT.sync_active()
   if STATE.chat.active ~= nil then return fail("back on the board, the panel should show the main conversation") end
+  -- With room for two (max_agents = 2), two agents really work at once.
+  require("azure-cli").setup({ chat = { max_agents = 2, agent = { label = "Fake Claude", timeout_seconds = 60,
+    cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
+  vim.api.nvim_set_current_win(bw)
+  goto_row(3001)
+  feed("gP")
+  goto_row(3002)
+  feed("gP")
+  if AGENTS.working() ~= 2 or #AGENTS.queued() ~= 0 then
+    return fail("with max_agents = 2 both should work at once: " .. AGENTS.working() .. " working, " .. #AGENTS.queued() .. " queued")
+  end
+  if not CHAT.strip():find("2 agents working", 1, true) then return fail("the strip doesn't count two agents: " .. CHAT.strip()) end
+  local together = vim.wait(30000, function() return AGENTS.working() == 0 end, 100)
+  if not together then return fail("the two agents working at once didn't both finish") end
+  for _, c in ipairs({ c1, c2 }) do
+    local e = c.entries[#c.entries]
+    if not (e.status == "done" and e.text:find("planned #", 1, true)) then
+      return fail("a parallel agent's answer went wrong: " .. vim.inspect(e.text))
+    end
+  end
+  if #STATE.chat.entries ~= main_turns then return fail("the main conversation got the parallel agents' turns") end
   for _, c in ipairs(CHAT.conversations()) do
     if c ~= STATE.chat and c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
   end

@@ -6,7 +6,7 @@
 --
 --    #3001  Throttle repeated login failures   ⠹ working  12s   ✎ start_story
 --    #3002  --name takes the flag as its value ● plan waits for you    3m
---    #3012  Tests for the lockout window       ⌛ waiting for a free agent
+--    #3012  Tests for the lockout window       ⌛ waiting for an agent
 --
 -- <CR> opens the row's plan, gd its change, gL its run log, gq its plan's
 -- tab with that agent's conversation in the chat; <C-c> stops what it's
@@ -65,7 +65,7 @@ function M.rows(convs, queued, plan_of, now, frame)
   for _, q in ipairs(queued) do
     if not seen[q.key] then
       rows[#rows + 1] = { key = q.key, label = "#" .. tostring(q.item.id), title = q.item.title or "",
-        state = "\u{231B} waiting for a free agent", hl = "AzureCliMuted", detail = "", ago = "",
+        state = "\u{231B} waiting for an agent", hl = "AzureCliMuted", detail = "", ago = "",
         target = { work_item_id = q.item.id } }
     end
   end
@@ -91,11 +91,13 @@ local function render()
     hls[#hls + 1] = { 1, 0, -1, "AzureCliMuted" }
     hls[#hls + 1] = { 2, 0, -1, "AzureCliMuted" }
   end
-  local title_w = math.max(16, math.min(44, width - 70))
+  -- label 8, state 26, age 4 and the gaps take 47 cells; the title gets
+  -- what's left, keeping ~20 for the latest step.
+  local title_w = math.max(16, math.min(44, width - 47 - 20))
   for _, r in ipairs(rows) do
     local label = UI.fit(r.label, 8)
     local title = UI.fit(r.title, title_w)
-    local state = UI.fit(r.state, 30)
+    local state = UI.fit(r.state, 26)
     local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. "  " .. r.detail
     lines[#lines + 1] = line
     view.rows[#lines] = r

@@ -27,7 +27,7 @@ Refer to pull requests as !<id> and work items as #<id>, so the user can open th
 -- for your review }. "" when there's nothing to say. Pure.
 -- With several agents, `working` = { { label, seconds } } and `frame`:
 -- one shows like `running`, more as "⠹ 3 agents working"; `queued` counts
--- the ones waiting for a free agent, `more_questions` the questions
+-- the ones waiting for an agent, `more_questions` the questions
 -- waiting behind the one asked.
 function M.strip_text(s)
   s = s or {}

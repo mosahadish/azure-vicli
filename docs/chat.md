@@ -494,9 +494,11 @@ first, so an answer never goes to a question you didn't read. The status
 strip counts what's going on: `⠹ 2 agents working · ⌛ 1 queued · ⚠ a
 question waits for you · ● 2 plans wait for you`.
 
+![The Agents screen: one row per plan's agent - working, its plan waiting for you, approved](images/chat-agents.png)
+
 **The Agents screen** (`A` on either dashboard, `gA` in the chat,
 `:AzureCli agents`) lists every plan's agent - what it's doing (working,
-with its latest step; waiting for a free agent; its plan waiting for you;
+with its latest step; waiting for an agent; its plan waiting for you;
 approved; revising; pushed) and how long since it last did something:
 
 | Key (Agents screen) | Action |
