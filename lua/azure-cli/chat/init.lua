@@ -728,20 +728,19 @@ local function confirm(question, cb, details)
     return
   end
   asking = true
-  local win
-  if details and #details > 0 then
-    win = require("azure-cli.ui").open_float(details, { big = true, title = "Details", focus = false })
-    local buf = win and vim.api.nvim_win_get_buf(win)
-    if buf and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) then vim.bo[buf].filetype = "diff" end
-  end
+  local is_diff = details and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) and "diff" or nil
   notify(question .. " (answer in the prompt)")
   M.alert("azure-vicli: a question for you", question)
   MAIN().question = question
   M.set_winbars()
-  require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, function(yes)
+  -- It can pop up while you're typing something else: Deny is focused, and
+  -- keys only count after a moment (ui.lua's M.choose).
+  require("azure-cli.ui").choose({ title = "The agent asks", lines = { question }, buttons = { "Allow", "Deny" },
+    default = 2, keys = { y = 1, n = 2 }, cancel = 2, details = details, details_ft = is_diff, arm_ms = 400 },
+  function(i)
+    local yes = i == 1
     MAIN().question = nil
     asking = false
-    if win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
     cb(yes)
     local nxt = table.remove(waiting_questions, 1)
     MAIN().questions_waiting = #waiting_questions

@@ -480,7 +480,8 @@ do
   check("ui: key_hints defaults to auto", config.get().ui.key_hints == "auto")
   config.setup({ ui = { key_hints = false } })
   check("ui: key_hints = false kept", config.get().ui.key_hints == false)
-  for _, bad in ipairs({ { border = "fancy" }, { palette = "pink" }, { colour = 1 }, { key_hints = "yes" } }) do
+  check("ui: confirm defaults to popup", config.get().ui.confirm == "popup")
+  for _, bad in ipairs({ { border = "fancy" }, { palette = "pink" }, { colour = 1 }, { key_hints = "yes" }, { confirm = "dialog" } }) do
     local ok, err = pcall(config.setup, { ui = bad })
     check("ui: rejects " .. next(bad), not ok and tostring(err):find("ui", 1, true) ~= nil, err)
   end

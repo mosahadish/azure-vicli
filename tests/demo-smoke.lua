@@ -630,7 +630,9 @@ do
   local CHAT = require("azure-cli.chat")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
   local agent_cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}" }
-  require("azure-cli").setup({ chat = { agent = {
+  -- ui.confirm = "select": the questions come through vim.ui.select, which
+  -- these blocks stub to answer them (the popup has tests/test-confirm.lua).
+  require("azure-cli").setup({ ui = { confirm = "select" }, chat = { agent = {
     label = "Fake Claude", cmd = agent_cmd, models = { "fast", "smart" }, timeout_seconds = 60,
   } } })
   local answer
@@ -800,7 +802,7 @@ do
   local STATE = require("azure-cli.state")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
   local streamed = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}" }
-  require("azure-cli").setup({ chat = {
+  require("azure-cli").setup({ ui = { confirm = "select" }, chat = {
     default_agent = "claude",
     agents = {
       claude = { label = "Fake Claude", cmd = streamed, models = { "fast", "smart" }, timeout_seconds = 60 },
@@ -1087,7 +1089,7 @@ do
   local STATE = require("azure-cli.state")
   local PLAN = require("azure-cli.chat.plan")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
-  require("azure-cli").setup({ chat = { agent = { label = "Fake Claude", timeout_seconds = 60,
+  require("azure-cli").setup({ ui = { confirm = "select" }, chat = { agent = { label = "Fake Claude", timeout_seconds = 60,
     cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   CHAT.new_chat(true)
   local st = STATE.chat
@@ -1468,7 +1470,7 @@ do
   local PLAN = require("azure-cli.chat.plan")
   local AGENTS = require("azure-cli.chat.agents")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
-  require("azure-cli").setup({ chat = { max_agents = 1, agent = { label = "Fake Claude", timeout_seconds = 60,
+  require("azure-cli").setup({ ui = { confirm = "select" }, chat = { max_agents = 1, agent = { label = "Fake Claude", timeout_seconds = 60,
     cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   local main_turns = #STATE.chat.entries
   local before3002 = #((PLAN.load("wi-3002") or { revisions = {} }).revisions)
@@ -1545,7 +1547,7 @@ do
     end
     cb(nil)
   end
-  require("azure-cli").setup({ chat = { max_agents = 2, test_cmd = { widgets = "true" },
+  require("azure-cli").setup({ ui = { confirm = "select" }, chat = { max_agents = 2, test_cmd = { widgets = "true" },
     agent = { label = "Fake Claude", timeout_seconds = 60, cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   local r1, r2
   for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
@@ -1623,7 +1625,7 @@ do
   CHAT.sync_active()
   if STATE.chat.active ~= nil then return fail("back on the board, the panel should show the main conversation") end
   -- With room for two (max_agents = 2), two agents really work at once.
-  require("azure-cli").setup({ chat = { max_agents = 2, agent = { label = "Fake Claude", timeout_seconds = 60,
+  require("azure-cli").setup({ ui = { confirm = "select" }, chat = { max_agents = 2, agent = { label = "Fake Claude", timeout_seconds = 60,
     cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   vim.api.nvim_set_current_win(bw)
   goto_row(3001)

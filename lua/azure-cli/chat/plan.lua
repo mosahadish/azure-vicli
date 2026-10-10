@@ -266,8 +266,12 @@ function M.ask_approval(keys, cb)
   local what = #keys == 1 and ("the plan for " .. M.target_label(M.load(keys[1]).target)) or (#keys .. " plans")
   local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
     or "Approve, and let it push without asking"
-  require("azure-cli.prompt").select({ prompt = "Approve " .. what, items = { plain, with_push } }, function(choice)
-    if choice then cb(choice == with_push) end
+  require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
+      "The agent goes ahead with it. Letting it push skips the question before its push"
+        .. (has_cmd and ", once the plan's tests pass on its change." or "."),
+    }, buttons = { plain, with_push, "Cancel" }, keys = { a = 1, p = 2 }, cancel = 3,
+    hint = "a approve \u{00B7} p approve and let it push \u{00B7} Esc cancel \u{00B7} Tab moves" }, function(i)
+    if i == 1 or i == 2 then cb(i == 2) end
   end)
 end
 

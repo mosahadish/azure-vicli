@@ -196,8 +196,11 @@ local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 -- group links to your colorscheme's) or "azure-vicli" (lua/azure-cli/
 -- palette.lua's own dark colours, as in the standalone launcher);
 -- `key_hints` "auto" / true / false - the g-key float (keyhints.lua), "auto"
--- leaving it to which-key or mini.clue when one is installed.
-local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto" }
+-- leaving it to which-key or mini.clue when one is installed; `confirm`
+-- "popup" (ui.lua's M.choose: buttons in the middle of the screen) or
+-- "select" (vim.ui.select, for a picker plugin to draw) for the questions
+-- that need an answer - an agent's tool call, approving a plan, re-queuing.
+local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto", confirm = "popup" }
 local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
 
 local DEFAULTS = {
@@ -213,6 +216,10 @@ local function validate_ui(ui)
     if k == "palette" then
       if v ~= "colorscheme" and v ~= "azure-vicli" then
         error("azure-cli.setup: ui.palette must be \"colorscheme\" or \"azure-vicli\"")
+      end
+    elseif k == "confirm" then
+      if v ~= "popup" and v ~= "select" then
+        error("azure-cli.setup: ui.confirm must be \"popup\" or \"select\"")
       end
     elseif k == "key_hints" then
       if v ~= "auto" and v ~= true and v ~= false then

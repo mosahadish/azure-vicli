@@ -647,43 +647,132 @@ function M.layout(columns, available_width)
   return { widths = widths, dropped = dropped, narrow = narrow }
 end
 
--- The yes/no popup's lines and highlights: the body, a blank line, the two
--- buttons (the focused one AzureCliButtonActive), and the keys, muted.
--- Returns lines, hls ({ row, from, to, group }), width. Pure.
-function M.confirm_lines(body, yes, no, yes_focused)
+-- The question popup's lines and highlights (M.choose): the body wrapped
+-- to `width`, a blank line, the buttons - in a row when they fit, else one
+-- per line - the focused one AzureCliButtonActive (all of them plain while
+-- `waiting`, the first moment keys don't count yet), then `hint`, muted.
+-- Returns lines, hls ({ row, from, to, group }), the buttons' rows. Pure.
+function M.choose_lines(body, labels, focused, width, hint, waiting)
   local lines, hls = {}, {}
-  for _, l in ipairs(body or {}) do lines[#lines + 1] = " " .. l end
+  -- `l` as lines of the popup: as it is when it fits (spacing and all),
+  -- else wrapped at word boundaries, one cell of margin on each side.
+  local function add(l)
+    if l == "" then lines[#lines + 1] = "" return end
+    if vim.fn.strdisplaywidth(l) <= width - 2 then lines[#lines + 1] = " " .. l return end
+    local cur = ""
+    for word in l:gmatch("%S+") do
+      if cur ~= "" and vim.fn.strdisplaywidth(cur .. " " .. word) > width - 2 then
+        lines[#lines + 1] = " " .. cur
+        cur = word
+      else
+        cur = cur == "" and word or (cur .. " " .. word)
+      end
+    end
+    lines[#lines + 1] = " " .. cur
+  end
+  for _, l in ipairs(body or {}) do add(l) end
   lines[#lines + 1] = ""
-  local y, n = "  " .. yes .. "  ", "  " .. no .. "  "
-  lines[#lines + 1] = " " .. y .. "   " .. n
-  local row = #lines - 1
-  hls[#hls + 1] = { row, 1, 1 + #y, yes_focused and "AzureCliButtonActive" or "AzureCliButton" }
-  hls[#hls + 1] = { row, 1 + #y + 3, 1 + #y + 3 + #n, yes_focused and "AzureCliButton" or "AzureCliButtonActive" }
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = " y " .. yes:lower() .. " \u{00B7} n / Esc " .. no:lower() .. " \u{00B7} Tab switches"
-  hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
-  local width = 0
-  for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l) + 1) end
-  return lines, hls, width
+  local caps = {}
+  for i, l in ipairs(labels) do caps[i] = "  " .. l .. "  " end
+  local row_text = " " .. table.concat(caps, "   ")
+  local rows = {}
+  local function group(i) return (i == focused and not waiting) and "AzureCliButtonActive" or "AzureCliButton" end
+  if vim.fn.strdisplaywidth(row_text) <= width then
+    lines[#lines + 1] = row_text
+    local col = 1
+    for i, c in ipairs(caps) do
+      hls[#hls + 1] = { #lines - 1, col, col + #c, group(i) }
+      col = col + #c + 3
+    end
+    for i = 1, #caps do rows[i] = #lines end
+  else
+    for i, c in ipairs(caps) do
+      lines[#lines + 1] = " " .. c
+      hls[#hls + 1] = { #lines - 1, 1, 1 + #c, group(i) }
+      rows[i] = #lines
+    end
+  end
+  if hint and hint ~= "" then
+    lines[#lines + 1] = ""
+    local from = #lines
+    add(hint)
+    for r = from, #lines - 1 do hls[#hls + 1] = { r, 0, #lines[r + 1], "AzureCliMuted" } end
+  end
+  return lines, hls, rows
 end
 
--- A yes/no question as a popup in the middle of the screen: opts.title,
--- opts.lines (what it's about), two buttons (opts.yes / opts.no, default
--- "Yes" / "Cancel"). <Tab> / h / l / the arrows move between them, <CR>
--- presses the focused one (yes, unless opts.default = "no"), y and n press
--- one straight away; q, <Esc> or leaving the popup is no. cb(true) only for
--- yes, and once.
-function M.confirm(opts, cb)
+-- A question as a popup in the middle of the screen, answered with buttons:
+--   title, lines    what it's about (wrapped)
+--   buttons         their labels; default = the one focused first (1)
+--   keys            shortcuts: { y = 1, n = 2 } presses that button
+--   cancel          what q / <Esc> / leaving the popup answers (the last)
+--   details         longer text (a diff, the text a tool would send) in a
+--                   window above, details_ft its filetype - scrolled from the
+--                   popup with <C-d> / <C-u> / <C-e> / <C-y>
+--   hint            the keys line under the buttons, when the one made from
+--                   `keys` would be too long (long labels)
+--   arm_ms          keys count only after this long, so typing already
+--                   under way when an agent's question pops up can't answer
+--                   it (the buttons light up once they work)
+-- <Tab> / <S-Tab> / h / l / j / k / the arrows move between the buttons,
+-- <CR> presses the focused one. Opened from insert mode it leaves it, and
+-- goes back to it after. cb(index), once. With ui.confirm = "select" it's
+-- vim.ui.select (prompt.lua) instead - the details in a float beside it.
+function M.choose(opts, cb)
   opts = opts or {}
   M.theme()
-  local yes, no = opts.yes or "Yes", opts.no or "Cancel"
-  local focused_yes = opts.default ~= "no"
+  local labels = opts.buttons or { "Yes", "Cancel" }
+  local cancel = opts.cancel or #labels
+  local done = false
+  local details_win
+  local function finish(i)
+    if done then return end
+    done = true
+    if details_win and vim.api.nvim_win_is_valid(details_win) then pcall(vim.api.nvim_win_close, details_win, true) end
+    cb(i)
+  end
+  local function details_float(focus_row)
+    if not (opts.details and #opts.details > 0) then return end
+    details_win = M.open_float(opts.details, focus_row)
+    local db = details_win and vim.api.nvim_win_get_buf(details_win)
+    if db and opts.details_ft then vim.bo[db].filetype = opts.details_ft end
+  end
+  local cfgok, cfg = pcall(function() return require("azure-cli.config").get() end)
+  local style = cfgok and cfg and cfg.ui and cfg.ui.confirm
+  local function as_select()
+    details_float({ big = true, title = "Details", focus = false })
+    local prompt = (opts.title or "") .. ((opts.lines and opts.lines[1]) and (": " .. opts.lines[1]) or "")
+    require("azure-cli.prompt").select({ prompt = prompt, items = labels, silent = true }, function(_, i)
+      finish(i or cancel)
+    end)
+  end
+  if style == "select" then return as_select() end
+
+  local was_insert = vim.api.nvim_get_mode().mode:sub(1, 1) == "i"
+  local prev_win = vim.api.nvim_get_current_win()
+  local focused = opts.default or 1
+  local uv = vim.uv or vim.loop
+  local armed_at = uv.hrtime() + (opts.arm_ms or 0) * 1e6
+  local function armed() return uv.hrtime() >= armed_at end
+  local hint_parts, shortcuts = {}, {}
+  for k, i in pairs(opts.keys or {}) do shortcuts[#shortcuts + 1] = { k = k, i = i } end
+  table.sort(shortcuts, function(a, b) return a.i < b.i or (a.i == b.i and a.k < b.k) end)
+  for _, s in ipairs(shortcuts) do hint_parts[#hint_parts + 1] = s.k .. " " .. labels[s.i]:lower() end
+  hint_parts[#hint_parts + 1] = "Esc " .. labels[cancel]:lower()
+  if #labels > 1 then hint_parts[#hint_parts + 1] = "Tab moves" end
+  if opts.details and #opts.details > 0 then hint_parts[#hint_parts + 1] = "C-d / C-u scroll above" end
+  local hint = opts.hint or table.concat(hint_parts, " \u{00B7} ")
+
+  local width = math.max(40, math.min(vim.fn.strdisplaywidth(hint) + 2, 80))
+  for _, l in ipairs(labels) do width = math.max(width, vim.fn.strdisplaywidth(l) + 6) end
+  width = math.min(width, math.max(30, math.min(80, vim.o.columns - 4)))
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
   local ns = vim.api.nvim_create_namespace("azure_cli_confirm")
-  local done = false
+  local rows = {}
   local function draw()
-    local lines, hls = M.confirm_lines(opts.lines, yes, no, focused_yes)
+    local lines, hls
+    lines, hls, rows = M.choose_lines(opts.lines, labels, focused, width, hint, not armed())
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
@@ -691,36 +780,103 @@ function M.confirm(opts, cb)
     for _, h in ipairs(hls) do
       pcall(vim.api.nvim_buf_set_extmark, buf, ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
     end
+    return #lines
   end
-  draw()
-  local lines, _, width = M.confirm_lines(opts.lines, yes, no, focused_yes)
-  width = math.min(math.max(width, 30), vim.o.columns - 4)
-  local cfg = { relative = "editor", row = math.max(0, math.floor((vim.o.lines - #lines) / 2) - 1),
-    col = math.max(0, math.floor((vim.o.columns - width) / 2)), width = width, height = #lines,
-    style = "minimal", border = M.border(), zindex = 200 }
-  if opts.title then cfg.title, cfg.title_pos = " " .. opts.title .. " ", "center" end
-  local ok, win = pcall(vim.api.nvim_open_win, buf, true, cfg)
+  local height = draw()
+
+  -- The details above the popup, both centred together.
+  local dh = 0
+  if opts.details and #opts.details > 0 then
+    dh = math.max(3, math.min(#opts.details, vim.o.lines - height - 8))
+  end
+  local total = height + 2 + (dh > 0 and dh + 2 or 0)
+  local top = math.max(0, math.floor((vim.o.lines - total) / 2) - 1)
+  local col = math.max(0, math.floor((vim.o.columns - width) / 2))
+  if dh > 0 then
+    local dbuf = vim.api.nvim_create_buf(false, true)
+    vim.bo[dbuf].bufhidden = "wipe"
+    vim.api.nvim_buf_set_lines(dbuf, 0, -1, false, opts.details)
+    vim.bo[dbuf].modifiable = false
+    if opts.details_ft then vim.bo[dbuf].filetype = opts.details_ft end
+    local dcfg = { relative = "editor", row = top, col = col, width = width, height = dh, style = "minimal",
+      border = M.border(), focusable = false, zindex = 199, title = " Details ", title_pos = "left" }
+    local ok
+    ok, details_win = pcall(vim.api.nvim_open_win, dbuf, false, dcfg)
+    if not ok then
+      dcfg.title, dcfg.title_pos = nil, nil
+      ok, details_win = pcall(vim.api.nvim_open_win, dbuf, false, dcfg)
+      if not ok then details_win = nil end
+    end
+    if details_win then M.float_hl(details_win) end
+    top = top + dh + 2
+  end
+  local wcfg = { relative = "editor", row = top, col = col, width = width, height = height, style = "minimal",
+    border = M.border(), zindex = 200 }
+  if opts.title then wcfg.title, wcfg.title_pos = " " .. opts.title .. " ", "center" end
+  local ok, win = pcall(vim.api.nvim_open_win, buf, true, wcfg)
   if not ok then
-    cfg.title, cfg.title_pos = nil, nil
-    win = vim.api.nvim_open_win(buf, true, cfg)
+    wcfg.title, wcfg.title_pos = nil, nil
+    ok, win = pcall(vim.api.nvim_open_win, buf, true, wcfg)
+  end
+  if not ok then
+    -- Can't take the focus here (the command line, say): the menu instead.
+    if details_win and vim.api.nvim_win_is_valid(details_win) then pcall(vim.api.nvim_win_close, details_win, true) end
+    details_win = nil
+    return as_select()
   end
   M.float_hl(win)
-  pcall(vim.api.nvim_win_set_cursor, win, { #lines - 2, 0 })
-  local function finish(answer)
-    if done then return end
-    done = true
-    if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
-    cb(answer)
+  if was_insert then vim.cmd("stopinsert") end
+  local function place() pcall(vim.api.nvim_win_set_cursor, win, { rows[focused] or 1, 0 }) end
+  place()
+  if not armed() then
+    vim.defer_fn(function()
+      if not done and vim.api.nvim_buf_is_valid(buf) then draw() place() end
+    end, (opts.arm_ms or 0) + 10)
   end
+
+  local function answer(i)
+    if done then return end
+    if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+    if vim.api.nvim_win_is_valid(prev_win) then pcall(vim.api.nvim_set_current_win, prev_win) end
+    if was_insert then vim.cmd("startinsert") end
+    finish(i)
+  end
+  local function guarded(fn) return function() if armed() then fn() end end end
   local kopts = { buffer = buf, silent = true, nowait = true }
-  local function switch() focused_yes = not focused_yes; draw() end
-  for _, k in ipairs({ "<Tab>", "<S-Tab>", "h", "l", "<Left>", "<Right>" }) do vim.keymap.set("n", k, switch, kopts) end
-  vim.keymap.set("n", "<CR>", function() finish(focused_yes) end, kopts)
-  vim.keymap.set("n", "y", function() finish(true) end, kopts)
-  for _, k in ipairs({ "n", "q", "<Esc>" }) do vim.keymap.set("n", k, function() finish(false) end, kopts) end
+  -- Typing that was meant for somewhere else lands here as normal-mode
+  -- keys: the ones that would start editing or a command do nothing.
+  for _, k in ipairs({ "i", "a", "o", "I", "A", "O", "s", "S", "c", "C", "x", "X", "d", "D", "p", "P", "r", "R",
+      "u", "v", "V", ":", "/", "?", "g", "z", "Z", "<Space>", "<BS>" }) do
+    vim.keymap.set("n", k, "<Nop>", kopts)
+  end
+  local function move(d) focused = (focused - 1 + d) % #labels + 1; draw(); place() end
+  for _, k in ipairs({ "<Tab>", "l", "j", "<Right>", "<Down>" }) do vim.keymap.set("n", k, guarded(function() move(1) end), kopts) end
+  for _, k in ipairs({ "<S-Tab>", "h", "k", "<Left>", "<Up>" }) do vim.keymap.set("n", k, guarded(function() move(-1) end), kopts) end
+  vim.keymap.set("n", "<CR>", guarded(function() answer(focused) end), kopts)
+  for k, i in pairs(opts.keys or {}) do vim.keymap.set("n", k, guarded(function() answer(i) end), kopts) end
+  -- Never guarded: backing out is always safe.
+  for _, k in ipairs({ "q", "<Esc>" }) do vim.keymap.set("n", k, function() answer(cancel) end, kopts) end
+  for key, cmd in pairs({ ["<C-d>"] = "\4", ["<C-u>"] = "\21", ["<C-e>"] = "\5", ["<C-y>"] = "\25" }) do
+    vim.keymap.set("n", key, function()
+      if details_win and vim.api.nvim_win_is_valid(details_win) then
+        vim.api.nvim_win_call(details_win, function() vim.cmd("normal! " .. cmd) end)
+      end
+    end, kopts)
+  end
   vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true,
-    callback = function() vim.schedule(function() finish(false) end) end })
+    callback = function() vim.schedule(function() answer(cancel) end) end })
   return win
+end
+
+-- A yes/no question (M.choose with two buttons): opts.title, opts.lines,
+-- opts.yes / opts.no (default "Yes" / "Cancel"), opts.default = "no" to
+-- focus No first, plus M.choose's details / arm_ms. y and n press them.
+-- cb(true) only for yes.
+function M.confirm(opts, cb)
+  opts = opts or {}
+  return M.choose({ title = opts.title, lines = opts.lines, buttons = { opts.yes or "Yes", opts.no or "Cancel" },
+    default = opts.default == "no" and 2 or 1, keys = { y = 1, n = 2 }, cancel = 2, details = opts.details,
+    details_ft = opts.details_ft, arm_ms = opts.arm_ms }, function(i) cb(i == 1) end)
 end
 
 return M

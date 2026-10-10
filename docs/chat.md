@@ -594,9 +594,17 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `vote` | Votes on a PR | **yes** |
 | `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
 
-When a tool asks, a prompt pops up in Neovim ("The agent wants to vote
-"Approve" on PR #101. Allow?"), with the diff or text it would send next to
-it. "Deny" is reported back to the agent, which carries on without it.
+When a tool asks, a popup comes up in the middle of the screen ("The agent
+wants to vote "Approve" on PR #101."), with the diff or text it would send
+in a window above it (`<C-d>` / `<C-u>` scroll it), and two buttons:
+**Allow** and **Deny**. It can come up while you're typing something else,
+so Deny is the one focused, and for the first moment keys don't count -
+the buttons light up once they do; then `y` / `n`, or `<Tab>` and `<CR>`.
+`<Esc>`, `q` or leaving it is Deny. A deny is reported back to the agent,
+which carries on without it. Approving a plan (`gA`) asks the same way:
+Approve, Approve and let it push, or Cancel. `ui.confirm = "select"`
+([Configuration](configuration.md)) asks through `vim.ui.select` instead,
+for a picker plugin to draw.
 
 **Your own rules.** `chat.permissions` overrides any tool: `"allow"` (no
 question), `"ask"`, or `"deny"` (the agent doesn't even see it):

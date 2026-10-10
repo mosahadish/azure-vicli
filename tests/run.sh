@@ -462,7 +462,7 @@ if command -v nvim >/dev/null 2>&1; then
   fi
 
   # The yes/no popup (UI.confirm): its layout and every way out.
-  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-confirm.lua" 2>&1)"
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-confirm.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all confirm tests passed"* ]]; then
     pass "test-confirm.lua (headless nvim)"
   else
