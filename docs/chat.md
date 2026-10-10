@@ -355,6 +355,16 @@ queued in one message ("please change these: auth.py line 13 ..."), with a
 note of your own. `dd` forgets one. The agent fixes them in the worktree
 and shows the change again.
 
+**Running the plan's tests.** The plan's Test plan section gives the
+command that checks the change, in a ` ```sh ` block. `gb` in the change
+viewer runs it in the change's worktree - after asking, since the agent
+wrote it - and the file list's winbar shows the result (`✓ tests passed`,
+`✗ tests failed (exit 1)`, or `..., before the last change` once the
+change moved on); a failed run opens its output, and `gb` later offers
+the last output again. The agent can run them too (`run_tests`, which
+asks you the same way), and `commit_and_push_fix`'s question shows how
+the tests last went on exactly that change.
+
 **Hunk by hunk.** `gy` on a change marks it accepted (a `✓` beside it,
 and `✓ 2/5 accepted` in the winbar - press it again to take that back);
 `gn` takes that one change out of the worktree (after asking - the
@@ -443,6 +453,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `requeue_build` | Queues the PR's build again | no |
 | `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you in a tab like the reviewer: changed files on the left, `]c`/`[c` through the changes); throwing it away | no |
 | `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
+| `run_tests` | Runs the plan's test command (or another) in the fix/story worktree; returns the exit code and the end of the output | **yes**, showing the command |
 | `delete_fix_file` | Deletes a file in the fix/story worktree (the agent's own file tools can't delete); any path outside the worktree is refused, so it needs no shell permission | no |
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |

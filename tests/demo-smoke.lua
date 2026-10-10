@@ -1087,6 +1087,15 @@ do
     cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   CHAT.new_chat(true)
   local st = STATE.chat
+  -- Every yes/no in this block: answer with the item containing `pick`.
+  local pick = "Allow"
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      if (opts.format_item and opts.format_item(it) or tostring(it)):find(pick, 1, true) then return cb(it, i) end
+    end
+    cb(nil)
+  end
   local function answered(n)
     local e
     local okw = vim.wait(40000, function()
@@ -1224,10 +1233,17 @@ do
     return fail("approving didn't let the story start: " .. e.text)
   end
   if st.entries[n + 1].text ~= "Approved the plan for #3002." then return fail("the approval isn't in the chat as such") end
+  if not e.text:find('"passed":true', 1, true) then return fail("run_tests (asked, allowed) didn't pass: " .. e.text) end
   -- ga in the change viewer, on the agent's new line.
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
   if not cwin then return fail("show_fix didn't open the change viewer") end
+  local function v_list_win()
+    return vim.fn.win_findbuf(vim.fn.bufnr("azure-cli://changes"))[1]
+  end
+  if not vim.wo[cwin].winbar:find("tests passed", 1, true) then
+    return fail("the change viewer doesn't show the tests' result: " .. vim.wo[cwin].winbar)
+  end
   -- The plan listed src/throttle.py too: the viewer and show_fix say so.
   local listed = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
   if not (listed:find("In the plan, not changed:", 1, true) and listed:find("    src/throttle.py", 1, true))
@@ -1307,15 +1323,8 @@ do
   end
   feed("gy")
   if #vim.api.nvim_buf_get_extmarks(dbuf, hns, 0, -1, {}) ~= 0 then return fail("gy again didn't take the accept back") end
-  local real_select = vim.ui.select
-  vim.ui.select = function(items, opts, cb)
-    for i, it in ipairs(items) do
-      if (opts.format_item and opts.format_item(it) or tostring(it)):find("Take it out", 1, true) then return cb(it, i) end
-    end
-    cb(nil)
-  end
+  pick = "Take it out"
   feed("gn")
-  vim.ui.select = real_select
   local wt = require("azure-cli.chat.tools_fix").find_story(3002)
   local gone = vim.wait(10000, function()
     return not table.concat(vim.fn.readfile(wt .. "/src/auth.py"), "\n"):find("PLANNED_CHANGE", 1, true)
@@ -1325,6 +1334,12 @@ do
     return st.entries[#st.entries].role == "note" and st.entries[#st.entries].text:find("took a change out", 1, true) ~= nil
   end, 50)
   if not noted then return fail("taking the hunk out left no note in the chat") end
+  -- The tests ran on the change as it was: the list says so now.
+  local stale = vim.wait(5000, function()
+    return vim.wo[v_list_win()].winbar:find("tests passed, before the last change", 1, true) ~= nil
+  end, 50)
+  if not stale then return fail("the tests' result isn't marked as before the last change: " .. vim.wo[v_list_win()].winbar) end
+  vim.ui.select = real_select
   print("== the plan ==")
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))

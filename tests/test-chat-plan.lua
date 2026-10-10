@@ -169,6 +169,24 @@ do
       .. "- b.py line 2 (a line you removed): keep this\n\nThanks.\n\nThen show_fix", 1, true) ~= nil, m)
 end
 
+-- --- the plan's test command, and its results ------------------------------------------------
+do
+  local lines = { "## Test plan", "Run them:", "```sh", "$ cd src", "# a comment", "pytest -q", "```",
+    "## Other", "```sh", "rm -rf /", "```" }
+  check("test_command: the Test plan's first shell block, $ and comments dropped",
+    PLAN.test_command(lines) == "cd src && pytest -q", PLAN.test_command(lines))
+  check("test_command: none outside the Test plan", PLAN.test_command({ "## Goal", "```sh", "x", "```" }) == nil)
+  check("test_command: a python block isn't a command",
+    PLAN.test_command({ "## Tests", "```python", "x()", "```", "```", "make test", "```" }) == "make test")
+  local TR = require("azure-cli.chat.tests_run")
+  check("label: passed / failed / stale / running / never",
+    TR.label({ code = 0, fingerprint = "a" }, "a") == "[\u{2713} tests passed]"
+      and TR.label({ code = 2, fingerprint = "a" }, "a") == "[\u{2717} tests failed (exit 2)]"
+      and TR.label({ code = 0, fingerprint = "a" }, "b") == "[\u{2713} tests passed, before the last change]"
+      and TR.label(nil, "a", true):find("running", 1, true) ~= nil and TR.label(nil, "a") == nil)
+  check("tail: the last non-empty lines", table.concat(TR.tail({ "a", "", "b", "c", "" }, 2), "|") == "b|c")
+end
+
 -- --- hunks ------------------------------------------------------------------------------------
 do
   local raw = { "diff --git a/x.lua b/x.lua", "index 1..2 100644", "--- a/x.lua", "+++ b/x.lua",

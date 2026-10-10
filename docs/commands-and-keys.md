@@ -122,6 +122,7 @@ paste the output here after changing a default.
 | `refresh` | `r` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
+| `run_tests` | `gb` |
 | `search` | `g/` |
 | `since` | `gi` |
 | `toggle_viewed` | `m` |
@@ -170,6 +171,7 @@ paste the output here after changing a default.
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
+| `run_tests` | `gb` |
 | `search` | `g/` |
 | `since` | `gi` |
 | `status` | `s` |

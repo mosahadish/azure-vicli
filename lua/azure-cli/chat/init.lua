@@ -567,7 +567,7 @@ local function confirm(question, cb, details)
   if details and #details > 0 then
     win = require("azure-cli.ui").open_float(details, { big = true, title = "Details", focus = false })
     local buf = win and vim.api.nvim_win_get_buf(win)
-    if buf and (details[1] or ""):match("^diff ") then vim.bo[buf].filetype = "diff" end
+    if buf and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) then vim.bo[buf].filetype = "diff" end
   end
   notify(question .. " (answer in the prompt)")
   require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, function(yes)

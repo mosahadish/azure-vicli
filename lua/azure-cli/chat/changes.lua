@@ -120,6 +120,7 @@ local LIST_HELP = {
   "Files",
   { "open", "show the file's change" },
   { "refresh", "refresh (the agent may have changed more)" },
+  { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
   { "chat", "go to the chat" },
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
@@ -143,6 +144,7 @@ local DIFF_HELP = {
   { "view_comments", "the question and answer in a popup" },
   { "next_comment", "next question" }, { "prev_comment", "previous question" },
   { "refresh", "refresh (the agent may have changed more)" },
+  { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
   { "chat", "go to the chat (in visual mode: send the selected lines)" },
   "Window",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
@@ -426,6 +428,41 @@ local function comment_here(idx, from, to)
   })
 end
 
+-- gb: run the plan's tests on this change (asks), or see the last run's
+-- output.
+local function run_tests()
+  local TR = require("azure-cli.chat.tests_run")
+  local PLAN = require("azure-cli.chat.plan")
+  local dir, fp, title = view.dir, view.fp, view.title
+  local cmd = view.plan and PLAN.test_command(PLAN.lines(view.plan))
+  local last = TR.load(dir)
+  if TR.running(dir) then return notify("The tests are running - their result shows in the winbar.") end
+  local function go()
+    if not cmd then
+      return notify("The plan has no test command - its Test plan section needs a ```sh block.", vim.log.levels.WARN)
+    end
+    TR.ask_and_run(dir, cmd, fp, function(r, err)
+      if not r then
+        if err ~= "declined" then notify("The tests didn't run: " .. tostring(err), vim.log.levels.WARN) end
+        return
+      end
+      require("azure-cli.chat").note("Tests on " .. title:gsub("^Proposed change %- ", "") .. " (" .. cmd .. "): "
+        .. (TR.label(r) or ""):gsub("^%[", ""):gsub("%]$", "") .. ".")
+      if view and view.dir == dir then M.refresh() end
+      if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
+    end)
+    if view and view.dir == dir then
+      pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) },
+        { TR.label(nil, nil, true) }))
+    end
+  end
+  if not last then return go() end
+  require("azure-cli.prompt").select({ prompt = "Tests " .. (TR.label(last, fp) or ""),
+    items = { "Run them again", "Show the last output" } }, function(choice)
+    if choice == "Run them again" then go() elseif choice then TR.show(last) end
+  end)
+end
+
 -- gS: send every queued change to the agent in one message.
 local function submit_changes()
   local queued = {}
@@ -517,6 +554,7 @@ local function bind_common(buf, surface)
   K.bind(buf, surface, "chat", function() require("azure-cli.chat").capture_selection() end,
     { desc = "send the selected lines to the chat", mode = "x" })
   K.bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
+  K.bind(buf, surface, "run_tests", function() run_tests() end, { desc = "run the plan's tests on the change" })
 end
 
 -- The diff buffer for file `idx` (built once per open).
@@ -711,6 +749,7 @@ function M.open(title, dir, raw, keep)
   for _, f in ipairs(view.files) do paths[#paths + 1] = f.path end
   local okp, PLAN = pcall(require, "azure-cli.chat.plan")
   view.plan = okp and PLAN.for_worktree(dir) or nil
+  view.fp = require("azure-cli.chat.tests_run").fingerprint(table.concat(raw, "\n"))
   view.check = okp and PLAN.check_change(view.plan, paths) or nil
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
@@ -740,6 +779,9 @@ function M.open(title, dir, raw, keep)
     pcall(vim.api.nvim_buf_set_extmark, view.list_buf, list_ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
   end
   local ctags = {}
+  local TR = require("azure-cli.chat.tests_run")
+  local tests_tag = TR.label(TR.load(dir), view.fp, TR.running(dir))
+  if tests_tag then ctags[#ctags + 1] = tests_tag end
   if view.check and #view.check.unplanned > 0 then ctags[#ctags + 1] = "[" .. #view.check.unplanned .. " off plan]" end
   if view.check and #view.check.missing > 0 then ctags[#ctags + 1] = "[" .. #view.check.missing .. " planned, untouched]" end
   pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) }, ctags))

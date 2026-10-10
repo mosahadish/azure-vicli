@@ -365,7 +365,15 @@ setmetatable(M, { __call = function(_, T)
       details = function(a, cb)
         local t = locate(a)
         if not t then return cb(nil) end
-        M.diff(t.dir, function(_, diff) cb(vim.split(diff or "", "\n", { plain = true })) end, T.git)
+        M.diff(t.dir, function(_, diff)
+          -- The plan's tests, as they last ran, above the diff.
+          local TR = require("azure-cli.chat.tests_run")
+          local tag = TR.label(TR.load(t.dir), TR.fingerprint(diff or ""))
+          local lines = vim.split(diff or "", "\n", { plain = true })
+          table.insert(lines, 1, "Tests: " .. (tag and tag:gsub("^%[", ""):gsub("%]$", "") or "not run on this change (gb in the change viewer)"))
+          table.insert(lines, 2, "")
+          cb(lines)
+        end, T.git)
       end,
       run = function(args, env, done)
         local t, why = locate(args)
@@ -389,6 +397,41 @@ setmetatable(M, { __call = function(_, T)
             end)
           end)
         end)
+      end,
+    },
+    {
+      name = "run_tests",
+      description = "Runs the tests on the start_fix / start_story change, in its directory: the command in your "
+        .. "plan's Test plan section (a ```sh block), or `command`. Asks the user first, showing the command. "
+        .. "Returns the exit code and the end of the output. Give pr_id for a fix, work_item_id for a story.",
+      schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
+        work_item_id = target_schema.properties.work_item_id,
+        command = { type = "string", description = "instead of the plan's" } } },
+      risk = "ask",
+      confirm = function(a)
+        local t = locate(a)
+        local PLAN = require("azure-cli.chat.plan")
+        local rec = t and PLAN.for_worktree(t.dir)
+        local cmd = a.command or (rec and PLAN.test_command(PLAN.lines(rec)))
+        return "run `" .. tostring(cmd or "?") .. "` in " .. (t and vim.fn.fnamemodify(t.dir, ":t") or "the worktree")
+      end,
+      run = function(args, env, done)
+        local t, why = locate(args)
+        if not t then return done(nil, why) end
+        local PLAN = require("azure-cli.chat.plan")
+        local rec = PLAN.for_worktree(t.dir)
+        local cmd = args.command or (rec and PLAN.test_command(PLAN.lines(rec)))
+        if not cmd then return done(nil, "no test command: put one in the plan's Test plan section as a ```sh block, or pass command") end
+        local TR = require("azure-cli.chat.tests_run")
+        M.diff(t.dir, function(_, diff)
+          env.log("$ " .. cmd)
+          TR.run(t.dir, cmd, TR.fingerprint(diff or ""), function(r, err)
+            if not r then return done(nil, err) end
+            pcall(require("azure-cli.chat.changes").refresh)
+            done({ exit_code = r.code, passed = r.code == 0, timed_out = r.timed_out, seconds = r.seconds,
+              output = table.concat(TR.tail(r.output, 80), "\n") })
+          end)
+        end, T.git)
       end,
     },
     {

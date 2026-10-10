@@ -40,7 +40,8 @@ How you'll do it, and why this way - the alternatives you considered and why not
 What could break, and how the change avoids or contains it.
 
 ## Test plan
-How it gets checked: the tests you'll add or run, what to try by hand.
+How it gets checked: the tests you'll add or run, what to try by hand. Put the command that runs them in a sh
+code block - the user can run it on your change.
 
 ## Open questions
 Anything the user should decide before you start (or "None").]]
@@ -235,6 +236,37 @@ function M.revision_changes(old, new, hunks)
     end
   end
   return out
+end
+
+-- The command the plan's Test plan section gives: its first ``` block
+-- (sh, bash, shell, cmd, pwsh, powershell or no language), lines joined
+-- with " && ", or nil. Pure.
+local SHELL_LANGS = { [""] = true, sh = true, bash = true, shell = true, cmd = true, pwsh = true, powershell = true,
+  console = true }
+function M.test_command(lines)
+  local inside, block, lang = false, nil, nil
+  for _, l in ipairs(lines) do
+    local fence = l:match("^%s*```%s*([%w]*)%s*$")
+    if block then
+      if fence then
+        local cmd = {}
+        for _, c in ipairs(block) do
+          c = vim.trim((c:gsub("^%s*%$%s+", "")))
+          if c ~= "" and not c:match("^#") then cmd[#cmd + 1] = c end
+        end
+        if #cmd > 0 and SHELL_LANGS[lang] then return table.concat(cmd, " && ") end
+        block = nil
+      else
+        block[#block + 1] = l
+      end
+    elseif fence and inside then
+      block, lang = {}, fence:lower()
+    else
+      local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+      if hashes then inside = #hashes == 2 and title:lower():find("test", 1, true) ~= nil end
+    end
+  end
+  return nil
 end
 
 -- The template's "## " headings `markdown` doesn't have. Pure.

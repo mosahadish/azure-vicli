@@ -21,7 +21,7 @@ What it does depends on the message:
             "BECAUSE-<the quoted line>" and nothing else
   "revise the plan"  counts the line requests, submit_plan revision 3
   "Please change these in ..."  (the change viewer's gS) counts the lines
-  "I approve the plan"  start_story for 3002, an edit, show_fix
+  "I approve the plan"  start_story for 3002, an edit, show_fix, run_tests
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and which turn of
 this process it is ("turn: 1" for a fresh process).
@@ -134,6 +134,7 @@ def answer_turn(mcp, init, message, turn, model, session):
         call("show_fix", {"work_item_id": 3002, "steps": [
             {"file": "src/auth.py", "line": line, "plan_line": 7, "note": "the reason code"},
             {"file": "src/auth.py", "line": 1, "plan_line": 999}]})
+        call("run_tests", {"work_item_id": 3002})
     elif asked.startswith("About "):
         quoted = [l[2:] for l in asked.splitlines() if l.startswith("> ")]
         out[:] = ["BECAUSE-" + (quoted[-1] if quoted else "?") + " (asked on the " + str(view.get("screen")) + ", line "
@@ -146,14 +147,16 @@ def answer_turn(mcp, init, message, turn, model, session):
             "# Lockout reason codes", "", "## Goal", "Say why a login was refused.", "",
             "## Approach", "Return a reason code from login().", "Keep the boolean API as a thin wrapper.", "",
             "## Files", "- `src/auth.py` - the reason code", "- `src/throttle.py` - expose the lockout state", "",
-            "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason."])})
+            "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason.", "```sh",
+            "grep -q PLANNED_CHANGE src/auth.py", "```"])})
     elif "make a plan" in asked:
         call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main", "name": "feature/3002-planned"})
         call("submit_plan", {"work_item_id": 3002, "title": "Lockout reason codes", "markdown": "\n".join([
             "# Lockout reason codes", "", "## Goal", "Say why a login was refused.", "",
             "## Approach", "Return a reason code from login().", "Keep the boolean API as a wrapper.", "",
             "## Files", "- `src/auth.py` - the reason code", "- `src/throttle.py` - expose the lockout state", "",
-            "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason."])})
+            "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason.", "```sh",
+            "grep -q PLANNED_CHANGE src/auth.py", "```"])})
         call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main", "name": "feature/3002-planned"})
     elif "triage" in asked:
         pr = view["pr"]["id"]

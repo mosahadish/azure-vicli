@@ -35,6 +35,7 @@ local DEFAULT_KEYS = {
     link_workitem = "gl", unlink_workitem = "gL",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
+    run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
   -- Reviewer diff pane.
   diff = {
@@ -56,6 +57,7 @@ local DEFAULT_KEYS = {
     goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
     delete_thread = "dd",  -- the chat's change viewer only: forget the question / queued change here
     accept_hunk = "gy", reject_hunk = "gn",  -- the chat's change viewer only: per hunk
+    run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
   -- Reviewer Overview page.
   overview = {

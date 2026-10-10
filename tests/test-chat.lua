@@ -114,7 +114,7 @@ do
   table.sort(asks)
   check("tools: what asks first - everything others see or that leaves the machine",
     table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
-      .. "complete_pull_request,create_pull_request,set_thread_status,set_work_item_state,update_pr_description,vote",
+      .. "complete_pull_request,create_pull_request,run_tests,set_thread_status,set_work_item_state,update_pr_description,vote",
     table.concat(asks, ","))
   check("tools: links, branches, drafts, tasks and sprints don't",
     TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
