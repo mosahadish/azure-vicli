@@ -44,7 +44,7 @@ end
 -- answers.
 local CONV_FIELDS = {
   entries = true, session_id = true, conv_id = true, created = true, running = true, persistent_job = true,
-  plan_key = true, agent_id = true, label = true, bridge_entry = true, mcp_path = true, target = true,
+  plan_key = true, agent_id = true, label = true, bridge_entry = true, mcp_path = true, target = true, title = true,
 }
 
 local function MAIN()
@@ -391,6 +391,8 @@ local function ensure_bufs()
     KEYS.bind(b, "chat", "history", function() pick_history() end, { desc = "open an earlier conversation" })
     KEYS.bind(b, "chat", "audit", function() show_audit() end, { desc = "what the agent changed (u undoes)" })
     KEYS.bind(b, "chat", "changes", function() M.show_changes() end, { desc = "the agent's change, file by file" })
+    KEYS.bind(b, "chat", "agents", function() require("azure-cli.chat.agents_view").open() end,
+      { desc = "every plan's agent (the Agents screen)" })
     KEYS.bind(b, "chat", "resize_less", function() M.resize(-1) end, { desc = "make the chat smaller" })
     KEYS.bind(b, "chat", "resize_more", function() M.resize(1) end, { desc = "make the chat bigger" })
     KEYS.bind(b, "chat", "back", function()
@@ -452,7 +454,7 @@ end
 -- The tabs the panel belongs in: azure-vicli's own screens.
 local PLUGIN_FT = {
   ["azurecli-dashboard"] = true, ["azurecli-files"] = true, ["azurecli-workitems"] = true, ["azurecli-workitem"] = true,
-  ["azurecli-changes"] = true, ["azurecli-plan"] = true,
+  ["azurecli-changes"] = true, ["azurecli-plan"] = true, ["azurecli-agents"] = true,
 }
 local function plugin_tab(tab)
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
@@ -1245,13 +1247,16 @@ send = function(text, opts)
 end
 M.send = send
 
-cancel = function()
-  local st = STATE()
+cancel = function(st)
+  st = st or STATE()
   if not st.running then return notify("The agent isn't running.") end
   if st.running.acp then return st.running.cancel() end
   if st.running.turn then st.running.turn.cancelled = true end
   pcall(vim.fn.jobstop, st.running.job)
 end
+
+-- Stops what conversation `c`'s agent is doing (the Agents screen's <C-c>).
+function M.cancel_conversation(c) cancel(c) end
 
 -- A fresh conversation (the current one stays in the history - gh).
 new_chat = function(quiet)
@@ -1363,6 +1368,7 @@ show_help = function()
     { "expand", "unfold a long answer or a list of tool calls (again: fold it)" },
     { "audit", "what the agent changed - u undoes one" },
     { "changes", "the agent's code change, file by file (like the reviewer: ]c / [c, gf, q)" },
+    { "agents", "every plan's agent: what each is doing (the Agents screen)" },
     "Conversation",
     { "new_chat", "start a new conversation" }, { "history", "open an earlier conversation" },
     { "agent", "choose the agent" }, { "model", "choose the model" },

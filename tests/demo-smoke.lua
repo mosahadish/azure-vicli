@@ -1455,6 +1455,15 @@ do
   if #AGENTS.queued() ~= 1 or AGENTS.working() ~= 1 then
     return fail("with max_agents = 1 the second agent should wait: " .. #AGENTS.queued() .. " queued, " .. AGENTS.working() .. " working")
   end
+  -- The Agents screen, meanwhile: #3001 working, #3002 waiting its turn.
+  feed("A")
+  local av = require("azure-cli.chat.agents_view").current()
+  if not av or vim.api.nvim_get_current_buf() ~= av.buf then return fail("A on the board didn't open the Agents screen") end
+  local function screen() return table.concat(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false), "\n") end
+  if not (screen():match("#3001[^\n]*working") and screen():match("#3002[^\n]*waiting for a free agent")) then
+    return fail("the Agents screen doesn't show one working and one waiting:\n" .. screen())
+  end
+  if not vim.wo[av.win].winbar:find("1 working", 1, true) then return fail("the Agents winbar: " .. vim.wo[av.win].winbar) end
   local both = vim.wait(60000, function()
     local a, b = PLAN.load("wi-3001"), PLAN.load("wi-3002")
     return a and a.status == "draft" and b and #b.revisions > before3002 and b.status == "draft"
@@ -1469,7 +1478,28 @@ do
     return fail("each agent's calls didn't reach its own conversation:\n" .. answer(c1) .. "\n" .. answer(c2))
   end
   if #STATE.chat.entries ~= main_turns then return fail("the main conversation got the agents' turns") end
-  if vim.api.nvim_get_current_tabpage() ~= board_tab then return fail("a background agent pulled the focus into its plan") end
+  if vim.api.nvim_get_current_tabpage() ~= vim.api.nvim_win_get_tabpage(av.win) then
+    return fail("a background agent pulled the focus into its plan")
+  end
+  -- Both plans wait for you now; <CR> on #3001's row opens its plan.
+  vim.wait(3000, function()
+    return screen():match("#3001[^\n]*plan waits for you") ~= nil and screen():match("#3002[^\n]*plan waits for you") ~= nil
+  end, 100)
+  if not (screen():match("#3001[^\n]*plan waits for you") and screen():match("#3002[^\n]*plan waits for you")) then
+    return fail("the Agents screen doesn't show both plans waiting:\n" .. screen())
+  end
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+    if l:find("#3001", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  end
+  feed("<CR>")
+  if not (PLAN.current() and PLAN.current().key == "wi-3001" and vim.api.nvim_get_current_tabpage() == PLAN.current().tab) then
+    return fail("<CR> on #3001's row didn't open its plan")
+  end
+  vim.cmd("tabclose")
+  vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(av.win))
+  vim.api.nvim_set_current_win(av.win)
+  feed("q")
+  vim.api.nvim_set_current_tabpage(board_tab)
   if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
   -- Two plans open at once, a tab each; each tab's keys, description and
   -- chat are its own plan's.

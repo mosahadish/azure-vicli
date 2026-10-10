@@ -487,6 +487,20 @@ the rest wait and start as the others finish. An agent working in the
 background doesn't pull you into its plan when it's done: the status
 strip counts the plans waiting for you.
 
+**The Agents screen** (`A` on either dashboard, `gA` in the chat,
+`:AzureCli agents`) lists every plan's agent - what it's doing (working,
+with its latest step; waiting for a free agent; its plan waiting for you;
+approved; revising; pushed) and how long since it last did something:
+
+| Key (Agents screen) | Action |
+|---|---|
+| `<CR>` | The row's plan |
+| `gd` | Its change, file by file |
+| `gL` | Its run log |
+| `gq` | Its plan's tab, with that agent's conversation in the chat |
+| `<C-c>` | Stop what it's doing |
+| `r` / `q` / `?` | Redraw / close / keys |
+
 Every plan opens in a tab of its own, and so does every change - opening
 another doesn't replace the one you were reading, and `r`, `gA` or `ga`
 in a tab always act on that tab's plan or change.

@@ -12,6 +12,7 @@ Installed as a plugin, everything goes through one user command:
 | `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, in a new tab - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
 | `:AzureCli workitems` | Open the [work-items dashboard](work-items.md#work-items), in a new tab. |
 | `:AzureCli chat` | Show or hide the [chat panel](chat.md) - the same as `gq` on any azure-vicli screen. |
+| `:AzureCli agents` | Every plan's agent - what each is doing ([Chat](chat.md#several-agents-at-once)) |
 | `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
 | `:AzureCli toasts` | Toggle [desktop notifications](dashboard.md#desktop-notifications) for the rest of this session - the same switch the dashboard's own `gN` key flips. |
 | `:AzureCli status` | Show the [provider daemon's](development.md#architecture) status, plus the resolved python interpreter and config file path (see [setup() options](configuration.md#setup-options)). |
@@ -67,6 +68,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `agents` | `A` |
 | `browser` | `o` |
 | `chat` | `gq` |
 | `collapse_all` | `zM` |
@@ -233,6 +235,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `agents` | `A` |
 | `assign` | `ga` |
 | `browser` | `o` |
 | `chat` | `gq` |
@@ -289,6 +292,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `agent` | `ga` |
+| `agents` | `gA` |
 | `audit` | `gL` |
 | `back` | `<BS>` |
 | `cancel` | `<C-c>` |
@@ -337,5 +341,18 @@ paste the output here after changing a default.
 | `run_log` | `gL` |
 | `since` | `gi` |
 | `view_thread` | `K` |
+
+#### agents
+
+| Action | Default key(s) |
+|---|---|
+| `cancel` | `<C-c>` |
+| `changes` | `gd` |
+| `chat` | `gq` |
+| `help` | `?` |
+| `open` | `<CR>` |
+| `quit` | `q` |
+| `refresh` | `r` |
+| `run_log` | `gL` |
 
 <!-- END GENERATED KEYS TABLE -->

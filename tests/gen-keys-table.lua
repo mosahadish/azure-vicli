@@ -38,7 +38,7 @@ local keys = config.get().keys
 
 -- Stable surface order (matches docs/commands-and-keys.md's section order).
 local SURFACES = {
-  "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan",
+  "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan", "agents",
 }
 
 local function keystr(v)

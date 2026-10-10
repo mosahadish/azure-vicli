@@ -184,6 +184,7 @@ end
 local FT_TITLE = {
   ["azurecli-dashboard"] = "Pull requests", ["azurecli-workitems"] = "Work items",
   ["azurecli-workitem"] = "Work item", ["azurecli-changes"] = "Change", ["azurecli-plan"] = "Plan",
+  ["azurecli-agents"] = "Agents",
 }
 function M.buf_title(buf)
   local t = vim.b[buf].azure_cli_title

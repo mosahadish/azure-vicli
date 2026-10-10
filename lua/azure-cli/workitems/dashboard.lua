@@ -1541,6 +1541,7 @@ local WORKITEMS_HELP = {
   { "browser", "open in the browser" },
   "Agents",
   { "plan_agents", "an agent plans this work item (in visual mode: one agent per selected item)" },
+  { "agents", "every plan's agent: what each is doing (the Agents screen)" },
   { "chat", "the chat, about the item under the cursor" },
   "Session",
   { "new", "new work item: type, title, and parent (if the cursor is on one)" },
@@ -1596,6 +1597,8 @@ KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open the confi
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
 -- gq: the chat panel, told about the work item under the cursor.
 require("azure-cli.chat").bind_toggle(buf, "workitems")
+KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.chat.agents_view").open() end,
+  { desc = "every plan's agent (the Agents screen)" })
 -- gP: an agent per work item - the one under the cursor, or every one in
 -- the selected rows - each writing its plan (chat/agents.lua).
 KEYS.bind(buf, "workitems", "plan_agents", function()

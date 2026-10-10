@@ -21,7 +21,7 @@ local DEFAULT_KEYS = {
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq",
+    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A",
   },
   -- Reviewer file list.
   list = {
@@ -85,7 +85,7 @@ local DEFAULT_KEYS = {
     copy_link = "gy", config = "gO", help = "?", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
-    plan_agents = "gP",
+    plan_agents = "gP", agents = "A",
   },
   -- Work-item detail view.
   workitem_view = {
@@ -100,7 +100,12 @@ local DEFAULT_KEYS = {
     cancel = "<C-c>", model = "gm", agent = "ga", prompts = "gp", history = "gh", audit = "gL",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
     back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
-    changes = "gd", why = "gw", expand = "<Tab>",
+    changes = "gd", why = "gw", expand = "<Tab>", agents = "gA",
+  },
+  -- The Agents screen (chat/agents_view.lua): every plan's agent.
+  agents = {
+    open = "<CR>", changes = "gd", run_log = "gL", chat = "gq", cancel = "<C-c>", refresh = "r",
+    quit = "q", help = "?",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -633,11 +638,12 @@ end
 -- over so the file can never drift from the code. Surfaces come out in the
 -- README's order, actions alphabetically, so a diff of two generated files
 -- is meaningful. Multi-key defaults render as Lua lists.
-local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan" }
+local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan",
+  "agents" }
 local SURFACE_TITLES = {
   dashboard = "Pull-request dashboard", list = "Reviewer: file list", diff = "Reviewer: diff pane",
   overview = "Reviewer: Overview page", nav = "Reviewer: gd/gr/gf revision buffers and peek",
-  workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel", plan = "Agent plan window",
+  workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel", plan = "Agent plan window", agents = "Agents screen",
 }
 local function lua_literal(v)
   if type(v) == "string" then return string.format("%q", v) end

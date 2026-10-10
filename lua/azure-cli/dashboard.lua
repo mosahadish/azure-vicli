@@ -175,7 +175,8 @@ local DASHBOARD_ACTIONS = {
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
   "Session",
-  { "refresh", "refresh" }, { "workitems", "work items" }, { "toasts", "notifications" }, { "config", "config" },
+  { "refresh", "refresh" }, { "workitems", "work items" }, { "agents", "every plan's agent (the Agents screen)" },
+  { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
 }
 
@@ -1876,6 +1877,8 @@ KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 -- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
 -- the PR under the cursor (chat/view.lua).
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
+KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.chat.agents_view").open() end,
+  { desc = "every plan's agent (the Agents screen)" })
 require("azure-cli.chat.view").register("azurecli-dashboard", function(w)
   local pr = row_pr[vim.api.nvim_win_get_cursor(w)[1]]
   local snap = { screen = "PR dashboard" }

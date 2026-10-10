@@ -151,6 +151,27 @@ do
         == "## Test plan\nRun it.\n\n_From the plan for #4 (revision 2, 1 question answered)._", d)
 end
 
+-- --- the Agents screen's rows ---------------------------------------------------------------
+do
+  local AV = require("azure-cli.chat.agents_view")
+  local convs = {
+    { entries = {} },  -- the main conversation: no row
+    { plan_key = "wi-1", label = "#1", title = "One", running = {}, entries = { { started = 90, tools = { "\u{270E} start_story (x)" } } } },
+    { plan_key = "wi-2", label = "#2", entries = { { started = 40, status = "done" } } },
+    { plan_key = "wi-4", label = "#4", entries = { { started = 95, status = "failed (exit 1)" } } },
+  }
+  local plans = { ["wi-2"] = { status = "draft", title = "Two" } }
+  local rows = AV.rows(convs, { { key = "wi-3", item = { id = 3, title = "Three" } }, { key = "wi-1", item = { id = 1 } } },
+    function(k) return plans[k] end, 100, "*")
+  check("agents rows: one per plan's agent, then the queued ones not running", #rows == 4, #rows)
+  check("agents rows: working, with its last step", rows[1].state == "* working" and rows[1].detail == "\u{270E} start_story (x)"
+    and rows[1].ago == "10s" and rows[1].title == "One")
+  check("agents rows: a plan waiting for you, titled from the plan", rows[2].state:find("plan waits for you", 1, true)
+    and rows[2].title == "Two" and rows[2].ago == "1m")
+  check("agents rows: a failed answer", rows[3].state:find("failed (exit 1)", 1, true) ~= nil)
+  check("agents rows: queued", rows[4].label == "#3" and rows[4].state:find("waiting for a free agent", 1, true) ~= nil)
+end
+
 -- --- messages -------------------------------------------------------------------------
 do
   local rec = { target = { work_item_id = 3 }, revisions = { { by = "agent", markdown = "a" } } }

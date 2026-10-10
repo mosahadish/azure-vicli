@@ -55,7 +55,8 @@ end
 
 local function start(q)
   local item = q.item
-  local conv = CHAT().conversation(q.key, { label = "#" .. tostring(item.id), target = { work_item_id = item.id } })
+  local conv = CHAT().conversation(q.key, { label = "#" .. tostring(item.id), title = item.title,
+    target = { work_item_id = item.id } })
   if conv.running then return false end
   local entry = CHAT().send(M.plan_prompt(item), {
     conv = conv, snap = snap_for(item), display = "/plan #" .. tostring(item.id),
