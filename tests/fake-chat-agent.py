@@ -19,6 +19,7 @@ What it does depends on the message:
             start_story again (refused: not approved yet)
   "About ..."  (a question from a plan / change-viewer line) answers
             "BECAUSE-<the quoted line>" and nothing else
+  "revise the plan"  counts the line requests, submit_plan revision 3
   "I approve the plan"  start_story for 3002, an edit, show_fix
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and which turn of
@@ -136,6 +137,13 @@ def answer_turn(mcp, init, message, turn, model, session):
         quoted = [l[2:] for l in asked.splitlines() if l.startswith("> ")]
         out[:] = ["BECAUSE-" + (quoted[-1] if quoted else "?") + " (asked on the " + str(view.get("screen")) + ", line "
                   + str(view.get("plan_line") or view.get("line")) + ")"]
+    elif "revise the plan" in asked:
+        out.append("requests: " + str(sum(1 for l in asked.splitlines() if l.startswith("- line "))))
+        call("submit_plan", {"work_item_id": 3002, "title": "Lockout reason codes", "markdown": "\n".join([
+            "# Lockout reason codes", "", "## Goal", "Say why a login was refused.", "",
+            "## Approach", "Return a reason code from login().", "Keep the boolean API as a thin wrapper.", "",
+            "## Files", "- `src/auth.py` - the reason code", "- `src/throttle.py` - expose the lockout state", "",
+            "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason."])})
     elif "make a plan" in asked:
         call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main", "name": "feature/3002-planned"})
         call("submit_plan", {"work_item_id": 3002, "title": "Lockout reason codes", "markdown": "\n".join([

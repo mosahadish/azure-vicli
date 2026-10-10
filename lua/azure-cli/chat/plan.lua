@@ -276,10 +276,22 @@ function M.approval_message(rec)
   return text
 end
 
--- What asking for changes sends the agent. Pure.
-function M.revise_message(rec, feedback)
-  return "Please revise the plan for " .. M.target_label(rec.target) .. ": " .. feedback
-    .. "\n\nSubmit the new version with submit_plan, then wait for me again."
+-- What asking for changes sends the agent: `feedback`, and the changes
+-- asked for on lines of the plan (`requests`: threads of kind "request" -
+-- { line, section, anchor, question }). Pure.
+function M.revise_message(rec, feedback, requests)
+  local parts = { "Please revise the plan for " .. M.target_label(rec.target) .. ": " .. feedback }
+  if requests and #requests > 0 then
+    parts[#parts + 1] = ""
+    parts[#parts + 1] = "On its lines:"
+    for _, r in ipairs(requests) do
+      parts[#parts + 1] = "- line " .. tostring(r.line) .. (r.section and (" (" .. r.section .. ")") or "")
+        .. (r.anchor and r.anchor ~= "" and (" \"" .. r.anchor .. "\"") or "") .. ": " .. r.question
+    end
+  end
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = "Submit the new version with submit_plan, then wait for me again."
+  return table.concat(parts, "\n")
 end
 
 -- ---------------------------------------------------------------------------
@@ -364,12 +376,14 @@ local LIST_HELP = {
 local PLAN_HELP = {
   "Ask",
   { "ask", "ask the agent about this line (in visual mode: these lines) - the answer shows under it" },
+  { "request", "queue a change on this line (in visual mode: these lines) - gR sends them together" },
+  { "delete_thread", "forget the question or change under this line" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_thread", "the question and answer in a popup" },
   { "next_thread", "next question" }, { "prev_thread", "previous question" },
   "The plan",
   { "approve", "approve it - the agent goes ahead" },
-  { "revise", "ask for changes (you say what)" },
+  { "revise", "ask for changes: what you write, plus the ones queued on lines (gc)" },
   { "open_file", "edit the plan by hand" },
   { "goto_code", "the code this line became (a linked step, or a Files entry's file)" },
   { "back", "back to the section list" },
@@ -429,7 +443,9 @@ local function set_winbars()
   local rec = view.rec
   local short = { draft = "draft", approved = "approved", changes_requested = "changes asked", done = "done" }
   local tags = { "[" .. (short[rec.status] or "draft") .. "]" }
-  if #rec.threads > 0 then tags[#tags + 1] = "[?" .. #rec.threads .. "]" end
+  local nq, nr = THREADS().counts(rec.threads)
+  if nq > 0 then tags[#tags + 1] = "[?" .. nq .. "]" end
+  if nr > 0 then tags[#tags + 1] = "[\u{270E}" .. nr .. " queued]" end
   if last_rev(rec) and last_rev(rec).by == "you" then tags[#tags + 1] = "[edited by you]" end
   if valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. M.target_label(rec.target),
@@ -455,18 +471,20 @@ local function render_list()
   local st, st_hl = M.status_label(rec)
   add(" " .. st .. (#rec.revisions > 1 and ("  \u{00B7} revision " .. #rec.revisions) or ""), st_hl)
   add("")
-  local per = {}
+  local per, per_req = {}, {}
   for _, th in ipairs(rec.threads) do
     local s = M.section_at(view.sections, th.line)
-    if s then per[s.line] = (per[s.line] or 0) + 1 end
+    local into = th.kind == "request" and per_req or per
+    if s and not (th.kind == "request" and th.status == "sent") then into[s.line] = (into[s.line] or 0) + 1 end
   end
   for _, s in ipairs(view.sections) do
     if s.level >= 2 then
       local badge = ""
       if per[s.line] then badge = "?" .. per[s.line] end
+      if per_req[s.line] then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{270E}" .. per_req[s.line] end
       if s.items > 0 and s.title:lower():find("file", 1, true) then badge = (badge ~= "" and (badge .. " ") or "") .. s.items end
       local indent = string.rep("  ", math.max(0, s.level - 2))
-      local name = UI().fit(indent .. s.title, math.max(8, width - 4 - #badge))
+      local name = UI().fit(indent .. s.title, math.max(8, width - 4 - vim.fn.strdisplaywidth(badge)))
       add("   " .. name .. badge, nil)
       if badge ~= "" then hls[#hls + 1] = { #lines - 1, #lines[#lines] - #badge, "AzureCliAccent" } end
       rows[#lines] = s
@@ -479,6 +497,7 @@ local function render_list()
     hints[#hints + 1] = { key_of("plan", "revise"), "ask for changes" }
   end
   hints[#hints + 1] = { key_of("plan", "ask"), "ask about a line" }
+  hints[#hints + 1] = { key_of("plan", "request"), "ask a change on a line" }
   hints[#hints + 1] = { key_of("plan", "open_file"), "edit it yourself" }
   hints[#hints + 1] = { key_of("plan", "help"), "all keys" }
   for _, h in ipairs(hints) do
@@ -549,17 +568,56 @@ local function approve()
   notify("Plan approved - the agent can change the code now.")
 end
 
+-- gR: ask for changes - what you write here, plus every change queued on
+-- a line with gc.
 local function revise()
   local rec = view and view.rec
   if not rec then return end
+  local queued = {}
+  for _, th in ipairs(rec.threads) do
+    if th.kind == "request" and th.status ~= "sent" then queued[#queued + 1] = th end
+  end
   require("azure-cli.editor").open({
-    title = "What should change in the plan?", initial = "", anchor = "center",
+    title = "What should change in the plan?" .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or ""),
+    initial = #queued > 0 and "See my comments on its lines." or "", anchor = "center",
     on_submit = function(text)
-      rec.status = "changes_requested"
-      changed(rec)
-      send(M.revise_message(rec, text), "Changes to the plan: " .. text)
+      if send(M.revise_message(rec, text, queued), "Changes to the plan: " .. text
+          .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or "")) then
+        rec.status = "changes_requested"
+        for _, th in ipairs(queued) do th.status = "sent" end
+        changed(rec)
+      end
     end,
   })
+end
+
+-- gc: queue a change on this line (or these lines) for gR.
+local function request(from, to)
+  local rec = view.rec
+  local lines = vim.api.nvim_buf_get_lines(view.plan_buf, from - 1, to, false)
+  local sec = M.section_at(view.sections, from)
+  require("azure-cli.editor").open({
+    title = "Change \u{00B7} plan:" .. (from == to and from or (from .. "-" .. to)) .. " (queued for gR)",
+    initial = "", anchor = { win = view.plan_win, row = to }, context_lines = lines,
+    on_submit = function(text)
+      table.insert(rec.threads, { id = tostring(os.time()) .. "-" .. math.random(1000, 9999), kind = "request",
+        line = to, anchor = vim.trim(lines[#lines] or ""), section = sec and sec.title, question = text,
+        status = "queued", at = os.time() })
+      changed(rec)
+      local _, r = THREADS().counts(rec.threads)
+      notify(r .. " change" .. (r == 1 and "" or "s") .. " queued - " .. (key_of("plan", "revise") or "gR")
+        .. " sends " .. (r == 1 and "it" or "them") .. ".")
+    end,
+  })
+end
+
+-- dd: forget the question or change request under the cursor.
+local function delete_here()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local _, i = THREADS().at_line(view.rec.threads, row)
+  if not i then return notify("Nothing under this line.") end
+  table.remove(view.rec.threads, i)
+  changed(view.rec)
 end
 
 local function open_file()
@@ -711,6 +769,17 @@ local function setup_plan(buf)
     draw_threads()
   end, { desc = "show all of the answer / fold it" })
   K.bind(buf, "plan", "view_thread", function() THREADS().show(thread_at_cursor()) end, { desc = "the question and answer" })
+  K.bind(buf, "plan", "request", function()
+    local r = vim.api.nvim_win_get_cursor(0)[1]
+    request(r, r)
+  end, { desc = "queue a change on this line" })
+  K.bind(buf, "plan", "request", function()
+    local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+    if a > b then a, b = b, a end
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    request(a, b)
+  end, { desc = "queue a change on these lines", mode = "x" })
+  K.bind(buf, "plan", "delete_thread", delete_here, { desc = "forget the question / change under this line" })
   K.bind(buf, "plan", "next_thread", function() jump_thread(1) end, { desc = "next question" })
   K.bind(buf, "plan", "prev_thread", function() jump_thread(-1) end, { desc = "previous question" })
   K.bind(buf, "plan", "back", function()

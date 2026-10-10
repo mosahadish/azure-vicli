@@ -161,7 +161,7 @@ M.THEME = {
   AzureCliStatusDraft = "DiagnosticWarn", AzureCliStatusOk = "DiagnosticOk", AzureCliStatusBad = "DiagnosticError",
   AzureCliStatusDone = "Comment",
   AzureCliThreadBar = "Special", AzureCliThreadQuestion = "Function", AzureCliThreadAnswer = "Normal",
-  AzureCliThreadMeta = "Comment",
+  AzureCliThreadMeta = "Comment", AzureCliThreadRequest = "DiagnosticWarn",
 }
 
 local themed = false

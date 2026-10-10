@@ -355,7 +355,9 @@ their line when the text around them changes.
 | Key (plan window) | Action |
 |---|---|
 | `gA` | Approve the plan - the agent is told to go ahead |
-| `gR` | Ask for changes: say what, and the agent submits a new revision |
+| `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
+| `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
+| `dd` | Forget the question or change under this line |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
@@ -371,6 +373,13 @@ section: a changed file the plan doesn't list is marked `✗ not in the plan`,
 and the files the plan lists but the change didn't touch are listed under
 the changed ones ("In the plan, not changed"); the winbar counts both. The
 agent gets the same list back from `show_fix`, so it can explain or fix it.
+
+**Asking for changes, line by line.** `gc` on a line (or a selection)
+queues what should change there; it shows under the line (`✎ use a
+decorator here`), like a review comment waiting in the batch queue. `gR`
+then sends them all in one message - with a note of your own - and the
+agent answers with a new revision. Sent ones stay under their lines,
+marked as sent, until you clear them with `dd`.
 
 **From the plan to the code and back.** `gd` on a plan line opens the
 code it became: the agent ties the parts of its change to the plan lines

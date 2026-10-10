@@ -6,7 +6,8 @@
 -- line is on screen.
 --
 -- A thread is { id, line, anchor, file?, section?, question, answer?,
--- status = "asking"|"answered"|"failed", at, agent? }: `line` is the line
+-- status = "asking"|"answered"|"failed", at, agent? } - or, with kind =
+-- "request", a change asked for on that line (status "queued"|"sent"): `line` is the line
 -- in the plan / the file (new side), `anchor` that line's text, so it can
 -- find its line again after the text around it changed (M.reanchor).
 --
@@ -14,7 +15,7 @@
 -- conversation, the agent sees the screen and line), and the answer lands
 -- both there and under the line.
 --
---   pure:   wrap, virt_lines, reanchor, message, at_line, count_label
+--   pure:   wrap, virt_lines, reanchor, message, at_line, counts, count_label
 --   Neovim: draw, ask, show
 local M = {}
 
@@ -64,6 +65,16 @@ function M.virt_lines(th, opts)
   local pad = string.rep(" ", opts.indent or 0)
   local bar = { pad .. "\u{2503} ", "AzureCliThreadBar" }
   local out = {}
+  if th.kind == "request" then
+    -- A change you asked for on this line (chat/plan.lua's gc): sent with
+    -- the others by gR.
+    for i, l in ipairs(M.wrap(th.question or "", width, opts.dw)) do
+      out[#out + 1] = { bar, { (i == 1 and "\u{270E} " or "  ") .. l, "AzureCliThreadRequest" } }
+    end
+    out[#out + 1] = { bar, { th.status == "sent" and "  sent with your change request"
+      or "  queued - gR sends it, with the others", "AzureCliThreadMeta" } }
+    return out
+  end
   local q = M.wrap(th.question or "", width, opts.dw)
   for i, l in ipairs(q) do
     out[#out + 1] = { bar, { (i == 1 and "? " or "  ") .. l, "AzureCliThreadQuestion" } }
@@ -147,10 +158,24 @@ function M.at_line(threads, line, match)
   return nil
 end
 
+-- How many of `threads` are questions (not change requests), and how many
+-- requests are still queued. Pure.
+function M.counts(threads)
+  local q, r = 0, 0
+  for _, th in ipairs(threads or {}) do
+    if th.kind == "request" then
+      if th.status ~= "sent" then r = r + 1 end
+    else
+      q = q + 1
+    end
+  end
+  return q, r
+end
+
 -- "2 questions" / "1 question" / "" for a list of threads (or a count) -
 -- for a winbar. Pure.
 function M.count_label(threads)
-  local n = type(threads) == "number" and threads or #(threads or {})
+  local n = type(threads) == "number" and threads or (M.counts(threads))
   if n == 0 then return "" end
   return n .. " question" .. (n == 1 and "" or "s")
 end
@@ -190,7 +215,8 @@ function M.draw(buf, win, threads, row_of)
       pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, row - 1, 0, {
         virt_lines = M.virt_lines(th, { width = width, expanded = expanded[th.id], dw = vim.fn.strdisplaywidth,
           frame = M.SPINNER[tick % #M.SPINNER + 1] }),
-        sign_text = "?", sign_hl_group = "AzureCliThreadBar",
+        sign_text = th.kind == "request" and "\u{270E}" or "?",
+        sign_hl_group = th.kind == "request" and "AzureCliThreadRequest" or "AzureCliThreadBar",
       })
     end
   end
@@ -260,6 +286,11 @@ end
 -- K: the whole thread in a float.
 function M.show(th)
   if not th then return require("azure-cli.shell").notify("No question on this line (ga asks one).") end
+  if th.kind == "request" then
+    return require("azure-cli.ui").open_float(vim.list_extend({ "\u{270E} Your change request" .. (th.status == "sent"
+      and " (sent)" or " (queued for gR)"), "" }, vim.split(th.question or "", "\n", { plain = true })),
+      { title = "Line " .. tostring(th.line) })
+  end
   local lines = { "? " .. (th.question or ""), "" }
   for _, l in ipairs(vim.split(th.answer or (th.status == "asking" and "(still asking...)" or ""), "\n", { plain = true })) do
     lines[#lines + 1] = l

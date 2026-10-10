@@ -90,6 +90,9 @@ do
   rec.revisions[2] = { by = "you", markdown = "MY VERSION" }
   check("approval_message: your edit goes along", PLAN.approval_message(rec):find("MY VERSION", 1, true) ~= nil)
   check("revise_message", PLAN.revise_message(rec, "use a decorator"):find("#3: use a decorator", 1, true) ~= nil)
+  local m = PLAN.revise_message(rec, "see below", { { line = 8, section = "Approach", anchor = "- two", question = "drop it" } })
+  check("revise_message: the changes asked on lines go along",
+    m:find('On its lines:\n- line 8 (Approach) "- two": drop it', 1, true) ~= nil, m)
   check("key / target_label", PLAN.key({ pr_id = 5 }) == "pr-5" and PLAN.key({}) == nil
     and PLAN.target_label({ pr_id = 5 }) == "PR !5")
 end
@@ -118,7 +121,14 @@ do
   local m = TH.message({ what = "your plan for #3", where = "line 4" }, "Why this?", "a\nb")
   check("message: what, where, every quoted line, the question",
     m:find("About your plan for #3, line 4:\n> a\n> b\n\nWhy this?", 1, true) ~= nil, m)
-  check("count_label", TH.count_label({ 1, 2 }) == "2 questions" and TH.count_label(1) == "1 question"
+  local req = TH.virt_lines({ kind = "request", question = "use a decorator", status = "queued" }, { width = 60 })
+  check("virt_lines: a change request, queued", req[1][2][1] == "\u{270E} use a decorator"
+    and req[1][2][2] == "AzureCliThreadRequest" and req[2][2][1]:find("queued", 1, true))
+  check("virt_lines: a request once sent", TH.virt_lines({ kind = "request", question = "x", status = "sent" })[2][2][1]
+    :find("sent", 1, true) ~= nil)
+  local q, r = TH.counts({ { question = "a" }, { kind = "request", status = "queued" }, { kind = "request", status = "sent" } })
+  check("counts: questions, and requests still queued", q == 1 and r == 1)
+  check("count_label", TH.count_label({ {}, {} }) == "2 questions" and TH.count_label(1) == "1 question"
     and TH.count_label({}) == "")
   check("at_line", TH.at_line({ { line = 3 }, { line = 4, id = "b" } }, 4).id == "b" and TH.at_line({}, 1) == nil)
 end

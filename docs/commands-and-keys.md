@@ -312,6 +312,7 @@ paste the output here after changing a default.
 | `ask` | `ga` |
 | `back` | `<BS>` |
 | `chat` | `gq` |
+| `delete_thread` | `dd` |
 | `expand_thread` | `<Tab>` |
 | `goto_code` | `gd` |
 | `help` | `?` |
@@ -321,6 +322,7 @@ paste the output here after changing a default.
 | `prev_thread` | `[t` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `request` | `gc` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `revise` | `gR` |

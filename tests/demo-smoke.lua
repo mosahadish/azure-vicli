@@ -1165,6 +1165,34 @@ do
     return fail("the plan pane doesn't show your edit")
   end
   if not vim.wo[v.plan_win].winbar:find("edited by you", 1, true) then return fail("no [edited by you] tag") end
+  -- gc queues a change on a line; gR sends it with the overall note, and
+  -- the agent's next revision comes back.
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
+  feed("gc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper" })
+  feed("<C-s>")
+  rec = PLAN.load("wi-3002")
+  local req = rec.threads[#rec.threads]
+  if not (req.kind == "request" and req.status == "queued" and req.line == 8) then
+    return fail("gc didn't queue a change on line 8: " .. vim.inspect(req))
+  end
+  if drawn(v.plan_buf, "\u{270E} Make it a thin wrapper") ~= 8 or not vim.wo[v.plan_win].winbar:find("1 queued", 1, true) then
+    return fail("the queued change isn't drawn under line 8 / counted")
+  end
+  n = #st.entries
+  feed("gR")
+  feed("<C-s>")
+  e = answered(n)
+  if not (e and e.text:find("requests: 1", 1, true)) then return fail("gR didn't send the line's change: " .. vim.inspect(e and e.text)) end
+  rec = PLAN.load("wi-3002")
+  if #rec.revisions ~= 3 or rec.status ~= "draft" or rec.threads[#rec.threads].status ~= "sent" then
+    return fail("the revision after gR went wrong: " .. vim.inspect({ #rec.revisions, rec.status }))
+  end
+  if not table.concat(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false), "\n"):find("thin wrapper", 1, true)
+      or not drawn(v.plan_buf, "sent with your change request") then
+    return fail("the plan pane doesn't show the new revision with the sent change")
+  end
   -- gA: approved; the agent starts the story now and shows the change.
   vim.api.nvim_set_current_win(v.plan_win)
   n = #st.entries
