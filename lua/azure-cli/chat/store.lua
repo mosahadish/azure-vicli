@@ -24,7 +24,7 @@ function M.new_id()
 end
 
 -- The parts of a turn worth keeping (never window ids or job handles).
-local KEEP_FIELDS = { "role", "text", "where", "status", "tools", "mode", "label", "started", "view" }
+local KEEP_FIELDS = { "role", "text", "where", "status", "tools", "mode", "label", "started", "view", "cost", "tokens" }
 local function clean(entry)
   local out = {}
   for _, k in ipairs(KEEP_FIELDS) do out[k] = entry[k] end

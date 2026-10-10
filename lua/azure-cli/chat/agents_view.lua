@@ -59,7 +59,7 @@ function M.rows(convs, queued, plan_of, now, frame)
       local started = last and last.started or c.created or now
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
-        target = c.target, conv = c }
+        target = c.target, conv = c, cost = require("azure-cli.chat.core").cost_of(c.entries) }
     end
   end
   for _, q in ipairs(queued) do
@@ -91,20 +91,24 @@ local function render()
     hls[#hls + 1] = { 1, 0, -1, "AzureCliMuted" }
     hls[#hls + 1] = { 2, 0, -1, "AzureCliMuted" }
   end
-  -- label 8, state 26, age 4 and the gaps take 47 cells; the title gets
+  -- label 8, state 26, age 4, cost 7 and the gaps take 55 cells; the title gets
   -- what's left, keeping ~20 for the latest step.
-  local title_w = math.max(16, math.min(44, width - 47 - 20))
+  local title_w = math.max(16, math.min(44, width - 55 - 20))
+  local CORE = require("azure-cli.chat.core")
+  local total
   for _, r in ipairs(rows) do
     local label = UI.fit(r.label, 8)
     local title = UI.fit(r.title, title_w)
     local state = UI.fit(r.state, 26)
-    local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. "  " .. r.detail
+    local cost = UI.fit(CORE.money(r.cost), 7)
+    local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. r.detail
     lines[#lines + 1] = line
     view.rows[#lines] = r
     local s = #("  " .. label .. " " .. title .. "  ")
     hls[#hls + 1] = { #lines - 1, 2, 2 + #label, "AzureCliAccent" }
     hls[#hls + 1] = { #lines - 1, s, s + #state, r.hl }
     hls[#hls + 1] = { #lines - 1, s + #state + 2, -1, "AzureCliMuted" }
+    if r.cost then total = (total or 0) + r.cost end
   end
   vim.bo[view.buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.buf, 0, -1, false, lines)
@@ -118,6 +122,7 @@ local function render()
   local parts = { working .. " working" }
   if queued > 0 then parts[#parts + 1] = queued .. " queued" end
   parts[#parts + 1] = "max " .. AG.max()
+  if total then parts[#parts + 1] = CORE.money(total) .. " so far" end
   pcall(UI.wo, view.win, "winbar", UI.winbar({ "Agents", table.concat(parts, " \u{00B7} ") }, {}))
 end
 

@@ -1265,6 +1265,13 @@ send = function(text, opts)
     turn.done = true
     absorb()
     if reader.session then st.session_id = reader.session end
+    -- This answer's cost: the growth of its process's running total (a new
+    -- process - a restart, a replay - starts again from 0).
+    if reader.cost_total and turn.pj then
+      entry.cost = math.max(0, reader.cost_total - (turn.pj.cost_seen or 0))
+      turn.pj.cost_seen = reader.cost_total
+    end
+    entry.tokens = reader.tokens
     if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
     if cancelled then
       entry.status = "stopped"
@@ -1345,6 +1352,7 @@ send = function(text, opts)
   end
   pcall(vim.fn.chansend, job, stdin_text)
 
+  turn.pj = st.persistent_job
   st.running = { job = job, turn = turn, entry = entry }
   start_spinner(st)
   local timeout = tonumber(agent.timeout_seconds) or 900

@@ -58,6 +58,12 @@ local pid2 = e2 and e2.text:match("pid (%d+)")
 check("turn 2 is turn 2, not a fresh conversation", e2 ~= nil and e2.text:match("^turn 2,") ~= nil, e2 and e2.text)
 check("turn 2 ran on the same process as turn 1", pid1 ~= nil and pid1 == pid2, { pid1 = pid1, pid2 = pid2 })
 check("still the same job object", pj == STATE.chat.persistent_job)
+-- Each answer's cost is the growth of its process's running total.
+check("cost: turn 1 costs what the process reported", e1 and math.abs((e1.cost or -1) - 0.01) < 1e-9 and e1.tokens == 15,
+  e1 and vim.inspect({ e1.cost, e1.tokens }))
+check("cost: turn 2 only its own share, not the running total", e2 and math.abs((e2.cost or -1) - 0.01) < 1e-9,
+  e2 and e2.cost)
+check("cost: the conversation's", math.abs((require("azure-cli.chat.core").cost_of(STATE.chat.entries) or 0) - 0.02) < 1e-9)
 
 local pids = {}
 for line in io.lines(marker) do pids[line] = true end

@@ -54,7 +54,9 @@ def main():
         if turn == 1:
             emit({"type": "system", "subtype": "init", "session_id": session})
         emit({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}})
-        emit({"type": "result", "subtype": "success", "result": answer, "session_id": session})
+        # Like Claude Code: the process's cost so far, and this turn's tokens.
+        emit({"type": "result", "subtype": "success", "result": answer, "session_id": session,
+              "total_cost_usd": round(0.01 * turn, 4), "usage": {"input_tokens": 10, "output_tokens": 5}})
 
 
 if __name__ == "__main__":

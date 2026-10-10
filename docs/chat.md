@@ -525,7 +525,9 @@ question waits for you · ● 2 plans wait for you`.
 **The Agents screen** (`A` on either dashboard, `gA` in the chat,
 `:AzureCli agents`) lists every plan's agent - what it's doing (working,
 with its latest step; waiting for an agent; its plan waiting for you;
-approved; revising; pushed) and how long since it last did something:
+approved; revising; pushed), how long since it last did something, and
+what it has cost so far (with Claude Code, from its own reports; the
+winbar adds them up - ACP agents don't report a cost):
 
 | Key (Agents screen) | Action |
 |---|---|

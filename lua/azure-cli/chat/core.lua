@@ -54,6 +54,24 @@ function M.strip_text(s)
   return table.concat(parts, "  \u{00B7}  ")
 end
 
+-- A conversation's cost so far: the sum of its answers' `cost` (each the
+-- difference in its process's running total - see send). nil when none
+-- reported one (an agent that doesn't, like an ACP one). Pure.
+function M.cost_of(entries)
+  local sum, any = 0, false
+  for _, e in ipairs(entries or {}) do
+    if type(e.cost) == "number" then sum, any = sum + e.cost, true end
+  end
+  return any and sum or nil
+end
+
+-- "$0.42", "<$0.01", "" for nil. Pure.
+function M.money(x)
+  if type(x) ~= "number" then return "" end
+  if x > 0 and x < 0.005 then return "<$0.01" end
+  return string.format("$%.2f", x)
+end
+
 -- What gw sends: a question about one of the agent's steps (a tool call
 -- it made, `kind` "step") or a line of its answer ("line"), with the
 -- message it was answering. Pure.
@@ -165,6 +183,14 @@ local function stream_line(st, line, decode)
       if type(ev.result) == "string" then
         st.final = ev.result
         st.is_error = ev.is_error == true
+        -- Claude Code's cost so far for this process (cumulative), and this
+        -- turn's tokens.
+        if type(ev.total_cost_usd) == "number" then st.cost_total = ev.total_cost_usd end
+        if type(ev.usage) == "table" then
+          local u = ev.usage
+          st.tokens = (tonumber(u.input_tokens) or 0) + (tonumber(u.output_tokens) or 0)
+            + (tonumber(u.cache_creation_input_tokens) or 0) + (tonumber(u.cache_read_input_tokens) or 0)
+        end
         return
       end
       if ev.type then return end  -- system/user/other stream events

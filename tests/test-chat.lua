@@ -223,6 +223,19 @@ do
   require("azure-cli").setup({})
 end
 
+-- --- cost --------------------------------------------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  local r = CORE.stream_new()
+  CORE.stream_feed(r, { '{"type":"result","result":"ok","total_cost_usd":0.25,"usage":{"input_tokens":3,"output_tokens":4,'
+    .. '"cache_read_input_tokens":10,"cache_creation_input_tokens":20}}', "" }, vim.json.decode)
+  check("stream: the result's running cost and its tokens", r.cost_total == 0.25 and r.tokens == 37, vim.inspect({ r.cost_total, r.tokens }))
+  check("cost_of: the answers' costs", CORE.cost_of({ { cost = 0.1 }, { text = "x" }, { cost = 0.05 } }) == 0.15000000000000002
+    or math.abs(CORE.cost_of({ { cost = 0.1 }, { cost = 0.05 } }) - 0.15) < 1e-9)
+  check("cost_of: none reported", CORE.cost_of({ { text = "x" } }) == nil)
+  check("money", CORE.money(0.4249) == "$0.42" and CORE.money(0.001) == "<$0.01" and CORE.money(0) == "$0.00" and CORE.money(nil) == "")
+end
+
 -- --- why_message ---------------------------------------------------------------
 do
   local CORE = require("azure-cli.chat.core")

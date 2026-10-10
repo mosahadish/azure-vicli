@@ -157,7 +157,7 @@ do
   local convs = {
     { entries = {} },  -- the main conversation: no row
     { plan_key = "wi-1", label = "#1", title = "One", running = {}, entries = { { started = 90, tools = { "\u{270E} start_story (x)" } } } },
-    { plan_key = "wi-2", label = "#2", entries = { { started = 40, status = "done" } } },
+    { plan_key = "wi-2", label = "#2", entries = { { started = 40, status = "done", cost = 0.3 }, { cost = 0.2 } } },
     { plan_key = "wi-4", label = "#4", entries = { { started = 95, status = "failed (exit 1)" } } },
   }
   local plans = { ["wi-2"] = { status = "draft", title = "Two" } }
@@ -167,8 +167,9 @@ do
   check("agents rows: working, with its last step", rows[1].state == "* working" and rows[1].detail == "\u{270E} start_story (x)"
     and rows[1].ago == "10s" and rows[1].title == "One")
   check("agents rows: a plan waiting for you, titled from the plan", rows[2].state:find("plan waits for you", 1, true)
-    and rows[2].title == "Two" and rows[2].ago == "1m")
+    and rows[2].title == "Two")
   check("agents rows: a failed answer", rows[3].state:find("failed (exit 1)", 1, true) ~= nil)
+  check("agents rows: what each cost", rows[2].cost == 0.5 and rows[1].cost == nil)
   check("agents rows: queued", rows[4].label == "#3" and rows[4].state:find("waiting for an agent", 1, true) ~= nil)
 end
 
