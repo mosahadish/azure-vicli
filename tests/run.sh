@@ -41,6 +41,13 @@ cd "$REPO_ROOT"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Every test gets its own Neovim data/cache/state/config directories: the
+# chat's conversations, plans and audit log, the per-agent MCP config files
+# and the rest must never land in (or be read from) the real ones.
+export XDG_DATA_HOME="$TMP/xdg-data" XDG_CACHE_HOME="$TMP/xdg-cache" XDG_STATE_HOME="$TMP/xdg-state"
+export XDG_CONFIG_HOME="$TMP/xdg-config"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
+
 PASS=0
 FAIL=0
 FAILED_NAMES=()

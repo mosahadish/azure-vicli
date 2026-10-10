@@ -881,6 +881,8 @@ local function stop_persistent(st)
   if not pj then return end
   if pj.finish then pcall(pj.finish, "stopped") end
   if pj.job then stop_tree(pj.job) end
+  -- A plan's agent's own MCP config file (write_mcp_config) goes with it.
+  if st.agent_id then pcall(os.remove, vim.fn.stdpath("cache") .. "/azure-cli/chat-mcp-" .. st.agent_id .. ".json") end
 end
 
 -- Whether `st.persistent_job` is a live process for `agent_name`'s current
