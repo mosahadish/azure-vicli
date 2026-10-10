@@ -73,7 +73,7 @@ function M.list()
     local rec = SHELL().read_json(path, nil)
     if type(rec) == "table" and rec.id then
       out[#out + 1] = { id = rec.id, title = rec.title or "?", updated = rec.updated or 0,
-        turns = #(rec.entries or {}), agent = rec.agent }
+        turns = #(rec.entries or {}), agent = rec.agent, plan = rec.plan }
     end
   end
   table.sort(out, function(a, b) return a.updated > b.updated end)

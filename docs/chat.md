@@ -501,6 +501,10 @@ the rest wait and start as the others finish. An agent working in the
 background doesn't pull you into its plan when it's done: the status
 strip counts the plans waiting for you.
 
+**After a restart** each plan's conversation comes back - in its plan's
+tabs and on the Agents screen - though its agent isn't running any more:
+the next message starts it again and replays the conversation to it.
+
 **Questions, one at a time.** A yes/no question from a plan's agent says
 whose it is - `[#3001] The agent wants to commit "..." and push it` - and
 when two agents ask at once, the second waits until you've answered the

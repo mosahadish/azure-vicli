@@ -175,10 +175,35 @@ local function load_conversation(rec, st)
   if rec.agent and M.agents()[rec.agent] then st.agent_name = rec.agent end
 end
 
+-- The plans' own conversations as they were before a restart: the newest
+-- saved one per plan (whose plan is still there), back in MAIN().convs.
+-- Their agents aren't running any more - the next message starts one and
+-- replays the conversation to it. Once per session.
+function M.restore_plans()
+  local main = MAIN()
+  if main.plans_restored then return end
+  main.plans_restored = true
+  local STORE = require("azure-cli.chat.store")
+  local PLAN = require("azure-cli.chat.plan")
+  local seen = {}
+  for _, s in ipairs(STORE.list()) do  -- newest first
+    if s.plan and not seen[s.plan] and not main.convs[s.plan] then
+      seen[s.plan] = true
+      local plan = PLAN.load(s.plan)
+      local rec = plan and STORE.load(s.id)
+      if rec then
+        local c = M.conversation(s.plan, { label = PLAN.target_label(plan.target), target = plan.target, title = plan.title })
+        c.entries, c.conv_id, c.created, c.session_id = rec.entries or {}, rec.id, rec.created, rec.session_id
+      end
+    end
+  end
+end
+
 local function restore_once()
   local st = MAIN()
   if st.restored then return end
   st.restored = true
+  pcall(M.restore_plans)
   if #st.entries > 0 then return end
   local rec = require("azure-cli.chat.store").load_current()
   if rec then load_conversation(rec, st) end
@@ -625,6 +650,7 @@ vim.api.nvim_create_autocmd("WinEnter", {
 -- agent has one; the main one everywhere else. Redraws when it changes.
 function M.sync_active()
   local main = MAIN()
+  pcall(M.restore_plans)
   local ok, key = pcall(vim.api.nvim_tabpage_get_var, 0, "azure_cli_plan_key")
   local want = (ok and key and main.convs[key]) and key or nil
   if want ~= main.active then

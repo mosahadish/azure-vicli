@@ -117,6 +117,27 @@ do
   local cur = require("azure-cli.chat.store").load_current()
   check("conversation: the main one stays current", cur and cur.id == STATE.chat.conv_id, cur and cur.id)
   check("conversation: the panel still shows the main one", not STATE.chat.active)
+  -- After a restart: the plan's conversation comes back (its plan must
+  -- exist), its process doesn't - the next message replays it.
+  local PLAN = require("azure-cli.chat.plan")
+  PLAN.save({ key = "wi-7", target = { work_item_id = 7 }, title = "Seven", status = "draft",
+    revisions = { { markdown = "# x" } }, threads = {} })
+  local saved_id = plan.conv_id
+  for _, c in ipairs(CHAT.conversations()) do
+    if c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
+  end
+  STATE.chat.convs, STATE.chat.plans_restored = {}, nil
+  CHAT.restore_plans()
+  local back = CHAT.find_conversation("wi-7")
+  check("restore: the plan's conversation is back", back and back.conv_id == saved_id and #back.entries == 2
+    and back.entries[2].text:find("plan slowly", 1, true) and back.label == "#7" and back.title == "Seven",
+    back and vim.inspect({ back.conv_id, #back.entries }))
+  local done_again
+  local again = CHAT.send("and again", { conv = back, view_win = win, on_done = function() done_again = true end })
+  vim.wait(20000, function() return done_again end, 20)
+  check("restore: its next message starts the agent and replays the conversation",
+    again and again.mode == "replay" and again.status == "done", again and again.mode)
+  plan = back
   for _, c in ipairs(CHAT.conversations()) do
     if c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
   end

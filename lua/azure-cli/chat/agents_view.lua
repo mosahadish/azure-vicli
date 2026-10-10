@@ -214,6 +214,7 @@ end
 -- Opens the screen (or goes to it).
 function M.open()
   require("azure-cli.ui").theme()
+  pcall(CHAT().restore_plans)  -- the plans' agents from before a restart
   if view and vim.api.nvim_tabpage_is_valid(view.tab) and vim.api.nvim_win_is_valid(view.win) then
     vim.api.nvim_set_current_tabpage(view.tab)
     vim.api.nvim_set_current_win(view.win)
