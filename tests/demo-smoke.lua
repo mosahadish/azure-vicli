@@ -1429,6 +1429,60 @@ do
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(v.tab))
   print("PLAN-SMOKE-OK")
 end
+-- Several agents at once: gP on two work items of the board starts one
+-- agent each (chat.max_agents = 1 here, so the second waits for the
+-- first); each plans in a conversation of its own, in the background - no
+-- tab opens - and the main conversation is left alone.
+do
+  local CHAT = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local PLAN = require("azure-cli.chat.plan")
+  local AGENTS = require("azure-cli.chat.agents")
+  local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
+  require("azure-cli").setup({ chat = { max_agents = 1, agent = { label = "Fake Claude", timeout_seconds = 60,
+    cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
+  local main_turns = #STATE.chat.entries
+  local before3002 = #((PLAN.load("wi-3002") or { revisions = {} }).revisions)
+  local bw = vim.fn.win_findbuf(wis)[1]
+  if not bw then return fail("the work-items board isn't showing") end
+  vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(bw))
+  vim.api.nvim_set_current_win(bw)
+  local board_tab = vim.api.nvim_get_current_tabpage()
+  goto_row(3001)
+  feed("gP")
+  goto_row(3002)
+  feed("gP")
+  if #AGENTS.queued() ~= 1 or AGENTS.working() ~= 1 then
+    return fail("with max_agents = 1 the second agent should wait: " .. #AGENTS.queued() .. " queued, " .. AGENTS.working() .. " working")
+  end
+  local both = vim.wait(60000, function()
+    local a, b = PLAN.load("wi-3001"), PLAN.load("wi-3002")
+    return a and a.status == "draft" and b and #b.revisions > before3002 and b.status == "draft"
+      and AGENTS.working() == 0 and #AGENTS.queued() == 0
+  end, 100)
+  if not both then return fail("the two board agents didn't both plan: " .. vim.inspect({ AGENTS.working(), #AGENTS.queued() })) end
+  local c1, c2 = CHAT.find_conversation("wi-3001"), CHAT.find_conversation("wi-3002")
+  if not (c1 and c2 and c1 ~= c2 and c1.agent_id ~= c2.agent_id) then return fail("not one conversation per plan") end
+  local function answer(c) local e = c.entries[#c.entries] return e and e.text or "" end
+  if not answer(c1):find("planned #3001 as agent " .. c1.agent_id, 1, true)
+      or not answer(c2):find("planned #3002 as agent " .. c2.agent_id, 1, true) then
+    return fail("each agent's calls didn't reach its own conversation:\n" .. answer(c1) .. "\n" .. answer(c2))
+  end
+  if #STATE.chat.entries ~= main_turns then return fail("the main conversation got the agents' turns") end
+  if vim.api.nvim_get_current_tabpage() ~= board_tab then return fail("a background agent pulled the focus into its plan") end
+  if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
+  -- Opening a plan shows its own agent's conversation in the panel.
+  PLAN.open("wi-3001")
+  if STATE.chat.active ~= "wi-3001" then return fail("the plan's tab doesn't show its own conversation") end
+  vim.cmd("tabclose")
+  vim.api.nvim_set_current_tabpage(board_tab)
+  CHAT.sync_active()
+  if STATE.chat.active ~= nil then return fail("back on the board, the panel should show the main conversation") end
+  for _, c in ipairs(CHAT.conversations()) do
+    if c ~= STATE.chat and c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
+  end
+  print("AGENTS-SMOKE-OK")
+end
 -- Batch review: gQ shows the place of the queued comment under the cursor
 -- in the diff pane as it moves (focus stays in the list), <Tab> goes there;
 -- gS sends the queue - everything at once - and leaving mid-send doesn't

@@ -1343,7 +1343,7 @@ function M.tools(T)
         markdown = { type = "string", description = "the plan, in markdown, following the template" },
       }, required = { "title", "markdown" } },
       risk = "write",
-      run = function(args, _, done)
+      run = function(args, env, done)
         local target = target_of(args)
         if not target then return done(nil, "give work_item_id or pr_id") end
         if type(args.markdown) ~= "string" or vim.trim(args.markdown) == "" then return done(nil, "the plan is empty") end
@@ -1353,7 +1353,14 @@ function M.tools(T)
         rec.title = args.title
         add_revision(rec, args.markdown, "agent")
         M.save(rec)
-        M.open(key)
+        -- An agent working in the background (one of several) doesn't pull
+        -- you into its plan; it says it's ready instead.
+        if env and env.background and env.background() then
+          notify("The plan for " .. M.target_label(target) .. " is ready for you - the Agents screen opens it.")
+          if view and view.key == key then render() end
+        else
+          M.open(key)
+        end
         done({
           shown = true, revision = #rec.revisions, file = M.path(key),
           missing_sections = M.missing(args.markdown, M.template()),

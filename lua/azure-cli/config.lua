@@ -85,6 +85,7 @@ local DEFAULT_KEYS = {
     copy_link = "gy", config = "gO", help = "?", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
+    plan_agents = "gP",
   },
   -- Work-item detail view.
   workitem_view = {
@@ -221,7 +222,7 @@ end
 local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
-  suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string",
+  suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -256,6 +257,9 @@ local function validate_chat(chat)
     error("azure-cli.setup: chat.position must be \"right\", \"left\", \"bottom\" or \"top\"")
   end
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
+  if out.max_agents ~= nil and (out.max_agents < 1 or out.max_agents ~= math.floor(out.max_agents)) then
+    error("azure-cli.setup: chat.max_agents must be a whole number, at least 1")
+  end
   if out.plan_first ~= nil and out.plan_first ~= true and out.plan_first ~= false and out.plan_first ~= "stories" then
     error("azure-cli.setup: chat.plan_first must be true, false or \"stories\"")
   end

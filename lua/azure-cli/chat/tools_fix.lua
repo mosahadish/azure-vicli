@@ -327,7 +327,12 @@ setmetatable(M, { __call = function(_, T)
         local linked = args.steps and require("azure-cli.chat.plan").set_links(target, args.steps) or nil
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
-          M.show("Proposed change - " .. t.label, t.dir, diff)
+          if env.background and env.background() then
+            M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
+            require("azure-cli.shell").notify(t.label .. "'s change is ready for you - the Agents screen opens it.")
+          else
+            M.show("Proposed change - " .. t.label, t.dir, diff)
+          end
           -- Against the plan: what it changed that the plan doesn't list,
           -- and what the plan lists that it didn't change.
           local PLAN = require("azure-cli.chat.plan")

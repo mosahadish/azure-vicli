@@ -1539,6 +1539,9 @@ local WORKITEMS_HELP = {
   { "unlink_pr", "unlink a pull request from the item under the cursor" },
   { "copy_link", "copy the item's link" },
   { "browser", "open in the browser" },
+  "Agents",
+  { "plan_agents", "an agent plans this work item (in visual mode: one agent per selected item)" },
+  { "chat", "the chat, about the item under the cursor" },
   "Session",
   { "new", "new work item: type, title, and parent (if the cursor is on one)" },
   { "refresh", "refresh" },
@@ -1593,6 +1596,25 @@ KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open the confi
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
 -- gq: the chat panel, told about the work item under the cursor.
 require("azure-cli.chat").bind_toggle(buf, "workitems")
+-- gP: an agent per work item - the one under the cursor, or every one in
+-- the selected rows - each writing its plan (chat/agents.lua).
+KEYS.bind(buf, "workitems", "plan_agents", function()
+  require("azure-cli.chat.agents").start_for_items({ row_item[vim.api.nvim_win_get_cursor(0)[1]] })
+end, { desc = "an agent plans this work item" })
+KEYS.bind(buf, "workitems", "plan_agents", function()
+  local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+  if a > b then a, b = b, a end
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  local items, seen = {}, {}
+  for l = a, b do
+    local it = row_item[l]
+    if type(it) == "table" and it.id and not seen[it.id] then
+      seen[it.id] = true
+      items[#items + 1] = it
+    end
+  end
+  require("azure-cli.chat.agents").start_for_items(items)
+end, { desc = "an agent per selected work item, each planning its item", mode = "x" })
 require("azure-cli.chat.view").register("azurecli-workitems", function(w)
   local it = row_item[vim.api.nvim_win_get_cursor(w)[1]]
   local snap = { screen = "work items dashboard" }

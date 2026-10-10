@@ -91,6 +91,9 @@ function M.conversation(key, fields)
   return c
 end
 
+-- A plan's own conversation, or nil (never makes one).
+function M.find_conversation(key) return MAIN().convs[key] end
+
 -- Every conversation: the main one first, then the plans' (by key).
 function M.conversations()
   local main = MAIN()
@@ -677,8 +680,13 @@ local function confirm(question, cb, details)
 end
 M.confirm = confirm
 
-local function tool_env(entry)
+local function tool_env(entry, conv)
   return {
+    -- The conversation this call comes from, and whether the panel is
+    -- showing another one right now (a plan's agent working in the
+    -- background): such a call shouldn't pull you into a tab.
+    conv = conv,
+    background = function() return conv ~= nil and STATE() ~= conv end,
     main_win = function() return entry.view_win and vim.api.nvim_win_is_valid(entry.view_win) and entry.view_win or M.main_win() end,
     -- What the user was looking at when they sent the message (selection
     -- included) - current_view answers with it.
@@ -757,13 +765,13 @@ local function where_label(snap)
   return nil
 end
 
-local function bridge_handler(entry_ref)
+local function bridge_handler(entry_ref, conv)
   return function(req, reply)
     local TOOLS = require("azure-cli.chat.tools")
     if req.method == "list" then return reply({ tools = TOOLS.describe() }) end
     if req.method == "call" then
       local entry = entry_ref() or { tools = {} }
-      return TOOLS.call(req.name, req.arguments, tool_env(entry), function(text, is_err)
+      return TOOLS.call(req.name, req.arguments, tool_env(entry, conv), function(text, is_err)
         reply({ text = text, error = is_err or nil })
       end)
     end
@@ -877,6 +885,8 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     save(st)
     if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
     if opts.on_done then pcall(opts.on_done, entry) end
+    -- An agent is free again: start the next plan waiting for one.
+    pcall(function() require("azure-cli.chat.agents").pump() end)
   end
 
   local function on_update(method, params)
@@ -1106,7 +1116,7 @@ send = function(text, opts)
     -- A plan's own agent: its tool calls come with its id (the relay's
     -- AZVICLI_CHAT_AGENT / X-Azvicli-Agent) and land in this conversation.
     st.bridge_entry = entry
-    BRIDGE.route(st.agent_id, bridge_handler(function() return st.bridge_entry end))
+    BRIDGE.route(st.agent_id, bridge_handler(function() return st.bridge_entry end, st))
   else
     BRIDGE.handler = bridge_handler(function() return entry end)
   end
@@ -1175,6 +1185,8 @@ send = function(text, opts)
     save(st)
     if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
     if opts.on_done then pcall(opts.on_done, entry) end
+    -- An agent is free again: start the next plan waiting for one.
+    pcall(function() require("azure-cli.chat.agents").pump() end)
   end
 
   local stdin_text = CORE.expand(agent.stdin or CORE.STREAM_JSON_STDIN, vars) .. "\n"

@@ -251,6 +251,7 @@ paste the output here after changing a default.
 | `next_sprint` | `]` / `<Tab>` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
+| `plan_agents` | `gP` |
 | `pr_list` | `P` |
 | `prev_sprint` | `[` / `<S-Tab>` |
 | `priority` | `gp` |

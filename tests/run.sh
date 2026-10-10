@@ -525,6 +525,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" "$out"
   fi
+  if [[ "$out" == *AGENTS-SMOKE-OK* ]]; then
+    pass "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation"
+  else
+    fail "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" "$out"
+  fi
   if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
     pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
   else

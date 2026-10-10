@@ -29,6 +29,7 @@ azure-vicli ships no agent configuration; you choose the agent and model
 - [Setting it up](#setting-it-up)
 - [Let the agent set itself up](#let-the-agent-set-itself-up)
 - [Plans, and asking why](#plans-and-asking-why)
+- [Several agents at once](#several-agents-at-once)
 - [What the agent can do](#what-the-agent-can-do)
 - [How it works](#how-it-works)
 
@@ -275,7 +276,8 @@ it's tied to one conversation with one agent and model.
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `suggest_on_new_comments` (default true), `plan_first`
-(default true) and `plan_template` ([below](#plans-and-asking-why)).
+(default true) and `plan_template` ([below](#plans-and-asking-why)), `max_agents` (default 3,
+[below](#several-agents-at-once)).
 
 The agent runs in the local clone of the PR you're looking at, when there is
 one, so a repository's own agent instructions and skills apply. A skill
@@ -474,6 +476,21 @@ ahead), `false` for neither (`/plan` still works).
 Plans live under Neovim's data directory, `azure-cli-chat/plans/<wi-3001 |
 pr-101>.md` (the text `gf` edits) and `.json` (status, revisions,
 questions).
+
+## Several agents at once
+
+`gP` on the work-items board hands the work item under the cursor - or,
+in visual mode, every one in the selected rows - to an agent of its own,
+which writes that item's plan in a conversation of its own while you
+carry on. At most `chat.max_agents` (default 3) work at the same time;
+the rest wait and start as the others finish. An agent working in the
+background doesn't pull you into its plan when it's done: the status
+strip counts the plans waiting for you.
+
+Each plan's tabs (its plan window, its change viewer) show that plan's
+agent in the chat panel - its winbar names it (`Chat · Claude · #3001`) -
+so asking why, approving or asking for changes there goes to the agent
+that wrote the plan; everywhere else the panel is your main conversation.
 
 ## What the agent can do
 

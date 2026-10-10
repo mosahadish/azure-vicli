@@ -22,6 +22,8 @@ What it does depends on the message:
   "revise the plan"  counts the line requests, submit_plan revision 3
   "Please change these in ..."  (the change viewer's gS) counts the lines
   "I approve the plan"  start_story for 3002, an edit, show_fix, run_tests
+  "Make a plan for this ... Work item #N"  (an agent started from the board)
+            waits a second, then submit_plan for #N
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and which turn of
 this process it is ("turn: 1" for a fresh process).
@@ -122,7 +124,17 @@ def answer_turn(mcp, init, message, turn, model, session):
     out.append("selection: " + str(view.get("selection_lines")) + " " + str((view.get("selection") or "")[:40]))
     out.append("hunk: " + str(bool(view.get("hunk"))))
     out.append("refs: " + ("PR !102" in message and "Referenced in the message" in message and "yes" or "no"))
-    if "I approve the plan" in asked:
+    if asked.startswith("Make a plan for this") and "Work item #" in asked:
+        # One of several agents started from the board (chat/agents.lua):
+        # slow enough that two would overlap, then the plan for its item.
+        import re
+        wid = int(re.search(r"Work item #(\d+)", asked).group(1))
+        time.sleep(1)
+        call("submit_plan", {"work_item_id": wid, "title": "Plan for {0}".format(wid), "markdown": "\n".join([
+            "# Plan for {0}".format(wid), "", "## Goal", "G", "", "## Approach", "A", "", "## Files",
+            "- `src/auth.py` - x"])})
+        out[:] = ["planned #{0} as agent {1}".format(wid, os.environ.get("AZVICLI_CHAT_AGENT"))]
+    elif "I approve the plan" in asked:
         res = json.loads(call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main",
                                               "name": "feature/3002-planned"})[0])
         path = os.path.join(res["directory"], "src", "auth.py")
