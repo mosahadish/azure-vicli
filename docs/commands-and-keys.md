@@ -347,6 +347,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `approve` | `gA` |
 | `cancel` | `<C-c>` |
 | `changes` | `gd` |
 | `chat` | `gq` |

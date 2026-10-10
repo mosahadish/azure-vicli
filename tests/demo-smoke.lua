@@ -1525,9 +1525,42 @@ do
   vim.cmd("tabclose")
   vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(av.win))
   vim.api.nvim_set_current_win(av.win)
+  if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
+  -- gA on both rows (visual): one question, each plan approved and its own
+  -- agent sets off implementing it - both at once.
+  local real_select = vim.ui.select
+  vim.ui.select = function(items, opts, cb)
+    for i, it in ipairs(items) do
+      local label = opts.format_item and opts.format_item(it) or tostring(it)
+      if label == "Approve" or label == "Allow" then return cb(it, i) end
+    end
+    cb(nil)
+  end
+  require("azure-cli").setup({ chat = { max_agents = 2, agent = { label = "Fake Claude", timeout_seconds = 60,
+    cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
+  local r1, r2
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+    if l:find("#3001", 1, true) then r1 = i end
+    if l:find("#3002", 1, true) then r2 = i end
+  end
+  vim.api.nvim_win_set_cursor(av.win, { math.min(r1, r2), 0 })
+  feed("V" .. math.abs(r2 - r1) .. "j")
+  feed("gA")
+  if PLAN.load("wi-3001").status ~= "approved" or PLAN.load("wi-3002").status ~= "approved" then
+    return fail("gA on both rows didn't approve both plans")
+  end
+  local built = vim.wait(30000, function() return AGENTS.working() == 0 end, 100)
+  vim.ui.select = real_select
+  if not built then return fail("the two approved agents didn't finish") end
+  for _, pair in ipairs({ { c1, 3001 }, { c2, 3002 } }) do
+    local c, id = pair[1], pair[2]
+    local you = c.entries[#c.entries - 1]
+    if not (you.text == "Approved the plan for #" .. id .. "." and answer(c):find("implemented #" .. id, 1, true)) then
+      return fail("#" .. id .. "'s approval didn't reach its own agent: " .. tostring(you.text) .. " / " .. answer(c))
+    end
+  end
   feed("q")
   vim.api.nvim_set_current_tabpage(board_tab)
-  if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
   -- Two plans open at once, a tab each; each tab's keys, description and
   -- chat are its own plan's.
   PLAN.open("wi-3001")

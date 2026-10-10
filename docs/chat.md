@@ -513,6 +513,7 @@ approved; revising; pushed) and how long since it last did something:
 |---|---|
 | `<CR>` | The row's plan |
 | `gd` | Its change, file by file |
+| `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gL` | Its run log |
 | `gq` | Its plan's tab, with that agent's conversation in the chat |
 | `<C-c>` | Stop what it's doing |

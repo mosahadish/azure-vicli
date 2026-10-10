@@ -136,19 +136,22 @@ def answer_turn(mcp, init, message, turn, model, session):
         out[:] = ["planned #{0} as agent {1} in {2}".format(wid, os.environ.get("AZVICLI_CHAT_AGENT"),
                                                             os.path.basename(os.getcwd()))]
     elif "I approve the plan" in asked:
+        import re
+        wid = int((re.search(r"I approve the plan for #(\d+)", asked) or re.search(r"(3002)", "3002")).group(1))
         out.append("answers: " + " | ".join(l for l in asked.splitlines() if l.startswith("- Should")))
-        res = json.loads(call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main",
-                                              "name": "feature/3002-planned"})[0])
+        res = json.loads(call("start_story", {"work_item_id": wid, "repo": "widgets", "from": "main",
+                                              "name": "feature/{0}-planned".format(wid)})[0])
         path = os.path.join(res["directory"], "src", "auth.py")
         with open(path, "a", encoding="utf-8") as f:
             f.write("PLANNED_CHANGE = True\n")
         with open(path, encoding="utf-8") as f:
             line = len(f.read().splitlines())
         # Line 7 of the plan is "Return a reason code from login().".
-        call("show_fix", {"work_item_id": 3002, "steps": [
+        call("show_fix", {"work_item_id": wid, "steps": [
             {"file": "src/auth.py", "line": line, "plan_line": 7, "note": "the reason code"},
             {"file": "src/auth.py", "line": 1, "plan_line": 999}]})
-        call("run_tests", {"work_item_id": 3002})
+        call("run_tests", {"work_item_id": wid})
+        out.append("implemented #{0}".format(wid))
     elif asked.startswith("About "):
         quoted = [l[2:] for l in asked.splitlines() if l.startswith("> ")]
         out[:] = ["BECAUSE-" + (quoted[-1] if quoted else "?") + " (asked on the " + str(view.get("screen")) + ", line "

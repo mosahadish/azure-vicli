@@ -136,6 +136,7 @@ local HELP = {
   "Agents",
   { "open", "the row's plan" }, { "changes", "its change, file by file" }, { "run_log", "its run log" },
   { "chat", "its plan's tab, with that agent's conversation in the chat" },
+  { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
   { "refresh", "redraw" }, { "quit", "close" }, { "help", "this help" },
 }
@@ -169,6 +170,36 @@ local function setup(buf)
     if not (r and r.conv and r.conv.running) then return notify("That agent isn't doing anything.") end
     CHAT().cancel_conversation(r.conv)
   end, { desc = "stop it" })
+  -- gA: approve the row's plan (in visual mode: every selected row's that
+  -- waits for you) - one question for all, each goes to its own agent.
+  local function approve_rows(rows)
+    local PLAN = require("azure-cli.chat.plan")
+    local keys, skipped = {}, {}
+    for _, r in ipairs(rows) do
+      local rec = PLAN.load(r.key)
+      if rec and (rec.status == "draft" or rec.status == "changes_requested") then keys[#keys + 1] = r.key
+      else skipped[#skipped + 1] = r.label end
+    end
+    if #keys == 0 then return notify("No plan there waits for your approval.") end
+    PLAN.ask_approval(keys, function(allow_push)
+      for _, k in ipairs(keys) do PLAN.approve(k, allow_push) end
+      notify("Approved " .. #keys .. " plan" .. (#keys == 1 and "" or "s")
+        .. (#skipped > 0 and (" (not " .. table.concat(skipped, ", ") .. ": nothing to approve)") or "") .. ".")
+      render()
+    end)
+  end
+  K.bind(buf, "agents", "approve", function()
+    local r = row_here()
+    if r then approve_rows({ r }) end
+  end, { desc = "approve its plan" })
+  K.bind(buf, "agents", "approve", function()
+    local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+    if a > b then a, b = b, a end
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    local rows = {}
+    for l = a, b do if view.rows[l] then rows[#rows + 1] = view.rows[l] end end
+    approve_rows(rows)
+  end, { desc = "approve the selected rows' plans", mode = "x" })
   K.bind(buf, "agents", "refresh", render, { desc = "redraw" })
   K.bind(buf, "agents", "quit", function()
     if view and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then

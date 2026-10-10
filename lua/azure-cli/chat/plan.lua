@@ -940,29 +940,7 @@ local function approve()
   if not rec then return end
   if rec.status == "approved" then return notify("Already approved.") end
   if rec.status == "done" then return notify("This plan was implemented already.") end
-  local has_cmd = M.test_command(current_lines(rec)) ~= nil
-  local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
-    or "Approve, and let it push without asking"
-  local v = view
-  require("azure-cli.prompt").select({ prompt = "Approve the plan for " .. M.target_label(rec.target),
-    items = { plain, with_push } }, function(choice)
-    if not choice then return end
-    view = v
-    rec.status = "approved"
-    rec.approved_rev = #rec.revisions
-    rec.approved_at = os.time()
-    rec.allow_push = choice == with_push or nil
-    M.add_event(rec, "approved", "Approved revision " .. #rec.revisions
-      .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
-    changed(rec)
-    local sent = send(M.approval_message(rec, current_lines(rec)), "Approved the plan for " .. M.target_label(rec.target)
-      .. (rec.allow_push and " (it may push once the tests pass)." or "."))
-    if sent then
-      for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
-      changed(rec)
-    end
-    notify("Plan approved - the agent can change the code now.")
-  end)
+  M.ask_approval({ rec.key }, function(allow_push) M.approve(rec.key, allow_push) end)
 end
 
 -- gR: ask for changes - what you write here, plus every change queued on
@@ -1449,6 +1427,58 @@ function M.set_links(target, steps)
   rec.links = links
   changed(rec)
   return #links
+end
+
+-- How to approve plans `keys` (one question for all of them): cb(allow_push)
+-- once you've picked - plain approval, or letting each push once its tests
+-- pass (without asking, for a plan with no test command).
+function M.ask_approval(keys, cb)
+  local has_cmd = false
+  for _, k in ipairs(keys) do
+    local rec = M.load(k)
+    if rec and M.test_command(current_lines(rec)) then has_cmd = true end
+  end
+  local what = #keys == 1 and ("the plan for " .. M.target_label(M.load(keys[1]).target)) or (#keys .. " plans")
+  local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
+    or "Approve, and let it push without asking"
+  require("azure-cli.prompt").select({ prompt = "Approve " .. what, items = { plain, with_push } }, function(choice)
+    if choice then cb(choice == with_push) end
+  end)
+end
+
+-- Approves plan `key`: its status, the run log, and the go-ahead (with
+-- your answers, and your version if you edited it) to the agent that
+-- wrote it - its own conversation when it has one (a board agent), else
+-- the main chat. False and why when it can't be approved now.
+function M.approve(key, allow_push)
+  local rec = M.load(key)
+  if not rec then return false, "no plan" end
+  if rec.status ~= "draft" and rec.status ~= "changes_requested" then
+    return false, ({ approved = "already approved", done = "implemented already" })[rec.status] or rec.status
+  end
+  rec.status = "approved"
+  rec.approved_rev = #rec.revisions
+  rec.approved_at = os.time()
+  rec.allow_push = allow_push or nil
+  M.add_event(rec, "approved", "Approved revision " .. #rec.revisions
+    .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
+  changed(rec)
+  local CHAT = require("azure-cli.chat")
+  local conv = CHAT.find_conversation(key)
+  local v = views[key]
+  local entry = CHAT.send(M.approval_message(rec, current_lines(rec)), {
+    conv = conv, view_win = (v and valid_win(v.plan_win)) and v.plan_win or nil,
+    display = "Approved the plan for " .. M.target_label(rec.target)
+      .. (rec.allow_push and " (it may push once the tests pass)." or "."),
+  })
+  if entry then
+    for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
+    changed(rec)
+  else
+    notify("Approved " .. M.target_label(rec.target) .. " - its agent is still answering; tell it once it's done "
+      .. "(it can read the plan with get_plan).", vim.log.levels.WARN)
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
