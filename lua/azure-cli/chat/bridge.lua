@@ -17,6 +17,12 @@ local uv = vim.uv or vim.loop
 -- M.handler(req, reply) is set by chat/init.lua: req is the decoded request
 -- (token already checked), reply(tbl) sends the answer and closes.
 M.handler = nil
+-- One handler per extra agent (a plan's own agent, chat/init.lua's
+-- conversations): a request whose "agent" names one goes there instead.
+M.handlers = {}
+
+-- Routes requests carrying agent id `id` to `fn`; nil removes it.
+function M.route(id, fn) M.handlers[id] = fn end
 
 local server, port, token
 
@@ -26,6 +32,9 @@ local function random_token()
   for _ = 1, 4 do parts[#parts + 1] = string.format("%08x", math.random(0, 0x7fffffff)) end
   return table.concat(parts)
 end
+
+-- A new random agent id.
+function M.new_id() return random_token():sub(1, 16) end
 
 -- Starts listening (once per session) and returns "127.0.0.1:<port>",
 -- token - or nil plus why.
@@ -66,8 +75,12 @@ function M.ensure()
         local okd, req = pcall(vim.json.decode, line)
         if not okd or type(req) ~= "table" then return reply({ text = "malformed request", error = true }) end
         if req.token ~= token then return reply({ text = "bad token", error = true }) end
-        if not M.handler then return reply({ text = "the chat isn't running", error = true }) end
-        local okh, herr = pcall(M.handler, req, reply)
+        local handler = (req.agent and req.agent ~= "") and M.handlers[req.agent] or M.handler
+        if not handler then
+          return reply({ text = (req.agent and req.agent ~= "") and "that agent's conversation is gone"
+            or "the chat isn't running", error = true })
+        end
+        local okh, herr = pcall(handler, req, reply)
         if not okh then reply({ text = "azure-vicli error: " .. tostring(herr), error = true }) end
       end)
     end)

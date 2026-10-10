@@ -4536,6 +4536,11 @@ def _bridge_call(payload, env=None, timeout=900):
         raise OSError("AZVICLI_CHAT_BRIDGE is not set - start the agent from azure-vicli's chat panel")
     msg = dict(payload)
     msg["token"] = env.get("AZVICLI_CHAT_TOKEN") or ""
+    # Which of the chat's agents this relay serves (one per plan when
+    # several run at once): the bridge hands the call to that agent's
+    # conversation. --mcp-http passes it per request (X-Azvicli-Agent).
+    if "agent" not in msg and env.get("AZVICLI_CHAT_AGENT"):
+        msg["agent"] = env.get("AZVICLI_CHAT_AGENT")
     with socket.create_connection((host, int(port)), timeout=timeout) as sock:
         sock.sendall((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
         buf = b""
@@ -4675,10 +4680,14 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
                 msg = json.loads(raw.decode("utf-8", errors="replace"))
             except ValueError:
                 return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+            # The agent this request comes from (its session/new header):
+            # the bridge routes the call to that agent's conversation.
+            agent = self.headers.get("X-Azvicli-Agent") or ""
+            routed = bridge if not agent else (lambda p: bridge(dict(p, agent=agent)))
             if isinstance(msg, list):
-                answers = [a for a in (mcp_handle(m, bridge) for m in msg) if a is not None]
+                answers = [a for a in (mcp_handle(m, routed) for m in msg) if a is not None]
                 return self._send(200, answers) if answers else self._send(202)
-            resp = mcp_handle(msg, bridge)
+            resp = mcp_handle(msg, routed)
             return self._send(202) if resp is None else self._send(200, resp)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)

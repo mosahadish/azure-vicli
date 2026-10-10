@@ -301,7 +301,10 @@ class McpHttpServeTests(unittest.TestCase):
     rejects a stdio MCP server)."""
 
     def setUp(self):
+        self.seen = []
+
         def bridge(payload):
+            self.seen.append(payload)
             if payload["method"] == "list":
                 return {"tools": [{"name": "current_view", "description": "d", "inputSchema": {"type": "object"}}]}
             return {"text": "on the PR dashboard"}
@@ -322,12 +325,14 @@ class McpHttpServeTests(unittest.TestCase):
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive(), "closing stdin should stop the server")
 
-    def post(self, body, token="secret", method="POST"):
+    def post(self, body, token="secret", method="POST", agent=None):
         import urllib.request
         import urllib.error
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = "Bearer " + token
+        if agent:
+            headers["X-Azvicli-Agent"] = agent
         req = urllib.request.Request("http://127.0.0.1:{0}/mcp".format(self.port), method=method,
                                      data=None if body is None else json.dumps(body).encode(), headers=headers)
         try:
@@ -345,6 +350,14 @@ class McpHttpServeTests(unittest.TestCase):
         self.assertEqual(r["result"]["tools"][0]["name"], "current_view")
         code, r = self.post({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "current_view"}})
         self.assertEqual(r["result"]["content"][0]["text"], "on the PR dashboard")
+
+    def test_the_agent_header_routes_the_call(self):
+        # With several agents at once, each one's calls go to its own
+        # conversation: the header becomes the bridge request's "agent".
+        self.post({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "current_view"}}, agent="a1")
+        self.post({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "current_view"}})
+        self.assertEqual(self.seen[0].get("agent"), "a1")
+        self.assertNotIn("agent", self.seen[1])
 
     def test_a_notification_is_accepted_without_a_body(self):
         self.assertEqual(self.post({"jsonrpc": "2.0", "method": "notifications/initialized"}), (202, None))
@@ -381,6 +394,29 @@ class BridgeCallTests(unittest.TestCase):
         srv.close()
         self.assertEqual(res, {"text": "hi"})
         self.assertEqual(got, {"method": "list", "token": "secret"})
+
+    def test_the_agent_id_goes_along(self):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        got = {}
+
+        def serve_one():
+            conn, _ = srv.accept()
+            data = b""
+            while not data.endswith(b"\n"):
+                data += conn.recv(4096)
+            got.update(json.loads(data))
+            conn.sendall(b'{"text": "hi"}\n')
+            conn.close()
+        t = threading.Thread(target=serve_one)
+        t.start()
+        ac._bridge_call({"method": "list"}, env={"AZVICLI_CHAT_BRIDGE": "127.0.0.1:{0}".format(port),
+                                                "AZVICLI_CHAT_TOKEN": "secret", "AZVICLI_CHAT_AGENT": "a7"})
+        t.join()
+        srv.close()
+        self.assertEqual(got, {"method": "list", "token": "secret", "agent": "a7"})
 
     def test_no_bridge_configured(self):
         with self.assertRaises(OSError):
