@@ -470,16 +470,18 @@ end
 -- output.
 local function run_tests()
   local TR = require("azure-cli.chat.tests_run")
-  local PLAN = require("azure-cli.chat.plan")
   local dir, fp, title = view.dir, view.fp, view.title
-  local cmd = view.plan and PLAN.test_command(PLAN.lines(view.plan))
+  local cmd, source = TR.command(dir, view.plan)
   local last = TR.load(dir)
   if TR.running(dir) then return notify("The tests are running - their result shows in the winbar.") end
   local function go()
     if not cmd then
-      return notify("The plan has no test command - its Test plan section needs a ```sh block.", vim.log.levels.WARN)
+      return notify("No test command: set chat.test_cmd for this repository, or the plan's Test plan section needs "
+        .. "a sh code block.", vim.log.levels.WARN)
     end
-    TR.ask_and_run(dir, cmd, fp, function(r, err)
+    -- Your own command (chat.test_cmd) runs straight away; the agent's asks.
+    local runner = source == "config" and TR.run or TR.ask_and_run
+    runner(dir, cmd, fp, function(r, err)
       if not r then
         if err ~= "declined" then notify("The tests didn't run: " .. tostring(err), vim.log.levels.WARN) end
         return

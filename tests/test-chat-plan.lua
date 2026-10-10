@@ -279,6 +279,18 @@ do
       and TR.label({ code = 0, fingerprint = "a" }, "b") == "[\u{2713} tests passed, before the last change]"
       and TR.label(nil, "a", true):find("running", 1, true) ~= nil and TR.label(nil, "a") == nil)
   check("tail: the last non-empty lines", table.concat(TR.tail({ "a", "", "b", "c", "" }, 2), "|") == "b|c")
+  check("repo_of: story and fix worktrees", TR.repo_of("/x/fix-worktrees/widgets-wi3001") == "widgets"
+    and TR.repo_of("/x/my-repo-101/") == "my-repo" and TR.repo_of("C:\\w\\api-wi7") == "api")
+  check("configured: one command, or per repository", TR.configured("make test", "x") == "make test"
+    and TR.configured({ widgets = "pytest -q" }, "widgets") == "pytest -q" and TR.configured({ widgets = "p" }, "other") == nil
+    and TR.configured(nil, "x") == nil)
+  require("azure-cli").setup({ chat = { test_cmd = { widgets = "./run-tests" } } })
+  local planrec = { key = "nope", revisions = { { markdown = "## Test plan\n```sh\nmake check\n```" } } }
+  local c1, s1 = TR.command("/w/widgets-wi1", planrec)
+  local c2, s2 = TR.command("/w/other-wi1", planrec)
+  check("command: yours first, else the plan's", c1 == "./run-tests" and s1 == "config" and c2 == "make check" and s2 == "plan",
+    vim.inspect({ c1, s1, c2, s2 }))
+  require("azure-cli").setup({})
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

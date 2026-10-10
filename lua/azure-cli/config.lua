@@ -228,6 +228,7 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
+  test_cmd = "any",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -262,6 +263,16 @@ local function validate_chat(chat)
     error("azure-cli.setup: chat.position must be \"right\", \"left\", \"bottom\" or \"top\"")
   end
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
+  if out.test_cmd ~= nil then
+    local ok = type(out.test_cmd) == "string"
+    if type(out.test_cmd) == "table" then
+      ok = true
+      for k, v in pairs(out.test_cmd) do if type(k) ~= "string" or type(v) ~= "string" then ok = false end end
+    end
+    if not ok then
+      error("azure-cli.setup: chat.test_cmd must be a command string, or a table of repository name -> command string")
+    end
+  end
   if out.max_agents ~= nil and (out.max_agents < 1 or out.max_agents ~= math.floor(out.max_agents)) then
     error("azure-cli.setup: chat.max_agents must be a whole number, at least 1")
   end

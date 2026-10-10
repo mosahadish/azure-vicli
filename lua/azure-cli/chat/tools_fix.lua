@@ -420,8 +420,9 @@ setmetatable(M, { __call = function(_, T)
     },
     {
       name = "run_tests",
-      description = "Runs the tests on the start_fix / start_story change, in its directory: the command in your "
-        .. "plan's Test plan section (a ```sh block), or `command`. Asks the user first, showing the command. "
+      description = "Runs the tests on the start_fix / start_story change, in its directory: the user's own test "
+        .. "command for the repository when they set one, else the command in your plan's Test plan section (a "
+        .. "```sh block), or `command`. Asks the user first, showing the command (not for their own). "
         .. "Returns the exit code and the end of the output. Give pr_id for a fix, work_item_id for a story.",
       schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
         work_item_id = target_schema.properties.work_item_id,
@@ -430,18 +431,23 @@ setmetatable(M, { __call = function(_, T)
       confirm = function(a)
         local t = locate(a)
         local PLAN = require("azure-cli.chat.plan")
-        local rec = t and PLAN.for_worktree(t.dir)
-        local cmd = a.command or (rec and PLAN.test_command(PLAN.lines(rec)))
+        local cmd = a.command or (t and require("azure-cli.chat.tests_run").command(t.dir, PLAN.for_worktree(t.dir)))
         return "run `" .. tostring(cmd or "?") .. "` in " .. (t and vim.fn.fnamemodify(t.dir, ":t") or "the worktree")
+      end,
+      -- The user's own command (chat.test_cmd) needs no question.
+      preapproved = function(a, cb)
+        local t = locate(a)
+        if a.command or not t then return cb(false) end
+        local _, source = require("azure-cli.chat.tests_run").command(t.dir, require("azure-cli.chat.plan").for_worktree(t.dir))
+        cb(source == "config", "your chat.test_cmd")
       end,
       run = function(args, env, done)
         local t, why = locate(args)
         if not t then return done(nil, why) end
         local PLAN = require("azure-cli.chat.plan")
-        local rec = PLAN.for_worktree(t.dir)
-        local cmd = args.command or (rec and PLAN.test_command(PLAN.lines(rec)))
-        if not cmd then return done(nil, "no test command: put one in the plan's Test plan section as a ```sh block, or pass command") end
         local TR = require("azure-cli.chat.tests_run")
+        local cmd = args.command or TR.command(t.dir, PLAN.for_worktree(t.dir))
+        if not cmd then return done(nil, "no test command: put one in the plan's Test plan section as a ```sh block, or pass command") end
         M.diff(t.dir, function(_, diff)
           env.log("$ " .. cmd)
           TR.run(t.dir, cmd, TR.fingerprint(diff or ""), function(r, err)

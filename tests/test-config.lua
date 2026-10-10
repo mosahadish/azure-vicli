@@ -466,6 +466,8 @@ do
   rejects("a session_pattern (gone)", { agent = { cmd = { "a" }, session_pattern = "x" } }, "chat.agent.session_pattern is gone")
   rejects("acp with a string cmd", { agent = { cmd = "copilot --acp", acp = true } }, "must be a list of strings when acp is set")
   rejects("a bad plan_first", { plan_first = "sometimes" }, "chat.plan_first")
+  rejects("a bad test_cmd", { test_cmd = { widgets = 3 } }, "chat.test_cmd")
+  rejects("a bad max_agents", { max_agents = 0 }, "chat.max_agents")
   config.setup({})
 end
 

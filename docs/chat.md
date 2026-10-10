@@ -276,7 +276,7 @@ it's tied to one conversation with one agent and model.
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `suggest_on_new_comments` (default true), `plan_first`
-(default true) and `plan_template` ([below](#plans-and-asking-why)), `max_agents` (default 3,
+(default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `max_agents` (default 3,
 [below](#several-agents-at-once)).
 
 The agent runs in the local clone of the PR you're looking at, when there is
@@ -384,6 +384,12 @@ change moved on); a failed run opens its output, and `gb` later offers
 the last output again. The agent can run them too (`run_tests`, which
 asks you the same way), and `commit_and_push_fix`'s question shows how
 the tests last went on exactly that change.
+
+Your own test command wins over the agent's: `chat.test_cmd` is one
+command for every repository, or one per repository - `test_cmd = {
+widgets = ".venv/bin/python -m pytest -q", api = "dotnet test" }`. It runs
+in the worktree like the plan's, but without the question (it's yours),
+for `gb` and for the agent's `run_tests` alike.
 
 **Letting an approved plan push.** `gA` offers two ways to approve: just
 approve, or approve *and let it push once the tests pass*. With the

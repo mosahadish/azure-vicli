@@ -1532,12 +1532,12 @@ do
   vim.ui.select = function(items, opts, cb)
     for i, it in ipairs(items) do
       local label = opts.format_item and opts.format_item(it) or tostring(it)
-      if label == "Approve" or label == "Allow" then return cb(it, i) end
+      if label == "Approve" then return cb(it, i) end  -- no "Allow": run_tests must not ask (test_cmd)
     end
     cb(nil)
   end
-  require("azure-cli").setup({ chat = { max_agents = 2, agent = { label = "Fake Claude", timeout_seconds = 60,
-    cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
+  require("azure-cli").setup({ chat = { max_agents = 2, test_cmd = { widgets = "true" },
+    agent = { label = "Fake Claude", timeout_seconds = 60, cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   local r1, r2
   for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
     if l:find("#3001", 1, true) then r1 = i end
@@ -1557,6 +1557,12 @@ do
     local you = c.entries[#c.entries - 1]
     if not (you.text == "Approved the plan for #" .. id .. "." and answer(c):find("implemented #" .. id, 1, true)) then
       return fail("#" .. id .. "'s approval didn't reach its own agent: " .. tostring(you.text) .. " / " .. answer(c))
+    end
+    -- Your chat.test_cmd ran without a question.
+    local last = c.entries[#c.entries]
+    if not (table.concat(last.tools or {}, "|"):find("run_tests: allowed by your chat.test_cmd", 1, true)
+        and answer(c):find('"passed":true', 1, true)) then
+      return fail("#" .. id .. "'s run_tests didn't run your test_cmd without asking: " .. table.concat(last.tools or {}, "|"))
     end
   end
   feed("q")

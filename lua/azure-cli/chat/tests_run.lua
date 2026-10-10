@@ -2,7 +2,9 @@
 -- change. The command is the one the plan's Test plan section gives
 -- (chat/plan.lua's test_command); it runs in the change's worktree, only
 -- after you say yes - it's text the agent wrote. The last result is kept
--- per worktree (stdpath("data")/azure-cli-chat/why/<worktree>.tests.json)
+-- per worktree (stdpath("data")/azure-cli-chat/why/<worktree>.tests.json).
+-- Your own command for the repository (chat.test_cmd) wins over the plan's
+-- and runs without asking
 -- with a fingerprint of the change it ran on, so the change viewer can say
 -- "passed", "failed" or "passed, before the last change"; commit_and_push_fix
 -- shows it in its question; the agent can run them itself (run_tests,
@@ -20,6 +22,36 @@ M.TIMEOUT = 600
 M.KEEP_LINES = 400
 
 local running = {}  -- dir -> true while its tests run
+
+-- The repository of a fix / story worktree: start_fix's <repo>-<pr id>,
+-- start_story's <repo>-wi<id>. Pure.
+function M.repo_of(dir)
+  local name = ((dir or ""):gsub("[/\\]+$", "")):match("([^/\\]+)$") or ""
+  return name:match("^(.-)%-wi%d+$") or name:match("^(.-)%-%d+$") or name
+end
+
+-- Your own test command for `repo` (setup({ chat = { test_cmd = "..." or {
+-- [repo] = "..." } } })), or nil. `cfg` = that setting. Pure.
+function M.configured(cfg, repo)
+  if type(cfg) == "string" and cfg ~= "" then return cfg end
+  if type(cfg) == "table" and type(cfg[repo]) == "string" and cfg[repo] ~= "" then return cfg[repo] end
+  return nil
+end
+
+-- The command to run on worktree `dir`'s change: yours from chat.test_cmd
+-- first ("config" - runs without asking, it's yours), else the one in its
+-- plan's Test plan ("plan" - asks: the agent wrote it). cmd, source.
+function M.command(dir, plan_rec)
+  local cfg = (require("azure-cli.config").get().chat or {}).test_cmd
+  local mine = M.configured(cfg, M.repo_of(dir))
+  if mine then return mine, "config" end
+  if plan_rec then
+    local PLAN = require("azure-cli.chat.plan")
+    local cmd = PLAN.test_command(PLAN.lines(plan_rec))
+    if cmd then return cmd, "plan" end
+  end
+  return nil, nil
+end
 
 function M.fingerprint(diff)
   return vim.fn.sha256(diff or "")
