@@ -32,7 +32,22 @@ for _, k in ipairs({ "PREAMBLE", "compose", "parse_answer", "expand", "render", 
   M[k] = CORE[k]
 end
 
-local function STATE()
+-- STATE.chat is the main conversation (the one the panel shows outside a
+-- plan) and everything the panel shares between conversations: its
+-- windows, size, the messages sent, the selection, the agent and models
+-- picked. A plan's own agent has a conversation of its own
+-- (MAIN().convs[plan key], made by M.conversation): a table with just
+-- CONV_FIELDS, falling back to STATE.chat for the rest. STATE() is the
+-- conversation the panel shows now - a plan's, in that plan's tabs (see
+-- M.sync_active), else the main one. A message keeps the conversation it
+-- was sent in (send's opts.conv), whatever the panel shows by the time it
+-- answers.
+local CONV_FIELDS = {
+  entries = true, session_id = true, conv_id = true, created = true, running = true, persistent_job = true,
+  plan_key = true, agent_id = true, label = true, bridge_entry = true, mcp_path = true, target = true,
+}
+
+local function MAIN()
   local S = require("azure-cli.state")
   S.chat = S.chat or {
     entries = {},        -- { role = "you"|"agent"|"note", text, where, view, tools, status, label, ... }
@@ -48,8 +63,42 @@ local function STATE()
     sent = {},           -- what was sent, for <Up>/<Down> in the input box
     selection = nil,     -- { win, buf, from, to, text } from gq in visual mode
     restored = false,
+    convs = {},          -- plan key -> that plan's own conversation
+    active = nil,        -- the plan key whose conversation the panel shows, or nil (the main one)
   }
+  S.chat.convs = S.chat.convs or {}
   return S.chat
+end
+
+local function STATE()
+  local main = MAIN()
+  return (main.active and main.convs[main.active]) or main
+end
+
+-- A plan's own conversation (made the first time): `key` = the plan's key
+-- ("wi-3001"), `fields` = { target, label } for a new one.
+function M.conversation(key, fields)
+  local main = MAIN()
+  if main.convs[key] then return main.convs[key] end
+  local c = { entries = {}, plan_key = key, agent_id = require("azure-cli.chat.bridge").new_id(),
+    conv_id = require("azure-cli.chat.store").new_id(), created = os.time() }
+  for k, v in pairs(fields or {}) do c[k] = v end
+  setmetatable(c, {
+    __index = function(_, k) if CONV_FIELDS[k] then return nil end return main[k] end,
+    __newindex = function(tbl, k, v) if CONV_FIELDS[k] then rawset(tbl, k, v) else main[k] = v end end,
+  })
+  main.convs[key] = c
+  return c
+end
+
+-- Every conversation: the main one first, then the plans' (by key).
+function M.conversations()
+  local main = MAIN()
+  local out = { main }
+  local keys = vim.tbl_keys(main.convs)
+  table.sort(keys)
+  for _, k in ipairs(keys) do out[#out + 1] = main.convs[k] end
+  return out
 end
 
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
@@ -104,17 +153,18 @@ end
 -- ---------------------------------------------------------------------------
 -- Conversation persistence.
 
-local function save()
-  local st = STATE()
+local function save(st)
+  st = st or STATE()
   if #st.entries == 0 then return end
   st.conv_id = st.conv_id or require("azure-cli.chat.store").new_id()
   st.created = st.created or os.time()
   pcall(require("azure-cli.chat.store").save, { id = st.conv_id, created = st.created, entries = st.entries,
-    session_id = st.session_id, agent = (M.current_agent()), model = M.current_model(select(2, M.current_agent())) })
+    session_id = st.session_id, agent = (M.current_agent()), model = M.current_model(select(2, M.current_agent())),
+    plan = st.plan_key })
 end
 
-local function load_conversation(rec)
-  local st = STATE()
+local function load_conversation(rec, st)
+  st = st or STATE()
   st.entries = rec.entries or {}
   st.session_id = rec.session_id
   st.conv_id = rec.id
@@ -123,12 +173,12 @@ local function load_conversation(rec)
 end
 
 local function restore_once()
-  local st = STATE()
+  local st = MAIN()
   if st.restored then return end
   st.restored = true
   if #st.entries > 0 then return end
   local rec = require("azure-cli.chat.store").load_current()
-  if rec then load_conversation(rec) end
+  if rec then load_conversation(rec, st) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -258,7 +308,7 @@ function M.set_winbars()
   local UI = require("azure-cli.ui")
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) then
-      pcall(UI.wo, w.log, "winbar", UI.winbar({ "Chat", agent_label() }, tags))
+      pcall(UI.wo, w.log, "winbar", UI.winbar({ "Chat", agent_label(), st.label }, tags))
     end
     if w.input and vim.api.nvim_win_is_valid(w.input) then
       local KEYS = require("azure-cli.keys")
@@ -560,10 +610,24 @@ vim.api.nvim_create_autocmd("WinEnter", {
     STATE().main_win[vim.api.nvim_get_current_tabpage()] = win
   end,
 })
+-- The conversation the panel shows: in a plan's tab (its plan window or
+-- change viewer: vim.t.azure_cli_plan_key) that plan's own one, if its
+-- agent has one; the main one everywhere else. Redraws when it changes.
+function M.sync_active()
+  local main = MAIN()
+  local ok, key = pcall(vim.api.nvim_tabpage_get_var, 0, "azure_cli_plan_key")
+  local want = (ok and key and main.convs[key]) and key or nil
+  if want ~= main.active then
+    main.active = want
+    if log_buf and vim.api.nvim_buf_is_valid(log_buf) then render() end
+  end
+end
+
 vim.api.nvim_create_autocmd({ "TabEnter", "BufWinEnter" }, {
   group = group,
   callback = function()
     vim.schedule(function()
+      M.sync_active()
       local st = STATE()
       local tab = vim.api.nvim_get_current_tabpage()
       if st.visible and not panel_open_in(tab) and plugin_tab(tab) then open_here(false) end
@@ -633,27 +697,29 @@ end
 -- environment. write_mcp_config (most agents: a file, `env` as an
 -- object) and acp_mcp_server (session/new's `mcpServers`: inline, `env`
 -- as a list and a `name` field required there) both build on this.
-local function mcp_server_def(addr, token)
+local function mcp_server_def(addr, token, agent_id)
   local CONFIG = require("azure-cli.config")
   local argv = CONFIG.provider_cmd()
-  local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
+  local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token, AZVICLI_CHAT_AGENT = agent_id }
   for _, k in ipairs({ "AZVICLI_CONFIG", "AZVICLI_ACCOUNTS_JSON", "AZVICLI_FAKE_WS" }) do
     if vim.env[k] and vim.env[k] ~= "" then env[k] = vim.env[k] end
   end
   return { command = argv[1], args = vim.list_extend(vim.list_slice(argv, 2), { "--mcp" }), env = env }
 end
 
-local function acp_mcp_server(addr, token)
-  local def = mcp_server_def(addr, token)
+local function acp_mcp_server(addr, token, agent_id)
+  local def = mcp_server_def(addr, token, agent_id)
   local env = {}
   for k, v in pairs(def.env) do table.insert(env, { name = k, value = v }) end
   return { name = "azure-vicli", command = def.command, args = def.args, env = env }
 end
 
-local function write_mcp_config(addr, token)
-  local path = vim.fn.stdpath("cache") .. "/azure-cli/chat-mcp.json"
+-- One file per agent: a plan's own agent gets its id in the relay's
+-- environment (chat-mcp-<id>.json), the main chat chat-mcp.json.
+local function write_mcp_config(addr, token, agent_id)
+  local path = vim.fn.stdpath("cache") .. "/azure-cli/chat-mcp" .. (agent_id and ("-" .. agent_id) or "") .. ".json"
   vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-  local cfg = { mcpServers = { ["azure-vicli"] = mcp_server_def(addr, token) } }
+  local cfg = { mcpServers = { ["azure-vicli"] = mcp_server_def(addr, token, agent_id) } }
   vim.fn.writefile({ vim.json.encode(cfg) }, path)
   return path
 end
@@ -808,7 +874,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     end
     if entry.text == "" then entry.text = "_(no answer)_" end
     render()
-    save()
+    save(st)
     if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
     if opts.on_done then pcall(opts.on_done, entry) end
   end
@@ -964,7 +1030,9 @@ end
 
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = group,
-  callback = function() stop_persistent(STATE()) end,
+  callback = function()
+    for _, c in ipairs(M.conversations()) do stop_persistent(c) end
+  end,
 })
 
 -- Sends `text` (default: the input box). opts.view_win overrides which
@@ -976,8 +1044,10 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 -- sent - the agent busy, or none configured.
 send = function(text, opts)
   opts = opts or {}
-  local st = STATE()
   restore_once()
+  -- The conversation this message belongs to, for good: a reply arriving
+  -- after the panel moved on to another plan still lands here.
+  local st = opts.conv or STATE()
   local from_input = text == nil
   if from_input then text = input_text() end
   if text == "" then return end
@@ -1012,7 +1082,7 @@ send = function(text, opts)
   local sel = st.selection
   if sel and not (vim.api.nvim_win_is_valid(sel.win) and sel.win == view_win) then sel = nil end
   st.selection = nil
-  local snap = VIEW.snapshot(view_win, sel)
+  local snap = opts.snap or VIEW.snapshot(view_win, sel)
   local view_text = VIEW.text(snap)
   local history = {}
   for _, e in ipairs(st.entries) do if e.role ~= "note" then history[#history + 1] = e end end
@@ -1032,7 +1102,14 @@ send = function(text, opts)
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
     label = agent.label or agent_name, mode = replay and "replay" or nil, text = "" }
   table.insert(st.entries, entry)
-  BRIDGE.handler = bridge_handler(function() return entry end)
+  if st.agent_id then
+    -- A plan's own agent: its tool calls come with its id (the relay's
+    -- AZVICLI_CHAT_AGENT / X-Azvicli-Agent) and land in this conversation.
+    st.bridge_entry = entry
+    BRIDGE.route(st.agent_id, bridge_handler(function() return st.bridge_entry end))
+  else
+    BRIDGE.handler = bridge_handler(function() return entry end)
+  end
   render()
 
   local message = CORE.compose(expanded, view_text, {
@@ -1042,8 +1119,8 @@ send = function(text, opts)
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,
     model = M.current_model(agent) or "",
-    mcp_config = write_mcp_config(addr, token),
-    mcp_server = agent.acp and acp_mcp_server(addr, token) or nil,
+    mcp_config = write_mcp_config(addr, token, st.agent_id),
+    mcp_server = agent.acp and acp_mcp_server(addr, token, st.agent_id) or nil,
     view = view_text,
     fix_root = require("azure-cli.chat.tools_fix").root(),
   }
@@ -1095,7 +1172,7 @@ send = function(text, opts)
       st.running = nil
     end
     render()
-    save()
+    save(st)
     if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
     if opts.on_done then pcall(opts.on_done, entry) end
   end
@@ -1119,7 +1196,7 @@ send = function(text, opts)
     else
       cmd = CORE.expand(agent.cmd, vars, vim.fn.shellescape)
     end
-    local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token }
+    local env = { AZVICLI_CHAT_BRIDGE = addr, AZVICLI_CHAT_TOKEN = token, AZVICLI_CHAT_AGENT = st.agent_id }
     for k, v in pairs(agent.env or {}) do env[k] = CORE.expand(tostring(v), vars) end
     -- The process's callbacks outlive this `send` call (the next message
     -- reuses it), so they read the turn in progress through its own `pj` -

@@ -33,7 +33,8 @@ local function clean(entry)
 end
 
 -- Saves conversation `conv` ({ id, entries, session_id, agent, model,
--- created }) and makes it the current one.
+-- created, plan }) and makes it the current one - unless it's a plan's own
+-- conversation (`plan` = its key): the main chat stays the one restored.
 function M.save(conv)
   if not conv or not conv.id or #(conv.entries or {}) == 0 then return end
   vim.fn.mkdir(conv_dir(), "p")
@@ -41,10 +42,10 @@ function M.save(conv)
   for _, e in ipairs(conv.entries) do entries[#entries + 1] = clean(e) end
   SHELL().write_json(conv_dir() .. "/" .. conv.id .. ".json", {
     id = conv.id, created = conv.created, updated = os.time(), entries = entries,
-    session_id = conv.session_id, agent = conv.agent, model = conv.model,
+    session_id = conv.session_id, agent = conv.agent, model = conv.model, plan = conv.plan,
     title = require("azure-cli.chat.core").title(entries),
   })
-  pcall(vim.fn.writefile, { conv.id }, M.root() .. "/current")
+  if not conv.plan then pcall(vim.fn.writefile, { conv.id }, M.root() .. "/current") end
   M.prune()
 end
 

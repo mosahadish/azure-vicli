@@ -41,6 +41,11 @@ def main():
         text = req.get("message", {}).get("content", [{}])[0].get("text", "")
         asked = text.split("## Message\n", 1)[-1].strip()
         answer = "turn {0}, pid {1}: {2}".format(turn, os.getpid(), asked)
+        if os.environ.get("AZVICLI_CHAT_AGENT"):
+            answer += " [agent {0}]".format(os.environ["AZVICLI_CHAT_AGENT"])
+        if "slowly" in asked:
+            import time
+            time.sleep(1)
 
         def emit(ev):
             sys.stdout.write(json.dumps(ev) + "\n")

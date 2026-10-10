@@ -1146,6 +1146,8 @@ function M.open(key, line)
     })
   end
   vim.t[view.tab].azure_cli_title = "Plan " .. M.target_label(rec.target)
+  vim.t[view.tab].azure_cli_plan_key = key
+  pcall(function() require("azure-cli.chat").sync_active() end)
   render()
   -- The plan gets the focus - again after the chat panel has followed into
   -- this tab (it opens on a scheduled callback).

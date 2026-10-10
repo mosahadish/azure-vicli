@@ -775,6 +775,8 @@ function M.open(title, dir, raw, keep)
     pcall(vim.api.nvim_win_set_width, view.list_win, width)
   end
   vim.t[view.tab].azure_cli_title = "Change " .. (title:match("([#!]%d+)") or "")
+  vim.t[view.tab].azure_cli_plan_key = view.plan and view.plan.key or nil
+  pcall(function() require("azure-cli.chat").sync_active() end)
   local llines, lhls = list_lines()
   vim.bo[view.list_buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, llines)

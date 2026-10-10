@@ -102,14 +102,17 @@ end
 local http = { job = nil, port = nil, waiting = {} }
 
 function M.http_server(stdio, cb)
-  local env, token = {}, nil
+  local env, token, agent = {}, nil, nil
   for _, e in ipairs(stdio.env or {}) do
-    env[e.name] = e.value
+    -- The server is shared by every agent: which one a request comes from
+    -- travels in its X-Azvicli-Agent header, not in the server's env.
+    if e.name == "AZVICLI_CHAT_AGENT" then agent = e.value else env[e.name] = e.value end
     if e.name == "AZVICLI_CHAT_TOKEN" then token = e.value end
   end
   local function entry()
-    return { type = "http", name = stdio.name, url = "http://127.0.0.1:" .. http.port .. "/mcp",
-      headers = { { name = "Authorization", value = "Bearer " .. (token or "") } } }
+    local headers = { { name = "Authorization", value = "Bearer " .. (token or "") } }
+    if agent and agent ~= "" then headers[#headers + 1] = { name = "X-Azvicli-Agent", value = agent } end
+    return { type = "http", name = stdio.name, url = "http://127.0.0.1:" .. http.port .. "/mcp", headers = headers }
   end
   if http.job and vim.fn.jobwait({ http.job }, 0)[1] == -1 then
     if http.port then return cb(entry()) end

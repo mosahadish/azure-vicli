@@ -75,8 +75,9 @@ SH_FILES=(azure-cli install.sh tests/demo.sh)
 # and review/range.lua's) own: each module table doubles as a plain table of
 # pure helpers (for its tests/test-review-*.lua) and a callable
 # `require(path)(ctx)` (for review/init.lua's EXT wiring) via a __call
-# metamethod.
-ALLOWED_GLOBALS=(_G debug dofile error ipairs math next os pairs pcall require select setmetatable string table tonumber tostring type vim)
+# metamethod. rawset is chat/init.lua's: a plan's own conversation keeps
+# its fields raw and hands the rest to the main one (__newindex).
+ALLOWED_GLOBALS=(_G debug dofile error ipairs math next os pairs pcall rawset require select setmetatable string table tonumber tostring type vim)
 
 mkdir -p "$TMP/lua" "$TMP/sh"
 

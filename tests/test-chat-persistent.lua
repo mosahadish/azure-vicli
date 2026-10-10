@@ -90,6 +90,40 @@ do
   CHAT.new_chat(true)
 end
 
+-- Two conversations at once: a plan's own (CHAT.conversation) and the
+-- main one, each with its own process, answering into its own entries -
+-- and the plan's isn't the conversation restored after a restart.
+do
+  CHAT.new_chat(true)
+  local plan = CHAT.conversation("wi-7", { label = "#7", target = { work_item_id = 7 } })
+  check("conversation: one per plan key", CHAT.conversation("wi-7") == plan)
+  check("conversation: shares the panel's state", plan.wins == STATE.chat.wins and plan.sent == STATE.chat.sent)
+  local done_plan, done_main
+  local ep = CHAT.send("plan slowly", { conv = plan, view_win = win, on_done = function() done_plan = true end })
+  local em = CHAT.send("main meanwhile", { view_win = win, on_done = function() done_main = true end })
+  check("conversation: both started at once", ep ~= nil and em ~= nil)
+  local ok = vim.wait(20000, function() return done_plan and done_main end, 20)
+  check("conversation: both answered", ok)
+  check("conversation: each answer in its own conversation",
+    #plan.entries == 2 and plan.entries[2].text:find("plan slowly", 1, true)
+      and STATE.chat.entries[#STATE.chat.entries].text:find("main meanwhile", 1, true)
+      and not STATE.chat.entries[#STATE.chat.entries].text:find("plan slowly", 1, true), vim.inspect(plan.entries))
+  check("conversation: the plan's agent got its id", plan.entries[2].text:find("[agent " .. plan.agent_id .. "]", 1, true) ~= nil,
+    plan.entries[2].text)
+  check("conversation: the main agent got none", not STATE.chat.entries[#STATE.chat.entries].text:find("[agent", 1, true))
+  local p1 = plan.entries[2].text:match("pid (%d+)")
+  local p2 = STATE.chat.entries[#STATE.chat.entries].text:match("pid (%d+)")
+  check("conversation: two processes", p1 and p2 and p1 ~= p2, { p1, p2 })
+  local cur = require("azure-cli.chat.store").load_current()
+  check("conversation: the main one stays current", cur and cur.id == STATE.chat.conv_id, cur and cur.id)
+  check("conversation: the panel still shows the main one", not STATE.chat.active)
+  for _, c in ipairs(CHAT.conversations()) do
+    if c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
+  end
+  STATE.chat.convs = {}
+  CHAT.new_chat(true)
+end
+
 -- A plain one-shot CLI (answers one message, exits) can't stay running:
 -- the message fails with an explanation instead of hanging.
 do
