@@ -1278,7 +1278,7 @@ do
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
   if not cwin then return fail("show_fix didn't open the change viewer") end
   local clist = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
-  for _, s in ipairs({ "In the diff:", " ga  ask about a line", " gy  accept a hunk", " gb  run the plan's tests", " ?  all keys" }) do
+  for _, s in ipairs({ "In the diff:", " ga  ask about a line", " gy  accept a hunk", " gb  run the plan's tests", " ?   all keys" }) do
     if not clist:find(s, 1, true) then return fail("the change list's keys lack " .. s .. ":\n" .. clist) end
   end
   local function v_list_win()

@@ -258,17 +258,23 @@ end
 -- plan's sections, the change's files): " key  what it does" for each
 -- { surface, action, desc } in `list` that's bound - the screen picks the
 -- entries from its state, so a draft plan offers approve and an approved
--- one doesn't. Returns lines, hls: { block row (0-based), from, to, group }
--- - the line muted, its key in AzureCliKeyHint.
+-- one doesn't. The descriptions line up after the widest key. Returns
+-- lines, hls: { block row (0-based), from, to, group } - the line muted,
+-- its key in AzureCliKeyHint.
 function M.hint_lines(list)
-  local lines, hls = {}, {}
+  local lines, hls, bound, kw = {}, {}, {}, 0
   for _, h in ipairs(list) do
     local k = M.first(h[1], h[2])
     if k then
-      lines[#lines + 1] = " " .. k .. "  " .. h[3]
-      hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
-      hls[#hls + 1] = { #lines - 1, 1, 1 + #k, "AzureCliKeyHint" }
+      bound[#bound + 1] = { k, h[3] }
+      kw = math.max(kw, vim.fn.strdisplaywidth(k))
     end
+  end
+  for _, b in ipairs(bound) do
+    local k = b[1]
+    lines[#lines + 1] = " " .. k .. string.rep(" ", kw - vim.fn.strdisplaywidth(k) + 2) .. b[2]
+    hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
+    hls[#hls + 1] = { #lines - 1, 1, 1 + #k, "AzureCliKeyHint" }
   end
   return lines, hls
 end
