@@ -1356,6 +1356,8 @@ do
   if not drawn(dbuf, "\u{270E} Name it LOCKOUT_REASON") or not vim.wo[dwin].winbar:find("1 queued", 1, true) then
     return fail("c didn't queue the change under the line: " .. vim.wo[dwin].winbar)
   end
+  -- Sent from here with gS, not the plan's gR.
+  if not drawn(dbuf, "queued - gS sends it") then return fail("the queued change doesn't say gS sends it") end
   n = #st.entries
   feed("gS")
   feed("<C-s>")

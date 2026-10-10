@@ -893,7 +893,7 @@ function M.on_dashboard_loaded(dash_win)
   pcall(vim.fn.writefile, { today }, stamp)
   new_chat(true)
   send("/standup", { view_win = dash_win, on_done = function()
-    notify("Your daily summary is ready in the chat (gq).")
+    notify("Your daily summary is ready in the chat (" .. require("azure-cli.keys").name("dashboard", "chat") .. ").")
   end })
 end
 

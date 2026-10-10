@@ -54,8 +54,9 @@ end
 -- The virt_lines drawn under a thread's line: the question, then the
 -- answer (its first ANSWER_LINES lines unless `opts.expanded`), each behind
 -- a bar. opts: width (cells for the text), expanded, frame (spinner
--- frame while asking), dw (width function), indent (cells before the bar).
--- Pure.
+-- frame while asking), dw (width function), indent (cells before the bar),
+-- send (the key that sends queued change requests - the plan's gR, the
+-- change viewer's gS). Pure.
 M.ANSWER_LINES = 4
 function M.virt_lines(th, opts)
   opts = opts or {}
@@ -75,13 +76,13 @@ function M.virt_lines(th, opts)
     return out
   end
   if th.kind == "request" then
-    -- A change you asked for on this line (chat/plan.lua's gc): sent with
-    -- the others by gR.
+    -- A change you asked for on this line (the plan's gc, the change
+    -- viewer's c): sent with the others by opts.send.
     for i, l in ipairs(M.wrap(th.question or "", width, opts.dw)) do
       out[#out + 1] = { bar, { (i == 1 and "\u{270E} " or "  ") .. l, "AzureCliThreadRequest" } }
     end
     out[#out + 1] = { bar, { th.status == "sent" and "  sent with your change request"
-      or "  queued - gR sends it, with the others", "AzureCliThreadMeta" } }
+      or ("  queued - " .. (opts.send or "gR") .. " sends it, with the others"), "AzureCliThreadMeta" } }
     return out
   end
   local q = M.wrap(th.question or "", width, opts.dw)
@@ -202,7 +203,7 @@ end
 -- Draws `threads` in `buf`: under buffer row `row_of(th)` (1-based; nil
 -- skips the thread) in window `win`'s width. Keeps a spinner turning
 -- while one of them is being asked.
-function M.draw(buf, win, threads, row_of)
+function M.draw(buf, win, threads, row_of, keys)
   if not vim.api.nvim_buf_is_valid(buf) then
     if spinning[buf] then
       spinning[buf]:stop()
@@ -223,7 +224,7 @@ function M.draw(buf, win, threads, row_of)
       if th.status == "asking" then asking = true end
       pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, row - 1, 0, {
         virt_lines = M.virt_lines(th, { width = width, expanded = expanded[th.id], dw = vim.fn.strdisplaywidth,
-          frame = M.SPINNER[tick % #M.SPINNER + 1] }),
+          frame = M.SPINNER[tick % #M.SPINNER + 1], send = keys and keys.send }),
         sign_text = th.kind == "request" and "\u{270E}" or (th.kind == "answer" and "\u{21AA}" or "?"),
         sign_hl_group = th.kind == "request" and "AzureCliThreadRequest" or "AzureCliThreadBar",
       })
@@ -235,7 +236,7 @@ function M.draw(buf, win, threads, row_of)
     spinning[buf] = timer
     timer:start(120, 120, vim.schedule_wrap(function()
       if spinning[buf] ~= timer then return end
-      M.draw(buf, win, threads, row_of)
+      M.draw(buf, win, threads, row_of, keys)
     end))
   elseif not asking and timer then
     spinning[buf] = nil
@@ -292,12 +293,16 @@ function M.ask(o)
   })
 end
 
--- K: the whole thread in a float.
-function M.show(th)
-  if not th then return require("azure-cli.shell").notify("No question on this line (ga asks one).") end
+-- K: the whole thread in a float. `keys` as for M.draw, plus ask (the key
+-- that asks one).
+function M.show(th, keys)
+  keys = keys or {}
+  if not th then
+    return require("azure-cli.shell").notify("No question on this line (" .. (keys.ask or "ga") .. " asks one).")
+  end
   if th.kind == "request" then
     return require("azure-cli.ui").open_float(vim.list_extend({ "\u{270E} Your change request" .. (th.status == "sent"
-      and " (sent)" or " (queued for gR)"), "" }, vim.split(th.question or "", "\n", { plain = true })),
+      and " (sent)" or (" (queued for " .. (keys.send or "gR") .. ")")), "" }, vim.split(th.question or "", "\n", { plain = true })),
       { title = "Line " .. tostring(th.line) })
   end
   local lines = { "? " .. (th.question or ""), "" }

@@ -86,7 +86,8 @@ local function render()
   local width = vim.api.nvim_win_is_valid(view.win) and UI.text_width(view.win) or 100
   local lines, hls = { "" }, {}
   if #rows == 0 then
-    lines[#lines + 1] = "  No agents yet. On the work-items board, gP on a work item (or on selected rows)"
+    lines[#lines + 1] = "  No agents yet. On the work-items board, " .. require("azure-cli.keys").name("workitems", "plan_agents")
+      .. " on a work item (or on selected rows)"
     lines[#lines + 1] = "  starts one per item, each writing its plan."
     hls[#hls + 1] = { 1, 0, -1, "AzureCliMuted" }
     hls[#hls + 1] = { 2, 0, -1, "AzureCliMuted" }

@@ -53,14 +53,19 @@ local PLAN_HELP = {
   { "back", "back to the section list" },
   "Ask the agent",
   { "ask", "ask the agent about this line (in visual mode: these lines) - the answer shows under it" },
-  { "request", "queue a change on this line (in visual mode: these lines) - gR sends them together" },
+  { "request", function()
+    return "queue a change on this line (in visual mode: these lines) - " .. KEYS().name("plan", "revise")
+      .. " sends them together"
+  end },
   { "answer", "answer the open question under the cursor - sent along when you approve" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_thread", "the question and answer in a popup" },
   { "delete_thread", "forget the question or change under this line" },
   "Decide",
   { "approve", "approve it - the agent goes ahead" },
-  { "revise", "ask for changes: what you write, plus the ones queued on lines (gc)" },
+  { "revise", function()
+    return "ask for changes: what you write, plus the ones queued on lines (" .. KEYS().name("plan", "request") .. ")"
+  end },
   { "open_file", "edit the plan by hand" },
   "See",
   { "since", "mark what this revision changed against the one before (on by default; toggles)" },
@@ -181,7 +186,8 @@ end
 
 local function draw_threads()
   if not (view and valid_buf(view.plan_buf)) then return end
-  THREADS().draw(view.plan_buf, view.plan_win, view.rec.threads, function(th) return th.line end)
+  THREADS().draw(view.plan_buf, view.plan_win, view.rec.threads, function(th) return th.line end,
+    { send = KEYS().name("plan", "revise") })
   draw_links()
 end
 
@@ -375,7 +381,7 @@ local function request(from, to)
   local lines = vim.api.nvim_buf_get_lines(view.plan_buf, from - 1, to, false)
   local sec = PLAN().section_at(view.sections, from)
   require("azure-cli.editor").open({
-    title = "Change \u{00B7} plan:" .. (from == to and from or (from .. "-" .. to)) .. " (queued for gR)",
+    title = "Change \u{00B7} plan:" .. (from == to and from or (from .. "-" .. to)) .. " (queued for " .. KEYS().name("plan", "revise") .. ")",
     initial = "", anchor = { win = view.plan_win, row = to }, context_lines = lines,
     on_submit = function(text)
       table.insert(rec.threads, { id = tostring(os.time()) .. "-" .. math.random(1000, 9999), kind = "request",
@@ -583,7 +589,8 @@ local function setup_plan(buf)
     THREADS().toggle(th)
     draw_threads()
   end, { desc = "show all of the answer / fold it" })
-  bind(buf, "view_thread", function() THREADS().show(thread_at_cursor()) end, { desc = "the question and answer" })
+  bind(buf, "view_thread", function() THREADS().show(thread_at_cursor(),
+    { send = KEYS().name("plan", "revise"), ask = KEYS().name("plan", "ask") }) end, { desc = "the question and answer" })
   bind(buf, "request", function()
     local r = vim.api.nvim_win_get_cursor(0)[1]
     request(r, r)

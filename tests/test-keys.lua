@@ -153,6 +153,11 @@ do
   check("hint_line: one line, separated", text == "  gA approve  \u{00B7}  ? all keys")
   check("hint_line: key columns", #lhls == 2 and text:sub(lhls[1][1] + 1, lhls[1][2]) == "gA"
     and text:sub(lhls[2][1] + 1, lhls[2][2]) == "?")
+  check("name: the key, or the action in words when unbound", keys.name("plan", "approve") == "gA"
+    and keys.name("plan", "revise") == "revise")
+  local fn_lines = keys.help_lines("plan", "T", { "G", { "approve", function() return "made " .. "now" end } })
+  check("help_lines: a description can be worked out when shown", fn_lines[4]:find("^  gA / Y%s+made now$") ~= nil,
+    table.concat(fn_lines, "\n"))
   check("first: nil when unbound, else the first key", keys.first("plan", "revise") == nil and keys.first("plan", "approve") == "gA")
 end
 config.setup({})

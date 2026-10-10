@@ -380,8 +380,10 @@ function M.render(entries, now, agent_label)
     name_end[1] = 4
     add("", "intro")
     add_text("Ask about what you're looking at - \"triage this PR's comments\", \"what do you think about "
-      .. "this comment?\", \"create a branch from develop for this work item\".\nType below; <CR> sends. "
-      .. "/triage, /review, /build, /standup run saved prompts (gp lists them).", "intro")
+      .. "this comment?\", \"create a branch from develop for this work item\".\nType below; "
+      .. require("azure-cli.keys").name("chat", "send") .. " sends. "
+      .. "/triage, /review, /build, /standup run saved prompts (" .. require("azure-cli.keys").name("chat", "prompts")
+      .. " lists them).", "intro")
     return lines, roles, name_end, entry_at
   end
   for i, e in ipairs(entries) do

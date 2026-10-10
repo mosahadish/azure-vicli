@@ -250,6 +250,9 @@ do
   local req = TH.virt_lines({ kind = "request", question = "use a decorator", status = "queued" }, { width = 60 })
   check("virt_lines: a change request, queued", req[1][2][1] == "\u{270E} use a decorator"
     and req[1][2][2] == "AzureCliThreadRequest" and req[2][2][1]:find("queued", 1, true))
+  local via = TH.virt_lines({ kind = "request", question = "x", status = "queued" }, { send = "gS" })
+  check("virt_lines: a request names the key that sends it", via[2][2][1]:find("gS sends it", 1, true) ~= nil,
+    via[2][2][1])
   check("virt_lines: a request once sent", TH.virt_lines({ kind = "request", question = "x", status = "sent" })[2][2][1]
     :find("sent", 1, true) ~= nil)
   local q, r = TH.counts({ { question = "a" }, { kind = "request", status = "queued" }, { kind = "request", status = "sent" } })

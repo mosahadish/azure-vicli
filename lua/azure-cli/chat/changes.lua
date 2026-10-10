@@ -258,7 +258,7 @@ local function set_diff_winbar(path, map)
   end
   local tags = {}
   if nq > 0 then tags[#tags + 1] = "[" .. THREADS().count_label(nq) .. "]" end
-  if queued > 0 then tags[#tags + 1] = "[\u{270E}" .. queued .. " queued - gS sends]" end
+  if queued > 0 then tags[#tags + 1] = "[\u{270E}" .. queued .. " queued - " .. KEYS().name("diff", "batch_submit") .. " sends]" end
   if na > 0 then tags[#tags + 1] = "[\u{2713} " .. na .. "/" .. nh .. " accepted]" end
   -- The plan's tests (gb), here rather than above the narrow file list.
   local TR = require("azure-cli.chat.tests_run")
@@ -430,7 +430,8 @@ local function draw_threads(idx)
   local f = view and view.files[idx]
   local buf = f and view.bufs[f.path]
   if not buf then return end
-  THREADS().draw(buf, view.diff_win, view.threads, function(th) return thread_row(idx, th) end)
+  THREADS().draw(buf, view.diff_win, view.threads, function(th) return thread_row(idx, th) end,
+    { send = KEYS().name("diff", "batch_submit") })
 end
 
 -- Every file's added and kept lines (new-side line number -> text), so the
@@ -492,7 +493,7 @@ local function comment_here(idx, from, to)
   local lines = vim.api.nvim_buf_get_lines(buf, from - 1, to, false)
   local dir = view.dir
   require("azure-cli.editor").open({
-    title = "Change \u{00B7} " .. vim.fn.fnamemodify(f.path, ":t") .. ":" .. m.lineno .. " (queued for gS)",
+    title = "Change \u{00B7} " .. vim.fn.fnamemodify(f.path, ":t") .. ":" .. m.lineno .. " (queued for " .. KEYS().name("diff", "batch_submit") .. ")",
     initial = "", anchor = { win = vim.api.nvim_get_current_win(), row = to }, context_lines = lines,
     on_submit = function(text)
       if not use_dir(dir) then return end
@@ -696,7 +697,8 @@ local function diff_buf(idx)
     THREADS().toggle(th)
     draw_threads(idx)
   end, { desc = "show all of the answer / fold it" })
-  bind(buf, "diff", "view_comments", function() THREADS().show(thread_here(idx)) end, { desc = "the question and answer" })
+  bind(buf, "diff", "view_comments", function() THREADS().show(thread_here(idx),
+    { send = KEYS().name("diff", "batch_submit"), ask = KEYS().name("diff", "ask") }) end, { desc = "the question and answer" })
   bind(buf, "diff", "next_comment", function() jump_thread(idx, 1) end, { desc = "next question" })
   bind(buf, "diff", "prev_comment", function() jump_thread(idx, -1) end, { desc = "previous question" })
   bind_common(buf, "diff")

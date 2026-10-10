@@ -224,6 +224,13 @@ end
 
 local queue_draft = M.queue_draft
 
+-- "gQ lists the queue, gS sends it", with the keys as bound - what the
+-- agent repeats to the user about a draft it queued.
+local function queue_keys()
+  local KEYS = require("azure-cli.keys")
+  return KEYS.name("list", "batch_queue") .. " lists the queue, " .. KEYS.name("list", "batch_submit") .. " sends it"
+end
+
 -- Takes a queued draft back out (the undo of draft_reply/draft_comment):
 -- through the live reviewer when that PR is open, else straight out of
 -- STATE.batch.
@@ -431,7 +438,7 @@ M.list = {
   {
     name = "draft_reply",
     description = "Drafts a reply to a comment thread. It is NOT posted: it goes into the PR's batch-review queue, "
-      .. "where the user reviews it and sends it with gS. Runs without asking.",
+      .. "where the user reviews it and sends it. Runs without asking.",
     schema = { type = "object", properties = { pr_id = { type = "integer" }, thread_id = { type = "integer" },
       text = { type = "string" } }, required = { "pr_id", "thread_id", "text" } },
     risk = "write",
@@ -441,7 +448,7 @@ M.list = {
       local item = { kind = "reply", thread_id = args.thread_id, text = args.text }
       queue_draft(pr.id, item)
       done("Drafted a reply to thread #" .. args.thread_id .. " on PR #" .. pr.id
-        .. " - queued for the user to review and send (gQ lists the queue, gS sends it).", nil,
+        .. " - queued for the user to review and send (" .. queue_keys() .. ").", nil,
         { op = "drop_draft", pr_id = pr.id, item = item })
     end,
   },
@@ -473,7 +480,7 @@ M.list = {
           label = "PR comment" }
       end
       queue_draft(pr.id, item)
-      done("Drafted: " .. item.label .. " on PR #" .. pr.id .. " - queued for the user (gQ lists, gS sends).", nil,
+      done("Drafted: " .. item.label .. " on PR #" .. pr.id .. " - queued for the user (" .. queue_keys() .. ").", nil,
         { op = "drop_draft", pr_id = pr.id, item = item })
     end,
   },

@@ -114,13 +114,16 @@ use_as_reply = function()
       local item = thread and { kind = "reply", thread_id = thread.id, text = text }
         or { kind = "thread", args = { "--pr-comment", text }, bucket = "general", text = text, label = "PR comment" }
       TOOLS.queue_draft(pr.id, item)
-      notify("Queued as a draft on PR !" .. pr.id .. " (gQ in the reviewer lists it, gS sends it).")
+      local KEYS = require("azure-cli.keys")
+      notify("Queued as a draft on PR !" .. pr.id .. " (" .. KEYS.name("list", "batch_queue") .. " in the reviewer lists it, "
+        .. KEYS.name("list", "batch_submit") .. " sends it).")
     end,
   })
 end
 
 show_help = function()
   local KEYS = require("azure-cli.keys")
+  local screen_chat = KEYS.name("dashboard", "chat")  -- the chat key on a screen (each has one)
   local lines = KEYS.help_lines("chat", "Chat keys", {
     "Talk",
     { "send", "send the message (in the input box)" }, { "send_insert", "send while typing" },
@@ -130,23 +133,26 @@ show_help = function()
     { "cancel", "stop the agent" },
     "Answers",
     { "open_ref", "open the !PR / #work item under the cursor" },
-    { "use_as_reply", "draft the answer under the cursor as a reply (queued for gS)" },
+    { "use_as_reply", "draft the answer under the cursor as a reply (queued for "
+      .. KEYS.name("list", "batch_submit") .. ")" },
     { "why", "ask the agent why it did the step (or wrote the line) under the cursor" },
     { "expand", "unfold a long answer or a list of tool calls (again: fold it)" },
     { "audit", "what the agent changed - u undoes one" },
-    { "changes", "the agent's code change, file by file (like the reviewer: ]c / [c, gf, q)" },
+    { "changes", "the agent's code change, file by file (like the reviewer: "
+      .. KEYS.name("diff", "next_hunk") .. " / " .. KEYS.name("diff", "prev_hunk") .. ", "
+      .. KEYS.name("diff", "open_file") .. ", " .. KEYS.name("diff", "quit") .. ")" },
     { "agents", "every plan's agent: what each is doing (the Agents screen)" },
     "Conversation",
     { "new_chat", "start a new conversation" }, { "history", "open an earlier conversation" },
     { "agent", "choose the agent" }, { "model", "choose the model" },
     "Panel",
-    { "back", "back to the screen next to the chat" }, { "hide", "hide the chat (gq shows it again)" },
+    { "back", "back to the screen next to the chat" }, { "hide", "hide the chat (" .. screen_chat .. " shows it again)" },
     { "toggle", "hide the chat - the same key on a screen takes you back to it" },
     { "resize_less", "make the chat smaller" }, { "resize_more", "make the chat bigger" },
     { "help", "this help" },
   }, { notes = {
     "The agent sees what you're looking at - the PR, work item, file, line, comment thread or selection "
-      .. "(gq in visual mode) under the cursor - and the !PRs and #work items you name. Type ! or # for completion.",
+      .. "(" .. screen_chat .. " in visual mode) under the cursor - and the !PRs and #work items you name. Type ! or # for completion.",
   } })
   require("azure-cli.ui").open_float(lines, { min_width = 60 })
 end

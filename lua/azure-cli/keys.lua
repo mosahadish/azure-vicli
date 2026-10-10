@@ -127,6 +127,13 @@ local function record(buf, surface, action, key, desc, fn)
   end
 end
 
+-- The key for surface/action as a message names it: the first one bound,
+-- else (unbound) the action in words - so "(gS sends)" stays true when the
+-- key is rebound.
+function M.name(surface, action)
+  return M.first(surface, action) or (tostring(action):gsub("_", " "))
+end
+
 -- Binds `fn` to every key resolved for surface/action on `buf`, or does
 -- nothing when the action is unbound. `opts.mode` defaults to "n" (pass
 -- "x" for a visual-mode mapping, e.g. the diff pane's comment_range);
@@ -181,6 +188,8 @@ function M.line(surface, action, desc)
   if not keyspec then return nil end
   -- A missing description must never take the whole popup down (it once
   -- did: a nil here made `?` throw) - fall back to the action's own name.
+  -- A function: worked out now, for a description that names other keys.
+  if type(desc) == "function" then desc = desc() end
   desc = desc or (tostring(action):gsub("_", " "))
   local keystr = type(keyspec) == "table" and table.concat(keyspec, " / ") or keyspec
   return M.line_raw(keystr, desc)
