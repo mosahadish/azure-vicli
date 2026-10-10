@@ -206,7 +206,7 @@ function M.draw(buf, win, threads, row_of)
   local width = 80
   if win and vim.api.nvim_win_is_valid(win) then width = require("azure-cli.ui").text_width(win) end
   local asking = false
-  local tick = math.floor(vim.uv.now() / 120)
+  local tick = math.floor((vim.uv or vim.loop).now() / 120)
   local n = vim.api.nvim_buf_line_count(buf)
   for _, th in ipairs(threads or {}) do
     local row = row_of(th)
@@ -222,7 +222,7 @@ function M.draw(buf, win, threads, row_of)
   end
   local timer = spinning[buf]
   if asking and not timer then
-    timer = vim.uv.new_timer()
+    timer = (vim.uv or vim.loop).new_timer()
     spinning[buf] = timer
     timer:start(120, 120, vim.schedule_wrap(function()
       if spinning[buf] ~= timer then return end

@@ -80,7 +80,7 @@ local function render()
   local UI = require("azure-cli.ui")
   local AG = require("azure-cli.chat.agents")
   local PLAN = require("azure-cli.chat.plan")
-  local frame = SPIN[math.floor(vim.uv.now() / 120) % #SPIN + 1]
+  local frame = SPIN[math.floor((vim.uv or vim.loop).now() / 120) % #SPIN + 1]
   local rows = M.rows(CHAT().conversations(), AG.queued(), PLAN.load, os.time(), frame)
   view.rows = {}
   local width = vim.api.nvim_win_is_valid(view.win) and UI.text_width(view.win) or 100
@@ -198,7 +198,7 @@ function M.open()
   pcall(vim.api.nvim_buf_set_name, view.buf, "azure-cli://agents")
   require("azure-cli.ui").plain_window(view.win, { cursorline = true })
   setup(view.buf)
-  local timer = vim.uv.new_timer()
+  local timer = (vim.uv or vim.loop).new_timer()
   view.timer = timer
   timer:start(1000, 1000, vim.schedule_wrap(function()
     if view and vim.api.nvim_buf_is_valid(view.buf) and #vim.fn.win_findbuf(view.buf) > 0 then render() end

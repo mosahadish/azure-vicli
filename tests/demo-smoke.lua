@@ -186,7 +186,9 @@ if not ok then return fail("gW in the reviewer didn't pop up #3001\n" .. tostrin
 do
   local c = vim.api.nvim_win_get_config(0)
   local mid_col = math.floor((vim.o.columns - c.width) / 2)
-  if c.relative ~= "editor" or math.abs(c.col - mid_col) > 1 then
+  -- Neovim 0.9 reports row/col as { [false] = n } (0.10+: plain numbers).
+  local col = type(c.col) == "table" and c.col[false] or c.col
+  if c.relative ~= "editor" or math.abs(col - mid_col) > 1 then
     return fail("the reviewer's gW popup isn't centred: " .. vim.inspect({ c.relative, c.col, mid_col }))
   end
 end
@@ -1270,7 +1272,8 @@ do
   -- The plan listed src/throttle.py too: the viewer and show_fix say so.
   local listed = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
   if not (listed:find("In the plan, not changed:", 1, true) and listed:find("    src/throttle.py", 1, true))
-      or not e.text:find('"planned_not_changed":["src/throttle.py"]', 1, true)
+      -- (Neovim 0.9's vim.json writes "/" as "\/".)
+      or not e.text:gsub("\\/", "/"):find('"planned_not_changed":["src/throttle.py"]', 1, true)
       or not vim.wo[cwin].winbar:find("1 untouched", 1, true) then
     return fail("the change wasn't checked against the plan:\n" .. listed .. "\n" .. e.text)
   end

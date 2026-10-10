@@ -297,7 +297,7 @@ function M.strip()
         seconds = math.max(0, os.time() - ((c.running.entry or {}).started or os.time())) })
     end
   end
-  s.frame = SPINNER[math.floor(vim.uv.now() / 120) % #SPINNER + 1]
+  s.frame = SPINNER[math.floor((vim.uv or vim.loop).now() / 120) % #SPINNER + 1]
   local okq, q = pcall(function() return #require("azure-cli.chat.agents").queued() end)
   s.queued = okq and q or 0
   local ok, waiting = pcall(function() return require("azure-cli.chat.plan").waiting() end)

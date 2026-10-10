@@ -750,7 +750,7 @@ local function setup_list(buf)
   -- Moving through the list previews each file's change, debounced like
   -- the reviewer's file list: only the row the cursor settles on is shown,
   -- so j/k stay instant while skipping past files.
-  local timer = vim.uv.new_timer()
+  local timer = (vim.uv or vim.loop).new_timer()
   vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = buf,
     callback = function()
