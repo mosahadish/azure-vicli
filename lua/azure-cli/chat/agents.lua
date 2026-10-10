@@ -65,7 +65,13 @@ local function start(q)
   return entry ~= nil
 end
 
+-- Neovim is quitting: start nothing more (stopping an agent finishes its
+-- answer, which would otherwise start the next queued one mid-exit - a
+-- process Neovim then waits for).
+local function exiting() return vim.v.exiting ~= vim.NIL end
+
 function M.pump()
+  if exiting() then queue = {} return end
   while #queue > 0 and M.working() < M.max() do
     local q = table.remove(queue, 1)
     start(q)

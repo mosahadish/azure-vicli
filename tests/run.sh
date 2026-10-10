@@ -447,6 +447,17 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-editor-mode.lua (headless nvim, real input)" "$out"
   fi
 
+  # Quitting while agents work, with more queued, exits right away.
+  start=$(date +%s)
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-chat-exit.lua" 2>&1)"
+  rc=$?
+  took=$(( $(date +%s) - start ))
+  if [ $rc -ne 124 ] && [ "$took" -lt 10 ] && [[ "$out" == *CHAT-EXIT-STARTED* ]]; then
+    pass "test-chat-exit.lua (quitting while agents work doesn't hang)"
+  else
+    fail "test-chat-exit.lua (quitting while agents work doesn't hang)" "rc $rc after ${took}s: $out"
+  fi
+
   # The plan, the questions under a line, the change viewer's file list.
   out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-plan.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all chat-plan tests passed"* ]]; then

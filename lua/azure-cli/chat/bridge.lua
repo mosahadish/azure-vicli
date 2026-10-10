@@ -25,6 +25,7 @@ M.handlers = {}
 function M.route(id, fn) M.handlers[id] = fn end
 
 local server, port, token
+local clients = {}  -- open connections, closed by M.stop
 
 local function random_token()
   local parts = {}
@@ -52,9 +53,11 @@ function M.ensure()
     if e then return end
     local client = uv.new_tcp()
     s:accept(client)
+    clients[client] = true
     local buf = ""
     client:read_start(function(rerr, chunk)
       if rerr or not chunk then
+        clients[client] = nil
         pcall(function() client:close() end)
         return
       end
@@ -69,7 +72,10 @@ function M.ensure()
         answered = true
         local okj, text = pcall(vim.json.encode, tbl)
         if not okj then text = vim.json.encode({ text = "internal error encoding the answer", error = true }) end
-        client:write(text .. "\n", function() pcall(function() client:close() end) end)
+        client:write(text .. "\n", function()
+          clients[client] = nil
+          pcall(function() client:close() end)
+        end)
       end
       vim.schedule(function()
         local okd, req = pcall(vim.json.decode, line)
@@ -94,7 +100,13 @@ function M.ensure()
   return "127.0.0.1:" .. port, token
 end
 
+-- Closes the listener and every connection still open - a relay waiting
+-- on an answer (a question you never got to) then sees the connection end
+-- and exits, instead of keeping Neovim from quitting: it shares the
+-- agent's stderr, which Neovim waits on.
 function M.stop()
+  for c in pairs(clients) do pcall(function() c:close() end) end
+  clients = {}
   if server then pcall(function() server:close() end) end
   server, port, token = nil, nil, nil
 end

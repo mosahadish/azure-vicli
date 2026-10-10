@@ -837,12 +837,24 @@ end
 -- send_acp's `running`) finalizes whatever message is still in flight -
 -- stopping the process on its own would otherwise leave that entry's
 -- status "running" forever, with `st.running` never cleared.
+-- Stops job `job` and everything it started: an agent CLI runs its MCP
+-- relay (azure-cli.py --mcp) as a child that shares its stderr, and a
+-- relay left behind keeps that pipe - and with it Neovim's exit - open.
+-- The agent leads its own process group (jobstart's), so the group goes.
+local function stop_tree(job)
+  local okp, pid = pcall(vim.fn.jobpid, job)
+  local uv = vim.uv or vim.loop
+  if okp and pid and pid > 0 and vim.fn.has("win32") == 0 then pcall(uv.kill, -pid, "sigterm") end
+  pcall(vim.fn.jobstop, job)
+end
+M.stop_tree = stop_tree
+
 local function stop_persistent(st)
   local pj = st.persistent_job
   st.persistent_job = nil
   if not pj then return end
   if pj.finish then pcall(pj.finish, "stopped") end
-  if pj.job then pcall(vim.fn.jobstop, pj.job) end
+  if pj.job then stop_tree(pj.job) end
 end
 
 -- Whether `st.persistent_job` is a live process for `agent_name`'s current
@@ -1088,7 +1100,9 @@ end
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = group,
   callback = function()
+    pcall(function() require("azure-cli.chat.agents").reset() end)
     for _, c in ipairs(M.conversations()) do stop_persistent(c) end
+    pcall(function() require("azure-cli.chat.bridge").stop() end)
   end,
 })
 
@@ -1108,6 +1122,7 @@ send = function(text, opts)
   local from_input = text == nil
   if from_input then text = input_text() end
   if text == "" then return end
+  if vim.v.exiting ~= vim.NIL then return end  -- quitting: no new agent process
   if st.running then
     notify("The agent is still answering - wait, or stop it (<C-c>).", vim.log.levels.WARN)
     return
