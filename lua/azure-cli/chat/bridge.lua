@@ -27,15 +27,27 @@ function M.route(id, fn) M.handlers[id] = fn end
 local server, port, token
 local clients = {}  -- open connections, closed by M.stop
 
-local function random_token()
-  local parts = {}
-  math.randomseed(os.time() + math.floor((uv.hrtime() or 0) % 100000))
-  for _ = 1, 4 do parts[#parts + 1] = string.format("%08x", math.random(0, 0x7fffffff)) end
-  return table.concat(parts)
+-- 16 bytes from the OS's CSPRNG (libuv's uv_random, in every Neovim we
+-- support), as 32 hex digits - the token is all that keeps another local
+-- user's process from calling the agent's tools, so math.random (seedable
+-- from the clock) won't do. nil when it fails.
+local function random_bytes(n)
+  local ok, bytes = pcall(uv.random, n, 0)
+  if ok and type(bytes) == "string" and #bytes == n then return bytes end
 end
 
--- A new random agent id.
-function M.new_id() return random_token():sub(1, 16) end
+local function random_token()
+  local bytes = random_bytes(16)
+  if not bytes then return nil end
+  return (bytes:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+end
+
+-- A new random agent id - a routing key, not a secret (the token is).
+function M.new_id()
+  local t = random_token()
+  if t then return t:sub(1, 16) end
+  return string.format("%08x%08x", math.random(0, 0x7fffffff), math.floor((uv.hrtime() or 0) % 0x7fffffff))
+end
 
 -- Starts listening (once per session) and returns "127.0.0.1:<port>",
 -- token - or nil plus why.
@@ -49,6 +61,13 @@ function M.ensure()
     return nil, "could not open the chat bridge: " .. tostring(err)
   end
   token = random_token()
+  if not token then
+    pcall(function() s:close() end)
+    return nil, "could not open the chat bridge: no secure random source for its token"
+  end
+  -- The chat's other ids (conversations, threads) come from math.random:
+  -- seed it once so they differ between sessions. Nothing secret uses it.
+  math.randomseed(os.time() + math.floor((uv.hrtime() or 0) % 100000))
   local listened, lerr = s:listen(16, function(e)
     if e then return end
     local client = uv.new_tcp()
