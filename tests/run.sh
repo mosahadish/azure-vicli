@@ -454,6 +454,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-editor-mode.lua (headless nvim, real input)" "$out"
   fi
 
+  # The action palette (g.): a buffer's actions, run in its window.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-keys-palette.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all palette tests passed"* ]]; then
+    pass "test-keys-palette.lua (headless nvim)"
+  else
+    fail "test-keys-palette.lua (headless nvim)" "$out"
+  fi
+
   # Quitting while agents work, with more queued, exits right away.
   start=$(date +%s)
   out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-chat-exit.lua" 2>&1)"

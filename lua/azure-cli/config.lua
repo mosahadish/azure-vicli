@@ -18,7 +18,7 @@ local DEFAULT_KEYS = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
     filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
-    workitems = "W", toasts = "gN", help = "?", quit = "q",
+    workitems = "W", toasts = "gN", help = "?", palette = "g.", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
@@ -29,7 +29,7 @@ local DEFAULT_KEYS = {
     search = "g/", active_filter = "gA", filters = "gF", ignore_ws = "gw",
     config = "gO", vote = "gv", complete = "gm",
     next_file_with_comments = "]C", prev_file_with_comments = "[C",
-    resize_less = "<", resize_more = ">", comment_file = "C", help = "?",
+    resize_less = "<", resize_more = ">", comment_file = "C", help = "?", palette = "g.",
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
@@ -47,7 +47,7 @@ local DEFAULT_KEYS = {
     prev_comment = "[C", active_filter = "gA", filters = "gF",
     ignore_ws = "gw", config = "gO", goto_definition = "gd",
     find_references = "gr", open_file = "gf", search = "g/",
-    resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
+    resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
@@ -65,7 +65,7 @@ local DEFAULT_KEYS = {
     comment = "c", reply = "R", status = "s", next_comment = "]C",
     prev_comment = "[C", search = "g/", vote = "gv", complete = "gm",
     active_filter = "gA", filters = "gF", ignore_ws = "gw", config = "gO",
-    resize_less = "<", resize_more = ">", back = "<BS>", help = "?",
+    resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
@@ -75,7 +75,7 @@ local DEFAULT_KEYS = {
   nav = {
     goto_definition = "gd", find_references = "gr", search = "g/",
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
-    resize_more = ">", help = "?", chat = "gq",
+    resize_more = ">", help = "?", palette = "g.", chat = "gq",
   },
   -- Work-items dashboard.
   workitems = {
@@ -83,7 +83,7 @@ local DEFAULT_KEYS = {
     edit_title = "ge", move_sprint = "gi", link_pr = "gl", browser = "o",
     refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
-    copy_link = "gy", config = "gO", help = "?", quit = "q",
+    copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
     plan_agents = "gP", agents = "A",
@@ -93,26 +93,26 @@ local DEFAULT_KEYS = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
     edit_title = "ge", move_sprint = "gi", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
-    back = "<BS>", quit = "q", help = "?", chat = "gq",
+    back = "<BS>", quit = "q", help = "?", palette = "g.", chat = "gq",
   },
   -- The chat panel (both its conversation and its input box).
   chat = {
     send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
     cancel = "<C-c>", model = "gm", agent = "gM", prompts = "gp", history = "gh", audit = "gH",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
-    back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
+    back = "<BS>", hide = "q", toggle = "gq", help = "?", palette = "g.", resize_less = "<", resize_more = ">",
     changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
-    quit = "q", help = "?", approve = "gA",
+    quit = "q", help = "?", palette = "g.", approve = "gA",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
     open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
-    refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", quit = "q",
+    refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
   },
 }

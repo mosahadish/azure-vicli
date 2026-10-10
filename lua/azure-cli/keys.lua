@@ -48,10 +48,67 @@ function M.first(surface, action)
   return k
 end
 
+-- Every normal-mode action bound on each buffer, in binding order, for the
+-- palette: actions[buf] = { list = { { surface, action, key, desc, fn } },
+-- at = { [surface .. "." .. action] = index }, surfaces = { [surface] = true } }.
+local actions = {}
+
+-- The palette (`palette`, g.): every action bound on `buf` by its
+-- description and key, through vim.ui.select - so Telescope's / fzf-lua's
+-- picker, when one replaces it, makes it searchable. The choice runs in the
+-- window the palette was opened from, cursor where it was.
+function M.palette(buf)
+  local reg = actions[buf]
+  if not reg then return end
+  local items = {}
+  for _, a in ipairs(reg.list) do
+    if a.action ~= "palette" then items[#items + 1] = a end
+  end
+  local win = vim.api.nvim_get_current_win()
+  require("azure-cli.prompt").select({ items = items, prompt = "Do", silent = true,
+    format = function(a) return a.desc .. "  (" .. a.key .. ")" end }, function(a)
+    if not a then return end
+    vim.schedule(function()
+      if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_set_current_win, win) end
+      a.fn()
+    end)
+  end)
+end
+
+-- Notes surface/action as bound on `buf` (normal mode only - the palette
+-- can't hand a visual selection over), and binds the palette key for that
+-- surface the first time the buffer gets one of its keys. Not under the
+-- plain-luajit shim the key tests run with (no vim.api there).
+local function record(buf, surface, action, key, desc, fn)
+  if not vim.api then return end
+  if buf == 0 then buf = vim.api.nvim_get_current_buf() end
+  local reg = actions[buf]
+  if not reg then
+    reg = { list = {}, at = {}, surfaces = {} }
+    actions[buf] = reg
+    pcall(vim.api.nvim_create_autocmd, "BufWipeout", { buffer = buf, once = true,
+      callback = function() actions[buf] = nil end })
+  end
+  local id = surface .. "." .. action
+  local entry = { surface = surface, action = action, key = key, desc = desc, fn = fn }
+  if reg.at[id] then reg.list[reg.at[id]] = entry
+  else
+    reg.list[#reg.list + 1] = entry
+    reg.at[id] = #reg.list
+  end
+  if not reg.surfaces[surface] then
+    reg.surfaces[surface] = true
+    if action ~= "palette" then
+      M.bind(buf, surface, "palette", function() M.palette(buf) end, { desc = "every action here, searchable" })
+    end
+  end
+end
+
 -- Binds `fn` to every key resolved for surface/action on `buf`, or does
 -- nothing when the action is unbound. `opts.mode` defaults to "n" (pass
 -- "x" for a visual-mode mapping, e.g. the diff pane's comment_range);
 -- `opts.desc` is forwarded to vim.keymap.set (which-key etc. read it).
+-- A buffer's first key of a surface also binds that surface's palette.
 function M.bind(buf, surface, action, fn, opts)
   opts = opts or {}
   local keyspec = M.resolve(surface, action)
@@ -62,6 +119,9 @@ function M.bind(buf, surface, action, fn, opts)
   local keylist = type(keyspec) == "table" and keyspec or { keyspec }
   for _, k in ipairs(keylist) do
     vim.keymap.set(mode, k, fn, kopts)
+  end
+  if mode == "n" then
+    record(buf, surface, action, keylist[1], opts.desc or (tostring(action):gsub("_", " ")), fn)
   end
 end
 
@@ -127,6 +187,11 @@ function M.help_lines(surface, title, table_, opts)
   if opts.extra and #opts.extra > 0 then
     open_group(opts.extra_title or "Features")
     for _, e in ipairs(opts.extra) do lines[#lines + 1] = M.line_raw(e.key, e.desc) end
+  end
+  local pal = M.first(surface, "palette")
+  if pal then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = M.line_raw(pal, "every action here, searchable")
   end
   for _, n in ipairs(opts.notes or {}) do
     lines[#lines + 1] = ""

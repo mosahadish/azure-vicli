@@ -28,9 +28,16 @@ directly, in the current window, the same way it always has (see
 
 ## Keys
 
+Two keys work on every screen: `?` lists that screen's keys, and `g.` (the
+`palette` action) lists every action bound there by what it does, through
+`vim.ui.select` - so with Telescope's, fzf-lua's or another picker standing
+in for it, you can type "approve" or "unlink" instead of remembering the key.
+The action you pick runs where you were, cursor and all. Actions that only
+work on a visual selection aren't listed.
+
 Every key in every table in these docs is a *default* - `setup()`'s `keys`
 option remaps or unbinds any of them, per **surface** (`dashboard`, `list`,
-`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat` - roughly, one per
+`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat`, `plan`, `agents` - roughly, one per
 screen this tool shows) and **action** (a stable name for what the key
 does, independent of which key it's bound to):
 
@@ -85,6 +92,7 @@ paste the output here after changing a default.
 | `open` | `<CR>` |
 | `open_build` | `gb` |
 | `open_workitem` | `gW` |
+| `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `quit` | `q` |
 | `refresh` | `r` |
@@ -118,6 +126,7 @@ paste the output here after changing a default.
 | `next_unviewed` | `]m` |
 | `open` | `<CR>` |
 | `open_workitem` | `gW` |
+| `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `pr_comment` | `gC` |
 | `prev_file_with_comments` | `[C` |
@@ -166,6 +175,7 @@ paste the output here after changing a default.
 | `next_unviewed` | `]m` |
 | `open_file` | `gf` |
 | `open_workitem` | `gW` |
+| `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `prev_hunk` | `[c` |
@@ -208,6 +218,7 @@ paste the output here after changing a default.
 | `next_comment` | `]C` |
 | `open_commit` | `<CR>` |
 | `open_workitem` | `gW` |
+| `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `quit` | `q` |
@@ -231,6 +242,7 @@ paste the output here after changing a default.
 | `find_references` | `gr` |
 | `goto_definition` | `gd` |
 | `help` | `?` |
+| `palette` | `g.` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `search` | `g/` |
@@ -258,6 +270,7 @@ paste the output here after changing a default.
 | `next_sprint` | `]` / `<Tab>` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
+| `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `pr_list` | `P` |
 | `prev_sprint` | `[` / `<S-Tab>` |
@@ -285,6 +298,7 @@ paste the output here after changing a default.
 | `move_sprint` | `gi` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
+| `palette` | `g.` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
@@ -310,6 +324,7 @@ paste the output here after changing a default.
 | `new_chat` | `gn` |
 | `next_message` | `<Down>` |
 | `open_ref` | `<CR>` |
+| `palette` | `g.` |
 | `prev_message` | `<Up>` |
 | `prompts` | `gp` |
 | `resize_less` | `<` |
@@ -336,6 +351,7 @@ paste the output here after changing a default.
 | `next_thread` | `]t` |
 | `open` | `<CR>` |
 | `open_file` | `gf` |
+| `palette` | `g.` |
 | `prev_thread` | `[t` |
 | `quit` | `q` |
 | `refresh` | `r` |
@@ -357,6 +373,7 @@ paste the output here after changing a default.
 | `chat` | `gq` |
 | `help` | `?` |
 | `open` | `<CR>` |
+| `palette` | `g.` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `run_log` | `gH` |
