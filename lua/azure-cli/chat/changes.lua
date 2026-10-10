@@ -21,12 +21,18 @@
 -- under the line (chat/threads.lua) - <Tab> unfolds it, K shows it whole,
 -- ]C / [C go from one to the next. Those questions are kept per worktree,
 -- under stdpath("data")/azure-cli-chat/why/.
+--   M.list_lines(files, check)  the file list's lines and highlights: with
+--                             a plan (chat/plan.lua's check_change), the
+--                             files it doesn't list are marked, and the
+--                             ones it lists but the change didn't touch
+--                             follow (pure)
 --   M.files(raw)              the changed files in diff order: { path,
 --                             status = "A"|"D"|"R"|"M" } (pure)
 local M = {}
 
 local DIFFBUF = require("azure-cli.diffbuf")
 local current_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_current")
+local list_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_list")
 
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
 
@@ -331,12 +337,36 @@ jump = function(dir)
   notify(dir > 0 and "No further changes." or "No previous changes.")
 end
 
-local function list_lines()
-  local lines = {}
-  for _, f in ipairs(view.files) do lines[#lines + 1] = " " .. f.status .. "  " .. f.path end
+-- The file list: one row per changed file (in view.files' order, so row i
+-- is file i); with a plan, the files it doesn't list are marked, and the
+-- ones it lists but the change doesn't touch follow below. Returns the
+-- lines and their highlights { row0, col, end_col, group }. Pure.
+function M.list_lines(files, check)
+  local lines, hls = {}, {}
+  local off = {}
+  for _, p in ipairs(check and check.unplanned or {}) do off[p] = true end
+  for _, f in ipairs(files) do
+    local l = " " .. f.status .. "  " .. f.path
+    if off[f.path] then
+      hls[#hls + 1] = { #lines, #l, #l + #"  \u{2717} not in the plan", "AzureCliStatusBad" }
+      l = l .. "  \u{2717} not in the plan"
+    end
+    lines[#lines + 1] = l
+  end
   if #lines == 0 then lines = { " (no changes yet)" } end
-  return lines
+  local missing = check and check.missing or {}
+  if #missing > 0 then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = " In the plan, not changed:"
+    hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
+    for _, p in ipairs(missing) do
+      lines[#lines + 1] = "    " .. p
+      hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliStatusDraft" }
+    end
+  end
+  return lines, hls
 end
+local function list_lines() return M.list_lines(view.files, view.check) end
 
 local function setup_list(buf)
   local K = KEYS()
@@ -379,6 +409,11 @@ function M.open(title, dir, raw, keep)
   view = { files = M.files(raw), diffs = CACHE.split_diff(raw), bufs = {}, maps = {}, title = title, dir = dir,
     width = width, threads = (old and old.dir == dir) and old.threads or why_load(dir) }
   reanchor()
+  -- The plan this change was made from, if any: which files it doesn't list.
+  local paths = {}
+  for _, f in ipairs(view.files) do paths[#paths + 1] = f.path end
+  local okp, PLAN = pcall(require, "azure-cli.chat.plan")
+  view.check = okp and PLAN.check_change(PLAN.for_worktree(dir), paths) or nil
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
     vim.api.nvim_set_current_tabpage(view.tab)
@@ -398,10 +433,18 @@ function M.open(title, dir, raw, keep)
     pcall(vim.api.nvim_win_set_width, view.list_win, width)
   end
   vim.t[view.tab].azure_cli_title = "Change " .. (title:match("([#!]%d+)") or "")
+  local llines, lhls = list_lines()
   vim.bo[view.list_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, list_lines())
+  vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, llines)
   vim.bo[view.list_buf].modifiable = false
-  pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) }, {}))
+  vim.api.nvim_buf_clear_namespace(view.list_buf, list_ns, 0, -1)
+  for _, h in ipairs(lhls) do
+    pcall(vim.api.nvim_buf_set_extmark, view.list_buf, list_ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
+  end
+  local ctags = {}
+  if view.check and #view.check.unplanned > 0 then ctags[#ctags + 1] = "[" .. #view.check.unplanned .. " off plan]" end
+  if view.check and #view.check.missing > 0 then ctags[#ctags + 1] = "[" .. #view.check.missing .. " planned, untouched]" end
+  pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) }, ctags))
   local at
   for i, f in ipairs(view.files) do if keep and f.path == keep.path then at = i end end
   if at then

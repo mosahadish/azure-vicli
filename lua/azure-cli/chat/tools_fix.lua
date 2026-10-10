@@ -283,17 +283,35 @@ setmetatable(M, { __call = function(_, T)
     {
       name = "show_fix",
       description = "Shows the user the change made in the start_fix or start_story directory (in a tab, file by file) and "
-        .. "returns the diff. Give pr_id for a fix, work_item_id for a story.",
+        .. "returns the diff, plus plan_check when the change and its plan's Files section disagree (files changed "
+        .. "that the plan doesn't list, files it lists that weren't changed). Give pr_id for a fix, work_item_id for "
+        .. "a story.",
       schema = target_schema,
       risk = "read",
-      run = function(args, _, done)
+      run = function(args, env, done)
         local t, why = locate(args)
         if not t then return done(nil, why) end
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
           M.show("Proposed change - " .. t.label, t.dir, diff)
+          -- Against the plan: what it changed that the plan doesn't list,
+          -- and what the plan lists that it didn't change.
+          local PLAN = require("azure-cli.chat.plan")
+          local paths = {}
+          for _, f in ipairs(require("azure-cli.chat.changes").files(vim.split(diff, "\n", { plain = true }))) do
+            paths[#paths + 1] = f.path
+          end
+          local check = PLAN.check_change(PLAN.load(PLAN.key(t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id })),
+            paths)
+          local plan_check
+          if check and (#check.unplanned > 0 or #check.missing > 0) then
+            plan_check = { not_in_plan = check.unplanned, planned_not_changed = check.missing,
+              note = "The user sees these flagged next to the change. Say why, or fix it." }
+            env.log("! against the plan: " .. #check.unplanned .. " file(s) not in it, "
+              .. #check.missing .. " planned file(s) not changed")
+          end
           if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
-          done({ stat = stat, diff = diff })
+          done({ stat = stat, diff = diff, plan_check = plan_check })
         end, T.git)
       end,
     },

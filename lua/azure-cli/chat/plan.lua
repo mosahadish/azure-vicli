@@ -99,6 +99,61 @@ function M.section_at(sections, line)
   return cur
 end
 
+-- The paths the plan's Files section lists: each entry's first `code`
+-- span, else its first word (a leading "./" dropped). Pure.
+function M.planned_files(lines)
+  local out, inside, fenced = {}, false, false
+  for _, l in ipairs(lines) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("file", 1, true) ~= nil
+    elseif inside and not fenced then
+      local item = l:match("^%s*[-*+]%s+(.+)$")
+      if item then
+        local path = item:match("`([^`]+)`") or item:match("^(%S+)")
+        path = path and path:gsub("^%./", ""):gsub("[,:;]$", "")
+        if path and path ~= "" then out[#out + 1] = path end
+      end
+    end
+  end
+  return out
+end
+
+local function same_path(a, b)
+  a, b = a:gsub("\\", "/"), b:gsub("\\", "/")
+  return a == b or a:sub(-#b - 1) == "/" .. b or b:sub(-#a - 1) == "/" .. a
+end
+
+-- The change's files against the plan's: { unplanned = changed paths the
+-- plan doesn't list, missing = planned paths the change doesn't touch }.
+-- A planned path matches a changed one when either ends with the other
+-- (the plan may say `throttle.py` for src/throttle.py). Pure.
+function M.check_files(planned, changed)
+  local out = { unplanned = {}, missing = {} }
+  for _, c in ipairs(changed) do
+    local hit = false
+    for _, p in ipairs(planned) do if same_path(c, p) then hit = true end end
+    if not hit then out.unplanned[#out.unplanned + 1] = c end
+  end
+  for _, p in ipairs(planned) do
+    local hit = false
+    for _, c in ipairs(changed) do if same_path(c, p) then hit = true end end
+    if not hit then out.missing[#out.missing + 1] = p end
+  end
+  return out
+end
+
+-- The plan for the change in worktree `dir` (start_fix's <repo>-<pr id>,
+-- start_story's <repo>-wi<id>): its record, or nil.
+function M.for_worktree(dir)
+  local name = vim.fn.fnamemodify((dir or ""):gsub("[/\\]+$", ""), ":t")
+  local wi = name:match("%-wi(%d+)$")
+  if wi then return M.load("wi-" .. wi) end
+  local pr = name:match("%-(%d+)$")
+  return pr and M.load("pr-" .. pr) or nil
+end
+
 -- The template's "## " headings `markdown` doesn't have. Pure.
 function M.missing(markdown, template)
   local have = {}
@@ -193,6 +248,12 @@ local function current_lines(rec)
   if ok and #lines > 0 then return lines end
   local rev = last_rev(rec)
   return vim.split(rev and rev.markdown or "", "\n", { plain = true })
+end
+
+-- The plan's Files check for a change: `changed` = its paths.
+function M.check_change(rec, changed)
+  if not rec then return nil end
+  return M.check_files(M.planned_files(current_lines(rec)), changed)
 end
 
 -- A new revision `markdown` by `by` ("agent" / "you"): the file rewritten

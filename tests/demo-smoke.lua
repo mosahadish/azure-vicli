@@ -1180,6 +1180,13 @@ do
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
   if not cwin then return fail("show_fix didn't open the change viewer") end
+  -- The plan listed src/throttle.py too: the viewer and show_fix say so.
+  local listed = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
+  if not (listed:find("In the plan, not changed:", 1, true) and listed:find("    src/throttle.py", 1, true))
+      or not e.text:find('"planned_not_changed":["src/throttle.py"]', 1, true)
+      or not vim.wo[cwin].winbar:find("1 planned, untouched", 1, true) then
+    return fail("the change wasn't checked against the plan:\n" .. listed .. "\n" .. e.text)
+  end
   vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(cwin))
   local dwin, drow
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do

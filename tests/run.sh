@@ -438,6 +438,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
+  # The plan, the questions under a line, the change viewer's file list.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-plan.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-plan tests passed"* ]]; then
+    pass "test-chat-plan.lua (headless nvim)"
+  else
+    fail "test-chat-plan.lua (headless nvim)" "$out"
+  fi
+
   # chat/init.lua's `send`: one agent process for the whole conversation
   # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
   # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.

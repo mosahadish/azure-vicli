@@ -364,6 +364,13 @@ their line when the text around them changes.
 | `<BS>` | Back to the section list |
 | `r` / `gq` / `<` `>` / `q` / `?` | Reload / the chat / resize / close / keys |
 
+**The change against the plan.** When the agent shows its change
+(`show_fix`, `gd`), the change viewer compares it with the plan's Files
+section: a changed file the plan doesn't list is marked `✗ not in the plan`,
+and the files the plan lists but the change didn't touch are listed under
+the changed ones ("In the plan, not changed"); the winbar counts both. The
+agent gets the same list back from `show_fix`, so it can explain or fix it.
+
 Pushing the change (`commit_and_push_fix`) marks its plan done, so the next
 change on that PR or work item needs a plan of its own. A plan the agent
 revises needs approving again.
