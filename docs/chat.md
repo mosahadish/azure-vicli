@@ -348,6 +348,13 @@ with `]C` / `[C` between the questions there.
 
 ![A question answered under a line of the agent's change](images/chat-ask-why.png)
 
+**Changes to the agent's change.** In the change viewer, `c` on a line
+(or a selection) queues what should change there - drawn under the line,
+like a comment in the reviewer's batch queue - and `gS` sends everything
+queued in one message ("please change these: auth.py line 13 ..."), with a
+note of your own. `dd` forgets one. The agent fixes them in the worktree
+and shows the change again.
+
 Questions are kept: they're
 still there next time you open the plan or the change, and they move with
 their line when the text around them changes.

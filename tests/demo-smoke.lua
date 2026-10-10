@@ -1282,6 +1282,20 @@ do
   end, 50)
   if not back then return fail("gd on the plan line didn't come back to the code: " .. vim.api.nvim_get_current_line()) end
   dwin = vim.api.nvim_get_current_win()
+  -- c queues a change on the line, gS sends the queue in one message.
+  feed("c")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Name it LOCKOUT_REASON" })
+  feed("<C-s>")
+  dbuf = vim.api.nvim_win_get_buf(dwin)
+  if not drawn(dbuf, "\u{270E} Name it LOCKOUT_REASON") or not vim.wo[dwin].winbar:find("1 queued", 1, true) then
+    return fail("c didn't queue the change under the line: " .. vim.wo[dwin].winbar)
+  end
+  n = #st.entries
+  feed("gS")
+  feed("<C-s>")
+  e = answered(n)
+  if not (e and e.text:find("fix requests: 1", 1, true)) then return fail("gS didn't send the queued change: " .. vim.inspect(e and e.text)) end
+  if not drawn(dbuf, "sent with your change request") then return fail("the sent change isn't marked as sent") end
   print("== the plan ==")
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))

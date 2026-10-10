@@ -54,6 +54,7 @@ local DEFAULT_KEYS = {
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
     goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
+    delete_thread = "dd",  -- the chat's change viewer only: forget the question / queued change here
   },
   -- Reviewer Overview page.
   overview = {

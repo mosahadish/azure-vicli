@@ -81,6 +81,9 @@ local DIFF_HELP = {
   { "back", "back to the file list" },
   { "open_file", "edit the file in the worktree, at this line" },
   "Ask the agent",
+  { "comment", "queue a change on this line (in visual mode: these lines) for the agent" },
+  { "batch_submit", "send the queued changes to the agent, in one message" },
+  { "delete_thread", "forget the question or queued change under this line" },
   { "goto_plan", "the plan line this code carries out (or the plan's entry for the file)" },
   { "ask", "ask about this line (\"why did you choose this here?\") - the answer shows under it" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
@@ -115,10 +118,13 @@ end
 -- The reviewer's winbar: the path and its +adds -dels.
 local function set_diff_winbar(path, map)
   if not valid_win(view.diff_win) then return end
-  local n = 0
-  for _, th in ipairs(view.threads or {}) do if th.file == path then n = n + 1 end end
+  local mine = {}
+  for _, th in ipairs(view.threads or {}) do if th.file == path then mine[#mine + 1] = th end end
+  local nq = THREADS().counts(mine)
+  local _, queued = THREADS().counts(view.threads)
   pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) },
-    { n > 0 and ("[" .. THREADS().count_label(n) .. "]") or nil }))
+    { nq > 0 and ("[" .. THREADS().count_label(nq) .. "]") or nil,
+      queued > 0 and ("[\u{270E}" .. queued .. " queued - gS sends]") or nil }))
 end
 
 -- The file-list row of the file in the diff pane, marked as the reviewer
@@ -234,6 +240,99 @@ local function thread_here(idx)
   return nil
 end
 
+-- What gS sends: every change queued on lines of the agent's change
+-- (`queued`: request threads { file, line, anchor, question }), with your
+-- note. Pure.
+function M.fix_message(what, note, queued)
+  local parts = { "Please change these in " .. what .. ":" }
+  for _, r in ipairs(queued) do
+    parts[#parts + 1] = "- " .. tostring(r.file) .. " line " .. tostring(r.line)
+      .. (r.side == "L" and " (a line you removed)" or "")
+      .. (r.anchor and r.anchor ~= "" and (" `" .. r.anchor .. "`") or "") .. ": " .. r.question
+  end
+  if note and vim.trim(note) ~= "" then
+    parts[#parts + 1] = ""
+    parts[#parts + 1] = note
+  end
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = "Then show_fix it to me again."
+  return table.concat(parts, "\n")
+end
+
+local function what_label()
+  return "your change " .. view.title:gsub("^Proposed change %- ", "for "):gsub(" %(last commit%)$", "")
+    .. " (worktree " .. view.dir .. ")"
+end
+
+-- c: queue a change on this line (or these lines) of the agent's change,
+-- for gS.
+local function comment_here(idx, from, to)
+  local f = view.files[idx]
+  local buf = view.bufs[f.path]
+  local map = view.maps[buf].map
+  local m = map[to] or {}
+  if not m.lineno then return notify("Put the cursor on a line of the change.") end
+  local lines = vim.api.nvim_buf_get_lines(buf, from - 1, to, false)
+  local dir = view.dir
+  require("azure-cli.editor").open({
+    title = "Change \u{00B7} " .. vim.fn.fnamemodify(f.path, ":t") .. ":" .. m.lineno .. " (queued for gS)",
+    initial = "", anchor = { win = vim.api.nvim_get_current_win(), row = to }, context_lines = lines,
+    on_submit = function(text)
+      if not (view and view.dir == dir) then return end
+      table.insert(view.threads, { id = tostring(os.time()) .. "-" .. math.random(1000, 9999), kind = "request",
+        file = f.path, line = m.lineno, side = m.side, anchor = vim.trim(lines[#lines] or ""), question = text,
+        status = "queued", at = os.time() })
+      why_save()
+      draw_threads(idx)
+      set_diff_winbar(f.path, map)
+    end,
+  })
+end
+
+-- gS: send every queued change to the agent in one message.
+local function submit_changes()
+  local queued = {}
+  for _, th in ipairs(view.threads) do
+    if th.kind == "request" and th.status ~= "sent" then queued[#queued + 1] = th end
+  end
+  if #queued == 0 then return notify("Nothing queued - c on a line queues a change.") end
+  local CHAT = require("azure-cli.chat")
+  if CHAT.busy() then return notify("The agent is still answering - send these once it's done.", vim.log.levels.WARN) end
+  local dir = view.dir
+  require("azure-cli.editor").open({
+    title = "Send " .. #queued .. " change" .. (#queued == 1 and "" or "s") .. " to the agent",
+    initial = "Please make these changes.", anchor = "center",
+    on_submit = function(note)
+      if not (view and view.dir == dir) then return end
+      local entry = CHAT.send(M.fix_message(what_label(), note, queued), {
+        view_win = valid_win(view.diff_win) and view.diff_win or nil,
+        display = note .. " (+" .. #queued .. " on lines of the change)" })
+      if not entry then return end
+      for _, th in ipairs(queued) do th.status = "sent" end
+      why_save()
+      if view.current then
+        draw_threads(view.current)
+        local f = view.files[view.current]
+        set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
+      end
+    end,
+  })
+end
+
+-- dd: forget the question or queued change under the cursor.
+local function delete_here(idx)
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  for i, th in ipairs(view.threads) do
+    if thread_row(idx, th) == row then
+      table.remove(view.threads, i)
+      why_save()
+      draw_threads(idx)
+      return
+    end
+  end
+  notify("Nothing under this line.")
+end
+
 local function ask_here(idx)
   local f = view.files[idx]
   local buf = view.bufs[f.path]
@@ -322,6 +421,18 @@ local function diff_buf(idx)
   K.bind(buf, "diff", "help", function() help("diff", DIFF_HELP) end, { desc = "keys" })
   K.bind(buf, "diff", "ask", function() ask_here(idx) end, { desc = "ask the agent about this line" })
   K.bind(buf, "diff", "goto_plan", function() goto_plan(idx) end, { desc = "the plan line this carries out" })
+  K.bind(buf, "diff", "comment", function()
+    local r = vim.api.nvim_win_get_cursor(0)[1]
+    comment_here(idx, r, r)
+  end, { desc = "queue a change on this line for the agent" })
+  K.bind(buf, "diff", "comment_range", function()
+    local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+    if a > b then a, b = b, a end
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    comment_here(idx, a, b)
+  end, { desc = "queue a change on these lines for the agent", mode = "x" })
+  K.bind(buf, "diff", "batch_submit", submit_changes, { desc = "send the queued changes to the agent" })
+  K.bind(buf, "diff", "delete_thread", function() delete_here(idx) end, { desc = "forget what's under this line" })
   K.bind(buf, "diff", "expand_thread", function()
     local th = thread_here(idx)
     if not th then return notify("No question on this line (ga asks one).") end

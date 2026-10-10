@@ -20,6 +20,7 @@ What it does depends on the message:
   "About ..."  (a question from a plan / change-viewer line) answers
             "BECAUSE-<the quoted line>" and nothing else
   "revise the plan"  counts the line requests, submit_plan revision 3
+  "Please change these in ..."  (the change viewer's gS) counts the lines
   "I approve the plan"  start_story for 3002, an edit, show_fix
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and which turn of
@@ -137,6 +138,8 @@ def answer_turn(mcp, init, message, turn, model, session):
         quoted = [l[2:] for l in asked.splitlines() if l.startswith("> ")]
         out[:] = ["BECAUSE-" + (quoted[-1] if quoted else "?") + " (asked on the " + str(view.get("screen")) + ", line "
                   + str(view.get("plan_line") or view.get("line")) + ")"]
+    elif asked.startswith("Please change these in "):
+        out[:] = ["fix requests: " + str(sum(1 for l in asked.splitlines() if l.startswith("- src/")))]
     elif "revise the plan" in asked:
         out.append("requests: " + str(sum(1 for l in asked.splitlines() if l.startswith("- line "))))
         call("submit_plan", {"work_item_id": 3002, "title": "Lockout reason codes", "markdown": "\n".join([

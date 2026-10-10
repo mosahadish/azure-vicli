@@ -161,6 +161,12 @@ do
     and lines[4] == " In the plan, not changed:" and lines[5] == "    tests/t.py", vim.inspect(lines))
   check("list_lines: highlights", #hls == 3 and hls[1][4] == "AzureCliStatusBad")
   check("list_lines: no plan, nothing extra", #CH.list_lines(files, nil) == 2)
+  local m = CH.fix_message("your change for #3", "Thanks.", {
+    { file = "src/a.py", line = 4, anchor = "x = 1", question = "use a constant" },
+    { file = "b.py", line = 2, side = "L", question = "keep this" } })
+  check("fix_message: every queued change with its place, then the note",
+    m:find("Please change these in your change for #3:\n- src/a.py line 4 `x = 1`: use a constant\n"
+      .. "- b.py line 2 (a line you removed): keep this\n\nThanks.\n\nThen show_fix", 1, true) ~= nil, m)
 end
 
 print(fails == 0 and "all chat-plan tests passed" or (fails .. " chat-plan test(s) failed"))

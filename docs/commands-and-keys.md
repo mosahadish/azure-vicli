@@ -145,6 +145,7 @@ paste the output here after changing a default.
 | `commits` | `gc` |
 | `complete` | `gm` |
 | `config` | `gO` |
+| `delete_thread` | `dd` |
 | `expand_thread` | `<Tab>` |
 | `filters` | `gF` |
 | `find_references` | `gr` |
