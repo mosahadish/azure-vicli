@@ -1553,6 +1553,8 @@ function M.tools(T)
         -- you into its plan; it says it's ready instead.
         if env and env.background and env.background() then
           notify("The plan for " .. M.target_label(target) .. " is ready for you - the Agents screen opens it.")
+          pcall(function() require("azure-cli.chat").alert("azure-vicli: plan " .. M.target_label(target) .. " is ready",
+            tostring(args.title or "") .. " - waiting for your review") end)
           if alive(views[key]) then with_view(views[key], function() view.rec = rec; render() end) end
         else
           M.open(key)

@@ -694,6 +694,23 @@ vim.api.nvim_create_autocmd("WinClosed", {
 
 -- A float with `lines` next to a yes/no question (the diff a push would
 -- send, the text a comment would post), closed once answered.
+-- A desktop notification (notify.lua's toast) about something waiting for
+-- you: chat.toasts = "unfocused" (default: only while Neovim isn't the
+-- focused window - the terminal has to report focus) | "always" | false.
+local focused = true
+function M.alert(title, body)
+  local mode = config().toasts
+  if mode == nil then mode = "unfocused" end
+  if mode == false or (mode == "unfocused" and focused) then return false end
+  pcall(function() require("azure-cli.notify").toast(title, body) end)
+  return true
+end
+M._set_focused = function(v) focused = v end  -- tests
+vim.api.nvim_create_autocmd({ "FocusGained", "FocusLost" }, {
+  group = group,
+  callback = function(ev) focused = ev.event == "FocusGained" end,
+})
+
 -- One question at a time: with several agents, another one asking while
 -- you answer waits here, so each answer goes to the question you read.
 local asking, waiting_questions = false, {}
@@ -713,6 +730,7 @@ local function confirm(question, cb, details)
     if buf and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) then vim.bo[buf].filetype = "diff" end
   end
   notify(question .. " (answer in the prompt)")
+  M.alert("azure-vicli: a question for you", question)
   MAIN().question = question
   M.set_winbars()
   require("azure-cli.prompt").confirm({ prompt = question .. " Allow?", yes = "Allow", no = "Deny" }, function(yes)
@@ -971,6 +989,9 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     render()
     save(st)
     if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
+    if st.plan_key and STATE() ~= st then
+      M.alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
+    end
     if opts.on_done then pcall(opts.on_done, entry) end
     -- An agent is free again: start the next plan waiting for one.
     pcall(function() require("azure-cli.chat.agents").pump() end)
@@ -1274,6 +1295,9 @@ send = function(text, opts)
     render()
     save(st)
     if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
+    if st.plan_key and STATE() ~= st then
+      M.alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
+    end
     if opts.on_done then pcall(opts.on_done, entry) end
     -- An agent is free again: start the next plan waiting for one.
     pcall(function() require("azure-cli.chat.agents").pump() end)

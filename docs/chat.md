@@ -276,7 +276,7 @@ it's tied to one conversation with one agent and model.
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `suggest_on_new_comments` (default true), `plan_first`
-(default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `max_agents` (default 3,
+(default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).
 
 The agent runs in the local clone of the PR you're looking at, when there is
@@ -500,6 +500,14 @@ carry on. At most `chat.max_agents` (default 3) work at the same time;
 the rest wait and start as the others finish. An agent working in the
 background doesn't pull you into its plan when it's done: the status
 strip counts the plans waiting for you.
+
+**Desktop notifications.** While Neovim isn't the focused window, a
+toast tells you when something waits for you: a plan from a background
+agent is ready, its change is ready, a question waits for your yes or no,
+or a plan's agent answered. `chat.toasts = "always"` sends them even
+while you're looking, `false` never (the terminal has to report focus for
+the default - tmux needs `set -g focus-events on`; `:AzureCli toasts` and
+`AZVICLI_TOASTS=0` turn every toast off).
 
 **After a restart** each plan's conversation comes back - in its plan's
 tabs and on the Agents screen - though its agent isn't running any more:

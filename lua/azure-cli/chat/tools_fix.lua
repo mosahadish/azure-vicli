@@ -331,6 +331,8 @@ setmetatable(M, { __call = function(_, T)
           if hidden then
             M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
             require("azure-cli.shell").notify(t.label .. "'s change is ready for you - the Agents screen opens it.")
+            pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
+              "Waiting for your review on the Agents screen") end)
           else
             M.show("Proposed change - " .. t.label, t.dir, diff)
           end

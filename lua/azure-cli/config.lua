@@ -228,7 +228,7 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
-  test_cmd = "any",
+  test_cmd = "any", toasts = "any",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -263,6 +263,9 @@ local function validate_chat(chat)
     error("azure-cli.setup: chat.position must be \"right\", \"left\", \"bottom\" or \"top\"")
   end
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
+  if out.toasts ~= nil and out.toasts ~= false and out.toasts ~= "unfocused" and out.toasts ~= "always" then
+    error("azure-cli.setup: chat.toasts must be \"unfocused\", \"always\" or false")
+  end
   if out.test_cmd ~= nil then
     local ok = type(out.test_cmd) == "string"
     if type(out.test_cmd) == "table" then

@@ -198,6 +198,31 @@ do
   PROMPT.confirm = real
 end
 
+-- --- desktop toasts for what waits for you ----------------------------------------
+do
+  local NOTIFY = require("azure-cli.notify")
+  local real = NOTIFY.toast
+  local toasts = {}
+  NOTIFY.toast = function(title, body) toasts[#toasts + 1] = title .. ": " .. body end
+  require("azure-cli").setup({ chat = { agent = { cmd = { "x" } } } })
+  CHAT._set_focused(true)
+  check("alert: not while you're looking (default unfocused)", CHAT.alert("t", "b") == false and #toasts == 0)
+  vim.api.nvim_exec_autocmds("FocusLost", {})
+  check("alert: once Neovim loses focus", CHAT.alert("t", "b") == true and toasts[1] == "t: b")
+  vim.api.nvim_exec_autocmds("FocusGained", {})
+  check("alert: not again once it's back", CHAT.alert("t", "b") == false and #toasts == 1)
+  require("azure-cli").setup({ chat = { agent = { cmd = { "x" } }, toasts = "always" } })
+  check("alert: always", CHAT.alert("t", "c") == true and #toasts == 2)
+  require("azure-cli").setup({ chat = { agent = { cmd = { "x" } }, toasts = false } })
+  CHAT._set_focused(false)
+  check("alert: off", CHAT.alert("t", "d") == false and #toasts == 2)
+  local okc = pcall(require("azure-cli").setup, { chat = { toasts = "sometimes" } })
+  check("alert: a bad setting is refused", not okc)
+  CHAT._set_focused(true)
+  NOTIFY.toast = real
+  require("azure-cli").setup({})
+end
+
 -- --- why_message ---------------------------------------------------------------
 do
   local CORE = require("azure-cli.chat.core")
