@@ -292,6 +292,7 @@ paste the output here after changing a default.
 | `back` | `<BS>` |
 | `cancel` | `<C-c>` |
 | `changes` | `gd` |
+| `expand` | `<Tab>` |
 | `focus_input` | `i` / `a` |
 | `help` | `?` |
 | `hide` | `q` |

@@ -296,9 +296,17 @@ end
 -- working… 4s"), your text, the agent's tool calls as they happen, then
 -- its markdown answer. Returns lines, roles (line -> one of you_head, you,
 -- agent_head, agent, agent_log, tool_read, tool_write, tool_err, note,
--- intro; nil for
+-- intro, fold; nil for
 -- the gap between turns), name_end (heading line -> byte where its dim
 -- part starts) and entry_at (line -> index into entries). Pure.
+--
+-- A finished answer with more than COLLAPSE_TOOLS tool calls shows them as
+-- one summary line ("· 6 lookups, 2 changes"), keeping the ones that
+-- failed, were declined, were allowed without asking or warn (✗ ✓ !) on
+-- their own lines; an answer longer than FOLD_LINES shows its first
+-- KEEP_LINES and "… N more lines" (role "fold"). An entry with `open` set
+-- (<Tab> on it) shows everything.
+M.COLLAPSE_TOOLS, M.FOLD_LINES, M.KEEP_LINES = 3, 40, 30
 function M.render(entries, now, agent_label)
   local lines, roles, name_end, entry_at = {}, {}, {}, {}
   local cur
@@ -333,16 +341,36 @@ function M.render(entries, now, agent_label)
       end
       if e.mode == "replay" then bits[#bits + 1] = "replayed" end
       head(e.label or agent_label or "Agent", table.concat(bits, "  \u{00B7}  "), "agent_head")
-      for _, t in ipairs(e.tools or {}) do
-        local role = t:find("^\u{2717}") and "tool_err" or (t:find("^\u{270E}") and "tool_write" or "tool_read")
-        add("  " .. t, role)
+      local tools = e.tools or {}
+      local function role_of(t) return t:find("^\u{2717}") and "tool_err" or (t:find("^\u{270E}") and "tool_write" or "tool_read") end
+      if not e.open and e.status ~= "running" and #tools > M.COLLAPSE_TOOLS then
+        local reads, writes, kept = 0, 0, {}
+        for _, tl in ipairs(tools) do
+          if tl:find("^\u{2717}") or tl:find("^\u{2713}") or tl:find("^!") then
+            kept[#kept + 1] = tl
+          elseif tl:find("^\u{270E}") then
+            writes = writes + 1
+          else
+            reads = reads + 1
+          end
+        end
+        local parts = {}
+        if reads > 0 then parts[#parts + 1] = reads .. " lookup" .. (reads == 1 and "" or "s") end
+        if writes > 0 then parts[#parts + 1] = writes .. " change" .. (writes == 1 and "" or "s") end
+        add("  " .. (writes > 0 and "\u{270E} " or "\u{00B7} ") .. table.concat(parts, ", ") .. "  (<Tab> shows them)",
+          writes > 0 and "tool_write" or "tool_read")
+        for _, tl in ipairs(kept) do add("  " .. tl, role_of(tl)) end
+      else
+        for _, tl in ipairs(tools) do add("  " .. tl, role_of(tl)) end
       end
       if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("", "agent") end
       if e.text and e.text ~= "" then
         local body = {}
         for l in (e.text .. "\n"):gmatch("(.-)\n") do body[#body + 1] = l end
         local kinds = M.answer_roles(body)
-        for k, l in ipairs(body) do add(l, kinds[k]) end
+        local shown = (not e.open and #body > M.FOLD_LINES) and M.KEEP_LINES or #body
+        for k = 1, shown do add(body[k], kinds[k]) end
+        if shown < #body then add("\u{2026} " .. (#body - shown) .. " more lines  (<Tab> unfolds)", "fold") end
       end
     else
       add_text(e.text or "", "note")

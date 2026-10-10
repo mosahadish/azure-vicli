@@ -146,6 +146,30 @@ do
   check("call: unknown tool", answer[2] == true and answer[1]:find("unknown tool", 1, true))
 end
 
+-- --- render: folding ------------------------------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  local long = {}
+  for i = 1, 50 do long[i] = "line " .. i end
+  local e = { role = "agent", status = "done", label = "A", text = table.concat(long, "\n"),
+    tools = { "\u{00B7} a", "\u{00B7} b", "\u{270E} c", "\u{2717} d: declined", "\u{2713} e: allowed by the plan" } }
+  local lines, roles = CORE.render({ e }, 0, "A")
+  local all = table.concat(lines, "\n")
+  check("render: many tool calls -> one summary line, failures and allowances kept",
+    all:find("  \u{270E} 2 lookups, 1 change  (<Tab> shows them)\n  \u{2717} d: declined\n  \u{2713} e: allowed by the plan", 1, true)
+      and not all:find("\u{00B7} a", 1, true), all:sub(1, 300))
+  check("render: a long answer folds after KEEP_LINES", all:find("line 30\n\u{2026} 20 more lines  (<Tab> unfolds)", 1, true)
+    and not all:find("line 31", 1, true) and roles[#lines] == "fold")
+  e.open = true
+  all = table.concat(CORE.render({ e }, 0, "A"), "\n")
+  check("render: open shows everything", all:find("\u{00B7} a", 1, true) and all:find("line 50", 1, true)
+    and not all:find("more lines", 1, true))
+  e.open, e.status = nil, "running"
+  check("render: a running turn shows every call", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} b", 1, true) ~= nil)
+  e.status, e.tools = "done", { "\u{00B7} a", "\u{00B7} b", "\u{00B7} c" }
+  check("render: a few calls stay listed", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} c", 1, true) ~= nil)
+end
+
 -- --- why_message ---------------------------------------------------------------
 do
   local CORE = require("azure-cli.chat.core")

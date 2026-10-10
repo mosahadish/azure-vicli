@@ -146,14 +146,14 @@ local BAR = {
   agent_head = "AzureCliChatAgent", agent = "AzureCliChatAgent",
   tool_read = "AzureCliChatAgent", tool_write = "AzureCliChatAgent", tool_err = "AzureCliChatAgent",
   agent_log = "AzureCliChatAgent",
-  note = "AzureCliChatNote", intro = "AzureCliChatAgent",
+  note = "AzureCliChatNote", intro = "AzureCliChatAgent", fold = "AzureCliChatAgent",
 }
 local LINE_HL = {
   -- Your messages in your colour, the agent's own step log dimmed, so its
   -- answer stands out from both.
   you = "AzureCliChatYouText", agent_log = "AzureCliChatToolRead",
   tool_read = "AzureCliChatToolRead", tool_write = "AzureCliChatToolWrite", tool_err = "AzureCliChatToolErr",
-  note = "AzureCliChatNote", intro = "AzureCliChatMeta",
+  note = "AzureCliChatNote", intro = "AzureCliChatMeta", fold = "AzureCliChatMeta",
 }
 
 local log_buf, input_buf
@@ -332,6 +332,18 @@ local function ensure_bufs()
   KEYS.bind(log_buf, "chat", "open_ref", function() open_ref() end, { desc = "open the PR/work item under the cursor" })
   KEYS.bind(log_buf, "chat", "use_as_reply", function() use_as_reply() end, { desc = "draft this answer as a reply" })
   KEYS.bind(log_buf, "chat", "why", function() ask_why() end, { desc = "ask the agent why it did this" })
+  KEYS.bind(log_buf, "chat", "expand", function()
+    -- <Tab>: all of this turn's tool calls and answer, or folded again.
+    local st = STATE()
+    local idx = entry_at[vim.api.nvim_win_get_cursor(0)[1]]
+    local e = idx and st.entries[idx]
+    if not (e and e.role == "agent") then return end
+    e.open = not e.open or nil
+    render()
+    for row, i in pairs(entry_at) do
+      if i == idx and role_at[row] == "agent_head" then pcall(vim.api.nvim_win_set_cursor, 0, { row, 0 }) end
+    end
+  end, { desc = "unfold / fold this answer and its tool calls" })
   KEYS.bind(input_buf, "chat", "send", function() send() end, { desc = "send the message" })
   KEYS.bind(input_buf, "chat", "send_insert", function() vim.cmd("stopinsert") send() end,
     { desc = "send the message", mode = "i" })
@@ -1238,6 +1250,7 @@ show_help = function()
     { "open_ref", "open the !PR / #work item under the cursor" },
     { "use_as_reply", "draft the answer under the cursor as a reply (queued for gS)" },
     { "why", "ask the agent why it did the step (or wrote the line) under the cursor" },
+    { "expand", "unfold a long answer or a list of tool calls (again: fold it)" },
     { "audit", "what the agent changed - u undoes one" },
     { "changes", "the agent's code change, file by file (like the reviewer: ]c / [c, gf, q)" },
     "Conversation",

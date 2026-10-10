@@ -727,7 +727,9 @@ do
   if e.status ~= "done" or not e.text:find("FAKE-CHAT-RAN", 1, true)
       or not e.text:find("view: reviewer: a file's diff, PR 101, file src/auth.py, line 12, thread 5000", 1, true)
       or not e.text:find("message had the view: True", 1, true) or not e.text:find("model: fast", 1, true)
-      or not e.text:find("threads: 3, active: 2", 1, true) or not log:find("\u{270E} draft_reply", 1, true) then
+      or not e.text:find("threads: 3, active: 2", 1, true)
+      or not (log:find("\u{270E} draft_reply", 1, true) or log:find("1 change  (<Tab> shows them)", 1, true))
+      or not table.concat(e.tools or {}, "|"):find("\u{270E} draft_reply", 1, true) then
     return fail("the triage turn went wrong:\n" .. log)
   end
   local b = require("azure-cli.state").batch["101"]
@@ -1379,6 +1381,15 @@ do
   CHAT.show(false)
   local lw = st.wins[vim.api.nvim_get_current_tabpage()].log
   local lb = vim.api.nvim_win_get_buf(lw)
+  -- That turn's tool calls are folded into one line; <Tab> there lists them.
+  local fold_row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(lb, 0, -1, false)) do
+    if l:find("(<Tab> shows them)", 1, true) then fold_row = i end
+  end
+  if not fold_row then return fail("the approval turn's tool calls aren't folded into one line") end
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { fold_row, 0 })
+  feed("<Tab>")
   local step_row
   for i, l in ipairs(vim.api.nvim_buf_get_lines(lb, 0, -1, false)) do
     if l:find("show_fix (", 1, true) then step_row = i end

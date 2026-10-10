@@ -47,6 +47,7 @@ until you hide it. The conversation is the same in every tab.
 | `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
 | `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |
+| `<Tab>` (conversation) | Unfold a long answer, or the list of tool calls folded into one line ("· 6 lookups, 2 changes"); again folds it |
 | `gw` (conversation) | Ask the agent why it did the step under the cursor (one of its tool calls, `✎ create_branch (...)`) or wrote that line |
 | `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
 | `gp` | Run a saved prompt |
@@ -77,6 +78,12 @@ seconds. With the panel hidden, put it in your statusline:
 `require("azure-cli.chat").status()` is `⠹ Copilot 42s` while the agent
 works and `""` otherwise (lualine: `{ function() return
 require("azure-cli.chat").status() end }`).
+
+Once a turn is done, more than three tool calls fold into one line (`· 6
+lookups, 2 changes`) - the ones that failed, were declined or were
+allowed without asking stay on their own lines - and an answer longer
+than 40 lines shows its first 30 and `… N more lines`. `<Tab>` on the
+turn unfolds it.
 
 Each turn has a coloured bar down its left side: one colour for you, another
 for the agent. The agent's markdown is rendered (headings, **bold**, `code`,
