@@ -1377,7 +1377,7 @@ do
   end
   feed("gy")
   if #vim.api.nvim_buf_get_extmarks(dbuf, hns, 0, -1, {}) ~= 0 then return fail("gy again didn't take the accept back") end
-  pick = "Take it out"
+  pick = "Yes"  -- take the hunk out
   feed("gn")
   local wt = require("azure-cli.chat.tools_fix").find_story(3002)
   local gone = vim.wait(10000, function()

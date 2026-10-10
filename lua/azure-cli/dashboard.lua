@@ -1826,7 +1826,7 @@ local function requeue_pr()
   if pr.buildStatus and pr.buildStatus ~= "" and pr.buildStatus ~= "none" then
     body[#body + 1] = "Build: " .. pr.buildStatus
   end
-  UI.confirm({ title = "Re-queue the build?", lines = body, yes = "Re-queue", no = "Cancel" }, function(yes)
+  UI.confirm({ title = "Re-queue the build?", lines = body }, function(yes)
     if yes then requeue_now(pr) end
   end)
 end

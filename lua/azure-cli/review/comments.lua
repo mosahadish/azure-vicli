@@ -202,7 +202,7 @@ local function do_delete(ctx, t, c, on_change)
     return
   end
   require("azure-cli.prompt").confirm({ title = "Delete comment",
-    prompt = "Are you sure?", yes = "Delete", no = "Keep", danger = true }, function(yes)
+    prompt = "Are you sure?" }, function(yes)
     if not yes then
       ctx.notify("Cancelled.")
       return

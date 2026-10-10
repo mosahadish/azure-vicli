@@ -167,7 +167,6 @@ local function leave(force)
     title = EMBED and "Close the reviewer?" or "Quit?",
     prompt = "PR #" .. ID .. " has " .. table.concat(what, " and ")
       .. (EMBED and " - kept until Neovim exits." or " - they will be lost."),
-    yes = EMBED and "Close" or "Quit", no = "Stay", danger = not EMBED,
   }, function(yes) if yes then go() end end)
 end
 
@@ -1751,8 +1750,7 @@ local function cast_vote()
   })
   end
   if vote.key == "-10" then
-    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?", yes = "Reject", no = "Cancel",
-      danger = true },
+    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?" },
       function(yes) if yes then go() end end)
   else
     go()

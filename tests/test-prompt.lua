@@ -122,8 +122,8 @@ end
 do
   select_answer = 1
   local got
-  P.confirm({ prompt = "Merge?", yes = "Merge", no = "Keep open" }, function(b) got = b end)
-  check("confirm: yes", got == true and last_select.items[1] == "Merge" and last_select.items[2] == "Keep open")
+  P.confirm({ prompt = "Merge?" }, function(b) got = b end)
+  check("confirm: yes", got == true and last_select.items[1] == "Yes" and last_select.items[2] == "Cancel")
   select_answer = 2
   P.confirm({ prompt = "Merge?" }, function(b) got = b end)
   check("confirm: no", got == false)
@@ -159,9 +159,10 @@ do
   check("popup: search = true stays vim.ui.select", popup_call == nil and last_select ~= nil)
   popup_answer = 1
   local yes
-  P.confirm({ title = "Delete?", prompt = "It goes.", yes = "Delete", no = "Keep", danger = true }, function(b) yes = b end)
-  check("popup: confirm", yes == true and popup_call.title == "Delete?" and popup_call.lines[1] == "It goes."
-    and popup_call.yes == "Delete" and popup_call.default == "no")
+  P.confirm({ title = "Delete comment", prompt = "Are you sure?" }, function(b) yes = b end)
+  check("popup: confirm - Yes / Cancel, Yes focused", yes == true and popup_call.title == "Delete comment"
+    and popup_call.lines[1] == "Are you sure?" and popup_call.yes == "Yes" and popup_call.no == "Cancel"
+    and popup_call.default == nil)
   P.confirm({ title = "Reject PR #7?", yes = "Reject", no = "Cancel" }, function() end)
   check("popup: a title alone is the whole question", popup_call.title == "Reject PR #7?" and #popup_call.lines == 0)
   ui_style = "select"

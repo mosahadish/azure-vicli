@@ -134,9 +134,8 @@ function M.run(dir, cmd, fp, cb)
 end
 
 function M.ask_and_run(dir, cmd, fp, cb)
-  -- The agent wrote the command: "Don't" is the one focused.
   require("azure-cli.prompt").confirm({ title = "Run the plan's tests?", prompt = "In "
-    .. vim.fn.fnamemodify(dir, ":t") .. ": " .. cmd, yes = "Run", no = "Don't", danger = true }, function(yes)
+    .. vim.fn.fnamemodify(dir, ":t") .. ": " .. cmd }, function(yes)
     if not yes then return cb(nil, "declined") end
     M.run(dir, cmd, fp, cb)
   end)

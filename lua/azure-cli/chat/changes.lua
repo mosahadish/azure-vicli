@@ -412,7 +412,7 @@ local function reject_hunk(idx)
   if not h then return notify("Put the cursor on a change.") end
   local dir, label = view.dir, f.path .. " (" .. h.lines[1]:match("^(@@.-@@)") .. ")"
   require("azure-cli.prompt").confirm({ title = "Take the change out?", prompt = "This change to " .. label
-    .. " goes from the worktree.", yes = "Take it out", no = "Keep it", danger = true, details = h.lines,
+    .. " goes from the worktree.", details = h.lines,
     details_ft = "diff" }, function(yes)
     if not yes then return end
     local tmp = vim.fn.tempname()

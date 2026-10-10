@@ -127,21 +127,18 @@ function M.input(opts, cb)
   end)
 end
 
--- M.confirm(opts, cb): a yes/no question. opts.prompt is the question,
--- opts.yes/opts.no relabel the two answers ("Merge", "Keep open"). cb(true)
--- only when the affirmative answer was picked; anything else - including
--- Esc - is cb(false), so a destructive action can never run by accident.
--- In the popup: opts.title its title, opts.details text shown above it,
--- opts.danger focuses the no (deleting, rejecting, losing something).
+-- M.confirm(opts, cb): a yes/no question, answered Yes or Cancel (Yes
+-- focused). opts.title and opts.prompt are the question (a title alone
+-- will do), opts.details text shown above it. cb(true) only for Yes;
+-- anything else - including Esc - is cb(false).
 function M.confirm(opts, cb)
   opts = opts or {}
-  local yes = opts.yes or "Yes"
-  local no = opts.no or "Cancel"
+  local yes, no = "Yes", "Cancel"
   if popup_style() then
     -- With a title, the question can be the title alone (no prompt).
     local body = opts.prompt and { opts.prompt } or (opts.title and {} or { "Are you sure?" })
-    return require("azure-cli.ui").confirm({ title = opts.title, lines = body, yes = yes,
-      no = no, default = opts.danger and "no" or nil, details = opts.details, details_ft = opts.details_ft }, cb)
+    return require("azure-cli.ui").confirm({ title = opts.title, lines = body, yes = yes, no = no,
+      details = opts.details, details_ft = opts.details_ft }, cb)
   end
   M.select({ prompt = opts.prompt or "Are you sure?", items = { yes, no }, silent = true }, function(choice)
     cb(choice == yes)
