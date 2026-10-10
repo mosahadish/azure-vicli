@@ -21,7 +21,7 @@ local DEFAULT_KEYS = {
     workitems = "W", toasts = "gN", help = "?", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A",
+    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
   },
   -- Reviewer file list.
   list = {
@@ -33,7 +33,7 @@ local DEFAULT_KEYS = {
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
+    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq", plan_agents = "gP",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
@@ -52,6 +52,7 @@ local DEFAULT_KEYS = {
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
+    plan_agents = "gP",
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
     goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
@@ -68,7 +69,7 @@ local DEFAULT_KEYS = {
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq",
+    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", plan_agents = "gP",
   },
   -- Code-navigation peek/revision buffers.
   nav = {

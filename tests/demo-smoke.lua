@@ -1634,6 +1634,47 @@ do
     end
   end
   if #STATE.chat.entries ~= main_turns then return fail("the main conversation got the parallel agents' turns") end
+  -- gP on PR dashboard rows (visual): an agent per PR, each planning the
+  -- fix of its review comments.
+  local dw = vim.fn.win_findbuf(dash)[1]
+  if not dw then return fail("the PR dashboard isn't showing") end
+  vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(dw))
+  vim.api.nvim_set_current_win(dw)
+  local row101, row102
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("#101 ", 1, true) then row101 = i end
+    if l:find("#102 ", 1, true) then row102 = i end
+  end
+  vim.api.nvim_win_set_cursor(dw, { math.min(row101, row102), 0 })
+  feed("V" .. math.abs(row102 - row101) .. "j")
+  feed("gP")
+  local prs_done = vim.wait(30000, function()
+    local a, b = PLAN.load("pr-101"), PLAN.load("pr-102")
+    return a and a.status == "draft" and b and b.status == "draft" and AGENTS.working() == 0 and #AGENTS.queued() == 0
+  end, 100)
+  if not prs_done then return fail("gP on the dashboard rows didn't plan PR !101 and !102") end
+  local p1 = CHAT.find_conversation("pr-101")
+  if not (p1 and p1.label == "PR !101" and answer(p1):find("planned PR !101 for every active thread", 1, true)) then
+    return fail("PR !101's agent: " .. (p1 and answer(p1) or "none"))
+  end
+  -- gP in the reviewer, on a commented line: just that thread.
+  require("azure-cli").open_review(101)
+  local landed = vim.wait(20000, function()
+    local o = STATE.review_openers and STATE.review_openers["101"]
+    return o and o("src/auth.py", "R", 12)
+  end, 100)
+  if not landed then return fail("the reviewer didn't open auth.py:12 for gP") end
+  vim.wait(3000, function()
+    local s = require("azure-cli.chat.view").snapshot(vim.api.nvim_get_current_win())
+    return type(s.thread) == "table"
+  end, 50)
+  local tsnap = require("azure-cli.chat.view").snapshot(vim.api.nvim_get_current_win())
+  if type(tsnap.thread) ~= "table" then return fail("no thread under the cursor at auth.py:12: " .. vim.inspect(tsnap.line)) end
+  feed("gP")
+  local one = vim.wait(30000, function()
+    return answer(p1):find("planned PR !101 for " .. tostring(tsnap.thread.id), 1, true) ~= nil and AGENTS.working() == 0
+  end, 100)
+  if not one then return fail("gP on thread " .. tostring(tsnap.thread.id) .. " in the reviewer: " .. answer(p1)) end
   for _, c in ipairs(CHAT.conversations()) do
     if c ~= STATE.chat and c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
   end

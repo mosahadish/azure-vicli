@@ -10,6 +10,8 @@
 -- agent going.
 --
 --   M.start_for_items(items)  queues { id, title, type, state } work items
+--   M.start_for_prs(prs, threads_of)  queues PRs: each agent plans fixes for
+--                             the given thread ids (default: every active one)
 --   M.pump()                  starts queued ones while there's room
 --                             (chat/init.lua calls it after every answer)
 --   M.queued()                the waiting ones, in order
@@ -53,16 +55,41 @@ local function snap_for(item)
     work_item = { id = item.id, type = item.type, title = item.title, state = item.state } }
 end
 
+-- A queued job: { key, label, title, target, prompt, display, snap }.
 local function start(q)
-  local item = q.item
-  local conv = CHAT().conversation(q.key, { label = "#" .. tostring(item.id), title = item.title,
-    target = { work_item_id = item.id } })
+  local conv = CHAT().conversation(q.key, { label = q.label, title = q.title, target = q.target })
   if conv.running then return false end
-  local entry = CHAT().send(M.plan_prompt(item), {
-    conv = conv, snap = snap_for(item), display = "/plan #" .. tostring(item.id),
-    done_note = "#" .. tostring(item.id) .. "'s agent answered (the Agents screen lists them).",
+  local entry = CHAT().send(q.prompt, {
+    conv = conv, snap = q.snap, display = q.display,
+    done_note = q.label .. "'s agent answered (the Agents screen lists them).",
   })
   return entry ~= nil
+end
+
+local function job_for_item(it)
+  return { key = "wi-" .. tostring(it.id), label = "#" .. tostring(it.id), title = it.title,
+    target = { work_item_id = it.id }, prompt = M.plan_prompt(it), display = "/plan #" .. tostring(it.id),
+    snap = snap_for(it) }
+end
+
+-- The first message of an agent started for a PR's review comments:
+-- `threads` = the thread ids to fix (nil: every active one). Pure.
+function M.pr_prompt(pr, threads)
+  local which = (threads and #threads > 0)
+    and ("the review comment" .. (#threads == 1 and "" or "s") .. " in thread" .. (#threads == 1 and " " or "s ")
+      .. table.concat(vim.tbl_map(tostring, threads), ", "))
+    or "its open review comments (every active thread)"
+  return "/plan PR !" .. tostring(pr.id) .. (pr.title and (" \"" .. pr.title .. "\"") or "") .. ": plan how to fix "
+    .. which .. ". Read them with get_pr_threads and look at the code they're on, then write one plan for the fix "
+    .. "with submit_plan (pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
+end
+
+local function job_for_pr(pr, threads)
+  return { key = "pr-" .. tostring(pr.id), label = "PR !" .. tostring(pr.id), title = pr.title,
+    target = { pr_id = pr.id }, prompt = M.pr_prompt(pr, threads),
+    display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "
+      .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
+    snap = { screen = "pull request (this agent was started for one PR's review comments)", pr = pr } }
 end
 
 -- Neovim is quitting: start nothing more (stopping an agent finishes its
@@ -78,35 +105,50 @@ function M.pump()
   end
 end
 
--- Queues `items` (work items from the board; nil entries and ones already
--- queued or working are skipped), then starts as many as there's room for.
-function M.start_for_items(items)
+-- Queues `jobs` (ones already queued or working are skipped), then starts
+-- as many as there's room for.
+local function enqueue(jobs, nothing)
   if not CHAT().current_agent() then
     return notify("No chat agent is configured (docs/chat.md).", vim.log.levels.WARN)
   end
   local added, skipped = {}, {}
-  for _, it in ipairs(items or {}) do
-    if type(it) == "table" and it.id then
-      local key = "wi-" .. tostring(it.id)
-      local busy = false
-      for _, q in ipairs(queue) do if q.key == key then busy = true end end
-      local conv = CHAT().find_conversation(key)
-      if conv and conv.running then busy = true end
-      if busy then skipped[#skipped + 1] = "#" .. it.id else
-        queue[#queue + 1] = { key = key, item = it }
-        added[#added + 1] = "#" .. it.id
-      end
+  for _, job in ipairs(jobs) do
+    local busy = false
+    for _, q in ipairs(queue) do if q.key == job.key then busy = true end end
+    local conv = CHAT().find_conversation(job.key)
+    if conv and conv.running then busy = true end
+    if busy then skipped[#skipped + 1] = job.label else
+      queue[#queue + 1] = job
+      added[#added + 1] = job.label
     end
   end
   if #added == 0 then
-    return notify(#skipped > 0 and ("Already working on " .. table.concat(skipped, ", ") .. ".")
-      or "Put the cursor on a work item (or select some rows).")
+    return notify(#skipped > 0 and ("Already working on " .. table.concat(skipped, ", ") .. ".") or nothing)
   end
   M.pump()
   local waiting = #queue
   notify("Planning " .. table.concat(added, ", ") .. " - one agent each"
     .. (waiting > 0 and (", " .. waiting .. " waiting for an agent (chat.max_agents = " .. M.max() .. ")") or "")
     .. ". The Agents screen lists them.")
+end
+
+-- Queues `items` (work items from the board; nil entries skipped).
+function M.start_for_items(items)
+  local jobs = {}
+  for _, it in ipairs(items or {}) do
+    if type(it) == "table" and it.id then jobs[#jobs + 1] = job_for_item(it) end
+  end
+  enqueue(jobs, "Put the cursor on a work item (or select some rows).")
+end
+
+-- Queues PRs `prs` (dashboard rows, or the one in the reviewer), each
+-- planning fixes for `threads_of[pr.id]` (thread ids) or its active threads.
+function M.start_for_prs(prs, threads_of)
+  local jobs = {}
+  for _, pr in ipairs(prs or {}) do
+    if type(pr) == "table" and pr.id then jobs[#jobs + 1] = job_for_pr(pr, (threads_of or {})[pr.id]) end
+  end
+  enqueue(jobs, "Put the cursor on a pull request (or select some rows).")
 end
 
 -- For tests: forget the queue.

@@ -85,6 +85,7 @@ paste the output here after changing a default.
 | `open` | `<CR>` |
 | `open_build` | `gb` |
 | `open_workitem` | `gW` |
+| `plan_agents` | `gP` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `requeue_build` | `gr` |
@@ -117,6 +118,7 @@ paste the output here after changing a default.
 | `next_unviewed` | `]m` |
 | `open` | `<CR>` |
 | `open_workitem` | `gW` |
+| `plan_agents` | `gP` |
 | `pr_comment` | `gC` |
 | `prev_file_with_comments` | `[C` |
 | `prev_unviewed` | `[m` |
@@ -164,6 +166,7 @@ paste the output here after changing a default.
 | `next_unviewed` | `]m` |
 | `open_file` | `gf` |
 | `open_workitem` | `gW` |
+| `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `prev_hunk` | `[c` |
 | `prev_unviewed` | `[m` |
@@ -205,6 +208,7 @@ paste the output here after changing a default.
 | `next_comment` | `]C` |
 | `open_commit` | `<CR>` |
 | `open_workitem` | `gW` |
+| `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `quit` | `q` |
 | `reply` | `R` |

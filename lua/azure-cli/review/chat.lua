@@ -69,6 +69,12 @@ local function setup(ctx)
     ctx.add_key(kind, "chat", function() require("azure-cli.chat").toggle() end, "go to the chat panel")
     ctx.add_key(kind, "chat", function() require("azure-cli.chat").capture_selection() end,
       "ask the chat about the selected lines", "x")
+    -- gP: an agent plans the fix of this PR's review comments - on a
+    -- thread, that one; elsewhere every active one (chat/agents.lua).
+    if kind ~= "nav" then
+      ctx.add_key(kind, "plan_agents", function() require("azure-cli.chat").plan_agents_here(0) end,
+        "an agent plans the fix of this PR's comments (on a thread: that one)")
+    end
   end
 
   require("azure-cli.chat.view").register("review:" .. ID, function(win, sel)

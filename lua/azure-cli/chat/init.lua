@@ -1640,6 +1640,40 @@ function M.bind_toggle(buf, surface)
   KEYS.bind(buf, surface, "chat", function() M.toggle() end, { desc = "go to the chat panel (opening it if needed)" })
   KEYS.bind(buf, surface, "chat", function() M.capture_selection() end,
     { desc = "ask the chat about the selected lines", mode = "x" })
+  -- gP (the PR dashboard and the reviewer; the work-items board binds its
+  -- own): an agent plans the fix of the PR's review comments.
+  if surface ~= "workitems" and KEYS.resolve(surface, "plan_agents") then
+    KEYS.bind(buf, surface, "plan_agents", function() M.plan_agents_here(0) end,
+      { desc = "an agent plans the fix of this PR's comments (on a thread: that one)" })
+    KEYS.bind(buf, surface, "plan_agents", function()
+      local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+      if a > b then a, b = b, a end
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+      M.plan_agents_here(0, a, b)
+    end, { desc = "an agent per selected PR, each planning the fix of its comments", mode = "x" })
+  end
+end
+
+-- gP on a screen: the PR (and the comment thread, in the reviewer) under
+-- the cursor - or every PR on rows `from`..`to` - each handed to an agent
+-- of its own that plans the fix of its review comments (chat/agents.lua).
+function M.plan_agents_here(win, from, to)
+  win = (win == 0 or not win) and vim.api.nvim_get_current_win() or win
+  local VIEW = require("azure-cli.chat.view")
+  local prs, threads_of, seen = {}, {}, {}
+  local cur = vim.api.nvim_win_get_cursor(win)
+  for row = from or cur[1], to or cur[1] do
+    if from then pcall(vim.api.nvim_win_set_cursor, win, { row, 0 }) end
+    local snap = VIEW.snapshot(win)
+    local pr = type(snap.pr) == "table" and snap.pr or nil
+    if pr and pr.id and not seen[pr.id] then
+      seen[pr.id] = true
+      prs[#prs + 1] = require("azure-cli.chat.tools").pr_record(pr.id) or pr
+      if not from and type(snap.thread) == "table" and snap.thread.id then threads_of[pr.id] = { snap.thread.id } end
+    end
+  end
+  if from then pcall(vim.api.nvim_win_set_cursor, win, cur) end
+  require("azure-cli.chat.agents").start_for_prs(prs, threads_of)
 end
 
 -- ---------------------------------------------------------------------------

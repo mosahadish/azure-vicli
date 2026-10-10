@@ -135,6 +135,16 @@ def answer_turn(mcp, init, message, turn, model, session):
             "- `src/auth.py` - x"])})
         out[:] = ["planned #{0} as agent {1} in {2}".format(wid, os.environ.get("AZVICLI_CHAT_AGENT"),
                                                             os.path.basename(os.getcwd()))]
+    elif asked.startswith("Make a plan for this") and "PR !" in asked:
+        # An agent started for one PR's review comments (gP on the dashboard
+        # or in the reviewer): the plan of the fix for that PR.
+        import re
+        pid = int(re.search(r"PR !(\d+)", asked).group(1))
+        threads = re.search(r"in threads? ([\d, ]+)\.", asked)
+        call("submit_plan", {"pr_id": pid, "title": "Fix the comments on {0}".format(pid), "markdown": "\n".join([
+            "# Fix the comments on {0}".format(pid), "", "## Goal", "G", "", "## Approach", "A", "", "## Files",
+            "- `src/auth.py` - x"])})
+        out[:] = ["planned PR !{0} for {1}".format(pid, threads.group(1).strip() if threads else "every active thread")]
     elif "I approve the plan" in asked:
         import re
         wid = int((re.search(r"I approve the plan for #(\d+)", asked) or re.search(r"(3002)", "3002")).group(1))

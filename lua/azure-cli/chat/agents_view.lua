@@ -64,9 +64,8 @@ function M.rows(convs, queued, plan_of, now, frame)
   end
   for _, q in ipairs(queued) do
     if not seen[q.key] then
-      rows[#rows + 1] = { key = q.key, label = "#" .. tostring(q.item.id), title = q.item.title or "",
-        state = "\u{231B} waiting for an agent", hl = "AzureCliMuted", detail = "", ago = "",
-        target = { work_item_id = q.item.id } }
+      rows[#rows + 1] = { key = q.key, label = q.label, title = q.title or "",
+        state = "\u{231B} waiting for an agent", hl = "AzureCliMuted", detail = "", ago = "", target = q.target }
     end
   end
   return rows

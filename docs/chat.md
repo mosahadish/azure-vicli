@@ -539,6 +539,14 @@ winbar adds them up - ACP agents don't report a cost):
 | `<C-c>` | Stop what it's doing |
 | `r` / `q` / `?` | Redraw / close / keys |
 
+**For review comments, too.** `gP` in the reviewer, on a comment
+thread, starts an agent that plans the fix of that comment (anywhere
+else in the reviewer: of every active one); on the PR dashboard, `gP` on
+a row - or on selected rows - starts one agent per PR, each planning the
+fix of its open comments. They run side by side like the work items'
+(one agent per PR, since a PR's fix happens in one worktree), and the
+plan gate applies the same way: no change until you approve.
+
 Every plan opens in a tab of its own, and so does every change - opening
 another doesn't replace the one you were reading, and `r`, `gA` or `ga`
 in a tab always act on that tab's plan or change.

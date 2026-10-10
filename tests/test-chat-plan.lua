@@ -161,7 +161,8 @@ do
     { plan_key = "wi-4", label = "#4", entries = { { started = 95, status = "failed (exit 1)" } } },
   }
   local plans = { ["wi-2"] = { status = "draft", title = "Two" } }
-  local rows = AV.rows(convs, { { key = "wi-3", item = { id = 3, title = "Three" } }, { key = "wi-1", item = { id = 1 } } },
+  local rows = AV.rows(convs, { { key = "wi-3", label = "#3", title = "Three", target = { work_item_id = 3 } },
+    { key = "wi-1", label = "#1", target = { work_item_id = 1 } } },
     function(k) return plans[k] end, 100, "*")
   check("agents rows: one per plan's agent, then the queued ones not running", #rows == 4, #rows)
   check("agents rows: working, with its last step", rows[1].state == "* working" and rows[1].detail == "\u{270E} start_story (x)"
@@ -195,6 +196,16 @@ do
   check("counts: an answer is neither a question nor a request", q == 1 and r == 0)
   local vl = TH.virt_lines({ kind = "answer", question = "No.", status = "queued" }, { width = 60 })
   check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("approval", 1, true))
+end
+
+-- --- an agent for a PR's comments ---------------------------------------------------------
+do
+  local AG = require("azure-cli.chat.agents")
+  local one = AG.pr_prompt({ id = 101, title = "Throttle" }, { 5000 })
+  check("pr_prompt: one thread", one:find('^/plan PR !101 "Throttle": plan how to fix the review comment in thread 5000%.')
+    and one:find("submit_plan (pr_id 101)", 1, true), one)
+  check("pr_prompt: several threads", AG.pr_prompt({ id = 7 }, { 1, 2 }):find("comments in threads 1, 2.", 1, true) ~= nil)
+  check("pr_prompt: every active one", AG.pr_prompt({ id = 7 }):find("every active thread", 1, true) ~= nil)
 end
 
 -- --- messages -------------------------------------------------------------------------
