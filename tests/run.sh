@@ -75,9 +75,8 @@ SH_FILES=(azure-cli install.sh tests/demo.sh)
 # sign of trouble: Lua/LuaJIT builtins these files actually use, plus `vim`
 # (the host global every UI file assumes), `require` (every module resolves
 # its sibling modules through Neovim's package.path/rtp with it now - see
-# lua/azure-cli/init.lua) and `_G` (unused by anything under lua/ any more,
-# kept allowed as harmless back-compat in case a future file still wants a
-# process-wide value require()'s module caching doesn't fit).
+# lua/azure-cli/init.lua) and `_G` (keyhints.lua's: whether which-key or
+# mini.clue is there - _G.package.loaded, _G.MiniClue).
 # setmetatable is review/comments.lua's (and, the same way, review/commits.lua's
 # and review/range.lua's) own: each module table doubles as a plain table of
 # pure helpers (for its tests/test-review-*.lua) and a callable
@@ -460,6 +459,14 @@ if command -v nvim >/dev/null 2>&1; then
     pass "test-keys-palette.lua (headless nvim)"
   else
     fail "test-keys-palette.lua (headless nvim)" "$out"
+  fi
+
+  # g and a pause list the screen's g keys; the next key does what it did.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-key-hints.lua" 2>&1)"
+  if [[ "$out" == *KEY-HINTS-OK* ]]; then
+    pass "test-key-hints.lua (headless nvim, real input)"
+  else
+    fail "test-key-hints.lua (headless nvim, real input)" "$out"
   fi
 
   # Quitting while agents work, with more queued, exits right away.

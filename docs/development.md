@@ -41,7 +41,8 @@ with lazy.nvim/packer - see [Install](../README.md#install)):
 lua/azure-cli/
   init.lua        setup(), open_dashboard()/open_review(id)/open_workitems(), standalone flag
   config.lua      setup() defaults (incl. every surface's `keys`) + merge/validate, provider_cmd()
-  keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines
+  keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines, the g. palette
+  keyhints.lua    g and a pause: the float of the screen's g keys (a buffer-local g that replays what follows)
   palette.lua     azure-vicli's own colours (the standalone launcher's; ui.palette = "azure-vicli")
   ui.lua          the shared look: winbars (UI.winbar), floats and their border, theme groups (UI.THEME), tabline/statusline, the column-width solver (UI.layout)
   shell.lua       shared housekeeping: flash, config file, browser/clipboard, JSON state files, failed-job summary

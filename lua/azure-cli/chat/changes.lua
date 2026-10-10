@@ -650,6 +650,7 @@ local function diff_buf(idx)
   -- The file's own filetype, as the reviewer sets it; the chat finds this
   -- screen by the buffer variable instead.
   vim.b[buf].azure_cli_view = "azurecli-changes"
+  vim.b[buf].azure_cli_keys_local = true  -- c / gS / dd go to the agent, not Azure DevOps
   vim.b[buf].azure_cli_title = f.path
   vim.bo[buf].filetype = DIFFBUF.ft_for_path(f.path) or "text"
   DIFFBUF.decorate(buf, lines, map)
@@ -844,6 +845,7 @@ function M.open(title, dir, raw, keep)
     vim.bo[view.list_buf].buftype = "nofile"
     vim.bo[view.list_buf].bufhidden = "wipe"
     vim.bo[view.list_buf].filetype = "azurecli-changes"
+    vim.b[view.list_buf].azure_cli_keys_local = true
     pcall(vim.api.nvim_buf_set_name, view.list_buf, "azure-cli://changes/" .. vim.fn.fnamemodify(dir, ":t"))
     local lb = view.list_buf
     vim.api.nvim_create_autocmd("BufWipeout", { buffer = lb, once = true, callback = function()

@@ -477,7 +477,10 @@ do
   config.setup({ ui = { border = "single" } })
   check("ui: a border, the palette left at its default", config.get().ui.border == "single"
     and config.get().ui.palette == "colorscheme")
-  for _, bad in ipairs({ { border = "fancy" }, { palette = "pink" }, { colour = 1 } }) do
+  check("ui: key_hints defaults to auto", config.get().ui.key_hints == "auto")
+  config.setup({ ui = { key_hints = false } })
+  check("ui: key_hints = false kept", config.get().ui.key_hints == false)
+  for _, bad in ipairs({ { border = "fancy" }, { palette = "pink" }, { colour = 1 }, { key_hints = "yes" } }) do
     local ok, err = pcall(config.setup, { ui = bad })
     check("ui: rejects " .. next(bad), not ok and tostring(err):find("ui", 1, true) ~= nil, err)
   end

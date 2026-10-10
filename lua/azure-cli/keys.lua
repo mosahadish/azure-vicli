@@ -75,6 +75,28 @@ function M.palette(buf)
   end)
 end
 
+-- Whether `buf` is one of ours: it got a key through M.bind.
+function M.has(buf)
+  return actions[buf] ~= nil
+end
+
+-- The keys on `buf` whose action changes Azure DevOps (M.WRITES): { [key] =
+-- true }. None on a buffer marked vim.b.azure_cli_keys_local - one that
+-- shares the reviewer's surfaces but keeps those actions to itself (the
+-- agent's change viewer).
+function M.writes_on(buf)
+  local out = {}
+  local reg = actions[buf]
+  if not reg or vim.b[buf].azure_cli_keys_local then return out end
+  for _, a in ipairs(reg.list) do
+    if (M.WRITES[a.surface] or {})[a.action] then
+      local spec = M.resolve(a.surface, a.action)
+      for _, k in ipairs(type(spec) == "table" and spec or { spec }) do out[k] = true end
+    end
+  end
+  return out
+end
+
 -- Notes surface/action as bound on `buf` (normal mode only - the palette
 -- can't hand a visual selection over), and binds the palette key for that
 -- surface the first time the buffer gets one of its keys. Not under the
@@ -88,6 +110,7 @@ local function record(buf, surface, action, key, desc, fn)
     actions[buf] = reg
     pcall(vim.api.nvim_create_autocmd, "BufWipeout", { buffer = buf, once = true,
       callback = function() actions[buf] = nil end })
+    pcall(function() require("azure-cli.keyhints").attach(buf) end)
   end
   local id = surface .. "." .. action
   local entry = { surface = surface, action = action, key = key, desc = desc, fn = fn }

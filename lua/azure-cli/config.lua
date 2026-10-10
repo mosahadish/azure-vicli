@@ -194,8 +194,10 @@ local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 -- setup({ui=...}): the shared look (ui.lua) - `border` is every float's
 -- border, any 'winborder' value; `palette` "colorscheme" (default: every
 -- group links to your colorscheme's) or "azure-vicli" (lua/azure-cli/
--- palette.lua's own dark colours, as in the standalone launcher).
-local DEFAULTS_UI = { border = "rounded", palette = "colorscheme" }
+-- palette.lua's own dark colours, as in the standalone launcher);
+-- `key_hints` "auto" / true / false - the g-key float (keyhints.lua), "auto"
+-- leaving it to which-key or mini.clue when one is installed.
+local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto" }
 local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
 
 local DEFAULTS = {
@@ -211,6 +213,10 @@ local function validate_ui(ui)
     if k == "palette" then
       if v ~= "colorscheme" and v ~= "azure-vicli" then
         error("azure-cli.setup: ui.palette must be \"colorscheme\" or \"azure-vicli\"")
+      end
+    elseif k == "key_hints" then
+      if v ~= "auto" and v ~= true and v ~= false then
+        error("azure-cli.setup: ui.key_hints must be \"auto\", true or false")
       end
     elseif k ~= "border" then
       error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in ui")

@@ -38,6 +38,16 @@ in for it, you can type "approve" or "unlink" instead of remembering the key.
 The action you pick runs where you were, cursor and all. Actions that only
 work on a visual selection aren't listed.
 
+Press `g` and pause, and a small float in the bottom-right corner lists the
+screen's `g` keys and what each does (with the `↑` marks); the next key
+closes it and does what it always did - `gg`, a count (`5g`, pause, `g`), a
+register (`"ag`, pause, `p`), your own `g` mappings. Type the second key
+straight away and there's no float at all. The pause is Neovim's own
+`'timeoutlen'`. With [which-key](https://github.com/folke/which-key.nvim) or
+mini.clue installed, this stays off and they show the same keys and
+descriptions themselves; `ui.key_hints` ([Configuration](configuration.md))
+turns it on or off regardless.
+
 Every key in every table in these docs is a *default* - `setup()`'s `keys`
 option remaps or unbinds any of them, per **surface** (`dashboard`, `list`,
 `diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat`, `plan`, `agents` - roughly, one per
