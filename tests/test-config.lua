@@ -465,6 +465,20 @@ do
   rejects("a followup (gone)", { agent = { cmd = { "a" }, followup = { cmd = { "a" } } } }, "chat.agent.followup is gone")
   rejects("a session_pattern (gone)", { agent = { cmd = { "a" }, session_pattern = "x" } }, "chat.agent.session_pattern is gone")
   rejects("acp with a string cmd", { agent = { cmd = "copilot --acp", acp = true } }, "must be a list of strings when acp is set")
+  rejects("a bad plan_first", { plan_first = "sometimes" }, "chat.plan_first")
+  config.setup({})
+end
+
+-- ui: border and palette.
+do
+  check("ui: defaults", config.get().ui.border == "rounded" and config.get().ui.palette == "colorscheme")
+  config.setup({ ui = { border = "single" } })
+  check("ui: a border, the palette left at its default", config.get().ui.border == "single"
+    and config.get().ui.palette == "colorscheme")
+  for _, bad in ipairs({ { border = "fancy" }, { palette = "pink" }, { colour = 1 } }) do
+    local ok, err = pcall(config.setup, { ui = bad })
+    check("ui: rejects " .. next(bad), not ok and tostring(err):find("ui", 1, true) ~= nil, err)
+  end
   config.setup({})
 end
 

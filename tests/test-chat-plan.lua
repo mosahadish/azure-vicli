@@ -253,5 +253,17 @@ do
   check("hunks: keys differ", parsed.hunks[1].key ~= parsed.hunks[2].key)
 end
 
+-- --- the azure-vicli palette in plugin mode ----------------------------------------------------
+do
+  require("azure-cli").setup({ ui = { palette = "azure-vicli" } })
+  local function fg(g) return vim.api.nvim_get_hl(0, { name = g, link = false }).fg end
+  check("palette: applied by setup", fg("AzureCliWinbarTitle") == 0x89b4fa)
+  vim.cmd("hi clear")
+  vim.api.nvim_exec_autocmds("ColorScheme", {})
+  check("palette: back after a :colorscheme", fg("AzureCliWinbarTitle") == 0x89b4fa and fg("AzureCliChatAgent") == 0xa6e3a1)
+  check("palette: leaves your tab line alone", vim.api.nvim_get_hl(0, { name = "TabLineSel" }).bg ~= 0x89b4fa)
+  require("azure-cli").setup({})
+end
+
 print(fails == 0 and "all chat-plan tests passed" or (fails .. " chat-plan test(s) failed"))
 vim.cmd(fails == 0 and "qa!" or "cq!")

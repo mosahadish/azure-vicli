@@ -42,6 +42,7 @@ lua/azure-cli/
   init.lua        setup(), open_dashboard()/open_review(id)/open_workitems(), standalone flag
   config.lua      setup() defaults (incl. every surface's `keys`) + merge/validate, provider_cmd()
   keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines
+  palette.lua     azure-vicli's own colours (the standalone launcher's; ui.palette = "azure-vicli")
   ui.lua          the shared look: winbars (UI.winbar), floats and their border, theme groups (UI.THEME), tabline/statusline, the column-width solver (UI.layout)
   shell.lua       shared housekeeping: flash, config file, browser/clipboard, JSON state files, failed-job summary
   state.lua       the one shared table every surface reads/writes (list/content caches, daemon state, ...)

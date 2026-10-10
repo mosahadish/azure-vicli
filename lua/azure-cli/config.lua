@@ -185,8 +185,10 @@ local DEFAULT_ROW_NUMBERS = "relative"
 local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 
 -- setup({ui=...}): the shared look (ui.lua) - `border` is every float's
--- border, any 'winborder' value.
-local DEFAULTS_UI = { border = "rounded" }
+-- border, any 'winborder' value; `palette` "colorscheme" (default: every
+-- group links to your colorscheme's) or "azure-vicli" (lua/azure-cli/
+-- palette.lua's own dark colours, as in the standalone launcher).
+local DEFAULTS_UI = { border = "rounded", palette = "colorscheme" }
 local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
 
 local DEFAULTS = {
@@ -199,8 +201,13 @@ local function validate_ui(ui)
   if type(ui) ~= "table" then error("azure-cli.setup: `ui` must be a table") end
   local out = vim.deepcopy(DEFAULTS_UI)
   for k, v in pairs(ui) do
-    if k ~= "border" then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in ui") end
-    if not ((type(v) == "string" and BORDERS[v]) or (type(v) == "table" and #v > 0)) then
+    if k == "palette" then
+      if v ~= "colorscheme" and v ~= "azure-vicli" then
+        error("azure-cli.setup: ui.palette must be \"colorscheme\" or \"azure-vicli\"")
+      end
+    elseif k ~= "border" then
+      error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in ui")
+    elseif not ((type(v) == "string" and BORDERS[v]) or (type(v) == "table" and #v > 0)) then
       error("azure-cli.setup: ui.border must be \"rounded\", \"single\", \"double\", \"solid\", \"shadow\", "
         .. "\"none\" or a list of border characters")
     end
@@ -584,6 +591,9 @@ function M.setup(opts)
     chat = chat,
     ui = ui,
   }
+  if ui.palette == "azure-vicli" then
+    pcall(function() require("azure-cli.palette").apply({ follow = true }) end)
+  end
   -- cached_prs/threads_ttl_seconds apply straight to cache.lua's own
   -- M.MAX_PRS/M.THREADS_TTL fields, which every read site there already
   -- uses live - see the DEFAULT_TIMING comment above for why these two
