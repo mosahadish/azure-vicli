@@ -65,6 +65,15 @@ function M.virt_lines(th, opts)
   local pad = string.rep(" ", opts.indent or 0)
   local bar = { pad .. "\u{2503} ", "AzureCliThreadBar" }
   local out = {}
+  if th.kind == "answer" then
+    -- Your answer to one of the plan's open questions (chat/plan.lua's gr).
+    for i, l in ipairs(M.wrap(th.question or "", width, opts.dw)) do
+      out[#out + 1] = { bar, { (i == 1 and "\u{21AA} you: " or "       ") .. l, "AzureCliStatusOk" } }
+    end
+    out[#out + 1] = { bar, { th.status == "sent" and "  sent to the agent"
+      or "  goes to the agent with your approval (or change request)", "AzureCliThreadMeta" } }
+    return out
+  end
   if th.kind == "request" then
     -- A change you asked for on this line (chat/plan.lua's gc): sent with
     -- the others by gR.
@@ -165,7 +174,7 @@ function M.counts(threads)
   for _, th in ipairs(threads or {}) do
     if th.kind == "request" then
       if th.status ~= "sent" then r = r + 1 end
-    else
+    elseif th.kind ~= "answer" then
       q = q + 1
     end
   end
@@ -215,7 +224,7 @@ function M.draw(buf, win, threads, row_of)
       pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, row - 1, 0, {
         virt_lines = M.virt_lines(th, { width = width, expanded = expanded[th.id], dw = vim.fn.strdisplaywidth,
           frame = M.SPINNER[tick % #M.SPINNER + 1] }),
-        sign_text = th.kind == "request" and "\u{270E}" or "?",
+        sign_text = th.kind == "request" and "\u{270E}" or (th.kind == "answer" and "\u{21AA}" or "?"),
         sign_hl_group = th.kind == "request" and "AzureCliThreadRequest" or "AzureCliThreadBar",
       })
     end

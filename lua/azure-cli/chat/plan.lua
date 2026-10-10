@@ -333,24 +333,73 @@ end
 
 local function last_rev(rec) return rec.revisions[#rec.revisions] end
 
--- What approving sends the agent. Pure.
-function M.approval_message(rec)
+-- The plan's questions for you: the lines of its Open questions section
+-- that ask something (a list entry, or a line ending in "?"), not "None".
+-- { { line, text } }. Pure.
+function M.open_questions(lines)
+  local out, inside, fenced = {}, false, false
+  for i, l in ipairs(lines) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("question", 1, true) ~= nil
+    elseif inside and not fenced then
+      local item = l:match("^%s*[-*+]%s+(.+)$") or l:match("^%s*%d+[.)]%s+(.+)$")
+      local text = vim.trim(item or l)
+      if text ~= "" and not text:lower():match("^none") and (item or text:match("%?%s*$")) then
+        out[#out + 1] = { line = i, text = text }
+      end
+    end
+  end
+  return out
+end
+
+-- Your answers (threads of kind "answer") as lines for a message: "- <the
+-- question>: <your answer>", in plan order. Pure.
+function M.answers_block(rec, lines)
+  local out = {}
+  local answers = {}
+  for _, th in ipairs(rec.threads or {}) do
+    if th.kind == "answer" then answers[#answers + 1] = th end
+  end
+  table.sort(answers, function(a, b) return a.line < b.line end)
+  for _, a in ipairs(answers) do
+    local q = vim.trim((lines and lines[a.line]) or a.anchor or ""):gsub("^[-*+]%s+", "")
+    out[#out + 1] = "- " .. q .. " " .. a.question
+  end
+  return out
+end
+
+-- What approving sends the agent: the go-ahead, your answers to its open
+-- questions, and your version of the plan if you edited it. Pure.
+function M.approval_message(rec, lines)
   local label = M.target_label(rec.target)
   local rev = last_rev(rec)
   local text = "I approve the plan for " .. label .. " (revision " .. #rec.revisions .. "). Go ahead and make the "
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
+  local answers = M.answers_block(rec, lines)
+  if #answers > 0 then
+    text = text .. "\n\nMy answers to your open questions:\n" .. table.concat(answers, "\n")
+  end
   if rev and rev.by == "you" then
     text = text .. "\n\nI edited the plan before approving - follow this version:\n\n" .. rev.markdown
   end
   return text
 end
 
--- What asking for changes sends the agent: `feedback`, and the changes
--- asked for on lines of the plan (`requests`: threads of kind "request" -
--- { line, section, anchor, question }). Pure.
-function M.revise_message(rec, feedback, requests)
+-- What asking for changes sends the agent: `feedback`, the changes asked
+-- for on lines of the plan (`requests`: threads of kind "request" - {
+-- line, section, anchor, question }), and your answers to its open
+-- questions (`lines` = the plan's text, for them). Pure.
+function M.revise_message(rec, feedback, requests, lines)
   local parts = { "Please revise the plan for " .. M.target_label(rec.target) .. ": " .. feedback }
+  local answers = M.answers_block(rec, lines)
+  if #answers > 0 then
+    parts[#parts + 1] = ""
+    parts[#parts + 1] = "My answers to your open questions:"
+    vim.list_extend(parts, answers)
+  end
   if requests and #requests > 0 then
     parts[#parts + 1] = ""
     parts[#parts + 1] = "On its lines:"
@@ -580,7 +629,7 @@ end
 local view = nil  -- { tab, list_win, plan_win, list_buf, plan_buf, key, rec, sections, rows, width }
 local views = {}  -- plan key -> its view
 local by_buf = {} -- buffer -> the view it belongs to
-local goto_code  -- forward
+local goto_code, unanswered  -- forward
 local list_ns = vim.api.nvim_create_namespace("azure_cli_plan_list")
 
 local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
@@ -610,6 +659,7 @@ local PLAN_HELP = {
   { "ask", "ask the agent about this line (in visual mode: these lines) - the answer shows under it" },
   { "request", "queue a change on this line (in visual mode: these lines) - gR sends them together" },
   { "delete_thread", "forget the question or change under this line" },
+  { "answer", "answer the open question under the cursor - sent along when you approve" },
   { "since", "mark what this revision changed against the one before (on by default; toggles)" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_thread", "the question and answer in a popup" },
@@ -750,6 +800,10 @@ local function set_winbars()
   if nr > 0 then tags[#tags + 1] = "[\u{270E}" .. nr .. " queued]" end
   if last_rev(rec) and last_rev(rec).by == "you" then tags[#tags + 1] = "[edited by you]" end
   if rec.allow_push and rec.status == "approved" then tags[#tags + 1] = "[may push]" end
+  local open_q = unanswered()
+  if open_q > 0 and rec.status ~= "approved" and rec.status ~= "done" then
+    tags[#tags + 1] = "[" .. open_q .. " to answer]"
+  end
   if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. (#rec.revisions - 1) .. "]" end
   if valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. M.target_label(rec.target),
@@ -817,6 +871,7 @@ local function render_list()
   end
   hints[#hints + 1] = { key_of("plan", "ask"), "ask about a line" }
   hints[#hints + 1] = { key_of("plan", "request"), "ask a change on a line" }
+  if unanswered() > 0 then hints[#hints + 1] = { key_of("plan", "answer"), "answer an open question" } end
   hints[#hints + 1] = { key_of("plan", "open_file"), "edit it yourself" }
   hints[#hints + 1] = { key_of("plan", "help"), "all keys" }
   for _, h in ipairs(hints) do
@@ -900,8 +955,12 @@ local function approve()
     M.add_event(rec, "approved", "Approved revision " .. #rec.revisions
       .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
     changed(rec)
-    send(M.approval_message(rec), "Approved the plan for " .. M.target_label(rec.target)
+    local sent = send(M.approval_message(rec, current_lines(rec)), "Approved the plan for " .. M.target_label(rec.target)
       .. (rec.allow_push and " (it may push once the tests pass)." or "."))
+    if sent then
+      for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
+      changed(rec)
+    end
     notify("Plan approved - the agent can change the code now.")
   end)
 end
@@ -920,10 +979,11 @@ local function revise()
     initial = #queued > 0 and "See my comments on its lines." or "", anchor = "center",
     on_submit = function(text)
       view = views[rec.key] or view
-      if send(M.revise_message(rec, text, queued), "Changes to the plan: " .. text
+      if send(M.revise_message(rec, text, queued, current_lines(rec)), "Changes to the plan: " .. text
           .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or "")) then
         rec.status = "changes_requested"
         for _, th in ipairs(queued) do th.status = "sent" end
+        for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
         M.add_event(rec, "changes", "You asked for changes: " .. text
           .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or ""))
         changed(rec)
@@ -950,6 +1010,42 @@ local function request(from, to)
         .. " sends " .. (r == 1 and "it" or "them") .. ".")
     end,
   })
+end
+
+-- gr on one of the plan's open questions: your answer, shown under it and
+-- sent along when you approve (or ask for changes).
+local function answer_here()
+  local rec = view.rec
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local lines = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
+  local is_q = false
+  for _, q in ipairs(M.open_questions(lines)) do if q.line == row then is_q = true end end
+  if not is_q then return notify("Put the cursor on one of the plan's open questions (its Open questions section).") end
+  local existing
+  for _, th in ipairs(rec.threads) do if th.kind == "answer" and th.line == row then existing = th end end
+  require("azure-cli.editor").open({
+    title = "Your answer \u{00B7} plan:" .. row, initial = existing and existing.question or "",
+    anchor = { win = view.plan_win, row = row }, context_lines = { lines[row] },
+    on_submit = function(text)
+      if existing then
+        existing.question, existing.status, existing.at = text, "queued", os.time()
+      else
+        table.insert(rec.threads, { id = tostring(os.time()) .. "-" .. math.random(1000, 9999), kind = "answer",
+          line = row, anchor = vim.trim(lines[row] or ""), question = text, status = "queued", at = os.time() })
+      end
+      changed(rec)
+    end,
+  })
+end
+
+-- How many of the plan's open questions you haven't answered.
+unanswered = function()
+  local answered = {}
+  for _, th in ipairs(view.rec.threads) do if th.kind == "answer" then answered[th.line] = true end end
+  local n = 0
+  local lines = valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
+  for _, q in ipairs(M.open_questions(lines)) do if not answered[q.line] then n = n + 1 end end
+  return n
 end
 
 -- dd: forget the question or change request under the cursor.
@@ -1122,6 +1218,7 @@ local function setup_plan(buf)
     request(a, b)
   end, { desc = "queue a change on these lines", mode = "x" })
   bind(buf, "delete_thread", delete_here, { desc = "forget the question / change under this line" })
+  bind(buf, "answer", answer_here, { desc = "answer this open question" })
   bind(buf, "since", function()
     view.since_off = not view.since_off
     render()

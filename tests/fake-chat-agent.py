@@ -136,6 +136,7 @@ def answer_turn(mcp, init, message, turn, model, session):
         out[:] = ["planned #{0} as agent {1} in {2}".format(wid, os.environ.get("AZVICLI_CHAT_AGENT"),
                                                             os.path.basename(os.getcwd()))]
     elif "I approve the plan" in asked:
+        out.append("answers: " + " | ".join(l for l in asked.splitlines() if l.startswith("- Should")))
         res = json.loads(call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main",
                                               "name": "feature/3002-planned"})[0])
         path = os.path.join(res["directory"], "src", "auth.py")
@@ -161,7 +162,7 @@ def answer_turn(mcp, init, message, turn, model, session):
             "## Approach", "Return a reason code from login().", "Keep the boolean API as a thin wrapper.", "",
             "## Files", "- `src/auth.py` - the reason code", "- `src/throttle.py` - expose the lockout state", "",
             "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason.", "```sh",
-            "grep -q PLANNED_CHANGE src/auth.py", "```"])})
+            "grep -q PLANNED_CHANGE src/auth.py", "```", "", "## Open questions", "- Should admins be exempt?"])})
     elif "make a plan" in asked:
         call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main", "name": "feature/3002-planned"})
         call("submit_plan", {"work_item_id": 3002, "title": "Lockout reason codes", "markdown": "\n".join([

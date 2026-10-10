@@ -408,6 +408,7 @@ their line when the text around them changes.
 | `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push once the tests pass) |
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
 | `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
+| `gr` | Answer the open question under the cursor (its Open questions section) - sent along when you approve |
 | `dd` | Forget the question or change under this line |
 | `gi` | Mark what this revision changed against the one before (on by default; toggles) |
 | `ga` | Ask about this line (in visual mode: these lines) |
@@ -433,6 +434,13 @@ decorator here`), like a review comment waiting in the batch queue. `gR`
 then sends them all in one message - with a note of your own - and the
 agent answers with a new revision. Sent ones stay under their lines,
 marked as sent, until you clear them with `dd`.
+
+**Answering its questions.** The agent puts what it needs you to decide
+under Open questions. `gr` on one of them opens an editor for your answer,
+which shows under the question (`↪ you: no, admins too`); the winbar
+counts the ones still open (`[1 to answer]`). Approving - or asking for
+changes - sends your answers along with each question, so the agent goes
+ahead knowing them.
 
 **What changed since the last revision.** When the agent sends a new
 revision (or you save your own), the lines it changed get a bar beside

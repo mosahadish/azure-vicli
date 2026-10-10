@@ -1214,8 +1214,14 @@ do
   -- questions shown as taken out; gi turns the marks off.
   local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]
   local bar8, removed = false, false
+  local qline
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false)) do
+    if l == "- Should admins be exempt?" then qline = i end
+  end
   for _, m in ipairs(vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, { details = true })) do
     if m[2] == 7 and m[4].sign_text then bar8 = true end
+    -- Your hand-written question: taken out, or rewritten as the agent's.
+    if qline and m[2] == qline - 1 and m[4].sign_text then removed = true end
     for _, vl in ipairs(m[4].virt_lines or {}) do
       if vl[1][1]:find("Should admins be exempt?", 1, true) then removed = true end
     end
@@ -1230,6 +1236,17 @@ do
   feed("gi")
   if #vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, {}) ~= 0 then return fail("gi didn't turn the marks off") end
   feed("gi")
+  -- gr on the plan's open question: your answer under it, sent with the approval.
+  if not vim.wo[v.plan_win].winbar:find("1 to answer", 1, true) then return fail("no [1 to answer]: " .. vim.wo[v.plan_win].winbar) end
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false)) do
+    if l == "- Should admins be exempt?" then vim.api.nvim_win_set_cursor(v.plan_win, { i, 0 }) end
+  end
+  feed("gr")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "No, admins too." })
+  feed("<C-s>")
+  if not drawn(v.plan_buf, "\u{21AA} you: No, admins too.") or vim.wo[v.plan_win].winbar:find("to answer", 1, true) then
+    return fail("the answer isn't under its question, or still counted as open")
+  end
   -- gA: approved; the agent starts the story now and shows the change.
   vim.api.nvim_set_current_win(v.plan_win)
   n = #st.entries
@@ -1253,6 +1270,9 @@ do
     return fail("the approval isn't in the chat as such: " .. st.entries[n + 1].text)
   end
   if not e.text:find('"passed":true', 1, true) then return fail("run_tests (asked, allowed) didn't pass: " .. e.text) end
+  if not e.text:find("answers: - Should admins be exempt? No, admins too.", 1, true) then
+    return fail("the approval didn't carry your answer: " .. e.text)
+  end
   -- ga in the change viewer, on the agent's new line.
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]

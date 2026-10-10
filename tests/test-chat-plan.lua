@@ -172,6 +172,30 @@ do
   check("agents rows: queued", rows[4].label == "#3" and rows[4].state:find("waiting for an agent", 1, true) ~= nil)
 end
 
+-- --- open questions and your answers ---------------------------------------------------------
+do
+  local lines = { "## Goal", "x?", "## Open questions", "- Should admins be exempt?", "1. Error or fallback?",
+    "Is this a question?", "None", "plain note", "```", "- not one?", "```", "## Risks", "- r?" }
+  local qs = PLAN.open_questions(lines)
+  local got = {}
+  for _, q in ipairs(qs) do got[#got + 1] = q.line .. ":" .. q.text end
+  check("open_questions: the section's entries and question lines, not None / notes / fences / other sections",
+    table.concat(got, "|") == "4:Should admins be exempt?|5:Error or fallback?|6:Is this a question?", table.concat(got, "|"))
+  local rec = { target = { work_item_id = 3 }, revisions = { { by = "agent" } }, threads = {
+    { kind = "answer", line = 5, question = "An error." }, { kind = "answer", line = 4, question = "No." },
+    { line = 2, question = "why?" } } }
+  check("answers_block: in plan order, each with its question",
+    table.concat(PLAN.answers_block(rec, lines), "|") == "- Should admins be exempt? No.|- 1. Error or fallback? An error.",
+    table.concat(PLAN.answers_block(rec, lines), "|"))
+  check("approval_message: carries the answers",
+    PLAN.approval_message(rec, lines):find("My answers to your open questions:\n- Should admins be exempt? No.", 1, true) ~= nil)
+  check("revise_message: carries them too", PLAN.revise_message(rec, "x", {}, lines):find("My answers", 1, true) ~= nil)
+  local q, r = TH.counts(rec.threads)
+  check("counts: an answer is neither a question nor a request", q == 1 and r == 0)
+  local vl = TH.virt_lines({ kind = "answer", question = "No.", status = "queued" }, { width = 60 })
+  check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("approval", 1, true))
+end
+
 -- --- messages -------------------------------------------------------------------------
 do
   local rec = { target = { work_item_id = 3 }, revisions = { { by = "agent", markdown = "a" } } }

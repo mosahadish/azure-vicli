@@ -320,6 +320,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `answer` | `gr` |
 | `approve` | `gA` |
 | `ask` | `ga` |
 | `back` | `<BS>` |
