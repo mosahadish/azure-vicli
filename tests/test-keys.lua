@@ -170,5 +170,72 @@ do
   check("help_lines: opts.writes = {} marks nothing", not text:find("\u{2191}", 1, true), text)
 end
 
+-- 11. No default key is something that acts on one screen and something
+-- harmless on another - you'd learn it on the harmless one and press it on
+-- the other - unless the acting one asks before it does anything, so a
+-- mistaken press costs one "no". Acting = changes Azure DevOps (keys.WRITES)
+-- or lets an agent go ahead. A new clash fails here: give one of the two
+-- another key, or - if the acting one really asks first - add it below.
+do
+  local ACTS = {}
+  for surface, t in pairs(keys.WRITES) do for action in pairs(t) do ACTS[surface .. "." .. action] = true end end
+  ACTS["plan.approve"], ACTS["agents.approve"] = true, true
+  -- Acting keys that ask first (a dialog, an editor, a picker or a confirm).
+  local ASKS_FIRST = {
+    ["dashboard.complete"] = "the complete dialog", ["list.complete"] = "the complete dialog",
+    ["diff.complete"] = "the complete dialog", ["overview.complete"] = "the complete dialog",
+    ["workitems.assign"] = "asks whom", ["workitem_view.assign"] = "asks whom",
+    ["workitems.move_sprint"] = "picks the sprint", ["workitem_view.move_sprint"] = "picks the sprint",
+    ["workitems.priority"] = "picks the priority", ["workitem_view.priority"] = "picks the priority",
+    ["workitem_view.comment"] = "opens the editor",
+    ["overview.delete_comment"] = "confirms",
+    ["plan.approve"] = "asks how (and whether to let it push)", ["agents.approve"] = "asks how",
+    -- Not asking, but harmless to press by mistake: it only runs the PR's
+    -- build again.
+    ["dashboard.requeue_build"] = "only re-runs the build",
+  }
+  local function find_clashes()
+    local by_key = {}
+    for surface, t in pairs(config.get().keys) do
+      if surface ~= "prefix" then
+        for action in pairs(t) do
+          local spec = keys.resolve(surface, action)
+          for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
+            by_key[k] = by_key[k] or {}
+            table.insert(by_key[k], surface .. "." .. action)
+          end
+        end
+      end
+    end
+    local clashes = {}
+    for k, ids in pairs(by_key) do
+      local acting, other = {}, {}
+      for _, id in ipairs(ids) do
+        if ACTS[id] then acting[#acting + 1] = id else other[#other + 1] = id end
+      end
+      if #other > 0 then
+        for _, id in ipairs(acting) do
+          if not ASKS_FIRST[id] then
+            table.sort(other)
+            clashes[#clashes + 1] = k .. ": " .. id .. " acts without asking, but is " .. table.concat(other, ", ")
+              .. " elsewhere"
+          end
+        end
+      end
+    end
+    table.sort(clashes)
+    return clashes
+  end
+  local clashes = find_clashes()
+  check("no key acts on one screen and is harmless on another", #clashes == 0, table.concat(clashes, "\n"))
+  -- And the check bites: gL as the plan's run log again would be one.
+  config.setup({ keys = { plan = { run_log = "gL" } } })
+  clashes = find_clashes()
+  local text = table.concat(clashes, "\n")
+  check("the clash check catches gL as both unlink and the run log",
+    text:find("gL: dashboard.unlink_workitem acts without asking, but is plan.run_log elsewhere", 1, true) ~= nil, text)
+  config.setup({})
+end
+
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

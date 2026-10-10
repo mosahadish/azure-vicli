@@ -260,7 +260,7 @@ selection and a `!102` reference carried into the message, `/build`
 reading a build log, `open_in_ui` landing the reviewer on `throttle.py:4`, an
 `annotate_code` note drawn in the diff, the fix flow (worktree, diff, asked
 before the push, the commit on the fake origin's branch), the board tools
-and undoing the link from `gL`, `gr`, switching agents with `ga` (a
+and undoing the link from `gH`, `gr`, switching agents with `gM` (a
 replayed turn) and `gh` bringing a conversation back.
 
 `tests/gen-keys-table.lua` (`luajit tests/gen-keys-table.lua`) prints the
@@ -268,6 +268,12 @@ replayed turn) and `gh` bringing a conversation back.
 part of the `run.sh` gate (there's nothing to assert; it's a generator, not
 a test), but re-run it and paste the output over that section after
 changing a default, so the two can't quietly drift apart.
+
+`tests/test-keys.lua` also refuses a default key that changes something on
+one screen (an action in `keys.lua`'s `WRITES`, or approving a plan) and is
+harmless on another, unless the acting one asks first: it lists those in
+`ASKS_FIRST`, each with how it asks. A new action that writes to Azure
+DevOps goes in `WRITES`, so `?` marks it and the check covers it.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `bash tests/run.sh` on
 every push and pull request.
