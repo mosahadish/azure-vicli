@@ -308,6 +308,7 @@ paste the output here after changing a default.
 | `send_insert` | `<C-s>` |
 | `toggle` | `gq` |
 | `use_as_reply` | `gr` |
+| `why` | `gw` |
 
 #### plan
 

@@ -21,6 +21,20 @@ Use the azure-vicli tools to look things up and to act. Drafted replies and comm
 
 Refer to pull requests as !<id> and work items as #<id>, so the user can open them from the chat. Answer briefly, in markdown.]]
 
+-- What gw sends: a question about one of the agent's steps (a tool call
+-- it made, `kind` "step") or a line of its answer ("line"), with the
+-- message it was answering. Pure.
+function M.why_message(quote, kind, asked, question)
+  local parts = { "About your " .. (kind == "step" and "step" or "answer") .. (asked and asked ~= ""
+    and (" to my \"" .. (#asked > 120 and (asked:sub(1, 117) .. "...") or asked) .. "\"") or "") .. ":" }
+  parts[#parts + 1] = "> " .. (quote or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = question
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = "(Answer that question only, briefly. Don't redo or undo anything unless I ask.)"
+  return table.concat(parts, "\n")
+end
+
 -- Default saved prompts (setup({chat = {prompts = {...}}}) adds, replaces,
 -- or removes one with `name = false`). "/name rest" in the input box sends
 -- the prompt followed by `rest`.

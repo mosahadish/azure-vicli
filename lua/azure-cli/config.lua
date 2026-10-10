@@ -99,7 +99,7 @@ local DEFAULT_KEYS = {
     cancel = "<C-c>", model = "gm", agent = "ga", prompts = "gp", history = "gh", audit = "gL",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
     back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
-    changes = "gd",
+    changes = "gd", why = "gw",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {

@@ -146,6 +146,16 @@ do
   check("call: unknown tool", answer[2] == true and answer[1]:find("unknown tool", 1, true))
 end
 
+-- --- why_message ---------------------------------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  local m = CORE.why_message("  \u{270E} create_branch (name=x)  ", "step", "make a branch", "Why from main?")
+  check("why_message: the step quoted, the question it answered, the question",
+    m:find('About your step to my "make a branch":\n> \u{270E} create_branch (name=x)\n\nWhy from main?', 1, true) ~= nil, m)
+  check("why_message: a long question is cut", CORE.why_message("x", "line", string.rep("q", 200), "?")
+    :find("...\":", 1, true) ~= nil)
+end
+
 -- --- core: streaming, prompts, refs, title ------------------------------------
 do
   local CORE = require("azure-cli.chat.core")

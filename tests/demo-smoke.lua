@@ -1340,6 +1340,28 @@ do
   end, 50)
   if not stale then return fail("the tests' result isn't marked as before the last change: " .. vim.wo[v_list_win()].winbar) end
   vim.ui.select = real_select
+  -- gw on one of the agent's steps in the conversation: asked about it.
+  CHAT.show(false)
+  local lw = st.wins[vim.api.nvim_get_current_tabpage()].log
+  local lb = vim.api.nvim_win_get_buf(lw)
+  local step_row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(lb, 0, -1, false)) do
+    if l:find("show_fix (", 1, true) then step_row = i end
+  end
+  if not step_row then return fail("no show_fix step in the conversation") end
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { step_row, 0 })
+  n = #st.entries
+  feed("gw")
+  feed("<C-s>")
+  e = answered(n)
+  if not (e and e.text:find("BECAUSE-", 1, true) and e.text:find("show_fix", 1, true)) then
+    return fail("gw on a step didn't ask about it: " .. vim.inspect(e and e.text))
+  end
+  if not st.entries[n + 1].text:find("Why did you do this?  (about: ", 1, true) then
+    return fail("the question isn't in the chat as asked: " .. st.entries[n + 1].text)
+  end
+  CHAT.hide()
   print("== the plan ==")
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))

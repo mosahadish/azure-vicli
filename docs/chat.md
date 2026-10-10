@@ -47,6 +47,7 @@ until you hide it. The conversation is the same in every tab.
 | `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
 | `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |
+| `gw` (conversation) | Ask the agent why it did the step under the cursor (one of its tool calls, `✎ create_branch (...)`) or wrote that line |
 | `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
 | `gp` | Run a saved prompt |
 | `gL` | What the agent changed; `u` on a line undoes it |

@@ -159,6 +159,7 @@ local LINE_HL = {
 local log_buf, input_buf
 local ns = vim.api.nvim_create_namespace("azure_cli_chat")
 local entry_at = {}
+local role_at = {}  -- conversation line -> its role (core.render's)
 
 local function is_chat_buf(b) return b ~= nil and (b == log_buf or b == input_buf) end
 M.is_chat_buf = is_chat_buf
@@ -168,6 +169,7 @@ local function render()
   local st = STATE()
   local lines, roles, name_end, at = CORE.render(st.entries, os.time(), agent_label())
   entry_at = at
+  role_at = roles
   vim.bo[log_buf].modifiable = true
   vim.api.nvim_buf_set_lines(log_buf, 0, -1, false, lines)
   vim.bo[log_buf].modifiable = false
@@ -273,7 +275,7 @@ end
 -- Buffers, keys and windows.
 
 local send, cancel, new_chat, show_help, pick_model, pick_agent, pick_prompt, pick_history, show_audit,
-  use_as_reply, open_ref, history_step  -- forward
+  use_as_reply, open_ref, history_step, ask_why  -- forward
 
 local function input_text()
   if not (input_buf and vim.api.nvim_buf_is_valid(input_buf)) then return "" end
@@ -329,6 +331,7 @@ local function ensure_bufs()
   KEYS.bind(log_buf, "chat", "focus_input", focus_input, { desc = "type a message" })
   KEYS.bind(log_buf, "chat", "open_ref", function() open_ref() end, { desc = "open the PR/work item under the cursor" })
   KEYS.bind(log_buf, "chat", "use_as_reply", function() use_as_reply() end, { desc = "draft this answer as a reply" })
+  KEYS.bind(log_buf, "chat", "why", function() ask_why() end, { desc = "ask the agent why it did this" })
   KEYS.bind(input_buf, "chat", "send", function() send() end, { desc = "send the message" })
   KEYS.bind(input_buf, "chat", "send_insert", function() vim.cmd("stopinsert") send() end,
     { desc = "send the message", mode = "i" })
@@ -1165,6 +1168,32 @@ open_ref = function()
   require("azure-cli.chat.refs").open(ref)
 end
 
+-- gw on one of the agent's steps (a tool call line) or a line of its
+-- answer: ask it why, quoting that line and the message it answered.
+ask_why = function()
+  local st = STATE()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local idx, role = entry_at[row], role_at[row]
+  local e = idx and st.entries[idx]
+  if not (e and e.role == "agent") then return notify("Put the cursor on one of the agent's steps or answers.") end
+  local quote = vim.trim(vim.api.nvim_get_current_line())
+  if quote == "" then return notify("Put the cursor on a line with something on it.") end
+  local asked
+  for i = idx - 1, 1, -1 do
+    if st.entries[i].role == "you" then asked = st.entries[i].text break end
+  end
+  local kind = (role == "tool_read" or role == "tool_write" or role == "tool_err" or role == "agent_log") and "step" or "line"
+  if st.running then return notify("The agent is still answering - ask once it's done.", vim.log.levels.WARN) end
+  require("azure-cli.editor").open({
+    title = "Ask " .. agent_label() .. " why", initial = kind == "step" and "Why did you do this?" or "Why?",
+    anchor = { win = vim.api.nvim_get_current_win(), row = row }, context_lines = { quote },
+    on_submit = function(q)
+      send(CORE.why_message(quote, kind, asked, q), { display = q .. "  (about: " .. (#quote > 60 and (quote:sub(1, 57) .. "...")
+        or quote) .. ")" })
+    end,
+  })
+end
+
 -- gr on an answer: open the comment editor prefilled with it, as a reply
 -- to the thread its question was about (or a new PR comment), queued as a
 -- batch-review draft on submit.
@@ -1208,6 +1237,7 @@ show_help = function()
     "Answers",
     { "open_ref", "open the !PR / #work item under the cursor" },
     { "use_as_reply", "draft the answer under the cursor as a reply (queued for gS)" },
+    { "why", "ask the agent why it did the step (or wrote the line) under the cursor" },
     { "audit", "what the agent changed - u undoes one" },
     { "changes", "the agent's code change, file by file (like the reviewer: ]c / [c, gf, q)" },
     "Conversation",
