@@ -53,7 +53,8 @@ lua/azure-cli/
   merge.lua       the complete-PR dialog shared by the dashboard's and the reviewer's gm
   log.lua         in-session error log (M.record/M.summary) + :AzureCli log
   editor.lua      floating comment editor (drafts, @ mentions)
-  chat/           the chat panel: init.lua (panel, agent runs), view.lua (what's on screen),
+  chat/           the chat panel: init.lua (conversations, the panel), run.lua (running the agent:
+                  send, cancel, its MCP config), actions.lua (what the panel's keys do), view.lua (what's on screen),
                   tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
                   plan.lua (the plan: storage, its gate on start_fix/start_story, the tools - with
                   plan_text.lua's pure helpers and plan_view.lua's tab), threads.lua (ga: a
