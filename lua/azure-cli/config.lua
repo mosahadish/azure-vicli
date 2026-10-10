@@ -52,6 +52,7 @@ local DEFAULT_KEYS = {
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
     refresh = "r",  -- the chat's change viewer only
+    ask = "ga",     -- the chat's change viewer only: ask the agent about this line
   },
   -- Reviewer Overview page.
   overview = {
@@ -94,6 +95,12 @@ local DEFAULT_KEYS = {
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
     back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
     changes = "gd",
+  },
+  -- The agent's plan (chat/plan.lua): the section list and the plan itself.
+  plan = {
+    open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
+    expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
+    refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", quit = "q",
   },
 }
 
@@ -171,18 +178,37 @@ local DEFAULT_ROW_NUMBERS = "relative"
 
 local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 
+-- setup({ui=...}): the shared look (ui.lua) - `border` is every float's
+-- border, any 'winborder' value.
+local DEFAULTS_UI = { border = "rounded" }
+local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
-  row_numbers = DEFAULT_ROW_NUMBERS, chat = DEFAULTS_CHAT,
+  row_numbers = DEFAULT_ROW_NUMBERS, chat = DEFAULTS_CHAT, ui = DEFAULTS_UI,
 }
+
+local function validate_ui(ui)
+  if type(ui) ~= "table" then error("azure-cli.setup: `ui` must be a table") end
+  local out = vim.deepcopy(DEFAULTS_UI)
+  for k, v in pairs(ui) do
+    if k ~= "border" then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in ui") end
+    if not ((type(v) == "string" and BORDERS[v]) or (type(v) == "table" and #v > 0)) then
+      error("azure-cli.setup: ui.border must be \"rounded\", \"single\", \"double\", \"solid\", \"shadow\", "
+        .. "\"none\" or a list of border characters")
+    end
+    out[k] = v
+  end
+  return out
+end
 
 -- setup({chat=...}): the chat panel (lua/azure-cli/chat/) - where it sits,
 -- and the agent it talks to (none by default; docs/chat.md has examples).
 local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
-  suggest_on_new_comments = "boolean",
+  suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -208,13 +234,18 @@ local function validate_chat(chat)
   local out = vim.deepcopy(DEFAULTS_CHAT)
   for k, v in pairs(chat) do
     if not CHAT_FIELDS[k] then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in chat") end
-    if type(v) ~= CHAT_FIELDS[k] then error("azure-cli.setup: chat." .. k .. " must be a " .. CHAT_FIELDS[k]) end
+    if CHAT_FIELDS[k] ~= "any" and type(v) ~= CHAT_FIELDS[k] then
+      error("azure-cli.setup: chat." .. k .. " must be a " .. CHAT_FIELDS[k])
+    end
     out[k] = v
   end
   if not ({ right = true, left = true, bottom = true, top = true })[out.position] then
     error("azure-cli.setup: chat.position must be \"right\", \"left\", \"bottom\" or \"top\"")
   end
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
+  if out.plan_first ~= nil and out.plan_first ~= true and out.plan_first ~= false and out.plan_first ~= "stories" then
+    error("azure-cli.setup: chat.plan_first must be true, false or \"stories\"")
+  end
   if out.input_height < 1 then error("azure-cli.setup: chat.input_height must be at least 1") end
   local function check_agent(a, where)
     for k, v in pairs(a) do
@@ -532,6 +563,8 @@ function M.setup(opts)
   end
   local chat = DEFAULTS.chat
   if opts.chat ~= nil then chat = validate_chat(opts.chat) end
+  local ui = DEFAULTS.ui
+  if opts.ui ~= nil then ui = validate_ui(opts.ui) end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
@@ -543,6 +576,7 @@ function M.setup(opts)
     collapsed_sections = collapsed_sections,
     row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
     chat = chat,
+    ui = ui,
   }
   -- cached_prs/threads_ttl_seconds apply straight to cache.lua's own
   -- M.MAX_PRS/M.THREADS_TTL fields, which every read site there already
@@ -579,11 +613,11 @@ end
 -- over so the file can never drift from the code. Surfaces come out in the
 -- README's order, actions alphabetically, so a diff of two generated files
 -- is meaningful. Multi-key defaults render as Lua lists.
-local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat" }
+local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan" }
 local SURFACE_TITLES = {
   dashboard = "Pull-request dashboard", list = "Reviewer: file list", diff = "Reviewer: diff pane",
   overview = "Reviewer: Overview page", nav = "Reviewer: gd/gr/gf revision buffers and peek",
-  workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel",
+  workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel", plan = "Agent plan window",
 }
 local function lua_literal(v)
   if type(v) == "string" then return string.format("%q", v) end

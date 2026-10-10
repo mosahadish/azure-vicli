@@ -85,6 +85,10 @@ local function agent_label()
   local name, a = M.current_agent()
   return (a and a.label) or name or "Agent"
 end
+M.agent_label = agent_label
+
+-- Whether a message is in flight (a new one has to wait).
+function M.busy() return STATE().running ~= nil end
 
 -- The model in use for `agent`: the one picked with gm (per agent) this
 -- session, else agent.model, else the first of agent.models, else nil.
@@ -242,8 +246,8 @@ function M.set_winbars()
       local KEYS = require("azure-cli.keys")
       local send = KEYS.resolve("chat", "send")
       if type(send) == "table" then send = send[1] end
-      pcall(UI.wo, w.input, "winbar", "%#Comment# " .. (send and (send .. " sends") or "")
-        .. "  \u{00B7}  /prompt  \u{00B7}  !PR #item  \u{00B7}  ? keys")
+      pcall(UI.wo, w.input, "winbar", "%#AzureCliWinbarHelp# " .. (send and (send .. " sends") or "")
+        .. " \u{00B7} /prompt \u{00B7} !PR #item \u{00B7} ? keys%<")
     end
   end
   pcall(vim.cmd, "redrawstatus!")  -- for M.status() in a statusline
@@ -363,7 +367,7 @@ end
 -- The tabs the panel belongs in: azure-vicli's own screens.
 local PLUGIN_FT = {
   ["azurecli-dashboard"] = true, ["azurecli-files"] = true, ["azurecli-workitems"] = true, ["azurecli-workitem"] = true,
-  ["azurecli-changes"] = true,
+  ["azurecli-changes"] = true, ["azurecli-plan"] = true,
 }
 local function plugin_tab(tab)
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
@@ -644,6 +648,8 @@ local function where_label(snap)
     bits[#bits + 1] = "a selection"
   end
   if type(snap.thread) == "table" then bits[#bits + 1] = "thread " .. tostring(snap.thread.id) end
+  if snap.plan_line then bits[#bits + 1] = "plan:" .. snap.plan_line
+  elseif snap.plan then bits[#bits + 1] = "the plan" end
   if #bits > 0 then return "on " .. table.concat(bits, " \u{00B7} ") end
   if snap.screen and snap.screen ~= "other" and snap.screen ~= "unknown" then return "on the " .. snap.screen end
   return nil
@@ -767,7 +773,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     if entry.text == "" then entry.text = "_(no answer)_" end
     render()
     save()
-    if not panel_visible() then notify(agent_label() .. " answered in the chat (gq shows it).") end
+    if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
     if opts.on_done then pcall(opts.on_done, entry) end
   end
 
@@ -926,7 +932,12 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 })
 
 -- Sends `text` (default: the input box). opts.view_win overrides which
--- window "current view" describes; opts.quiet doesn't clear the input box.
+-- window "current view" describes; opts.display is what the conversation
+-- shows as your message (default: `text`); opts.on_done(entry) runs once
+-- the answer is complete, and opts.done_note replaces the "answered in the
+-- chat" note shown while the panel is hidden. Returns the answer's entry
+-- (its status "running" while the agent works), or nil when nothing was
+-- sent - the agent busy, or none configured.
 send = function(text, opts)
   opts = opts or {}
   local st = STATE()
@@ -957,7 +968,7 @@ send = function(text, opts)
   while #st.sent > 100 do table.remove(st.sent, 1) end
   st.sent_pos = nil
 
-  local shown_text = text
+  local shown_text = opts.display or text
   local expanded = CORE.expand_prompt(text, CORE.prompts(config().prompts))
 
   local VIEW = require("azure-cli.chat.view")
@@ -1002,7 +1013,10 @@ send = function(text, opts)
   }
   vim.fn.mkdir(vars.fix_root, "p")
 
-  if agent.acp then return send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts) end
+  if agent.acp then
+    send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts)
+    return entry
+  end
 
   local reader = CORE.stream_new(agent.strip)
   local seen_tools, err = 0, {}
@@ -1046,7 +1060,7 @@ send = function(text, opts)
     end
     render()
     save()
-    if not panel_visible() then notify(agent_label() .. " answered in the chat (gq shows it).") end
+    if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (gq shows it).")) end
     if opts.on_done then pcall(opts.on_done, entry) end
   end
 
@@ -1102,6 +1116,7 @@ send = function(text, opts)
       pcall(vim.fn.jobstop, job)
     end
   end, timeout * 1000)
+  return entry
 end
 M.send = send
 

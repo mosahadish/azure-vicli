@@ -274,7 +274,7 @@ function M.open(opts)
 
   local win_opts = {
     style = "minimal",
-    border = "rounded",
+    border = require("azure-cli.ui").border(),
     width = width,
     height = height,
   }
@@ -313,6 +313,7 @@ function M.open(opts)
   end
   require("azure-cli.ui").wo(win, "wrap", true)
   require("azure-cli.ui").wo(win, "linebreak", true)
+  require("azure-cli.ui").float_hl(win)
   set_context(buf, context_ns(), opts.context_lines)
   setup_mentions(buf, opts.mentions)
 

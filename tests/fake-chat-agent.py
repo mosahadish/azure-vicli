@@ -15,6 +15,11 @@ What it does depends on the message:
   "fix it"  start_fix, an edit, show_fix, commit_and_push_fix on PR 101
   "implement"  start_story for work item 3001 (twice: the second reuses
             it), a new file, show_fix, commit_and_push_fix
+  "make a plan"  start_story for 3002 (refused: no plan yet), submit_plan,
+            start_story again (refused: not approved yet)
+  "About ..."  (a question from a plan / change-viewer line) answers
+            "BECAUSE-<the quoted line>" and nothing else
+  "I approve the plan"  start_story for 3002, an edit, show_fix
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and which turn of
 this process it is ("turn: 1" for a fresh process).
@@ -115,7 +120,25 @@ def answer_turn(mcp, init, message, turn, model, session):
     out.append("selection: " + str(view.get("selection_lines")) + " " + str((view.get("selection") or "")[:40]))
     out.append("hunk: " + str(bool(view.get("hunk"))))
     out.append("refs: " + ("PR !102" in message and "Referenced in the message" in message and "yes" or "no"))
-    if "triage" in asked:
+    if "I approve the plan" in asked:
+        res = json.loads(call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main",
+                                              "name": "feature/3002-planned"})[0])
+        with open(os.path.join(res["directory"], "src", "auth.py"), "a", encoding="utf-8") as f:
+            f.write("PLANNED_CHANGE = True\n")
+        call("show_fix", {"work_item_id": 3002})
+    elif asked.startswith("About "):
+        quoted = [l[2:] for l in asked.splitlines() if l.startswith("> ")]
+        out[:] = ["BECAUSE-" + (quoted[-1] if quoted else "?") + " (asked on the " + str(view.get("screen")) + ", line "
+                  + str(view.get("plan_line") or view.get("line")) + ")"]
+    elif "make a plan" in asked:
+        call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main", "name": "feature/3002-planned"})
+        call("submit_plan", {"work_item_id": 3002, "title": "Lockout reason codes", "markdown": "\n".join([
+            "# Lockout reason codes", "", "## Goal", "Say why a login was refused.", "",
+            "## Approach", "Return a reason code from login().", "Keep the boolean API as a wrapper.", "",
+            "## Files", "- `src/auth.py` - the reason code", "- `src/throttle.py` - expose the lockout state", "",
+            "## Risks", "Callers comparing to True.", "", "## Test plan", "A test per reason."])})
+        call("start_story", {"work_item_id": 3002, "repo": "widgets", "from": "main", "name": "feature/3002-planned"})
+    elif "triage" in asked:
         pr = view["pr"]["id"]
         threads = json.loads(mcp.call("get_pr_threads", {"pr_id": pr})[0])
         active = [t for t in threads if t["status"] == "active"]

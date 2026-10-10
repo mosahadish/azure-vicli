@@ -18,6 +18,9 @@
 --                        own file tools can't), refusing any path outside it
 --
 -- show/commit/discard take pr_id for a PR's fix, work_item_id for a story.
+-- start_fix / start_story first need an approved plan (chat/plan.lua's
+-- gate, unless setup({ chat = { plan_first = false } })); a push marks it
+-- done.
 --
 -- Returns function(T) -> list of tools, T being chat/tools.lua.
 local M = {}
@@ -176,6 +179,8 @@ setmetatable(M, { __call = function(_, T)
       schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
       risk = "write",
       run = function(args, env, done)
+        local planned, why = require("azure-cli.chat.plan").gate({ pr_id = args.pr_id })
+        if not planned then return done(nil, why) end
         local pr, clone = need_clone(args, done)
         if not pr then return end
         local wt = M.path(pr)
@@ -226,6 +231,8 @@ setmetatable(M, { __call = function(_, T)
       risk = "write",
       run = function(args, env, done)
         local id = args.work_item_id
+        local planned, why = require("azure-cli.chat.plan").gate({ work_item_id = id })
+        if not planned then return done(nil, why) end
         local existing, ebranch = M.find_story(id)
         if existing then
           return done({ directory = existing, branch = ebranch, note = "Already started - kept as it was.",
@@ -320,6 +327,9 @@ setmetatable(M, { __call = function(_, T)
               if not pok then
                 return done(nil, "push failed (the branch may have moved since): " .. perr)
               end
+              -- The plan behind it is done: the next change needs its own.
+              pcall(require("azure-cli.chat.plan").mark_done,
+                t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id })
               T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
                 done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")."
                   .. (t.wi and " Offer to open a pull request for it (create_pull_request, linking the work item)." or ""))

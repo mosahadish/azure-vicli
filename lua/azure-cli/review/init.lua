@@ -2793,7 +2793,7 @@ manage_ignore_texts = function(on_change)
     width = width,
     height = height,
     style = "minimal",
-    border = "rounded",
+    border = require("azure-cli.ui").border(),
   })
   set_float_wrap(win)
 

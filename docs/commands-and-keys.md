@@ -119,6 +119,7 @@ paste the output here after changing a default.
 | `prev_file_with_comments` | `[C` |
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
+| `refresh` | `r` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `search` | `g/` |
@@ -132,6 +133,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `ask` | `ga` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -160,6 +162,7 @@ paste the output here after changing a default.
 | `prev_hunk` | `[c` |
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
+| `refresh` | `r` |
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
@@ -282,6 +285,7 @@ paste the output here after changing a default.
 | `audit` | `gL` |
 | `back` | `<BS>` |
 | `cancel` | `<C-c>` |
+| `changes` | `gd` |
 | `focus_input` | `i` / `a` |
 | `help` | `?` |
 | `hide` | `q` |
@@ -292,6 +296,8 @@ paste the output here after changing a default.
 | `open_ref` | `<CR>` |
 | `prev_message` | `<Up>` |
 | `prompts` | `gp` |
+| `resize_less` | `<` |
+| `resize_more` | `>` |
 | `send` | `<CR>` |
 | `send_insert` | `<C-s>` |
 | `toggle` | `gq` |

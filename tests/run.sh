@@ -503,6 +503,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
   fi
+  if [[ "$out" == *PLAN-SMOKE-OK* ]]; then
+    pass "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves"
+  else
+    fail "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" "$out"
+  fi
   if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
     pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
   else

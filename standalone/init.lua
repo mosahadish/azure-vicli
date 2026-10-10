@@ -37,6 +37,10 @@ azure_cli.set_standalone(true)
 vim.o.hidden = true
 vim.o.termguicolors = true
 vim.o.laststatus = 2
+-- Tabs and status lines named after the screens, not "[Scratch]".
+vim.o.showtabline = 2
+vim.o.tabline = "%!v:lua.require'azure-cli.ui'.tabline()"
+vim.o.statusline = "%!v:lua.require'azure-cli.ui'.statusline()"
 vim.o.mouse = "a"
 vim.cmd("syntax on")
 
@@ -135,6 +139,33 @@ local function apply_palette()
   hl("AzureCliChatToolWrite", { fg = "#f9e2af" })
   hl("AzureCliChatToolErr",   { fg = "#f38ba8" })
   hl("AzureCliChatNote",      { fg = "#89dceb" })
+  -- The shared look (ui.lua's M.THEME): winbars, floats, the plan, the
+  -- questions under a line.
+  hl("AzureCliWinbar",         { fg = "#bac2de" })
+  hl("AzureCliWinbarTitle",    { fg = "#89b4fa", bold = true })
+  hl("AzureCliWinbarSep",      { fg = "#585b70" })
+  hl("AzureCliWinbarTag",      { fg = "#f9e2af" })
+  hl("AzureCliWinbarHelp",     { fg = "#6c7086", italic = true })
+  hl("AzureCliFloatBorder",    { fg = "#585b70" })
+  hl("AzureCliFloatTitle",     { fg = "#89b4fa", bold = true })
+  hl("AzureCliFloatFooter",    { fg = "#6c7086", italic = true })
+  hl("AzureCliSection",        { fg = "#89b4fa", bold = true })
+  hl("AzureCliMuted",          { fg = "#6c7086" })
+  hl("AzureCliAccent",         { fg = "#f9e2af", bold = true })
+  hl("AzureCliKeyHint",        { fg = "#94e2d5", bold = true })
+  hl("AzureCliStatusDraft",    { fg = "#f9e2af", bold = true })
+  hl("AzureCliStatusOk",       { fg = "#a6e3a1", bold = true })
+  hl("AzureCliStatusBad",      { fg = "#f38ba8", bold = true })
+  hl("AzureCliStatusDone",     { fg = "#6c7086", bold = true })
+  hl("AzureCliThreadBar",      { fg = "#94e2d5" })
+  hl("AzureCliThreadQuestion", { fg = "#89b4fa", bold = true })
+  hl("AzureCliThreadAnswer",   { fg = "#cdd6f4" })
+  hl("AzureCliThreadMeta",     { fg = "#6c7086", italic = true })
+  hl("TabLineSel",             { fg = "#1e1e2e", bg = "#89b4fa", bold = true })
+  hl("TabLine",                { fg = "#a6adc8", bg = "#313244" })
+  hl("TabLineFill",            { bg = "#181825" })
+  hl("StatusLine",             { fg = "#bac2de", bg = "#313244" })
+  hl("StatusLineNC",           { fg = "#6c7086", bg = "#1e1e2e" })
 
   -- Reviewer diff-pane decorations (lua/azure-cli/review/init.lua).
   hl("AzureCliDiffAddBg",   { bg = "#20302a" })

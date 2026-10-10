@@ -28,6 +28,7 @@ azure-vicli ships no agent configuration; you choose the agent and model
 - [Conversations, agents and models](#conversations-agents-and-models)
 - [Setting it up](#setting-it-up)
 - [Let the agent set itself up](#let-the-agent-set-itself-up)
+- [Plans, and asking why](#plans-and-asking-why)
 - [What the agent can do](#what-the-agent-can-do)
 - [How it works](#how-it-works)
 
@@ -89,7 +90,7 @@ launcher sets them in its own palette.
 
 ## Saved prompts, references and selections
 
-**Saved prompts.** `/triage`, `/review`, `/explain`, `/build` and `/standup`
+**Saved prompts.** `/triage`, `/review`, `/explain`, `/build`, `/plan` and `/standup`
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
 They run against what's on screen like any message. Add your own, replace
@@ -255,7 +256,8 @@ it's tied to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
-(default false), `suggest_on_new_comments` (default true).
+(default false), `suggest_on_new_comments` (default true), `plan_first`
+(default true) and `plan_template` ([below](#plans-and-asking-why)).
 
 The agent runs in the local clone of the PR you're looking at, when there is
 one, so a repository's own agent instructions and skills apply. A skill
@@ -319,12 +321,68 @@ couldn't confirm.
    the azure-vicli tools work; the second should come back without the
    startup wait, which shows the process stayed running.
 
+## Plans, and asking why
+
+Before the agent changes any code - fixing a comment (`start_fix`) or
+implementing a work item (`start_story`) - it writes a plan, and waits for
+you to approve it. Those two tools refuse until there is an approved plan
+for that PR or work item. You can also ask for a plan any time: `/plan`.
+
+![The agent's plan: sections on the left, the plan with questions answered under its lines, the chat on the right](images/chat-plan.png)
+
+The plan opens in a tab of its own, laid out like the reviewer: its
+sections on the left (with a count of the files it touches, and of the
+questions you asked in each), the plan on the right as rendered markdown,
+the chat alongside. It follows a template: Goal, Approach, Files, Risks,
+Test plan, Open questions (`chat.plan_template` replaces it).
+
+**Ask why.** Put the cursor on any line of the plan - or select a few -
+and press `ga`: a small editor opens under the line with "Why did you
+choose this?" already written (change it, or just send it with `<C-s>`).
+The question goes to the agent through the chat, with the line and its
+section, and the answer appears under that line, like a review thread
+(also in the chat). `<Tab>` unfolds a long answer, `K` shows it in a
+popup, `]t` / `[t` go from question to question. The same `ga` works in
+the change viewer (`show_fix`, `gd`) on any line of the agent's change,
+with `]C` / `[C` between the questions there.
+
+![A question answered under a line of the agent's change](images/chat-ask-why.png)
+
+Questions are kept: they're
+still there next time you open the plan or the change, and they move with
+their line when the text around them changes.
+
+| Key (plan window) | Action |
+|---|---|
+| `gA` | Approve the plan - the agent is told to go ahead |
+| `gR` | Ask for changes: say what, and the agent submits a new revision |
+| `ga` | Ask about this line (in visual mode: these lines) |
+| `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
+| `]t` / `[t` | Next / previous question |
+| `gf` | Edit the plan's file yourself; saving it makes your version the one the agent gets (and it needs approving again) |
+| `<CR>` (section list) | Go to the section; moving through the list scrolls the plan |
+| `<BS>` | Back to the section list |
+| `r` / `gq` / `<` `>` / `q` / `?` | Reload / the chat / resize / close / keys |
+
+Pushing the change (`commit_and_push_fix`) marks its plan done, so the next
+change on that PR or work item needs a plan of its own. A plan the agent
+revises needs approving again.
+
+`chat.plan_first` sets the gate: `true` (default) for both fixes and
+stories, `"stories"` only for work items (comment fixes go straight
+ahead), `false` for neither (`/plan` still works).
+
+Plans live under Neovim's data directory, `azure-cli-chat/plans/<wi-3001 |
+pr-101>.md` (the text `gf` edits) and `.json` (status, revisions,
+questions).
+
 ## What the agent can do
 
 The agent gets an MCP server named `azure-vicli` with these tools:
 
 | Tool | What it does | Asks you first? |
 |---|---|---|
+| `submit_plan`, `get_plan` | Shows you its plan for a PR or work item (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions | - |
 | `current_view` | What you're looking at when you sent the message (see above) | - |
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details - any PR in the project by id, not only your dashboard's (after it, the other PR tools work for that PR too) | - |
 | `find_implementations`, `find_definition` | Across a whole repository (the fix/story worktree, a PR's source branch, or a local clone): the types implementing an interface or deriving from a class, and the ones deriving from those; where a type or member is declared. Text-based (`git grep` and declaration patterns for C#, Java, TypeScript, Kotlin, Python, ...), no build needed | - |

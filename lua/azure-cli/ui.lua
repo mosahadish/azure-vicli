@@ -28,6 +28,9 @@ function M.plain_window(win, opts)
   M.wo(win, "wrap", false)
   M.wo(win, "cursorline", opts.cursorline and true or false)
   M.wo(win, "foldenable", false)
+  -- No "~" below the last line: the screens end where their text does.
+  M.wo(win, "fillchars", "eob: ")
+  M.theme()
 end
 
 -- Row numbers inside the dashboards' boxes (setup({row_numbers=...})).
@@ -142,6 +145,121 @@ function M.link_hl(map)
   end
 end
 
+-- The shared look: the groups every screen's chrome is drawn with - the
+-- winbars (M.winbar), the floats (M.open_float and the other popups, via
+-- M.border/M.float_hl), section headings, the plan window and the inline
+-- question threads (chat/plan.lua, chat/threads.lua). Linked to standard
+-- groups (default = true, like everything else here), so any colorscheme
+-- gives a consistent result; the standalone launcher sets its own palette.
+M.THEME = {
+  AzureCliWinbar = "WinBar", AzureCliWinbarTitle = "Title", AzureCliWinbarSep = "NonText",
+  AzureCliWinbarTag = "Special", AzureCliWinbarHelp = "Comment",
+  AzureCliFloat = "NormalFloat", AzureCliFloatBorder = "FloatBorder", AzureCliFloatTitle = "FloatTitle",
+  AzureCliFloatFooter = "Comment",
+  AzureCliSection = "Title", AzureCliMuted = "Comment", AzureCliAccent = "Special",
+  AzureCliKeyHint = "Special",
+  AzureCliStatusDraft = "DiagnosticWarn", AzureCliStatusOk = "DiagnosticOk", AzureCliStatusBad = "DiagnosticError",
+  AzureCliStatusDone = "Comment",
+  AzureCliThreadBar = "Special", AzureCliThreadQuestion = "Function", AzureCliThreadAnswer = "Normal",
+  AzureCliThreadMeta = "Comment",
+}
+
+local themed = false
+-- Defines M.THEME's groups (once; again after every :colorscheme, which
+-- clears them).
+function M.theme()
+  if themed then return end
+  themed = true
+  M.link_hl(M.THEME)
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = vim.api.nvim_create_augroup("AzureCliTheme", { clear = true }),
+    callback = function() M.link_hl(M.THEME) end,
+  })
+end
+
+-- What a window of azure-vicli's is, in a few words: its buffer's
+-- vim.b.azure_cli_title (set by the screens that know better), else by
+-- filetype, else the buffer's own name. nil for a buffer that isn't ours.
+local FT_TITLE = {
+  ["azurecli-dashboard"] = "Pull requests", ["azurecli-workitems"] = "Work items",
+  ["azurecli-workitem"] = "Work item", ["azurecli-changes"] = "Change", ["azurecli-plan"] = "Plan",
+}
+function M.buf_title(buf)
+  local t = vim.b[buf].azure_cli_title
+  if t and t ~= "" then return t end
+  local ft = vim.bo[buf].filetype
+  if ft == "azurecli-files" and vim.b[buf].azure_cli_pr then return "PR !" .. tostring(vim.b[buf].azure_cli_pr) end
+  if vim.b[buf].azure_cli_chat then return "Chat" end
+  return FT_TITLE[ft]
+end
+
+-- A tab's label: the tab's vim.t.azure_cli_title, else the title of the
+-- first of our windows in it, else its current buffer's file name.
+function M.tab_title(tab)
+  local ok, t = pcall(vim.api.nvim_tabpage_get_var, tab, "azure_cli_title")
+  if ok and t and t ~= "" then return t end
+  local chat
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+    if vim.api.nvim_win_get_config(w).relative == "" then
+      local title = M.buf_title(vim.api.nvim_win_get_buf(w))
+      if title == "Chat" then chat = title elseif title then return title end
+    end
+  end
+  if chat then return chat end
+  local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(vim.api.nvim_tabpage_get_win(tab)))
+  return name ~= "" and vim.fn.fnamemodify(name, ":t") or "[No Name]"
+end
+
+-- 'tabline': every tab by its title (the standalone launcher sets it;
+-- plugin users can: vim.o.tabline = "%!v:lua.require'azure-cli.ui'.tabline()").
+function M.tabline()
+  M.theme()
+  local cur = vim.api.nvim_get_current_tabpage()
+  local out = {}
+  for i, tab in ipairs(vim.api.nvim_list_tabpages()) do
+    local hl = tab == cur and "%#TabLineSel#" or "%#TabLine#"
+    out[#out + 1] = hl .. "%" .. i .. "T " .. (M.tab_title(tab):gsub("%%", "%%%%")) .. " "
+  end
+  return table.concat(out) .. "%#TabLineFill#%T"
+end
+
+-- 'statusline' for the standalone launcher: what the window is, and where
+-- the cursor is - not "[Scratch] [-]".
+function M.statusline()
+  local buf = vim.api.nvim_get_current_buf()
+  local win = vim.g.statusline_winid or vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_is_valid(win) then buf = vim.api.nvim_win_get_buf(win) end
+  local title = M.buf_title(buf)
+  if not title and vim.api.nvim_buf_get_name(buf) == "" and vim.bo[buf].buftype == "nofile" then
+    -- One of our unnamed panes (a diff, a revision): what its tab is.
+    title = M.tab_title(vim.api.nvim_win_get_tabpage(win))
+  end
+  if not title then
+    local name = vim.api.nvim_buf_get_name(buf)
+    title = name ~= "" and vim.fn.fnamemodify(name, ":~:.") or "[No Name]"
+    if vim.bo[buf].modified then title = title .. " [+]" end
+  end
+  return " " .. title:gsub("%%", "%%%%") .. "%=%l/%L "
+end
+
+-- The border every float uses: setup({ ui = { border = ... } }), "rounded"
+-- by default (any 'winborder' value: "single", "double", "solid",
+-- "shadow", "none", or a list of eight characters).
+function M.border()
+  local ok, cfg = pcall(function() return require("azure-cli.config").get() end)
+  local b = ok and cfg and cfg.ui and cfg.ui.border
+  return b or "rounded"
+end
+
+-- The 'winhighlight' a float gets so its body, border, title and footer
+-- use the theme's groups.
+M.FLOAT_HL = "NormalFloat:AzureCliFloat,FloatBorder:AzureCliFloatBorder,FloatTitle:AzureCliFloatTitle,"
+  .. "FloatFooter:AzureCliFloatFooter"
+function M.float_hl(win)
+  M.theme()
+  pcall(M.wo, win, "winhighlight", M.FLOAT_HL)
+end
+
 -- The shared "big float" size: roughly 70% of the columns and 65% of the
 -- lines, floored so a small window still gets something usable and capped
 -- so a very wide one doesn't produce an unreadable measure. Used by
@@ -195,7 +313,7 @@ function M.open_float(lines, opts)
   vim.bo[buf].modifiable = false
   vim.bo[buf].buftype = "nofile"
 
-  local cfg = { width = width, height = height, style = "minimal", border = "rounded" }
+  local cfg = { width = width, height = height, style = "minimal", border = M.border() }
   if opts.big or opts.center then
     cfg.relative = "editor"
     cfg.row = math.floor((vim.o.lines - height) / 2)
@@ -237,6 +355,7 @@ function M.open_float(lines, opts)
   M.wo(win, "linebreak", true)
   M.wo(win, "breakindent", true)
   M.wo(win, "cursorline", false)
+  M.float_hl(win)
   if focus then
     local kopts = { buffer = buf, silent = true, nowait = true }
     local function close()
@@ -271,7 +390,7 @@ function M.filter_prompt(opts)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { opts.default or "" })
   local cfg = {
     relative = "win", win = host, row = 0, col = math.max(0, math.floor((vim.api.nvim_win_get_width(host) - width) / 2)),
-    width = width, height = 1, style = "minimal", border = "rounded",
+    width = width, height = 1, style = "minimal", border = M.border(),
     title = " " .. (opts.prompt or "Filter") .. " ", title_pos = "left",
     footer = " <CR> keep \u{00B7} <Esc> clear ", footer_pos = "right",
   }
@@ -280,6 +399,7 @@ function M.filter_prompt(opts)
     cfg.title, cfg.title_pos, cfg.footer, cfg.footer_pos = nil, nil, nil, nil
     win = vim.api.nvim_open_win(buf, true, cfg)
   end
+  M.float_hl(win)
   local done = false
   local function text()
     return vim.trim(vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or "")
@@ -368,20 +488,44 @@ end
 -- elsewhere) joined by a single space, then always "?: help" - the three
 -- groups (context, tags, help) are joined by three spaces so the tags read
 -- as a distinct cluster of flags rather than more context.
+--
+-- The result is a 'winbar' value in the shared look: the first context
+-- part (what the screen is) in AzureCliWinbarTitle, the rest in
+-- AzureCliWinbar, the dots between them in AzureCliWinbarSep, the tags in
+-- AzureCliWinbarTag and the help pointer in AzureCliWinbarHelp. A "%" in
+-- the text is escaped, so a path with one in it shows as it is.
+-- M.strip_hl(M.winbar(...)) is the plain text. Pure.
+local function esc(s) return (s:gsub("%%", "%%%%")) end
+
 function M.winbar(parts, tags)
   local ctx = {}
   for _, p in ipairs(parts or {}) do
     if p and p ~= "" then ctx[#ctx + 1] = p end
   end
   local segments = {}
-  if #ctx > 0 then segments[#segments + 1] = table.concat(ctx, " \u{00B7} ") end
+  if #ctx > 0 then
+    local bits = {}
+    for i, p in ipairs(ctx) do
+      bits[i] = (i == 1 and "%#AzureCliWinbarTitle#" or "%#AzureCliWinbar#") .. esc(p)
+    end
+    -- Too long for the window: cut after the title, not before it.
+    local rest = #bits > 1 and ("%#AzureCliWinbarSep# \u{00B7} " .. table.concat(bits, "%#AzureCliWinbarSep# \u{00B7} ", 2)) or ""
+    segments[#segments + 1] = bits[1] .. "%<" .. rest
+  end
   local tagbits = {}
   for _, t in ipairs(tags or {}) do
-    if t and t ~= "" then tagbits[#tagbits + 1] = t end
+    if t and t ~= "" then tagbits[#tagbits + 1] = esc(t) end
   end
-  if #tagbits > 0 then segments[#segments + 1] = table.concat(tagbits, " ") end
-  segments[#segments + 1] = "?: help"
-  return table.concat(segments, "   ")
+  if #tagbits > 0 then segments[#segments + 1] = "%#AzureCliWinbarTag#" .. table.concat(tagbits, " ") end
+  segments[#segments + 1] = "%#AzureCliWinbarHelp#?: help"
+  return " " .. table.concat(segments, "%#AzureCliWinbar#   ") .. "%#AzureCliWinbar#"
+end
+
+-- A 'winbar'/'statusline' value without its %#Group# codes, "%%" back to
+-- "%", and the leading pad M.winbar adds: what it reads as. Pure.
+function M.strip_hl(s)
+  s = (s or ""):gsub("%%#[%w_]*#", ""):gsub("%%%*", ""):gsub("%%<", ""):gsub("%%%%", "%%")
+  return (s:gsub("^ ", ""))
 end
 
 -- Solves column widths for a row of scaling columns against `available_width`

@@ -16,7 +16,11 @@
 --                             file and line
 --
 -- gq goes to the chat, as on every other screen, and the chat describes
--- the file and line under the cursor here (M.describe).
+-- the file and line under the cursor here (M.describe). ga on a line asks
+-- the agent about it ("why did you choose this here?"); the answer shows
+-- under the line (chat/threads.lua) - <Tab> unfolds it, K shows it whole,
+-- ]C / [C go from one to the next. Those questions are kept per worktree,
+-- under stdpath("data")/azure-cli-chat/why/.
 --   M.files(raw)              the changed files in diff order: { path,
 --                             status = "A"|"D"|"R"|"M" } (pure)
 local M = {}
@@ -27,6 +31,7 @@ local current_ns = vim.api.nvim_create_namespace("azure_cli_chat_changes_current
 local view = nil  -- { tab, list_win, diff_win, list_buf, files, diffs, bufs, title, dir }
 
 local function KEYS() return require("azure-cli.keys") end
+local function THREADS() return require("azure-cli.chat.threads") end
 local function UI() return require("azure-cli.ui") end
 local function notify(msg) require("azure-cli.shell").notify(msg) end
 
@@ -66,6 +71,11 @@ local DIFF_HELP = {
   { "prev_hunk", "previous change (continues into the previous file)" },
   { "back", "back to the file list" },
   { "open_file", "edit the file in the worktree, at this line" },
+  "Ask the agent",
+  { "ask", "ask about this line (\"why did you choose this here?\") - the answer shows under it" },
+  { "expand_thread", "show all of the answer under this line / fold it again" },
+  { "view_comments", "the question and answer in a popup" },
+  { "next_comment", "next question" }, { "prev_comment", "previous question" },
   { "refresh", "refresh (the agent may have changed more)" },
   { "chat", "go to the chat (in visual mode: send the selected lines)" },
   "Window",
@@ -95,7 +105,10 @@ end
 -- The reviewer's winbar: the path and its +adds -dels.
 local function set_diff_winbar(path, map)
   if not valid_win(view.diff_win) then return end
-  pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) }, {}))
+  local n = 0
+  for _, th in ipairs(view.threads or {}) do if th.file == path then n = n + 1 end end
+  pcall(UI().wo, view.diff_win, "winbar", UI().winbar({ path .. DIFFBUF.stats(map) },
+    { n > 0 and ("[" .. THREADS().count_label(n) .. "]") or nil }))
 end
 
 -- The file-list row of the file in the diff pane, marked as the reviewer
@@ -104,6 +117,110 @@ local function mark_current(idx)
   if not (view.list_buf and vim.api.nvim_buf_is_valid(view.list_buf)) then return end
   vim.api.nvim_buf_clear_namespace(view.list_buf, current_ns, 0, -1)
   if idx then pcall(vim.api.nvim_buf_add_highlight, view.list_buf, current_ns, "AzureCliCurrentFile", idx - 1, 0, -1) end
+end
+
+-- The questions asked about worktree `dir`'s change: { file, line, side,
+-- anchor, question, answer, ... } (chat/threads.lua).
+local function why_path(dir)
+  return require("azure-cli.chat.store").root() .. "/why/" .. vim.fn.fnamemodify(dir, ":t"):gsub("[^%w%._%-]", "_") .. ".json"
+end
+
+local function why_load(dir)
+  local ok, lines = pcall(vim.fn.readfile, why_path(dir))
+  local okd, list = pcall(vim.json.decode, ok and table.concat(lines, "\n") or "")
+  return okd and type(list) == "table" and list or {}
+end
+
+local function why_save()
+  if not view then return end
+  local path = why_path(view.dir)
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  pcall(vim.fn.writefile, { vim.json.encode(view.threads) }, path)
+end
+
+-- The diff row thread `th` sits under in file `idx`'s buffer, or nil.
+local function thread_row(idx, th)
+  local f = view.files[idx]
+  local cur = f and view.bufs[f.path] and view.maps[view.bufs[f.path]]
+  if not (cur and th.file == f.path) then return nil end
+  local near, near_d
+  for row, m in ipairs(cur.map) do
+    if m.lineno == th.line and m.side == (th.side or "R") then return row end
+    if th.outdated and m.side == "R" and m.lineno then
+      local d = math.abs(m.lineno - th.line)
+      if not near_d or d < near_d then near, near_d = row, d end
+    end
+  end
+  return near
+end
+
+local function draw_threads(idx)
+  local f = view and view.files[idx]
+  local buf = f and view.bufs[f.path]
+  if not buf then return end
+  THREADS().draw(buf, view.diff_win, view.threads, function(th) return thread_row(idx, th) end)
+end
+
+-- Every file's added and kept lines (new-side line number -> text), so the
+-- questions find their lines again after the agent changed more.
+local function reanchor()
+  local CACHE = require("azure-cli.cache")
+  for _, f in ipairs(view.files) do
+    local mine = false
+    for _, th in ipairs(view.threads) do if th.file == f.path then mine = true end end
+    if mine then
+      local lines, map = CACHE.parse_diff(view.diffs[f.path] or {})
+      local by_line = {}
+      for i, m in ipairs(map) do if m.side == "R" and m.lineno then by_line[m.lineno] = lines[i] end end
+      THREADS().reanchor(view.threads, by_line, function(th) return th.file ~= f.path or th.side == "L" end)
+    end
+  end
+end
+
+local function thread_here(idx)
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  for _, th in ipairs(view.threads) do
+    if thread_row(idx, th) == row then return th end
+  end
+  return nil
+end
+
+local function ask_here(idx)
+  local f = view.files[idx]
+  local buf = view.bufs[f.path]
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local m = view.maps[buf].map[row] or {}
+  if not m.lineno then return notify("Put the cursor on a line of the change.") end
+  local text = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+  local name = vim.fn.fnamemodify(f.path, ":t")
+  local dir = view.dir
+  THREADS().ask({
+    win = vim.api.nvim_get_current_win(), row = row, line = m.lineno, anchor = vim.trim(text),
+    file = f.path, side = m.side,
+    ctx = { what = "your change " .. view.title:gsub("^Proposed change %- ", "for "):gsub(" %(last commit%)$", "")
+      .. " (worktree " .. dir .. ")",
+      where = f.path .. " line " .. m.lineno .. (m.side == "L" and " (a line you removed)" or "") },
+    label = name .. ":" .. m.lineno,
+    threads = view.threads,
+    changed = function()
+      if not (view and view.dir == dir) then return end
+      why_save()
+      if view.current then draw_threads(view.current) end
+    end,
+  })
+end
+
+local function jump_thread(idx, dir)
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local best
+  for _, th in ipairs(view.threads) do
+    local r = thread_row(idx, th)
+    if r and ((dir > 0 and r > row and (not best or r < best)) or (dir < 0 and r < row and (not best or r > best))) then
+      best = r
+    end
+  end
+  if not best then return notify(dir > 0 and "No further questions in this file." or "No earlier questions in this file.") end
+  vim.api.nvim_win_set_cursor(0, { best, 0 })
 end
 
 local jump  -- forward
@@ -131,6 +248,7 @@ local function diff_buf(idx)
   -- The file's own filetype, as the reviewer sets it; the chat finds this
   -- screen by the buffer variable instead.
   vim.b[buf].azure_cli_view = "azurecli-changes"
+  vim.b[buf].azure_cli_title = f.path
   vim.bo[buf].filetype = DIFFBUF.ft_for_path(f.path) or "text"
   DIFFBUF.decorate(buf, lines, map)
   require("azure-cli.review.pane").register(buf, map)
@@ -153,6 +271,16 @@ local function diff_buf(idx)
   K.bind(buf, "diff", "resize_more", function() resize(5) end, { desc = "grow the file list" })
   K.bind(buf, "diff", "quit", close, { desc = "close" })
   K.bind(buf, "diff", "help", function() help("diff", DIFF_HELP) end, { desc = "keys" })
+  K.bind(buf, "diff", "ask", function() ask_here(idx) end, { desc = "ask the agent about this line" })
+  K.bind(buf, "diff", "expand_thread", function()
+    local th = thread_here(idx)
+    if not th then return notify("No question on this line (ga asks one).") end
+    THREADS().toggle(th)
+    draw_threads(idx)
+  end, { desc = "show all of the answer / fold it" })
+  K.bind(buf, "diff", "view_comments", function() THREADS().show(thread_here(idx)) end, { desc = "the question and answer" })
+  K.bind(buf, "diff", "next_comment", function() jump_thread(idx, 1) end, { desc = "next question" })
+  K.bind(buf, "diff", "prev_comment", function() jump_thread(idx, -1) end, { desc = "previous question" })
   bind_common(buf, "diff")
   return buf
 end
@@ -169,6 +297,10 @@ local function show(idx, focus)
   set_diff_winbar(view.files[idx].path, view.maps[buf].map)
   mark_current(idx)
   view.current = idx
+  draw_threads(idx)
+  -- Again once the window has drawn its gutter: the answers wrap to what's
+  -- left of the width.
+  vim.schedule(function() if view and view.current == idx then draw_threads(idx) end end)
   if valid_win(view.list_win) then pcall(vim.api.nvim_win_set_cursor, view.list_win, { idx, 0 }) end
   if focus then vim.api.nvim_set_current_win(view.diff_win) end
   return buf
@@ -245,7 +377,8 @@ function M.open(title, dir, raw, keep)
     and valid_win(view.diff_win)
   local old = reuse and view or nil
   view = { files = M.files(raw), diffs = CACHE.split_diff(raw), bufs = {}, maps = {}, title = title, dir = dir,
-    width = width }
+    width = width, threads = (old and old.dir == dir) and old.threads or why_load(dir) }
+  reanchor()
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
     vim.api.nvim_set_current_tabpage(view.tab)
@@ -264,11 +397,11 @@ function M.open(title, dir, raw, keep)
     UI().plain_window(view.list_win, { cursorline = true })
     pcall(vim.api.nvim_win_set_width, view.list_win, width)
   end
+  vim.t[view.tab].azure_cli_title = "Change " .. (title:match("([#!]%d+)") or "")
   vim.bo[view.list_buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, list_lines())
   vim.bo[view.list_buf].modifiable = false
-  pcall(UI().wo, view.list_win, "winbar", "%#Title# " .. title:gsub("%%", "%%%%") .. "%* %#Comment#"
-    .. #view.files .. " file" .. (#view.files == 1 and "" or "s"))
+  pcall(UI().wo, view.list_win, "winbar", UI().winbar({ (title:gsub("^Proposed change %- ", "Change ")) }, {}))
   local at
   for i, f in ipairs(view.files) do if keep and f.path == keep.path then at = i end end
   if at then

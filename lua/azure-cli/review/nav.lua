@@ -430,8 +430,9 @@ local peek_ns = vim.api.nvim_create_namespace("azure_cli_peek")
 local function open_peek_win(buf, focus, cfg, title)
   local with_title = vim.tbl_extend("force", cfg, { title = " " .. title .. " ", title_pos = "left" })
   local ok, win = pcall(vim.api.nvim_open_win, buf, focus, with_title)
-  if ok then return win end
-  return vim.api.nvim_open_win(buf, focus, cfg)
+  if not ok then win = vim.api.nvim_open_win(buf, focus, cfg) end
+  require("azure-cli.ui").float_hl(win)
+  return win
 end
 
 local function show_hits(title, hits, ref, current_path, truncated, word, search_opts)
@@ -466,14 +467,14 @@ local function show_hits(title, hits, ref, current_path, truncated, word, search
   vim.bo[lbuf].buftype = "nofile"
   local lwin = open_peek_win(lbuf, true, {
     relative = "editor", row = row, col = col, width = list_w, height = height,
-    style = "minimal", border = "rounded",
+    style = "minimal", border = require("azure-cli.ui").border(),
   }, title .. (truncated and ("  (first " .. #hits .. ")") or ""))
   UI.wo(lwin, "cursorline", true)
   UI.wo(lwin, "wrap", false)
 
   local pwin = open_peek_win(vim.api.nvim_create_buf(false, true), false, {
     relative = "editor", row = row, col = col + list_w + 2, width = prev_w, height = height,
-    style = "minimal", border = "rounded", focusable = false,
+    style = "minimal", border = require("azure-cli.ui").border(), focusable = false,
   }, "preview")
   UI.wo(pwin, "number", true)
   UI.wo(pwin, "wrap", false)

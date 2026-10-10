@@ -275,7 +275,7 @@ function M.flash(text, level)
   height = math.min(height, 8)
   local win = vim.api.nvim_open_win(buf, false, {
     relative = "editor", row = vim.o.lines - 2, col = math.max(0, vim.o.columns - FLASH_WIDTH - 2),
-    width = FLASH_WIDTH, height = height, style = "minimal", border = "rounded",
+    width = FLASH_WIDTH, height = height, style = "minimal", border = require("azure-cli.ui").border(),
     focusable = false, noautocmd = true,
   })
   local hl = flash_hl(level)

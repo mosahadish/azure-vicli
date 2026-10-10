@@ -253,6 +253,7 @@ local function render(data)
 
   pcall(function()
     UI.wo(0, "winbar", UI.winbar({ "#" .. tostring(it.id or "?"), it.type or "", it.state or "" }, {}))
+    vim.b.azure_cli_title = "#" .. tostring(it.id or "?")
   end)
 end
 

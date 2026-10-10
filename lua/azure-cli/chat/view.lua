@@ -89,6 +89,10 @@ function M.text(snap)
     out[#out + 1] = "File: " .. snap.file .. (snap.line and (" line " .. snap.line .. " (" .. (snap.side == "L" and "target" or "source") .. " side)") or "")
   end
   if snap.code_line then out[#out + 1] = "Code on that line: " .. snap.code_line end
+  if snap.plan_line then
+    out[#out + 1] = "Plan line " .. snap.plan_line .. (snap.plan_section and (" (section \"" .. snap.plan_section .. "\")") or "")
+      .. ": " .. tostring(snap.plan_text or "")
+  end
   if type(snap.thread) == "table" then
     local t = snap.thread
     local first = t.comments and t.comments[1]

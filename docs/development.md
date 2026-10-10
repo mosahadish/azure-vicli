@@ -42,7 +42,7 @@ lua/azure-cli/
   init.lua        setup(), open_dashboard()/open_review(id)/open_workitems(), standalone flag
   config.lua      setup() defaults (incl. every surface's `keys`) + merge/validate, provider_cmd()
   keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines
-  ui.lua          shared winbar formatting (UI.winbar), the column-width solver (UI.layout), floats, highlight links
+  ui.lua          the shared look: winbars (UI.winbar), floats and their border, theme groups (UI.THEME), tabline/statusline, the column-width solver (UI.layout)
   shell.lua       shared housekeeping: flash, config file, browser/clipboard, JSON state files, failed-job summary
   state.lua       the one shared table every surface reads/writes (list/content caches, daemon state, ...)
   migrate.lua     one-time data-file rename, M.ensure(old, new)
@@ -52,7 +52,9 @@ lua/azure-cli/
   log.lua         in-session error log (M.record/M.summary) + :AzureCli log
   editor.lua      floating comment editor (drafts, @ mentions)
   chat/           the chat panel: init.lua (panel, agent runs), view.lua (what's on screen),
-                  tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to)
+                  tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
+                  plan.lua (the plan window, its gate on start_fix/start_story), threads.lua (ga: a
+                  question answered under a line - the plan's and the change viewer's)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard
   review/
@@ -331,8 +333,10 @@ python3 tests/screenshots.py            # rewrites docs/images/*.png
 The images under `docs/images/` are generated, not hand-taken: the script
 runs `tests/demo.sh --standalone` in a fixed-size detached `tmux` pane,
 walks through the fake provider's fixtures (dashboard, PR #101, its diff,
-the inline thread, the complete dialog, work items, a work item), captures
-each screen with its colours and rasterises it through ImageMagick's
+the inline thread, the complete dialog, work items, a work item, then the
+chat's plan window and a question under a line of a change - those two
+scenes are seeded by `tests/shot-plan.lua` and `tests/shot-change.lua`
+through `:luafile`, since no agent runs), captures each screen with its colours and rasterises it through ImageMagick's
 `pango:` coder. Needs tmux, an ImageMagick with pango support and a
 monospace font (Noto Sans Mono by default - `--font` picks another); no
 display. Re-run it after a UI change and commit the result; add a step to

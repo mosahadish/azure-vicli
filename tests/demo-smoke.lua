@@ -802,6 +802,7 @@ do
       claude = { label = "Fake Claude", cmd = streamed, models = { "fast", "smart" }, timeout_seconds = 60 },
       plain = { label = "Plain", cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" }, timeout_seconds = 60 },
     },
+    plan_first = false,  -- the plan gate has a smoke of its own (PLAN-SMOKE-OK)
   } })
   vim.env.GIT_AUTHOR_NAME, vim.env.GIT_AUTHOR_EMAIL = "Fake Agent", "agent@example.com"
   vim.env.GIT_COMMITTER_NAME, vim.env.GIT_COMMITTER_EMAIL = "Fake Agent", "agent@example.com"
@@ -1071,6 +1072,144 @@ do
   print(table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(wins().log), 0, 40, false), "\n"))
   CHAT.hide()
   print("CHATPLUS-SMOKE-OK")
+end
+-- The plan: start_story is refused until there's an approved plan;
+-- submit_plan opens it like the reviewer (sections left, the plan right);
+-- ga on a line asks the agent about it and the answer lands under it; gf +
+-- :w makes your edit a revision; gA approves it and the agent goes ahead;
+-- ga in the change viewer asks about a line of the change the same way.
+do
+  local CHAT = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local PLAN = require("azure-cli.chat.plan")
+  local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
+  require("azure-cli").setup({ chat = { agent = { label = "Fake Claude", timeout_seconds = 60,
+    cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
+  CHAT.new_chat(true)
+  local st = STATE.chat
+  local function answered(n)
+    local e
+    local okw = vim.wait(40000, function()
+      e = st.entries[#st.entries]
+      return #st.entries >= n + 2 and e.role == "agent" and e.status ~= "running"
+    end, 100)
+    return okw and e or nil
+  end
+  local n = #st.entries
+  CHAT.send("make a plan for #3002")
+  local e = answered(n)
+  if not e then return fail("no answer to the plan request: " .. vim.inspect(st.entries[#st.entries])) end
+  for _, s in ipairs({ "No plan for #3002 yet", "submit_plan: {", "isn't approved yet" }) do
+    if not e.text:find(s, 1, true) then return fail("\"" .. s .. "\" missing from the answer:\n" .. e.text) end
+  end
+  local v = PLAN.current()
+  if not (v and vim.api.nvim_tabpage_is_valid(v.tab) and vim.api.nvim_win_is_valid(v.plan_win)) then
+    return fail("submit_plan didn't open the plan")
+  end
+  local outline = table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n")
+  for _, s in ipairs({ "#3002  Lockout reason codes", "Waiting for your review", "Approach", "Files", "Test plan", "gA  approve" }) do
+    if not outline:find(s, 1, true) then return fail("the section list lacks \"" .. s .. "\":\n" .. outline) end
+  end
+  if not outline:match("Files%s+2") then return fail("the Files section doesn't count its 2 files:\n" .. outline) end
+  if not vim.wo[v.plan_win].winbar:find("Plan", 1, true) or vim.wo[v.plan_win].fillchars ~= "eob: " then
+    return fail("the plan pane lacks the shared look: " .. vim.wo[v.plan_win].winbar)
+  end
+  -- <CR> on a section goes there.
+  vim.api.nvim_set_current_win(v.list_win)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false)) do
+    if l:find("Approach", 1, true) then vim.api.nvim_win_set_cursor(v.list_win, { i, 0 }) end
+  end
+  feed("<CR>")
+  if vim.api.nvim_get_current_win() ~= v.plan_win or vim.api.nvim_get_current_line() ~= "## Approach" then
+    return fail("<CR> on Approach didn't go there: " .. vim.api.nvim_get_current_line())
+  end
+  -- ga on "Return a reason code from login().": asked, answered under it.
+  feed("j")
+  local row = vim.api.nvim_win_get_cursor(v.plan_win)[1]
+  n = #st.entries
+  feed("ga")
+  feed("<C-s>")
+  local rec
+  local okq = vim.wait(40000, function()
+    rec = PLAN.load("wi-3002")
+    return rec and rec.threads[1] and rec.threads[1].status ~= "asking"
+  end, 100)
+  if not okq then return fail("the question about the plan line wasn't answered: " .. vim.inspect(rec and rec.threads)) end
+  local th = rec.threads[1]
+  if th.line ~= row or th.question ~= "Why did you choose this?" or th.status ~= "answered"
+      or not (th.answer or ""):find("BECAUSE-Return a reason code from login(). (asked on the plan, line " .. row .. ")", 1, true) then
+    return fail("the plan question went wrong: " .. vim.inspect(th))
+  end
+  local function drawn(buf, s)
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, require("azure-cli.chat.threads").ns, 0, -1, { details = true })) do
+      for _, vl in ipairs(m[4].virt_lines or {}) do
+        for _, chunk in ipairs(vl) do if chunk[1]:find(s, 1, true) then return m[2] + 1 end end
+      end
+    end
+  end
+  if drawn(v.plan_buf, "BECAUSE-Return") ~= row then return fail("the answer isn't drawn under its plan line") end
+  if not (st.entries[n + 1].text or ""):find("Why did you choose this?  (plan:" .. row .. ")", 1, true) then
+    return fail("the question doesn't show in the chat as asked: " .. tostring(st.entries[n + 1].text))
+  end
+  -- gf, an edit, :w - a revision by you, which the plan pane shows.
+  feed("gf")
+  vim.api.nvim_buf_set_lines(0, -1, -1, false, { "", "## Open questions", "Should admins be exempt?" })
+  vim.cmd("silent write")
+  rec = PLAN.load("wi-3002")
+  if #rec.revisions ~= 2 or rec.revisions[2].by ~= "you" or rec.status ~= "draft" then
+    return fail("saving the plan by hand wasn't a revision: " .. vim.inspect({ #rec.revisions, rec.status }))
+  end
+  vim.cmd("tabclose")
+  vim.api.nvim_set_current_tabpage(v.tab)
+  if not table.concat(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false), "\n"):find("Should admins be exempt?", 1, true) then
+    return fail("the plan pane doesn't show your edit")
+  end
+  if not vim.wo[v.plan_win].winbar:find("edited by you", 1, true) then return fail("no [edited by you] tag") end
+  -- gA: approved; the agent starts the story now and shows the change.
+  vim.api.nvim_set_current_win(v.plan_win)
+  n = #st.entries
+  feed("gA")
+  e = answered(n)
+  if not e then return fail("no answer after approving") end
+  if PLAN.load("wi-3002").status ~= "approved" or not e.text:find("start_story: {", 1, true)
+      or not e.text:find("show_fix:", 1, true) then
+    return fail("approving didn't let the story start: " .. e.text)
+  end
+  if st.entries[n + 1].text ~= "Approved the plan for #3002." then return fail("the approval isn't in the chat as such") end
+  -- ga in the change viewer, on the agent's new line.
+  local cbuf = vim.fn.bufnr("azure-cli://changes")
+  local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
+  if not cwin then return fail("show_fix didn't open the change viewer") end
+  vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(cwin))
+  local dwin, drow
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false)) do
+      if l == "PLANNED_CHANGE = True" then dwin, drow = w, i end
+    end
+  end
+  if not dwin then return fail("the change viewer doesn't show the planned change") end
+  vim.api.nvim_set_current_win(dwin)
+  vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
+  feed("ga")
+  feed("<C-s>")
+  local dbuf = vim.api.nvim_win_get_buf(dwin)
+  local okd = vim.wait(40000, function() return drawn(dbuf, "BECAUSE-PLANNED_CHANGE = True") ~= nil end, 100)
+  if not okd then return fail("the question in the change viewer wasn't answered under its line") end
+  if drawn(dbuf, "BECAUSE-PLANNED_CHANGE") ~= drow then return fail("the change viewer's answer is on the wrong line") end
+  -- r keeps it there; K shows it whole.
+  feed("r")
+  vim.wait(5000, function() return false end, 50)
+  dbuf = vim.api.nvim_win_get_buf(dwin)
+  vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
+  if drawn(dbuf, "BECAUSE-PLANNED_CHANGE") ~= drow then return fail("r lost the question under the line") end
+  feed("K")
+  if not float_text():find("BECAUSE-PLANNED_CHANGE", 1, true) then return fail("K didn't show the question") end
+  feed("q")
+  print("== the plan ==")
+  print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
+  pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))
+  pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(v.tab))
+  print("PLAN-SMOKE-OK")
 end
 -- Batch review: gQ shows the place of the queued comment under the cursor
 -- in the diff pane as it moves (focus stays in the list), <Tab> goes there;

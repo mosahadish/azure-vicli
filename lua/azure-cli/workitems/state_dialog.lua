@@ -514,12 +514,13 @@ function M._popup(spec, states)
 
   draw()
   local cfg = geometry(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-  cfg.style, cfg.border = "minimal", "rounded"
+  cfg.style, cfg.border = "minimal", require("azure-cli.ui").border()
   win = vim.api.nvim_open_win(buf, true, cfg)
   local UI = require("azure-cli.ui")
   UI.wo(win, "wrap", true)
   UI.wo(win, "linebreak", true)
   UI.wo(win, "cursorline", true)
+  UI.float_hl(win)
   for l, r in pairs(rows) do
     if r.kind == "state" then pcall(vim.api.nvim_win_set_cursor, win, { l, 0 }) end
   end

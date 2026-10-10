@@ -545,6 +545,7 @@ for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", 
   "azure-cli.chat.tools_code" }) do
   vim.list_extend(M.list, require(mod)(M))
 end
+vim.list_extend(M.list, require("azure-cli.chat.plan").tools(M))
 
 M.by_name = {}
 for _, t in ipairs(M.list) do M.by_name[t.name] = t end

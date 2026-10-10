@@ -165,7 +165,7 @@ function M.apply(win)
   pcall(UI.wo, win, "foldenable", true)
   pcall(UI.wo, win, "foldlevel", 0)
   pcall(UI.wo, win, "foldminlines", 2)
-  pcall(UI.wo, win, "fillchars", "fold: ")
+  pcall(UI.wo, win, "fillchars", "fold: ,eob: ")
 end
 
 -- Re-evaluates the folds in `win` when it shows `buf` (after the map or
