@@ -25,6 +25,12 @@ M.handlers = {}
 function M.route(id, fn) M.handlers[id] = fn end
 
 local server, port, token
+
+-- The most a request may hold before its newline: the largest a tool call
+-- gets (a whole file written in the worktree) with room to spare. Past it
+-- the connection is dropped - the token is only checked on a full line, so
+-- without a cap any local process could make Neovim hold whatever it sent.
+M.MAX_REQUEST = 8 * 1024 * 1024
 local clients = {}  -- open connections, closed by M.stop
 
 -- 16 bytes from the OS's CSPRNG (libuv's uv_random, in every Neovim we
@@ -82,7 +88,14 @@ function M.ensure()
       end
       buf = buf .. chunk
       local nl = buf:find("\n", 1, true)
-      if not nl then return end
+      if not nl then
+        if #buf > M.MAX_REQUEST then
+          clients[client] = nil
+          pcall(function() client:read_stop() client:close() end)
+          buf = ""
+        end
+        return
+      end
       local line = buf:sub(1, nl - 1)
       client:read_stop()
       local answered = false

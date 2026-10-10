@@ -453,6 +453,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-editor-mode.lua (headless nvim, real input)" "$out"
   fi
 
+  # The chat bridge over a real socket: the token, and the request size cap.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-bridge.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all bridge tests passed"* ]]; then
+    pass "test-chat-bridge.lua (headless nvim)"
+  else
+    fail "test-chat-bridge.lua (headless nvim)" "$out"
+  fi
+
   # The action palette (g.): a buffer's actions, run in its window.
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-keys-palette.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all palette tests passed"* ]]; then
