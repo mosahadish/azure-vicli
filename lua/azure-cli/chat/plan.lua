@@ -861,21 +861,25 @@ local function render_list()
   end
   add("")
   local hints = {}
-  if rec.status ~= "approved" and rec.status ~= "done" then
-    hints[#hints + 1] = { key_of("plan", "approve"), "approve" }
-    hints[#hints + 1] = { key_of("plan", "revise"), "ask for changes" }
+  local decided = rec.status == "approved" or rec.status == "done"
+  if not decided then
+    hints[#hints + 1] = { "plan", "approve", "approve" }
+    hints[#hints + 1] = { "plan", "revise", "ask for changes" }
   end
-  hints[#hints + 1] = { key_of("plan", "ask"), "ask about a line" }
-  hints[#hints + 1] = { key_of("plan", "request"), "ask a change on a line" }
-  if unanswered() > 0 then hints[#hints + 1] = { key_of("plan", "answer"), "answer an open question" } end
-  hints[#hints + 1] = { key_of("plan", "open_file"), "edit it yourself" }
-  hints[#hints + 1] = { key_of("plan", "help"), "all keys" }
-  for _, h in ipairs(hints) do
-    if h[1] then
-      add(" " .. h[1] .. "  " .. h[2], "AzureCliMuted")
-      hls[#hls + 1] = { #lines - 1, 1, "AzureCliKeyHint", 1 + #h[1] }
-    end
+  hints[#hints + 1] = { "plan", "ask", "ask about a line" }
+  if not decided then hints[#hints + 1] = { "plan", "request", "ask a change on a line" } end
+  if unanswered() > 0 then hints[#hints + 1] = { "plan", "answer", "answer an open question" } end
+  if decided then
+    hints[#hints + 1] = { "plan", "goto_code", "the code a step became" }
+    hints[#hints + 1] = { "plan", "run_log", "what happened so far" }
+  else
+    hints[#hints + 1] = { "plan", "open_file", "edit it yourself" }
   end
+  hints[#hints + 1] = { "plan", "help", "all keys" }
+  local hl_, hhls = KEYS().hint_lines(hints)
+  local at = #lines
+  for _, l in ipairs(hl_) do lines[#lines + 1] = l end
+  for _, h in ipairs(hhls) do hls[#hls + 1] = { at + h[1], h[2], h[4], h[3] } end
   vim.bo[view.list_buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, lines)
   vim.bo[view.list_buf].modifiable = false

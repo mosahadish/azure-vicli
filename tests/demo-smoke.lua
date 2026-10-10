@@ -1277,6 +1277,10 @@ do
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
   if not cwin then return fail("show_fix didn't open the change viewer") end
+  local clist = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
+  for _, s in ipairs({ "In the diff:", " ga  ask about a line", " gy  accept a hunk", " gb  run the plan's tests", " ?  all keys" }) do
+    if not clist:find(s, 1, true) then return fail("the change list's keys lack " .. s .. ":\n" .. clist) end
+  end
   local function v_list_win()
     return vim.fn.win_findbuf(vim.fn.bufnr("azure-cli://changes"))[1]
   end
@@ -1514,6 +1518,9 @@ do
   end, 100)
   if not (screen():match("#3001[^\n]*plan waits for you") and screen():match("#3002[^\n]*plan waits for you")) then
     return fail("the Agents screen doesn't show both plans waiting:\n" .. screen())
+  end
+  if not screen():find("gA approve (2 waiting)", 1, true) then
+    return fail("the Agents screen's keys don't offer approving both:\n" .. screen())
   end
   for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
     if l:find("#3001", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end

@@ -356,6 +356,13 @@ questions you asked in each), the plan on the right as rendered markdown,
 the chat alongside. It follows a template: Goal, Approach, Files, Risks,
 Test plan, Open questions (`chat.plan_template` replaces it).
 
+Under the sections, the keys that matter for the plan as it is now: approve
+and ask for changes while it waits for you, the code a step became and the
+run log once it's approved. The change viewer's file list ends the same way
+(sending is offered while changes are queued, the tests when there's a test
+command), and so does the Agents screen (approve, while a plan waits). `?`
+always has all of them.
+
 **Ask why.** Put the cursor on any line of the plan - or select a few -
 and press `ga`: a small editor opens under the line with "Why did you
 choose this?" already written (change it, or just send it with `<C-s>`).

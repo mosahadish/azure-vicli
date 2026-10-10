@@ -59,7 +59,8 @@ function M.rows(convs, queued, plan_of, now, frame)
       local started = last and last.started or c.created or now
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
-        target = c.target, conv = c, cost = require("azure-cli.chat.core").cost_of(c.entries) }
+        target = c.target, conv = c, cost = require("azure-cli.chat.core").cost_of(c.entries),
+        waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
     end
   end
   for _, q in ipairs(queued) do
@@ -108,6 +109,21 @@ local function render()
     hls[#hls + 1] = { #lines - 1, s, s + #state, r.hl }
     hls[#hls + 1] = { #lines - 1, s + #state + 2, -1, "AzureCliMuted" }
     if r.cost then total = (total or 0) + r.cost end
+  end
+  -- What's worth pressing now: approve only while a plan waits for you.
+  if #rows > 0 then
+    local waiting = 0
+    for _, r in ipairs(rows) do if r.waiting then waiting = waiting + 1 end end
+    local hints = { { "agents", "open", "its plan" } }
+    if waiting > 0 then hints[#hints + 1] = { "agents", "approve", "approve (" .. waiting .. " waiting)" } end
+    hints[#hints + 1] = { "agents", "changes", "its change" }
+    hints[#hints + 1] = { "agents", "run_log", "what happened" }
+    hints[#hints + 1] = { "agents", "help", "all keys" }
+    local text, hhls = require("azure-cli.keys").hint_line(hints, "  ")
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = text
+    hls[#hls + 1] = { #lines - 1, 0, -1, "AzureCliMuted" }
+    for _, h in ipairs(hhls) do hls[#hls + 1] = { #lines - 1, h[1], h[2], h[3] } end
   end
   vim.bo[view.buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.buf, 0, -1, false, lines)

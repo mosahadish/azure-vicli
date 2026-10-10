@@ -139,5 +139,23 @@ config.setup({ keys = { dashboard = { quit = false } } })
 check("winbar label empty when unbound", keys.label("dashboard", "quit", "quit") == "")
 config.setup({})
 
+-- 9. The "keys that matter now" hints: first key of each bound action, the
+-- unbound ones left out; the key highlighted inside the muted line.
+config.setup({ keys = { plan = { revise = false, approve = { "gA", "Y" } } } })
+do
+  local lines, hls = keys.hint_lines({ { "plan", "approve", "approve" }, { "plan", "revise", "ask for changes" },
+    { "plan", "help", "all keys" } })
+  check("hint_lines: unbound skipped, first key", #lines == 2 and lines[1] == " gA  approve" and lines[2] == " ?  all keys")
+  check("hint_lines: line muted, key highlighted", hls[1][4] == "AzureCliMuted" and hls[2][2] == 1 and hls[2][3] == 3
+    and hls[2][4] == "AzureCliKeyHint" and hls[4][1] == 1)
+  local text, lhls = keys.hint_line({ { "plan", "approve", "approve" }, { "plan", "revise", "x" },
+    { "plan", "help", "all keys" } }, "  ")
+  check("hint_line: one line, separated", text == "  gA approve  \u{00B7}  ? all keys")
+  check("hint_line: key columns", #lhls == 2 and text:sub(lhls[1][1] + 1, lhls[1][2]) == "gA"
+    and text:sub(lhls[2][1] + 1, lhls[2][2]) == "?")
+  check("first: nil when unbound, else the first key", keys.first("plan", "revise") == nil and keys.first("plan", "approve") == "gA")
+end
+config.setup({})
+
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

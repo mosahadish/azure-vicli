@@ -203,8 +203,45 @@ local function resize(delta)
   pcall(vim.api.nvim_win_set_width, view.list_win, view.width)
 end
 
+-- The file list, then what's worth pressing now (KEYS.hint_lines): the
+-- diff's keys, "send" while changes are queued, the plan's tests when there
+-- are some. Rows 1..#files stay the files.
+local function render_list()
+  if not (view and view.list_buf and vim.api.nvim_buf_is_valid(view.list_buf)) then return end
+  local lines, hls = M.list_lines(view.files, view.check)
+  local _, queued = THREADS().counts(view.threads)
+  local hints = { { "diff", "ask", "ask about a line" }, { "diff", "comment", "queue a change on a line" } }
+  if queued > 0 then hints[#hints + 1] = { "diff", "batch_submit", "send the " .. queued .. " queued" } end
+  hints[#hints + 1] = { "diff", "accept_hunk", "accept a hunk" }
+  hints[#hints + 1] = { "diff", "reject_hunk", "take a hunk out" }
+  if view.plan then hints[#hints + 1] = { "diff", "goto_plan", "the plan step it carries out" } end
+  local tail = {}
+  if view.has_tests then tail[#tail + 1] = { "list", "run_tests", "run the plan's tests" } end
+  tail[#tail + 1] = { "list", "help", "all keys" }
+  local hl1, hh1 = KEYS().hint_lines(hints)
+  local hl2, hh2 = KEYS().hint_lines(tail)
+  if #hl1 + #hl2 > 0 then lines[#lines + 1] = "" end
+  if #hl1 > 0 then
+    lines[#lines + 1] = " In the diff:"
+    hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
+  end
+  for _, part in ipairs({ { hl1, hh1 }, { hl2, hh2 } }) do
+    local at = #lines
+    for _, l in ipairs(part[1]) do lines[#lines + 1] = l end
+    for _, h in ipairs(part[2]) do hls[#hls + 1] = { at + h[1], h[2], h[3], h[4] } end
+  end
+  vim.bo[view.list_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, lines)
+  vim.bo[view.list_buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(view.list_buf, list_ns, 0, -1)
+  for _, h in ipairs(hls) do
+    pcall(vim.api.nvim_buf_set_extmark, view.list_buf, list_ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
+  end
+end
+
 -- The reviewer's winbar: the path and its +adds -dels.
 local function set_diff_winbar(path, map)
+  render_list()
   if not valid_win(view.diff_win) then return end
   local mine = {}
   for _, th in ipairs(view.threads or {}) do if th.file == path then mine[#mine + 1] = th end end
@@ -739,7 +776,6 @@ function M.list_lines(files, check)
   end
   return lines, hls
 end
-local function list_lines() return M.list_lines(view.files, view.check) end
 
 local function setup_list(buf)
   local function under() return vim.api.nvim_win_get_cursor(0)[1] end
@@ -791,6 +827,7 @@ function M.open(title, dir, raw, keep)
   view.plan = okp and PLAN.for_worktree(dir) or nil
   view.fp = require("azure-cli.chat.tests_run").fingerprint(table.concat(raw, "\n"))
   view.check = okp and PLAN.check_change(view.plan, paths) or nil
+  view.has_tests = require("azure-cli.chat.tests_run").command(dir, view.plan) ~= nil
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
     by_buf[view.list_buf] = view
@@ -819,14 +856,7 @@ function M.open(title, dir, raw, keep)
   vim.t[view.tab].azure_cli_title = "Change " .. (title:match("([#!]%d+)") or "")
   vim.t[view.tab].azure_cli_plan_key = view.plan and view.plan.key or nil
   pcall(function() require("azure-cli.chat").sync_active() end)
-  local llines, lhls = list_lines()
-  vim.bo[view.list_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(view.list_buf, 0, -1, false, llines)
-  vim.bo[view.list_buf].modifiable = false
-  vim.api.nvim_buf_clear_namespace(view.list_buf, list_ns, 0, -1)
-  for _, h in ipairs(lhls) do
-    pcall(vim.api.nvim_buf_set_extmark, view.list_buf, list_ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
-  end
+  render_list()
   local ctags = {}
   if view.check and #view.check.unplanned > 0 then ctags[#ctags + 1] = "[" .. #view.check.unplanned .. " off plan]" end
   if view.check and #view.check.missing > 0 then ctags[#ctags + 1] = "[" .. #view.check.missing .. " untouched]" end

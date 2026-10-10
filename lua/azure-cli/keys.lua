@@ -135,6 +135,40 @@ function M.help_lines(surface, title, table_, opts)
   return lines
 end
 
+-- The "keys that matter now" block a screen's side list ends with (the
+-- plan's sections, the change's files): " key  what it does" for each
+-- { surface, action, desc } in `list` that's bound - the screen picks the
+-- entries from its state, so a draft plan offers approve and an approved
+-- one doesn't. Returns lines, hls: { block row (0-based), from, to, group }
+-- - the line muted, its key in AzureCliKeyHint.
+function M.hint_lines(list)
+  local lines, hls = {}, {}
+  for _, h in ipairs(list) do
+    local k = M.first(h[1], h[2])
+    if k then
+      lines[#lines + 1] = " " .. k .. "  " .. h[3]
+      hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
+      hls[#hls + 1] = { #lines - 1, 1, 1 + #k, "AzureCliKeyHint" }
+    end
+  end
+  return lines, hls
+end
+
+-- The same block as one line for a wide screen (the Agents list):
+-- "key what it does · key what it does", and hls as { from, to, group }.
+function M.hint_line(list, lead)
+  local text, hls = lead or "", {}
+  for _, h in ipairs(list) do
+    local k = M.first(h[1], h[2])
+    if k then
+      if #hls > 0 then text = text .. "  \u{00B7}  " end
+      hls[#hls + 1] = { #text, #text + #k, "AzureCliKeyHint" }
+      text = text .. k .. " " .. h[3]
+    end
+  end
+  return text, hls
+end
+
 -- A short "key: hint" winbar chip for surface/action, or "" when unbound -
 -- callers join a list of these with two spaces (see M.winbar).
 function M.label(surface, action, hint)
