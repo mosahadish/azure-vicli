@@ -411,7 +411,7 @@ local function reject_hunk(idx)
   local h = M.hunk_at(parsed, vim.api.nvim_win_get_cursor(0)[1])
   if not h then return notify("Put the cursor on a change.") end
   local dir, label = view.dir, f.path .. " (" .. h.lines[1]:match("^(@@.-@@)") .. ")"
-  require("azure-cli.prompt").confirm({ title = "Take the change out?", prompt = "This change to " .. label
+  require("azure-cli.prompt").confirm({ title = "Revert this?", prompt = "This change to " .. label
     .. " goes from the worktree.", details = h.lines,
     details_ft = "diff" }, function(yes)
     if not yes then return end
