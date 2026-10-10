@@ -792,8 +792,8 @@ end
 -- The chat, part two: streamed answers (stream-json), a visual selection
 -- and !refs in the message, a saved prompt (/build) reading a build log,
 -- open_in_ui, annotate_code, the fix flow (worktree -> diff -> commit and
--- push, asked first), board tools with an undo from the audit log (gL, u),
--- gr drafting an answer as a reply, switching agents (ga) and going back to
+-- push, asked first), board tools with an undo from the audit log (gH, u),
+-- gr drafting an answer as a reply, switching agents (gM) and going back to
 -- an earlier conversation (gh).
 do
   local CHAT = require("azure-cli.chat")
@@ -1016,7 +1016,7 @@ do
   if not need(e, why, "get_pull_request: {", "get_pr_threads: [", "PR !9999 wasn't found",
     "find_definition: {", "src/throttle.py", "def is_locked", "find_implementations: {") then return end
 
-  -- Board tools, then u in gL undoes the link.
+  -- Board tools, then u in gH undoes the link.
   e, why = ask("plan the work")
   if not need(e, why, "create_child_task: Created Task", "move_to_sprint: Moved #3002", "link_pr_to_work_item: Linked PR #102") then return end
   local items = require("azure-cli.chat.store").audit()
@@ -1024,9 +1024,9 @@ do
     return fail("the link isn't in the audit log with an undo: " .. vim.inspect(items[#items]))
   end
   vim.api.nvim_set_current_win(wins().log)
-  feed("gL")
+  feed("gH")
   local fw = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_get_config(fw).relative == "" then return fail("gL didn't open the audit float") end
+  if vim.api.nvim_win_get_config(fw).relative == "" then return fail("gH didn't open the audit float") end
   vim.api.nvim_win_set_cursor(fw, { 1, 0 })
   feed("u")
   ok = vim.wait(10000, function()
@@ -1051,13 +1051,13 @@ do
   ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
   if not ok then return fail("gr's reply wasn't queued") end
 
-  -- ga: the other agent, which gets the conversation replayed.
+  -- gM: the other agent, which gets the conversation replayed.
   answer = "Plain"
   vim.api.nvim_set_current_win(wins().log)
-  feed("ga")
+  feed("gM")
   e, why = ask("hello")
   if not need(e, why, "turn: 1", "message had the history: True") then return end
-  if e.label ~= "Plain" or e.mode ~= "replay" then return fail("ga didn't switch agents: " .. vim.inspect({ e.label, e.mode })) end
+  if e.label ~= "Plain" or e.mode ~= "replay" then return fail("gM didn't switch agents: " .. vim.inspect({ e.label, e.mode })) end
 
   -- A note from the dashboard, then gn and back with gh.
   CHAT.on_new_comments({ id = 102, title = "Reload config" }, 2)
@@ -1403,10 +1403,10 @@ do
     return fail("create_pull_request's question doesn't show the description")
   end
 
-  -- gL in the plan: the run log, with everything that happened.
+  -- gH in the plan: the run log, with everything that happened.
   vim.api.nvim_set_current_tabpage(v.tab)
   vim.api.nvim_set_current_win(v.plan_win)
-  feed("gL")
+  feed("gH")
   local logtext = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
   for _, s in ipairs({ "# Run log: #3002 Lockout reason codes", "## Timeline", "Revision 1, by the agent", "Revision 2, edited by you",
     "You asked about plan line", "You asked for a change on plan line 8", "You asked for changes: See my comments",
@@ -1415,7 +1415,7 @@ do
     if not logtext:find(s, 1, true) then return fail("the run log lacks \"" .. s .. "\":\n" .. logtext) end
   end
   vim.cmd("tabclose")
-  -- gw on one of the agent's steps in the conversation: asked about it.
+  -- ga on one of the agent's steps in the conversation: asked about it.
   CHAT.show(false)
   local lw = st.wins[vim.api.nvim_get_current_tabpage()].log
   local lb = vim.api.nvim_win_get_buf(lw)
@@ -1436,11 +1436,11 @@ do
   vim.api.nvim_set_current_win(lw)
   vim.api.nvim_win_set_cursor(lw, { step_row, 0 })
   n = #st.entries
-  feed("gw")
+  feed("ga")
   feed("<C-s>")
   e = answered(n)
   if not (e and e.text:find("BECAUSE-", 1, true) and e.text:find("show_fix", 1, true)) then
-    return fail("gw on a step didn't ask about it: " .. vim.inspect(e and e.text))
+    return fail("ga on a step didn't ask about it: " .. vim.inspect(e and e.text))
   end
   if not st.entries[n + 1].text:find("Why did you do this?  (about: ", 1, true) then
     return fail("the question isn't in the chat as asked: " .. st.entries[n + 1].text)

@@ -40,6 +40,14 @@ function M.resolve(surface, action)
   return prefix .. keyspec
 end
 
+-- The first key resolved for surface/action, or nil when it's unbound - for
+-- a message or hint that names the key ("approve it again (gA)").
+function M.first(surface, action)
+  local k = M.resolve(surface, action)
+  if type(k) == "table" then k = k[1] end
+  return k
+end
+
 -- Binds `fn` to every key resolved for surface/action on `buf`, or does
 -- nothing when the action is unbound. `opts.mode` defaults to "n" (pass
 -- "x" for a visual-mode mapping, e.g. the diff pane's comment_range);

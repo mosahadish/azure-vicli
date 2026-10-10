@@ -98,14 +98,14 @@ local DEFAULT_KEYS = {
   -- The chat panel (both its conversation and its input box).
   chat = {
     send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
-    cancel = "<C-c>", model = "gm", agent = "ga", prompts = "gp", history = "gh", audit = "gL",
+    cancel = "<C-c>", model = "gm", agent = "gM", prompts = "gp", history = "gh", audit = "gH",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
     back = "<BS>", hide = "q", toggle = "gq", help = "?", resize_less = "<", resize_more = ">",
-    changes = "gd", why = "gw", expand = "<Tab>", agents = "gA",
+    changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
-    open = "<CR>", changes = "gd", run_log = "gL", chat = "gq", cancel = "<C-c>", refresh = "r",
+    open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", approve = "gA",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
@@ -113,7 +113,7 @@ local DEFAULT_KEYS = {
     open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
     refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", quit = "q",
-    goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gL", answer = "gr",
+    goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
   },
 }
 

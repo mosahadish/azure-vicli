@@ -486,7 +486,7 @@ function M.description_for(given, from_plan, work_item_ids, source)
 end
 
 -- The run log: everything that happened to a plan and its change, as
--- markdown (gL in the plan opens it). `o` = { threads = the change
+-- markdown (gH in the plan opens it). `o` = { threads = the change
 -- viewer's questions and requests, tests = the last test run, audit = the
 -- agent's tool calls for this PR / work item (store.audit's), lines = the
 -- plan as it is now }. Pure (`date` formats a timestamp).
@@ -635,11 +635,7 @@ local list_ns = vim.api.nvim_create_namespace("azure_cli_plan_list")
 local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
 local function valid_buf(b) return b and vim.api.nvim_buf_is_valid(b) end
 
-local function key_of(surface, action)
-  local k = KEYS().resolve(surface, action)
-  if type(k) == "table" then k = k[1] end
-  return k
-end
+local function key_of(surface, action) return KEYS().first(surface, action) end
 
 local LIST_HELP = {
   "Sections",
@@ -1067,7 +1063,7 @@ vim.api.nvim_create_autocmd("BufWritePost", {
         render()
       end)
     end
-    notify("Plan saved as your version" .. ((was == "approved") and " - approve it again (gA) for the agent to use it." or "."))
+    notify("Plan saved as your version" .. ((was == "approved") and " - approve it again (" .. (key_of("plan", "approve") or "gA") .. ") for the agent to use it." or "."))
   end,
 })
 
@@ -1377,7 +1373,7 @@ function M.event_for_worktree(dir, kind, text)
   changed(rec)
 end
 
--- gL: the run log, written to <plans>/<key>.log.md and opened in a tab.
+-- gH: the run log, written to <plans>/<key>.log.md and opened in a tab.
 function M.open_run_log(key)
   local rec = M.load(key)
   if not rec then return notify("No plan " .. tostring(key) .. ".") end

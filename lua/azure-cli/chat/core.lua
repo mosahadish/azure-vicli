@@ -72,7 +72,7 @@ function M.money(x)
   return string.format("$%.2f", x)
 end
 
--- What gw sends: a question about one of the agent's steps (a tool call
+-- What ga in the conversation sends: a question about one of the agent's steps (a tool call
 -- it made, `kind` "step") or a line of its answer ("line"), with the
 -- message it was answering. Pure.
 function M.why_message(quote, kind, asked, question)

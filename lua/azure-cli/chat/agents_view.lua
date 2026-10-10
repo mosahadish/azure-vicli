@@ -8,7 +8,7 @@
 --    #3002  --name takes the flag as its value ● plan waits for you    3m
 --    #3012  Tests for the lockout window       ⌛ waiting for an agent
 --
--- <CR> opens the row's plan, gd its change, gL its run log, gq its plan's
+-- <CR> opens the row's plan, gd its change, gH its run log, gq its plan's
 -- tab with that agent's conversation in the chat; <C-c> stops what it's
 -- doing. Redrawn every second while it's showing.
 --

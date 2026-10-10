@@ -8,7 +8,7 @@
 --   current                  the id of the conversation in the panel
 --   audit.json               every change the agent made through a tool
 --                            (newest last, 200 kept), with what undoing it
---                            needs - gL lists them, u undoes one
+--                            needs - gH lists them, u undoes one
 local M = {}
 
 M.KEEP = 50

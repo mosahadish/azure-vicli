@@ -8,21 +8,21 @@
 -- if needed); gq/q inside it hides it. gq on a visual selection sends the
 -- selected lines along with the next message.
 --
--- The chosen agent (chat.agent, or one of chat.agents - ga switches) runs
+-- The chosen agent (chat.agent, or one of chat.agents - gM switches) runs
 -- headless and stays running for the whole conversation: either a CLI
 -- reading one stream-json request per message on stdin (Claude Code's
 -- --input-format stream-json), its events read as they arrive by
 -- chat/core.lua's stream reader, or (agent.acp) an Agent Client Protocol
 -- session (chat/acp.lua). Each message carries a description of what's
 -- under the cursor (chat/view.lua) and of the PRs/work items it names
--- (chat/refs.lua); a process started mid-conversation (ga, gh, gm) gets
+-- (chat/refs.lua); a process started mid-conversation (gM, gh, gm) gets
 -- the conversation so far replayed to it. Conversations are saved
 -- (chat/store.lua): the last one comes back after a restart, gh opens an
 -- older one.
 --
 -- The agent's tools (chat/tools*.lua) reach Neovim through `azure-cli.py
 -- --mcp` and chat/bridge.lua; their calls show in the conversation as they
--- happen, every change lands in an audit log (gL, u undoes), and the ones
+-- happen, every change lands in an audit log (gH, u undoes), and the ones
 -- that ask pop up a prompt (with the diff/text they'd send, when there is
 -- one).
 local M = {}
@@ -59,7 +59,7 @@ local function MAIN()
     running = nil,       -- { job, turn, timer, tick, cancelled } - the message in flight
     persistent_job = nil, -- { job, agent_name, conv_id, turn, stale } - the agent's running process
     models = {},         -- agent name -> model picked with gm
-    agent_name = nil,    -- picked with ga
+    agent_name = nil,    -- picked with gM
     sent = {},           -- what was sent, for <Up>/<Down> in the input box
     selection = nil,     -- { win, buf, from, to, text } from gq in visual mode
     restored = false,
@@ -119,7 +119,7 @@ function M.agents()
   return {}
 end
 
--- The agent in use: name, spec - the one picked with ga, else
+-- The agent in use: name, spec - the one picked with gM, else
 -- chat.default_agent, else the first by name.
 function M.current_agent()
   local agents = M.agents()
@@ -421,8 +421,6 @@ local function ensure_bufs()
     KEYS.bind(b, "chat", "history", function() pick_history() end, { desc = "open an earlier conversation" })
     KEYS.bind(b, "chat", "audit", function() show_audit() end, { desc = "what the agent changed (u undoes)" })
     KEYS.bind(b, "chat", "changes", function() M.show_changes() end, { desc = "the agent's change, file by file" })
-    KEYS.bind(b, "chat", "agents", function() require("azure-cli.chat.agents_view").open() end,
-      { desc = "every plan's agent (the Agents screen)" })
     KEYS.bind(b, "chat", "resize_less", function() M.resize(-1) end, { desc = "make the chat smaller" })
     KEYS.bind(b, "chat", "resize_more", function() M.resize(1) end, { desc = "make the chat bigger" })
     KEYS.bind(b, "chat", "back", function()
@@ -434,6 +432,9 @@ local function ensure_bufs()
   KEYS.bind(log_buf, "chat", "open_ref", function() open_ref() end, { desc = "open the PR/work item under the cursor" })
   KEYS.bind(log_buf, "chat", "use_as_reply", function() use_as_reply() end, { desc = "draft this answer as a reply" })
   KEYS.bind(log_buf, "chat", "why", function() ask_why() end, { desc = "ask the agent why it did this" })
+  -- Not in the input box: A there is Vim's own "append at the end".
+  KEYS.bind(log_buf, "chat", "agents", function() require("azure-cli.chat.agents_view").open() end,
+    { desc = "every plan's agent (the Agents screen)" })
   KEYS.bind(log_buf, "chat", "expand", function()
     -- <Tab>: all of this turn's tool calls and answer, or folded again.
     local st = STATE()
@@ -876,7 +877,7 @@ local function panel_visible()
 end
 
 -- Every agent keeps one process alive across messages (see send/send_acp):
--- stopped whenever the conversation it belongs to goes away from under it (ga, gh,
+-- stopped whenever the conversation it belongs to goes away from under it (gM, gh,
 -- a new chat) or Neovim exits. An ACP connection's `.finish` (set by
 -- send_acp's `running`) finalizes whatever message is still in flight -
 -- stopping the process on its own would otherwise leave that entry's
@@ -1415,7 +1416,7 @@ open_ref = function()
   require("azure-cli.chat.refs").open(ref)
 end
 
--- gw on one of the agent's steps (a tool call line) or a line of its
+-- ga on one of the agent's steps (a tool call line) or a line of its
 -- answer: ask it why, quoting that line and the message it answered.
 ask_why = function()
   local st = STATE()
@@ -1531,7 +1532,7 @@ pick_model = function()
 end
 M.pick_model = pick_model
 
--- ga: switch agents. The other agent can't resume this one's session, so
+-- gM: switch agents. The other agent can't resume this one's session, so
 -- the next message replays the conversation to it.
 pick_agent = function()
   local agents = M.agents()
@@ -1592,7 +1593,7 @@ pick_history = function()
   end)
 end
 
--- gL: the audit log - every change the agent made, newest first; u on one
+-- gH: the audit log - every change the agent made, newest first; u on one
 -- undoes it (when it can be).
 show_audit = function()
   local STORE = require("azure-cli.chat.store")

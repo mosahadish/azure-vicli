@@ -651,7 +651,7 @@ local function diff_buf(idx)
   bind(buf, "diff", "delete_thread", function() delete_here(idx) end, { desc = "forget what's under this line" })
   bind(buf, "diff", "expand_thread", function()
     local th = thread_here(idx)
-    if not th then return notify("No question on this line (ga asks one).") end
+    if not th then return notify("No question on this line (" .. (KEYS().first("diff", "ask") or "ga") .. " asks one).") end
     THREADS().toggle(th)
     draw_threads(idx)
   end, { desc = "show all of the answer / fold it" })

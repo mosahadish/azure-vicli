@@ -295,9 +295,9 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
-| `agent` | `ga` |
-| `agents` | `gA` |
-| `audit` | `gL` |
+| `agent` | `gM` |
+| `agents` | `A` |
+| `audit` | `gH` |
 | `back` | `<BS>` |
 | `cancel` | `<C-c>` |
 | `changes` | `gd` |
@@ -318,7 +318,7 @@ paste the output here after changing a default.
 | `send_insert` | `<C-s>` |
 | `toggle` | `gq` |
 | `use_as_reply` | `gr` |
-| `why` | `gw` |
+| `why` | `ga` |
 
 #### plan
 
@@ -343,7 +343,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `revise` | `gR` |
-| `run_log` | `gL` |
+| `run_log` | `gH` |
 | `since` | `gi` |
 | `view_thread` | `K` |
 
@@ -359,6 +359,6 @@ paste the output here after changing a default.
 | `open` | `<CR>` |
 | `quit` | `q` |
 | `refresh` | `r` |
-| `run_log` | `gL` |
+| `run_log` | `gH` |
 
 <!-- END GENERATED KEYS TABLE -->

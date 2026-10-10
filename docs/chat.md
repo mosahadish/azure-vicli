@@ -49,14 +49,14 @@ until you hide it. The conversation is the same in every tab.
 | `i` / `a` (conversation) | Go to the input box |
 | `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |
 | `<Tab>` (conversation) | Unfold a long answer, or the list of tool calls folded into one line ("· 6 lookups, 2 changes"); again folds it |
-| `gw` (conversation) | Ask the agent why it did the step under the cursor (one of its tool calls, `✎ create_branch (...)`) or wrote that line |
+| `ga` (conversation) | Ask the agent why it did the step under the cursor (one of its tool calls, `✎ create_branch (...)`) or wrote that line |
 | `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
 | `gp` | Run a saved prompt |
-| `gL` | What the agent changed; `u` on a line undoes it |
+| `gH` | What the agent changed; `u` on a line undoes it |
 | `gd` | The agent's code change (a fix or a story), file by file like the reviewer |
 | `gh` | Open an earlier conversation |
 | `gn` | Start a new conversation (the current one stays in `gh`) |
-| `ga` / `gm` | Choose the agent / the model |
+| `gM` / `gm` | Choose the agent / the model |
 | `<C-c>` | Stop the agent |
 | `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
 | `<BS>` | Back to the screen next to the panel |
@@ -144,7 +144,7 @@ Conversations are saved (under Neovim's data directory, the last 50): the
 one in the panel is still there after a restart, `gn` starts a new one, and
 `gh` brings back an earlier one.
 
-With several agents configured (`chat.agents`, below), `ga` switches
+With several agents configured (`chat.agents`, below), `gM` switches
 between them. `gm` picks the model for the current agent. Switching agent
 or model, going back to an older conversation with `gh`, or a restart
 starts a new process, and your next message replays the conversation to it.
@@ -246,7 +246,7 @@ agent = {
 ### Fields
 
 **Several agents.** Instead of `agent`, give `agents = { claude = {...},
-copilot = {...} }` and optionally `default_agent = "claude"`; `ga` switches.
+copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 
 | `chat.agent` field | Meaning |
 |---|---|
@@ -270,7 +270,7 @@ typed, prompts expanded), `{view}` (the view description), `{mcp_config}`
 `{fix_root}` (where fix and story worktrees live), `{model}`.
 
 The process is stopped (and the next message starts a new one, with the
-conversation replayed) on `ga`, `gm`, `gh`, a new chat, and quitting Neovim -
+conversation replayed) on `gM`, `gm`, `gh`, a new chat, and quitting Neovim -
 it's tied to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
@@ -421,7 +421,7 @@ their line when the text around them changes.
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
 | `gd` | The code this line became (in the change viewer; `gp` there comes back) |
-| `gL` | The run log: everything that happened to the plan and its change, as one page |
+| `gH` | The run log: everything that happened to the plan and its change, as one page |
 | `gf` | Edit the plan's file yourself; saving it makes your version the one the agent gets (and it needs approving again) |
 | `<CR>` (section list) | Go to the section; moving through the list scrolls the plan |
 | `<BS>` | Back to the section list |
@@ -462,7 +462,7 @@ Files entry always opens its file. Those lines are marked in both places
 of the change goes to the plan line it belongs to (the nearest step above
 it, else the file's Files entry).
 
-**The run log.** `gL` in the plan opens one page with everything that
+**The run log.** `gH` in the plan opens one page with everything that
 happened to it: a timeline of its revisions (the agent's and yours), your
 questions and change requests, the approval, the test runs, the hunks you
 took out, the agent's tool calls for that PR or work item, and the push;
@@ -522,7 +522,7 @@ question waits for you · ● 2 plans wait for you`.
 
 ![The Agents screen: one row per plan's agent - working, its plan waiting for you, approved](images/chat-agents.png)
 
-**The Agents screen** (`A` on either dashboard, `gA` in the chat,
+**The Agents screen** (`A` on either dashboard, `A` in the chat's conversation,
 `:AzureCli agents`) lists every plan's agent - what it's doing (working,
 with its latest step; waiting for an agent; its plan waiting for you;
 approved; revising; pushed), how long since it last did something, and
@@ -534,7 +534,7 @@ winbar adds them up - ACP agents don't report a cost):
 | `<CR>` | The row's plan |
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
-| `gL` | Its run log |
+| `gH` | Its run log |
 | `gq` | Its plan's tab, with that agent's conversation in the chat |
 | `<C-c>` | Stop what it's doing |
 | `r` / `q` / `?` | Redraw / close / keys |
@@ -598,7 +598,7 @@ question), `"ask"`, or `"deny"` (the agent doesn't even see it):
 permissions = { create_branch = "ask", commit_and_push_fix = "deny", set_thread_status = "allow" },
 ```
 
-**Undo.** Every change the agent makes is logged; `gL` lists them (newest
+**Undo.** Every change the agent makes is logged; `gH` lists them (newest
 first) and `u` on one undoes it where that's possible: unlinking, deleting a
 branch it created (only if nobody pushed to it since), taking a draft back
 out of the queue, and putting back a vote, a state, an assignee, a sprint, a
@@ -641,7 +641,7 @@ tasks and pushes can't be undone from here; the list says so.
 5. It offers `create_pull_request` (which asks too), linking the work item.
 
 The repository has to be cloned locally: `<clones_dir>/<repo>`, as for
-reviews. `u` in `gL` deletes the branch again as long as nothing was pushed
+reviews. `u` in `gH` deletes the branch again as long as nothing was pushed
 to it.
 
 **The agent has to be allowed to edit there.** Claude Code runs headless, so
