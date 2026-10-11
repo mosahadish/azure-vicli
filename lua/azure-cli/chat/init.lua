@@ -49,6 +49,7 @@ end
 local CONV_FIELDS = {
   entries = true, session_id = true, conv_id = true, created = true, running = true, persistent_job = true,
   plan_key = true, agent_id = true, label = true, bridge_entry = true, mcp_path = true, target = true, title = true,
+  model = true, model_agent = true,
 }
 
 local function MAIN()
@@ -146,11 +147,23 @@ M.agent_label = agent_label
 -- Whether a message is in flight (a new one has to wait).
 function M.busy() return STATE().running ~= nil end
 
--- The model in use for `agent`: the one picked with gm (per agent) this
--- session, else agent.model, else the first of agent.models, else nil.
-function M.current_model(agent)
-  for name, a in pairs(M.agents()) do
-    if a == agent and STATE().models[name] then return STATE().models[name] end
+-- The model conversation `st` (default: the panel's) uses on `agent`: the
+-- one picked there with gm, else its stage's - a plan's own agent is on
+-- agent.planner_model until you approve its plan, then on
+-- agent.implementer_model - else agent.model, else the first of
+-- agent.models, else nil.
+function M.current_model(agent, st)
+  st = st or STATE()
+  if st.model then
+    for name, a in pairs(M.agents()) do
+      if a == agent and st.model_agent == name then return st.model end
+    end
+  end
+  if agent and st.plan_key and (agent.planner_model or agent.implementer_model) then
+    local rec = require("azure-cli.chat.plan").load(st.plan_key)
+    local approved = rec and (rec.status == "approved" or rec.status == "done")
+    local staged = approved and agent.implementer_model or (not approved and agent.planner_model)
+    if staged then return staged end
   end
   if agent and agent.model then return agent.model end
   local list = CORE.models(agent)
@@ -166,7 +179,7 @@ local function save(st)
   st.conv_id = st.conv_id or require("azure-cli.chat.store").new_id()
   st.created = st.created or os.time()
   pcall(require("azure-cli.chat.store").save, { id = st.conv_id, created = st.created, entries = st.entries,
-    session_id = st.session_id, agent = (M.current_agent()), model = M.current_model(select(2, M.current_agent())),
+    session_id = st.session_id, agent = (M.current_agent()), model = M.current_model(select(2, M.current_agent()), st),
     plan = st.plan_key })
 end
 

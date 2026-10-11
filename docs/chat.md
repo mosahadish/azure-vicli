@@ -145,9 +145,13 @@ one in the panel is still there after a restart, `gn` starts a new one, and
 `gh` brings back an earlier one.
 
 With several agents configured (`chat.agents`, below), `gM` switches
-between them. `gm` picks the model for the current agent. Switching agent
-or model, going back to an older conversation with `gh`, or a restart
-starts a new process, and your next message replays the conversation to it.
+between them. `gm` picks the model for the conversation you're in (the
+main chat, or the agent of the plan you're looking at) - see
+`planner_model` / `implementer_model` below for a model per stage.
+Switching agent or model, going back to an older conversation with `gh`,
+or a restart starts a new process, and your next message replays the
+conversation to it - except that an ACP agent (Copilot) switches model
+within its session.
 
 **Proactive.** When the dashboard sees new comments on one of your PRs, a
 note appears in the conversation suggesting `/triage` (no agent runs;
@@ -189,6 +193,8 @@ require("azure-cli").setup({
       -- Premium requests per message, by model (your plan's multipliers, see
       -- GitHub's "Copilot premium requests" page); `default` for the rest.
       premium_requests = { default = 1, ["claude-sonnet-5"] = 1, ["gpt-5.5"] = 1 },
+      -- Optional: a plan's agent plans on one model and implements on another.
+      -- planner_model = "gpt-5.5", implementer_model = "claude-sonnet-5",
     },
   },
 })
@@ -269,6 +275,7 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 | `premium_requests` | For an agent billed per message (Copilot): what one message counts as, by model name, with `default` for any other (missing: 1). Each message adds that up, shown where costs are. |
 | `stdin` | What each message writes to its stdin, as one line (default: Claude Code's stream-json user message, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}`). Unused with `acp`. |
 | `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option`). |
+| `planner_model` / `implementer_model` | A plan's own agent (`gP`, `/plan`, `start_agents`) plans on `planner_model`, and once you approve its plan, implements on `implementer_model`; the main chat stays on `model`. Either missing: that stage uses `model`. An ACP agent switches in its session; another starts again on the new model and gets the conversation. `gm` picks a model for the conversation you're in only, over all of these. |
 | `label` | The agent's name in the panel. |
 | `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls). Unused with `acp`. |
 | `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900) - a timeout stops the process (`acp`: asks the agent to stop the turn first). |
@@ -285,8 +292,10 @@ typed, prompts expanded), `{view}` (the view description), `{mcp_config}`
 `{fix_root}` (where fix and story worktrees live), `{model}`.
 
 The process is stopped (and the next message starts a new one, with the
-conversation replayed) on `gM`, `gm`, `gh`, a new chat, and quitting Neovim -
-it's tied to one conversation with one agent and model.
+conversation replayed) on `gM`, a model change (`gm`, or a plan's agent
+moving from `planner_model` to `implementer_model` - an ACP agent switches
+in its session instead), `gh`, a new chat, and quitting Neovim - it's tied
+to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`

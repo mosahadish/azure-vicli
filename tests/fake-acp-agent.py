@@ -39,6 +39,7 @@ def main():
             f.write(str(os.getpid()) + "\n")
     tools_seen = "no azure-vicli tools"
     turn = 0
+    model = None
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -65,6 +66,8 @@ def main():
         elif method == "session/prompt":
             turn += 1
             text = "turn {0}, pid {1}, {2}".format(turn, os.getpid(), tools_seen)
+            if model:
+                text += ", model " + model
             prompt = "".join(p.get("text", "") for p in params.get("prompt") or [])
             if "PERMS" in prompt:
                 # Ask permission for a read and an edit, the way Copilot
@@ -126,6 +129,10 @@ def main():
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
                   "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}}})
             send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+        elif method == "session/set_config_option":
+            if params.get("configId") == "model":
+                model = params.get("value")
+            send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif mid is not None:
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
 

@@ -173,13 +173,14 @@ pick_model = function()
   require("azure-cli.prompt").select({ prompt = "Model for " .. (agent.label or name), items = list,
     current = function(m) return m.value == cur end }, function(choice)
     if not choice then return end
+    -- This conversation's only: the main chat's, or the agent's in the
+    -- plan you're looking at. The next message uses it (an ACP agent
+    -- switches in its session; another starts again on it).
     local st = STATE()
-    st.models[name] = choice.value
-    -- The running process was started with the old model: the next
-    -- message starts one with this model (the conversation replayed).
-    if st.persistent_job then st.persistent_job.stale = true end
+    st.model, st.model_agent = choice.value, name
     CHAT().set_winbars()
-    notify("Chat model: " .. choice.label .. (uses and "" or " - but the agent's cmd has no {model}, so it can't pass it on."))
+    notify((st.plan_key and ("Model for " .. (st.label or st.plan_key) .. "'s agent: ") or "Chat model: ") .. choice.label
+      .. (uses and "" or " - but the agent's cmd has no {model}, so it can't pass it on."))
   end)
 end
 M.pick_model = pick_model
@@ -201,6 +202,7 @@ pick_agent = function()
     stop_persistent(st)
     st.agent_name = choice
     st.session_id = nil
+    st.model, st.model_agent = nil, nil
     CHAT().set_winbars()
     notify("Chat agent: " .. (agents[choice].label or choice) .. " - it gets the conversation so far with your next message.")
   end)

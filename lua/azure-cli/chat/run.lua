@@ -368,10 +368,19 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     end, timeout * 1000)
   end
 
+  local model = vars.model ~= "" and vars.model or nil
+  local function set_model(pj, next_step)
+    if not model or pj.model == model then return next_step() end
+    pj.model = model
+    local ok = pcall(pj.conn.request, "session/set_config_option",
+      { sessionId = pj.acp_session_id, configId = "model", value = model }, function() next_step() end)
+    if not ok then next_step() end
+  end
+
   if reuse then
     local pj = st.persistent_job
     running(pj)
-    send_prompt(pj)
+    set_model(pj, function() send_prompt(pj) end)
     return
   end
 
@@ -432,12 +441,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
           return finish("failed", tostring(serr or "the agent didn't return a session id"))
         end
         pj.acp_session_id = result.sessionId
-        local model = CHAT().current_model(agent)
-        if model then
-          pcall(conn.request, "session/set_config_option",
-            { sessionId = pj.acp_session_id, configId = "model", value = model }, function() end)
-        end
-        send_prompt(pj)
+        set_model(pj, function() if live() then send_prompt(pj) end end)
       end)
     end)
   end)
@@ -513,13 +517,18 @@ send = function(text, opts)
   -- The agent's process from an earlier message of this conversation takes
   -- this one too; otherwise a new one starts, and - unless this is the
   -- first message - gets the conversation so far replayed to it.
+  local model = CHAT().current_model(agent, st)
   local reuse = persistent_alive(st, agent_name)
+  -- A different model than its process runs (its plan approved: planner ->
+  -- implementer; or gm): an ACP agent switches in its session (send_acp),
+  -- any other starts again on it.
+  if reuse and not agent.acp and st.persistent_job.model ~= model then reuse = false end
   if st.persistent_job and not reuse then stop_persistent(st) end
   local replay = not first and not reuse
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
     label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil,
-    requests = CORE.request_multiplier(agent, CHAT().current_model(agent)) }
+    requests = CORE.request_multiplier(agent, model), model = model }
   table.insert(st.entries, entry)
   if st.agent_id then
     -- A plan's own agent: its tool calls come with its id (the relay's
@@ -537,7 +546,7 @@ send = function(text, opts)
   })
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,
-    model = CHAT().current_model(agent) or "",
+    model = model or "",
     mcp_config = write_mcp_config(addr, token, st.agent_id),
     mcp_server = agent.acp and acp_mcp_server(addr, token, st.agent_id) or nil,
     view = view_text,
@@ -634,7 +643,7 @@ send = function(text, opts)
     -- reuses it), so they read the turn in progress through its own `pj` -
     -- not through `st.persistent_job`, which stop_persistent clears before
     -- the process's on_exit runs, and that turn would then never finish.
-    local pj = { agent_name = agent_name, conv_id = st.conv_id, turn = turn }
+    local pj = { agent_name = agent_name, conv_id = st.conv_id, turn = turn, model = model }
     local function get_turn() return pj.turn end
     local ok
     ok, job = pcall(vim.fn.jobstart, cmd, {

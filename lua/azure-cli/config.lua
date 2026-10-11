@@ -247,6 +247,7 @@ local CHAT_FIELDS = {
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
   models = "table", strip = "table", acp = "boolean", premium_requests = "table",
+  planner_model = "string", implementer_model = "string",
 }
 -- Fields from when every message started a fresh process: the agent now
 -- stays running for the whole conversation, so there's nothing to resume.

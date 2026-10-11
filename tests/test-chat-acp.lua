@@ -170,6 +170,33 @@ check("multiplier: per model, else default, else none",
     and CORE0.request_multiplier({ premium_requests = { mini = 0 } }, "mini") == 0
     and CORE0.request_multiplier({}, "opus") == nil)
 
+-- Models by stage: a plan's agent plans on planner_model, switches (in its
+-- session) to implementer_model once the plan is approved; the main chat
+-- stays on `model`; gm sets one conversation's only.
+local AGENT = require("azure-cli.config").get().chat.agent
+AGENT.model, AGENT.planner_model, AGENT.implementer_model = "chatty", "thinker", "coder"
+local mc = CHAT.conversation("wi-77", { label = "#77", target = { work_item_id = 77 } })
+local function conv_send(c, text)
+  local d
+  CHAT.send(text, { conv = c, view_win = win, on_done = function() d = true end })
+  vim.wait(20000, function() return d end, 20)
+  return c.entries[#c.entries]
+end
+local m1 = conv_send(mc, "plan it")
+check("a plan's agent plans on planner_model", m1.text:find("model thinker", 1, true) ~= nil and m1.model == "thinker", m1.text)
+PLAN.save({ key = "wi-77", status = "approved", target = { work_item_id = 77 }, threads = {}, revisions = { { markdown = "x" } } })
+local m2 = conv_send(mc, "go ahead")
+check("approved: it implements on implementer_model", m2.text:find("model coder", 1, true) ~= nil, m2.text)
+check("switched in the same session", m1.text:match("pid (%d+)") == m2.text:match("pid (%d+)"), { m1.text, m2.text })
+CHAT.new_chat(true)
+local m3 = send_and_wait("hello")
+check("the main chat stays on model", m3 and m3.text:find("model chatty", 1, true) ~= nil, m3 and m3.text)
+mc.model, mc.model_agent = "picked", require("azure-cli.chat").current_agent()
+check("gm's pick is that conversation's only", CHAT.current_model(AGENT, mc) == "picked"
+  and CHAT.current_model(AGENT, STATE.chat) == "chatty")
+os.remove(PLAN.root() .. "/wi-77.json")
+AGENT.model, AGENT.planner_model, AGENT.implementer_model = nil, nil, nil
+
 -- The main chat as the coordinator: its /plan starts an agent (shown on
 -- the Agents screen) instead of planning itself; list_agents and
 -- message_agent reach the agents; a plan's agent can't use them.
