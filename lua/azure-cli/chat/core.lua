@@ -65,6 +65,43 @@ function M.cost_of(entries)
   return any and sum or nil
 end
 
+-- A conversation's premium requests so far (Copilot bills a message as one
+-- request times its model's multiplier - agent.premium_requests): the sum
+-- of its messages' `requests`, or nil when none counted. Pure.
+function M.requests_of(entries)
+  local sum, any = 0, false
+  for _, e in ipairs(entries or {}) do
+    if type(e.requests) == "number" then sum, any = sum + e.requests, true end
+  end
+  return any and sum or nil
+end
+
+-- What one message to `agent` on `model` counts as, in premium requests:
+-- agent.premium_requests[model], else its `default`; nil when the agent has
+-- no premium_requests (it isn't billed that way). Pure.
+function M.request_multiplier(agent, model)
+  local p = type(agent) == "table" and agent.premium_requests
+  if type(p) ~= "table" then return nil end
+  local m = (model and model ~= "" and p[model]) or p.default
+  if m == nil then m = 1 end
+  return tonumber(m)
+end
+
+-- "12 req", "1.5 req", "" for nil. Pure.
+function M.requests_label(n)
+  if type(n) ~= "number" then return "" end
+  return (n == math.floor(n) and tostring(math.floor(n)) or string.format("%.1f", n)) .. " req"
+end
+
+-- How full the agent's context is, from ACP's usage_update ({ used, size }):
+-- "ctx 27%", "" when unknown. Pure.
+function M.context_label(ctx)
+  if type(ctx) ~= "table" or not tonumber(ctx.used) or not tonumber(ctx.size) or tonumber(ctx.size) <= 0 then
+    return ""
+  end
+  return "ctx " .. math.floor(100 * tonumber(ctx.used) / tonumber(ctx.size) + 0.5) .. "%"
+end
+
 -- "$0.42", "<$0.01", "" for nil. Pure.
 function M.money(x)
   if type(x) ~= "number" then return "" end

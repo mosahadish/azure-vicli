@@ -82,6 +82,14 @@ def main():
                             picked[kind] = ((reply.get("result") or {}).get("outcome") or {}).get("optionId")
                             break
                 text += ", perms: read={0} edit={1}".format(picked.get("read"), picked.get("edit"))
+            # USAGE: report the context and a cumulative cost, as ACP's
+            # usage_update does ($0.05 more each time).
+            if "USAGE" in prompt:
+                usage_cost = round(globals().get("usage_cost", 0) + 0.05, 2)
+                globals()["usage_cost"] = usage_cost
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
+                      "update": {"sessionUpdate": "usage_update", "used": 50000, "size": 200000,
+                                 "cost": {"amount": usage_cost, "currency": "USD"}}}})
             # EXEC=<command, _ for spaces>: ask to run it, report the option.
             for n, cmd in enumerate(re.findall(r"EXEC=(\S+)", prompt)):
                 cmd = cmd.replace("_", " ")

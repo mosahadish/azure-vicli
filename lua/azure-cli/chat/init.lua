@@ -340,6 +340,17 @@ function M.set_winbars()
   local _, agent = M.current_agent()
   local model = M.current_model(agent)
   if model then tags[#tags + 1] = "[" .. model .. "]" end
+  -- What this conversation has used: its cost when the agent reports one,
+  -- else its premium requests; and how full the agent's context is.
+  local CORE = require("azure-cli.chat.core")
+  local cost = CORE.cost_of(st.entries)
+  local used = cost and CORE.money(cost) or CORE.requests_label(CORE.requests_of(st.entries))
+  local ctx
+  for i = #st.entries, 1, -1 do
+    if st.entries[i].context then ctx = CORE.context_label(st.entries[i].context) break end
+  end
+  local usage = table.concat(vim.tbl_filter(function(x) return x and x ~= "" end, { used, ctx }), " \u{00B7} ")
+  if usage ~= "" then tags[#tags + 1] = "[" .. usage .. "]" end
   if st.running then tags[#tags + 1] = "[" .. spinner() .. " working]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")

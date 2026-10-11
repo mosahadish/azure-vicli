@@ -186,6 +186,9 @@ require("azure-cli").setup({
       acp = true,
       models = { "claude-sonnet-5", "gpt-5.5" },   -- examples: use the names your `copilot --help` lists
       cmd = { "copilot", "--acp", "--add-dir", "{fix_root}", "--allow-tool", "azure-vicli" },
+      -- Premium requests per message, by model (your plan's multipliers, see
+      -- GitHub's "Copilot premium requests" page); `default` for the rest.
+      premium_requests = { default = 1, ["claude-sonnet-5"] = 1, ["gpt-5.5"] = 1 },
     },
   },
 })
@@ -263,6 +266,7 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 |---|---|
 | `cmd` | The command (a list, or a string run through `'shell'` with every value shell-escaped; `acp` needs a list). |
 | `acp` | The process speaks the Agent Client Protocol (`copilot --acp`). |
+| `premium_requests` | For an agent billed per message (Copilot): what one message counts as, by model name, with `default` for any other (missing: 1). Each message adds that up, shown where costs are. |
 | `stdin` | What each message writes to its stdin, as one line (default: Claude Code's stream-json user message, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}`). Unused with `acp`. |
 | `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option`). |
 | `label` | The agent's name in the panel. |
@@ -566,8 +570,13 @@ question waits for you · ● 2 plans wait for you`.
 `:AzureCli agents`) lists every plan's agent - what it's doing (working,
 with its latest step; waiting for an agent; its plan waiting for you;
 approved; revising; pushed), how long since it last did something, and
-what it has cost so far (with Claude Code, from its own reports; the
-winbar adds them up - ACP agents don't report a cost):
+what it has used so far, and the winbar adds it up: its cost when the
+agent reports one (Claude Code does, and an ACP agent can, through ACP's
+`usage_update`), else its premium requests (`agent.premium_requests`:
+each message counts as its model's multiplier). An ACP agent's
+`usage_update` also says how full its context is (`ctx 27%`, before the
+latest step). The chat's winbar shows the same for the conversation in it
+(`[2 req · ctx 25%]`). The screen's keys:
 
 | Key (Agents screen) | Action |
 |---|---|

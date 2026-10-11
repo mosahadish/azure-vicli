@@ -263,6 +263,16 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     elseif u.sessionUpdate == "tool_call_update" and u.status == "failed" then
       table.insert(entry.tools, "\u{2717} " .. (u.title or "tool failed"))
       render_soon()
+    elseif u.sessionUpdate == "usage_update" then
+      -- How full its context is, and - when it says - the session's cost
+      -- so far (cumulative: this answer's is what it grew by).
+      if tonumber(u.used) and tonumber(u.size) then entry.context = { used = tonumber(u.used), size = tonumber(u.size) } end
+      local cost = type(u.cost) == "table" and tonumber(u.cost.amount)
+      local pj = st.persistent_job
+      if cost and (u.cost.currency == nil or u.cost.currency == "USD") and pj then
+        entry.cost = (entry.cost or 0) + math.max(0, cost - (pj.cost_seen or 0))
+        pj.cost_seen = cost
+      end
     end
   end
 
@@ -508,7 +518,8 @@ send = function(text, opts)
   local replay = not first and not reuse
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
-    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil }
+    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil,
+    requests = CORE.request_multiplier(agent, CHAT().current_model(agent)) }
   table.insert(st.entries, entry)
   if st.agent_id then
     -- A plan's own agent: its tool calls come with its id (the relay's

@@ -60,6 +60,7 @@ function M.rows(convs, queued, plan_of, now, frame)
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
         target = c.target, conv = c, cost = require("azure-cli.chat.core").cost_of(c.entries),
+        requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
         waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
     end
   end
@@ -96,13 +97,17 @@ local function render()
   -- what's left, keeping ~20 for the latest step.
   local title_w = math.max(16, math.min(44, width - 55 - 20))
   local CORE = require("azure-cli.chat.core")
-  local total
+  local total, requests
   for _, r in ipairs(rows) do
     local label = UI.fit(r.label, 8)
     local title = UI.fit(r.title, title_w)
     local state = UI.fit(r.state, 26)
-    local cost = UI.fit(CORE.money(r.cost), 7)
-    local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. r.detail
+    -- What it has used: its cost when it reports one, else its premium
+    -- requests; and how full its context is (ACP's usage_update).
+    local cost = UI.fit(r.cost and CORE.money(r.cost) or CORE.requests_label(r.requests), 7)
+    local ctx = CORE.context_label(r.context)
+    local detail = ctx ~= "" and (ctx .. (r.detail ~= "" and (" \u{00B7} " .. r.detail) or "")) or r.detail
+    local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. detail
     lines[#lines + 1] = line
     view.rows[#lines] = r
     local s = #("  " .. label .. " " .. title .. "  ")
@@ -110,6 +115,7 @@ local function render()
     hls[#hls + 1] = { #lines - 1, s, s + #state, r.hl }
     hls[#hls + 1] = { #lines - 1, s + #state + 2, -1, "AzureCliMuted" }
     if r.cost then total = (total or 0) + r.cost end
+    if r.requests then requests = (requests or 0) + r.requests end
   end
   -- What's worth pressing now: approve only while a plan waits for you.
   if #rows > 0 then
@@ -139,6 +145,7 @@ local function render()
   if queued > 0 then parts[#parts + 1] = queued .. " queued" end
   parts[#parts + 1] = "max " .. AG.max()
   if total then parts[#parts + 1] = CORE.money(total) .. " so far" end
+  if requests then parts[#parts + 1] = CORE.requests_label(requests):gsub(" req$", " premium requests") .. " so far" end
   pcall(UI.wo, view.win, "winbar", UI.winbar({ "Agents", table.concat(parts, " \u{00B7} ") }, {}))
 end
 

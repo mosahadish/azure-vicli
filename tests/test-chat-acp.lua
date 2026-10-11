@@ -20,7 +20,7 @@ local marker = vim.fn.tempname()
 local py = vim.fn.executable("python3") == 1 and "python3" or "python"
 
 require("azure-cli").setup({ chat = { agent = {
-  label = "Fake ACP", acp = true, timeout_seconds = 20,
+  label = "Fake ACP", acp = true, timeout_seconds = 20, premium_requests = { default = 1 },
   cmd = { py, plugin_root .. "/tests/fake-acp-agent.py", "--marker-file", marker },
 } } })
 
@@ -149,6 +149,26 @@ vim.fn.delete(wt, "rf")
 os.remove(wt .. ".branch")
 os.remove(PLAN.root() .. "/wi-3001.json")
 UI.choose = real_choose
+
+-- Usage: ACP's usage_update gives the context and the session's cost so far
+-- (each answer's cost is what it grew by); premium_requests counts each
+-- message as one request times its model's multiplier.
+CHAT.new_chat(true)
+local u1 = send_and_wait("USAGE")
+local u2 = send_and_wait("USAGE")
+check("usage_update: the context", u1 and u1.context and u1.context.used == 50000 and u1.context.size == 200000,
+  vim.inspect(u1 and u1.context))
+check("usage_update: each answer's cost is what the total grew by",
+  u1 and u2 and math.abs((u1.cost or 0) - 0.05) < 1e-9 and math.abs((u2.cost or 0) - 0.05) < 1e-9, vim.inspect({ u1 and u1.cost, u2 and u2.cost }))
+local CORE0 = require("azure-cli.chat.core")
+check("premium requests: one per message", CORE0.requests_of(STATE.chat.entries) == 2, CORE0.requests_of(STATE.chat.entries))
+check("labels", CORE0.context_label(u1 and u1.context) == "ctx 25%" and CORE0.requests_label(2) == "2 req"
+  and CORE0.requests_label(1.5) == "1.5 req" and CORE0.requests_label(nil) == "")
+check("multiplier: per model, else default, else none",
+  CORE0.request_multiplier({ premium_requests = { default = 1, opus = 10 } }, "opus") == 10
+    and CORE0.request_multiplier({ premium_requests = { default = 1, opus = 10 } }, "sonnet") == 1
+    and CORE0.request_multiplier({ premium_requests = { mini = 0 } }, "mini") == 0
+    and CORE0.request_multiplier({}, "opus") == nil)
 
 -- The main chat as the coordinator: its /plan starts an agent (shown on
 -- the Agents screen) instead of planning itself; list_agents and
