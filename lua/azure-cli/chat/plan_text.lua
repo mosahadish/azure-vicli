@@ -74,6 +74,18 @@ local function same_path(a, b)
   return a == b or a:sub(-#b - 1) == "/" .. b or b:sub(-#a - 1) == "/" .. a
 end
 
+-- Whether every one of `paths` (relative to the change's worktree) is one
+-- the plan lists, matched as check_files does. Pure.
+function M.paths_planned(planned, paths)
+  if #paths == 0 then return false end
+  for _, c in ipairs(paths) do
+    local hit = false
+    for _, p in ipairs(planned) do if same_path(c, p) then hit = true end end
+    if not hit then return false end
+  end
+  return true
+end
+
 -- The change's files against the plan's: { unplanned = changed paths the
 -- plan doesn't list, missing = planned paths the change doesn't touch }.
 -- A planned path matches a changed one when either ends with the other

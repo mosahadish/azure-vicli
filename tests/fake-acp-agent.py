@@ -12,6 +12,7 @@ Usage: fake-acp-agent.py [--marker-file PATH]
 """
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -81,6 +82,20 @@ def main():
                             picked[kind] = ((reply.get("result") or {}).get("outcome") or {}).get("optionId")
                             break
                 text += ", perms: read={0} edit={1}".format(picked.get("read"), picked.get("edit"))
+            # EDITPATH=<path>: ask to edit that file, report the option.
+            for n, path in enumerate(re.findall(r"EDITPATH=(\S+)", prompt)):
+                send({"jsonrpc": "2.0", "id": "edit-{0}".format(n), "method": "session/request_permission",
+                      "params": {"sessionId": params.get("sessionId"), "toolCall": {
+                          "toolCallId": "e{0}".format(n), "title": "Edit " + path, "kind": "edit",
+                          "locations": [{"path": path}]},
+                          "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                      {"optionId": "no", "name": "Deny", "kind": "reject_once"}]}})
+                for reply in sys.stdin:
+                    reply = json.loads(reply)
+                    if reply.get("id") == "edit-{0}".format(n):
+                        opt = ((reply.get("result") or {}).get("outcome") or {}).get("optionId")
+                        text += ", edit[{0}]={1}".format(path, opt)
+                        break
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
                   "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}}})
             send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})

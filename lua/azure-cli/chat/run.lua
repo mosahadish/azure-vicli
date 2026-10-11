@@ -271,8 +271,10 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   -- any) as the details. "Allow" picks the first allow_* option offered,
   -- "Deny" the first reject_*; azure-vicli can't tell "once" from
   -- "always" apart in that popup, so it always answers "once". Reading
-  -- and searching never ask (CORE.READ_ONLY_KINDS); while a /plan
-  -- message runs, changing files is refused without asking (CORE.PLAN_REFUSED_KINDS).
+  -- and searching never ask (CORE.READ_ONLY_KINDS); changing files
+  -- (CORE.FILE_CHANGE_KINDS) is refused without asking while a /plan
+  -- message runs, and allowed without asking when every file is in an
+  -- approved plan's Files section, inside its worktree.
   local function on_permission(method, params, id, conn)
     if method ~= "session/request_permission" then return conn.respond(id, nil, "unsupported request") end
     local options = params.options or {}
@@ -288,10 +290,13 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
     end
     if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
-    if entry.planning and CORE.PLAN_REFUSED_KINDS[tool.kind] then
-      table.insert(entry.tools, "\u{2717} " .. (tool.title or tool.kind) .. " (refused: planning changes no files)")
-      render_soon()
-      return answer(false)
+    if CORE.FILE_CHANGE_KINDS[tool.kind] then
+      if entry.planning then
+        table.insert(entry.tools, "\u{2717} " .. (tool.title or tool.kind) .. " (refused: planning changes no files)")
+        render_soon()
+        return answer(false)
+      end
+      if require("azure-cli.chat.plan").edit_planned(CORE.tool_paths(tool)) then return answer(true) end
     end
     local details = {}
     local diff = type(tool.rawInput) == "table" and tool.rawInput.diff

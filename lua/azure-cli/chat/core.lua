@@ -105,10 +105,26 @@ M.DEFAULT_PROMPTS = {
 
 -- ACP tool-call kinds (agentclientprotocol.com's ToolKind) the agent's
 -- permission requests are answered for without asking you: reading and
--- searching are always allowed, and while a /plan message runs, changing
--- files is always refused - a plan changes no code.
+-- searching are always allowed; changing files is refused while a /plan
+-- message runs (a plan changes no code), and allowed once the files are
+-- in an approved plan (chat/plan.lua's edit_planned).
 M.READ_ONLY_KINDS = { read = true, search = true, think = true }
-M.PLAN_REFUSED_KINDS = { edit = true, delete = true, move = true }
+M.FILE_CHANGE_KINDS = { edit = true, delete = true, move = true }
+
+-- The paths an ACP tool call names: its locations, else the usual
+-- rawInput fields. Pure.
+function M.tool_paths(tool)
+  local out, seen = {}, {}
+  local function add(p)
+    if type(p) == "string" and p ~= "" and not seen[p] then seen[p] = true; out[#out + 1] = p end
+  end
+  for _, l in ipairs(type(tool.locations) == "table" and tool.locations or {}) do
+    if type(l) == "table" then add(l.path) end
+  end
+  local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
+  for _, k in ipairs({ "path", "file_path", "filePath", "fileName", "source", "destination" }) do add(raw[k]) end
+  return out
+end
 
 -- The text one message sends: the preamble (first message, or every
 -- replayed one), the earlier conversation (replay only), the current view,

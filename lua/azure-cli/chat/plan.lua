@@ -148,6 +148,23 @@ function M.check_change(rec, changed)
   return M.check_files(M.planned_files(current_lines(rec)), changed)
 end
 
+-- Whether the agent may change `paths` (absolute, from its permission
+-- request) without asking: each inside one change's worktree whose plan
+-- is approved, and listed in that plan's Files section.
+function M.edit_planned(paths)
+  local TF = require("azure-cli.chat.tools_fix")
+  local rec, rels = nil, {}
+  for _, p in ipairs(paths or {}) do
+    local under = TF.inside(TF.root(), p)
+    local name, rel = (under or ""):match("^([^/]+)/(.+)$")
+    if not rel then return false end
+    local r = M.for_worktree(TF.root() .. "/" .. name)
+    if not (r and r.status == "approved") or (rec and rec.key ~= r.key) then return false end
+    rec, rels[#rels + 1] = r, rel
+  end
+  return rec ~= nil and M.paths_planned(M.planned_files(current_lines(rec)), rels)
+end
+
 -- A new revision `markdown` by `by` ("agent" / "you"): the file rewritten
 -- (when the agent wrote it), the questions moved to their lines, the status
 -- back to waiting for the user.

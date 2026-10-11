@@ -81,6 +81,24 @@ local e5, err5 = send_and_wait("/plan PERMS")
 check("planning: a read is allowed", e5 ~= nil and e5.text:find("read=yes", 1, true) ~= nil, err5 or (e5 and e5.text))
 check("planning: an edit is refused", e5 ~= nil and e5.text:find("edit=no", 1, true) ~= nil, e5 and e5.text)
 check("planning: nothing asked", #asked == 0, vim.inspect(asked))
+
+-- After the plan is approved: an edit to a file its Files section lists,
+-- inside its worktree, goes through; one it doesn't list still asks.
+local PLAN, TF = require("azure-cli.chat.plan"), require("azure-cli.chat.tools_fix")
+PLAN.save({ key = "wi-3001", status = "approved", target = { work_item_id = 3001 }, threads = {},
+  revisions = { { at = os.time(), by = "agent", markdown = "## Goal\nx\n\n## Files\n- `src/a.py` - throttle\n" } } })
+local wt = TF.root() .. "/widgets-wi3001"
+asked = {}
+local e6, err6 = send_and_wait("EDITPATH=" .. wt .. "/src/a.py EDITPATH=" .. wt .. "/src/b.py")
+check("approved plan: a planned file is edited without asking",
+  e6 ~= nil and e6.text:find("src/a.py]=yes", 1, true) ~= nil, err6 or (e6 and e6.text))
+check("approved plan: an unplanned file asks", #asked == 1 and asked[1]:find("b.py", 1, true) ~= nil, vim.inspect(asked))
+PLAN.save({ key = "wi-3001", status = "draft", target = { work_item_id = 3001 }, threads = {},
+  revisions = { { at = os.time(), by = "agent", markdown = "## Files\n- `src/a.py`\n" } } })
+asked = {}
+send_and_wait("EDITPATH=" .. wt .. "/src/a.py")
+check("a plan not approved yet: a planned file still asks", #asked == 1, vim.inspect(asked))
+os.remove(PLAN.root() .. "/wi-3001.json")
 UI.choose = real_choose
 
 CHAT.new_chat(true)
