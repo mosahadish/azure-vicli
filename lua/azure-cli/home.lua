@@ -7,7 +7,8 @@
 --
 --   M.go(name)    goes to "prs" / "workitems" / "agents", opening it if needed
 --   M.open_all()  opens the ones not open yet, then comes back here; from
---                 then on every new tab (a PR, a plan) goes after them
+--                 then on every new tab (a PR, a plan) goes after them,
+--                 and closing one goes back to the tab it was opened from
 --   M.order()     moves the open ones to the front, in order (standalone)
 local M = {}
 
@@ -84,10 +85,32 @@ function M.open_all()
   if vim.api.nvim_win_is_valid(win) then vim.api.nvim_set_current_win(win) end
   -- A tab opened next to one of them (a PR from the dashboard) would
   -- otherwise land in between: put them back in front once it's built.
-  vim.api.nvim_create_autocmd("TabNew", {
-    group = vim.api.nvim_create_augroup("AzureCliHomeTabs", { clear = true }),
-    callback = function() vim.schedule(M.order) end,
-  })
+  local group = vim.api.nvim_create_augroup("AzureCliHomeTabs", { clear = true })
+  -- Which tab each new one was opened from (tab handle -> tab handle), so
+  -- closing it (q in a PR) goes back there rather than to its neighbour.
+  local opened_from, leaving, fresh = {}, nil, false
+  vim.api.nvim_create_autocmd("TabLeave", { group = group,
+    callback = function() leaving = vim.api.nvim_get_current_tabpage() end })
+  vim.api.nvim_create_autocmd("TabNew", { group = group, callback = function()
+    fresh = true
+    vim.schedule(M.order)
+  end })
+  vim.api.nvim_create_autocmd("TabEnter", { group = group, callback = function()
+    if fresh and leaving then opened_from[vim.api.nvim_get_current_tabpage()] = leaving end
+    fresh = false
+  end })
+  vim.api.nvim_create_autocmd("TabClosed", { group = group, callback = function()
+    local back
+    for tab, from in pairs(opened_from) do
+      if not vim.api.nvim_tabpage_is_valid(tab) then
+        opened_from[tab] = nil
+        if vim.api.nvim_tabpage_is_valid(from) then back = from end
+      end
+    end
+    if back then vim.schedule(function()
+      if vim.api.nvim_tabpage_is_valid(back) then vim.api.nvim_set_current_tabpage(back) end
+    end) end
+  end })
 end
 
 return M

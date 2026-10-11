@@ -42,7 +42,8 @@ work on a visual selection aren't listed.
 have a tab of their own: `P` goes to the pull requests, `W` to the work
 items, `A` to the Agents screen, from any of them (or click the tab). The
 standalone launcher opens all three at startup and keeps them the first
-three tabs, in that order; a PR or a plan you open goes after them.
+three tabs, in that order; a PR or a plan you open goes after them, and
+closing it takes you back to the tab you opened it from.
 
 Press `g` and pause, and a small float in the bottom-right corner lists the
 screen's `g` keys and what each does (with the `↑` marks); the next key
