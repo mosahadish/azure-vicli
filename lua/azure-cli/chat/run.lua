@@ -482,6 +482,15 @@ send = function(text, opts)
   if sel and not (vim.api.nvim_win_is_valid(sel.win) and sel.win == view_win) then sel = nil end
   st.selection = nil
   local snap = opts.snap or VIEW.snapshot(view_win, sel)
+  -- The main chat coordinates: its /plan starts an agent of its own for
+  -- each work item or PR (chat/agents.lua), instead of planning here.
+  if prompt_name == "plan" and not st.plan_key then
+    table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
+    table.insert(st.entries, { role = "note", text = require("azure-cli.chat.agents").start_for(text:gsub("^%s*/plan%s*", ""), snap) })
+    render()
+    save(st)
+    return
+  end
   local view_text = VIEW.text(snap)
   local history = {}
   for _, e in ipairs(st.entries) do if e.role ~= "note" then history[#history + 1] = e end end
@@ -512,7 +521,7 @@ send = function(text, opts)
   render()
 
   local message = CORE.compose(expanded, view_text, {
-    first = first, history = replay and history or nil,
+    first = first, history = replay and history or nil, orchestrator = not st.plan_key,
     refs = require("azure-cli.chat.refs").describe(expanded),
   })
   local vars = {

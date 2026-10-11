@@ -140,13 +140,20 @@ function M.tool_paths(tool)
   return out
 end
 
+-- The main chat's part (compose's opts.orchestrator): it coordinates the
+-- agents rather than planning and changing code itself - unless asked to.
+M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing code - implementing a work item, fixing a pull request's review comments - is done by agents of its own, one per work item or PR, each in its own conversation, and the user approves each plan. So for that, start agents with start_agents rather than planning or editing here yourself; only do it here when the user asks you to do it yourself. list_agents shows what each agent is doing and whose plan waits for the user; get_plan reads a plan; message_agent passes the user's instructions on to an agent. Approving a plan is the user's, never yours.]]
+
 -- The text one message sends: the preamble (first message, or every
 -- replayed one), the earlier conversation (replay only), the current view,
 -- what the message references, and the message. Pure.
 function M.compose(message, view_text, opts)
   opts = opts or {}
   local parts = {}
-  if opts.first or opts.history then parts[#parts + 1] = M.PREAMBLE end
+  if opts.first or opts.history then
+    parts[#parts + 1] = M.PREAMBLE
+    if opts.orchestrator then parts[#parts + 1] = M.ORCHESTRATOR end
+  end
   if opts.history and #opts.history > 0 then
     parts[#parts + 1] = "## The conversation so far"
     for _, e in ipairs(opts.history) do

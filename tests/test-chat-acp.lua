@@ -77,7 +77,12 @@ check("a read is allowed without asking", e4 ~= nil and e4.text:find("read=yes",
 check("an edit asks", #asked == 1 and asked[1]:find("edit", 1, true) ~= nil, vim.inspect(asked))
 check("and gets the answer given", e4 ~= nil and e4.text:find("edit=no", 1, true) ~= nil, e4 and e4.text)
 asked = {}
-local e5, err5 = send_and_wait("/plan PERMS")
+-- (in a plan's own conversation: the main chat's /plan starts an agent)
+local pc = CHAT.conversation("wi-9", { label = "#9", target = { work_item_id = 9 } })
+local pdone
+CHAT.send("/plan PERMS", { conv = pc, view_win = win, on_done = function() pdone = true end })
+vim.wait(20000, function() return pdone end, 20)
+local e5, err5 = pc.entries[#pc.entries], (not pdone) and vim.inspect(pc.entries) or nil
 check("planning: a read is allowed", e5 ~= nil and e5.text:find("read=yes", 1, true) ~= nil, err5 or (e5 and e5.text))
 check("planning: an edit is refused", e5 ~= nil and e5.text:find("edit=no", 1, true) ~= nil, e5 and e5.text)
 check("planning: nothing asked", #asked == 0, vim.inspect(asked))
@@ -144,6 +149,48 @@ vim.fn.delete(wt, "rf")
 os.remove(wt .. ".branch")
 os.remove(PLAN.root() .. "/wi-3001.json")
 UI.choose = real_choose
+
+-- The main chat as the coordinator: its /plan starts an agent (shown on
+-- the Agents screen) instead of planning itself; list_agents and
+-- message_agent reach the agents; a plan's agent can't use them.
+CHAT.new_chat(true)
+local CORE, AG, TOOLS = require("azure-cli.chat.core"), require("azure-cli.chat.agents"), require("azure-cli.chat.tools")
+check("the main chat is told it coordinates", CORE.compose("x", "v", { first = true, orchestrator = true })
+  :find("you coordinate", 1, true) ~= nil and not CORE.compose("x", "v", { first = true }):find("you coordinate", 1, true))
+CHAT.send("/plan #3005 keep it small", { view_win = win })
+local main = STATE.chat
+local last = main.entries[#main.entries]
+check("/plan in the main chat starts an agent", last and last.role == "note" and last.text:find("Planning #3005", 1, true) ~= nil,
+  vim.inspect(last))
+local conv = CHAT.find_conversation("wi-3005")
+check("in a conversation of its own", conv ~= nil and conv ~= main)
+check("and the main chat's agent wasn't asked", not main.running)
+vim.wait(20000, function() return conv and not conv.running end, 20)
+local rows = require("azure-cli.chat.agents_view").rows(CHAT.conversations(), AG.queued(), PLAN.load, os.time())
+local on_screen = false
+for _, r in ipairs(rows) do if r.key == "wi-3005" then on_screen = true end end
+check("it's on the Agents screen", on_screen, vim.inspect(rows))
+local function call(name, args, env)
+  local res, err
+  TOOLS.by_name[name].run(args, env or {}, function(r, e) res, err = r, e end)
+  vim.wait(2000, function() return res ~= nil or err ~= nil end, 10)
+  return res, err
+end
+local listed = call("list_agents", {})
+check("list_agents lists it", type(listed) == "table" and listed[1] and listed[1].agent == "#3005", vim.inspect(listed))
+local sent, serr = call("message_agent", { work_item_id = 3005, message = "use the existing cache" })
+check("message_agent sends it on", sent and sent:find("Sent to #3005", 1, true) ~= nil, serr)
+vim.wait(20000, function() return not conv.running end, 20)
+local shown = false
+for _, e in ipairs(conv.entries) do if e.role == "you" and e.text == "From the main chat: use the existing cache" then shown = true end end
+check("shown in that agent's own chat", shown, vim.inspect(conv.entries))
+check("which answered it", conv.entries[#conv.entries].status == "done", vim.inspect(conv.entries[#conv.entries]))
+local _, refused = call("start_agents", { work_item_ids = { 3006 } }, { conv = conv })
+check("a plan's agent can't start agents", refused and refused:find("only the main chat", 1, true) ~= nil, refused)
+local started = call("start_agents", { work_item_ids = { 3006 } })
+check("start_agents starts one", started and started:find("Planning #3006", 1, true) ~= nil, started)
+local c6 = CHAT.find_conversation("wi-3006")
+vim.wait(20000, function() return c6 and not c6.running end, 20)
 
 CHAT.new_chat(true)
 os.remove(marker)

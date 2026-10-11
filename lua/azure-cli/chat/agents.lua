@@ -9,9 +9,14 @@
 -- tab's chat is that agent's conversation, so approving it there sets that
 -- agent going.
 --
---   M.start_for_items(items)  queues { id, title, type, state } work items
---   M.start_for_prs(prs, threads_of)  queues PRs: each agent plans fixes for
---                             the given thread ids (default: every active one)
+--   M.start_for_items(items, extra)  queues { id, title, type, state } work
+--                             items; `extra` = what the user added, passed on
+--   M.start_for_prs(prs, threads_of, extra)  queues PRs: each agent plans
+--                             fixes for the given thread ids (default: every
+--                             active one)
+--     (both return what they did, as a sentence, and the labels started)
+--   M.start_for(text, snap)   the main chat's /plan: the work items and PRs
+--                             `text` names, else the one in view `snap`
 --   M.pump()                  starts queued ones while there's room
 --                             (chat/init.lua calls it after every answer)
 --   M.queued()                the waiting ones, in order
@@ -66,9 +71,15 @@ local function start(q)
   return entry ~= nil
 end
 
-local function job_for_item(it)
+-- What the user added to a /plan, passed on to each agent it starts.
+local function with_extra(prompt, extra)
+  extra = extra and vim.trim(extra) or ""
+  return extra ~= "" and (prompt .. "\n\nThe user adds: " .. extra) or prompt
+end
+
+local function job_for_item(it, extra)
   return { key = "wi-" .. tostring(it.id), label = "#" .. tostring(it.id), title = it.title,
-    target = { work_item_id = it.id }, prompt = M.plan_prompt(it), display = "/plan #" .. tostring(it.id),
+    target = { work_item_id = it.id }, prompt = with_extra(M.plan_prompt(it), extra), display = "/plan #" .. tostring(it.id),
     snap = snap_for(it) }
 end
 
@@ -84,9 +95,9 @@ function M.pr_prompt(pr, threads)
     .. "with submit_plan (pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
 end
 
-local function job_for_pr(pr, threads)
+local function job_for_pr(pr, threads, extra)
   return { key = "pr-" .. tostring(pr.id), label = "PR !" .. tostring(pr.id), title = pr.title,
-    target = { pr_id = pr.id }, prompt = M.pr_prompt(pr, threads),
+    target = { pr_id = pr.id }, prompt = with_extra(M.pr_prompt(pr, threads), extra),
     display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "
       .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
     snap = { screen = "pull request (this agent was started for one PR's review comments)", pr = pr } }
@@ -106,10 +117,15 @@ function M.pump()
 end
 
 -- Queues `jobs` (ones already queued or working are skipped), then starts
--- as many as there's room for.
+-- as many as there's room for. Says what it did (a toast), and returns it:
+-- the sentence, and the labels it started or queued.
 local function enqueue(jobs, nothing)
+  local function say(msg, level)
+    notify(msg, level)
+    return msg, {}
+  end
   if not CHAT().current_agent() then
-    return notify("No chat agent is configured (docs/chat.md).", vim.log.levels.WARN)
+    return say("No chat agent is configured (docs/chat.md).", vim.log.levels.WARN)
   end
   local added, skipped = {}, {}
   for _, job in ipairs(jobs) do
@@ -123,32 +139,70 @@ local function enqueue(jobs, nothing)
     end
   end
   if #added == 0 then
-    return notify(#skipped > 0 and ("Already working on " .. table.concat(skipped, ", ") .. ".") or nothing)
+    return say(#skipped > 0 and ("Already working on " .. table.concat(skipped, ", ") .. ".") or nothing)
   end
   M.pump()
   local waiting = #queue
-  notify("Planning " .. table.concat(added, ", ") .. " - one agent each"
+  local msg = "Planning " .. table.concat(added, ", ") .. " - one agent each"
     .. (waiting > 0 and (", " .. waiting .. " waiting for an agent (chat.max_agents = " .. M.max() .. ")") or "")
-    .. ". The Agents screen lists them.")
+    .. (#skipped > 0 and ("; already working on " .. table.concat(skipped, ", ")) or "")
+    .. ". The Agents screen lists them."
+  notify(msg)
+  return msg, added
 end
 
 -- Queues `items` (work items from the board; nil entries skipped).
-function M.start_for_items(items)
+function M.start_for_items(items, extra)
   local jobs = {}
   for _, it in ipairs(items or {}) do
-    if type(it) == "table" and it.id then jobs[#jobs + 1] = job_for_item(it) end
+    if type(it) == "table" and it.id then jobs[#jobs + 1] = job_for_item(it, extra) end
   end
-  enqueue(jobs, "Put the cursor on a work item (or select some rows).")
+  return enqueue(jobs, "Put the cursor on a work item (or select some rows).")
 end
 
 -- Queues PRs `prs` (dashboard rows, or the one in the reviewer), each
 -- planning fixes for `threads_of[pr.id]` (thread ids) or its active threads.
-function M.start_for_prs(prs, threads_of)
+function M.start_for_prs(prs, threads_of, extra)
   local jobs = {}
   for _, pr in ipairs(prs or {}) do
-    if type(pr) == "table" and pr.id then jobs[#jobs + 1] = job_for_pr(pr, (threads_of or {})[pr.id]) end
+    if type(pr) == "table" and pr.id then jobs[#jobs + 1] = job_for_pr(pr, (threads_of or {})[pr.id], extra) end
   end
-  enqueue(jobs, "Put the cursor on a pull request (or select some rows).")
+  return enqueue(jobs, "Put the cursor on a pull request (or select some rows).")
+end
+
+-- The main chat's /plan (chat/run.lua): an agent for each work item and PR
+-- `text` names (#3001, !101), else for the work item or PR in view `snap`
+-- (on a review thread: that thread). The rest of `text` goes to each agent.
+-- Returns what it did, as a sentence.
+function M.start_for(text, snap)
+  local REFS = require("azure-cli.chat.refs")
+  local items, prs = {}, {}
+  local extra = text
+  for _, ref in ipairs(require("azure-cli.chat.core").find_refs(text or "")) do
+    local r = REFS.resolve(ref)
+    if r.kind == "pr" then
+      prs[#prs + 1] = r.pr or require("azure-cli.chat.tools").pr_record(r.id) or { id = r.id }
+    else
+      items[#items + 1] = r.item or { id = r.id }
+    end
+  end
+  local threads_of = {}
+  snap = snap or {}
+  if #items == 0 and #prs == 0 then
+    if type(snap.work_item) == "table" and snap.work_item.id then
+      items[1] = snap.work_item
+    elseif type(snap.pr) == "table" and snap.pr.id then
+      prs[1] = require("azure-cli.chat.tools").pr_record(snap.pr.id) or snap.pr
+      if type(snap.thread) == "table" and snap.thread.id then threads_of[snap.pr.id] = { snap.thread.id } end
+    else
+      return "/plan starts an agent for the work item or pull request on screen, or the ones you name "
+        .. "(/plan #3001 !101) - there's none here."
+    end
+  end
+  local said = {}
+  if #items > 0 then said[#said + 1] = (M.start_for_items(items, extra)) end
+  if #prs > 0 then said[#said + 1] = (M.start_for_prs(prs, threads_of, extra)) end
+  return table.concat(said, " ")
 end
 
 -- For tests: forget the queue.

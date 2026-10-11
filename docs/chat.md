@@ -357,7 +357,9 @@ couldn't confirm.
 Before the agent changes any code - fixing a comment (`start_fix`) or
 implementing a work item (`start_story`) - it writes a plan, and waits for
 you to approve it. Those two tools refuse until there is an approved plan
-for that PR or work item. You can also ask for a plan any time: `/plan`.
+for that PR or work item. You can also ask for a plan any time: `/plan` -
+in the main chat that starts an agent for it (see
+[below](#the-main-chat-coordinates)), in an agent's own chat it asks that agent.
 
 ![The agent's plan: sections on the left, the plan with questions answered under its lines, the chat on the right](images/chat-plan.png)
 
@@ -519,6 +521,26 @@ the rest wait and start as the others finish. An agent working in the
 background doesn't pull you into its plan when it's done: the status
 strip counts the plans waiting for you.
 
+### The main chat coordinates
+
+The main chat (`gq` anywhere outside a plan) hands planning and code
+changes to agents rather than doing them itself:
+
+- **`/plan`** there starts an agent - for the work item or PR on screen (on a
+  review thread: that thread), or for the ones you name: `/plan #3001 #3002`,
+  `/plan !101`. Anything else you write after `/plan` goes to each agent with
+  its first message (`/plan #3001 keep the change small`).
+- **Ask it in plain words** - "plan #3001 and #3002", "fix the comments on
+  !101", "what are the agents doing?", "tell #3001 to use the existing
+  cache". It has three tools for that: `start_agents`, `list_agents` and
+  `message_agent` (the message shows in that agent's own chat, as coming
+  from the main chat, and it answers there).
+- It's a strong default, not a lock: ask the main chat to do something
+  itself and it will.
+- **Approving stays yours** - `gA` on the Agents screen or in the plan's
+  tab. The main chat can't approve a plan, and an agent can't start or
+  message other agents.
+
 **Desktop notifications.** While Neovim isn't the focused window, a
 toast tells you when something waits for you: a plan from a background
 agent is ready, its change is ready, a question waits for your yes or no,
@@ -580,6 +602,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 
 | Tool | What it does | Asks you first? |
 |---|---|---|
+| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
 | `submit_plan`, `get_plan` | Shows you its plan for a PR or work item (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions | - |
 | `current_view` | What you're looking at when you sent the message (see above) | - |
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details - any PR in the project by id, not only your dashboard's (after it, the other PR tools work for that PR too) | - |

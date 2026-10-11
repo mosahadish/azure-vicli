@@ -552,7 +552,7 @@ end
 
 -- The other tool groups.
 for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", "azure-cli.chat.tools_fix",
-  "azure-cli.chat.tools_code" }) do
+  "azure-cli.chat.tools_code", "azure-cli.chat.tools_agents" }) do
   vim.list_extend(M.list, require(mod)(M))
 end
 vim.list_extend(M.list, require("azure-cli.chat.plan").tools(M))
