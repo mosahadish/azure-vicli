@@ -44,7 +44,7 @@ local DEFAULT_KEYS = {
     comment = "c", comment_range = "c", comment_file = "C",
     next_hunk = "]c", prev_hunk = "[c", view_comments = "K", reply = "R",
     status = "s", vote = "gv", complete = "gm", next_comment = "]C",
-    prev_comment = "[C", active_filter = "gA", filters = "gF",
+    prev_comment = "[C", next_note = "]a", prev_note = "[a", active_filter = "gA", filters = "gF",
     ignore_ws = "gw", config = "gO", goto_definition = "gd",
     find_references = "gr", open_file = "gf", search = "g/",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",

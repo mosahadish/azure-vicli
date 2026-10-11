@@ -905,6 +905,33 @@ do
     end
   end
   if not noted then return fail("the note isn't drawn in auth.py's diff") end
+  -- ]a / [a: the diff shows throttle.py (open_in_ui above), after
+  -- auth.py in the file list - [a goes back to auth.py's note, and with a
+  -- note in throttle.py too, ]a goes on into it and [a back again.
+  local function at_note(line)
+    local b = vim.api.nvim_get_current_buf()
+    local m = ((require("azure-cli.review.pane").entry(b) or {}).map or {})[vim.api.nvim_win_get_cursor(0)[1]]
+    return vim.api.nvim_get_current_win() == diffwin and m ~= nil and m.side == "R" and m.lineno == line
+  end
+  local function on_text(t) return vim.api.nvim_get_current_line():find(t, 1, true) ~= nil end
+  vim.api.nvim_set_current_win(diffwin)
+  local throttle_buf = vim.api.nvim_get_current_buf()
+  feed("[a")
+  if not vim.wait(5000, function() return at_note(12) and vim.api.nvim_get_current_buf() ~= throttle_buf end, 50) then
+    return fail("[a didn't go back to auth.py's note")
+  end
+  local auth_buf = vim.api.nvim_get_current_buf()
+  local notes = require("azure-cli.state").chat_notes["101"]
+  table.insert(notes, { file = "src/throttle.py", line = 3, text = "And here", kind = "info" })
+  feed("]a")
+  if not vim.wait(5000, function() return at_note(3) and on_text("FAILURES = {}") end, 50) then
+    return fail("]a didn't go on into throttle.py's note")
+  end
+  feed("[a")
+  if not vim.wait(5000, function() return at_note(12) and vim.api.nvim_get_current_buf() == auth_buf end, 50) then
+    return fail("[a didn't come back to auth.py's note")
+  end
+  table.remove(notes)
 
   -- The fix flow: the push asks first ("Allow"), then lands on the branch.
   answer = "Allow"

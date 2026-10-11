@@ -192,6 +192,7 @@ paste the output here after changing a default.
 | `link_workitem` | `gl` |
 | `next_comment` | `]C` |
 | `next_hunk` | `]c` |
+| `next_note` | `]a` |
 | `next_unviewed` | `]m` |
 | `open_file` | `gf` |
 | `open_workitem` | `gW` |
@@ -199,6 +200,7 @@ paste the output here after changing a default.
 | `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `prev_hunk` | `[c` |
+| `prev_note` | `[a` |
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
 | `refresh` | `r` |

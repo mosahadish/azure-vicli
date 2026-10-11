@@ -514,6 +514,15 @@ do
   check("selection_lines: source side preferred", range == "11-13" and side == "R")
   check("selection_lines: target only", RCHAT.selection_lines(map, 2, 2) == "11")
   check("selection_lines: one line", RCHAT.selection_lines(map, 1, 1) == "10")
+  local notes = { { file = "a.py", line = 11 }, { file = "a.py", line = 11, side = "L" }, { file = "c.py", line = 1 } }
+  local rows = RCHAT.note_rows(notes, "a.py", map)
+  check("note_rows: each side's line, in order", vim.deep_equal(rows, { 2, 3 }), vim.inspect(rows))
+  check("next_row: past the cursor either way", RCHAT.next_row(rows, 2, 1) == 3 and RCHAT.next_row(rows, 3, -1) == 2
+    and RCHAT.next_row(rows, 3, 1) == nil and RCHAT.next_row(rows, 1, -1) == nil)
+  local order = { "a.py", "b.py", "c.py" }
+  check("next_note_file: skips files without notes", RCHAT.next_note_file(notes, order, 1, 1) == 3
+    and RCHAT.next_note_file(notes, order, 3, -1) == 1 and RCHAT.next_note_file(notes, order, 3, 1) == nil
+    and RCHAT.next_note_file(notes, order, nil, 1) == 1 and RCHAT.next_note_file(notes, order, nil, -1) == 3)
 end
 
 if fails > 0 then

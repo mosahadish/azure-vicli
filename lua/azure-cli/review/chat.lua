@@ -13,6 +13,8 @@
 --   notes        the agent's annotate_code notes (STATE.chat_notes[id]),
 --                drawn as virtual lines under their lines in the diff;
 --                review/init.lua's decorate_comments calls M.decorate
+--   ]a / [a      the next / previous of those notes, on into the next file
+--                (in the file list's order) that has any
 local M = {}
 
 -- A thread (review/init.lua's parse_threads shape) as the chat sees it.
@@ -59,6 +61,39 @@ function M.selection_lines(map, from, to)
   return (lo == hi and tostring(lo) or (lo .. "-" .. hi)), side
 end
 
+-- The rows of a diff buffer (line map `map`, for file `path`) that the
+-- agent's notes are under, in order, each once. Pure.
+function M.note_rows(notes, path, map)
+  local want, rows = {}, {}
+  for _, n in ipairs(notes or {}) do
+    if n.file == path then want[(n.side or "R") .. "\t" .. n.line] = true end
+  end
+  for i, m in ipairs(map or {}) do
+    if m.side and m.lineno and want[m.side .. "\t" .. m.lineno] then rows[#rows + 1] = i end
+  end
+  return rows
+end
+
+-- The first of `rows` past `cur` going `dir` (1 / -1), or nil. Pure.
+function M.next_row(rows, cur, dir)
+  for k = dir > 0 and 1 or #rows, dir > 0 and #rows or 1, dir do
+    if (rows[k] - cur) * dir > 0 then return rows[k] end
+  end
+end
+
+-- The index into `ordered` (the file list's files) of the next file going
+-- `dir` from `cur` (nil: from before the first / after the last) that has
+-- any of `notes`, or nil. Pure.
+function M.next_note_file(notes, ordered, cur, dir)
+  local has = {}
+  for _, n in ipairs(notes or {}) do has[n.file] = true end
+  local i = (cur or (dir > 0 and 0 or #ordered + 1)) + dir
+  while i >= 1 and i <= #ordered do
+    if has[ordered[i]] then return i end
+    i = i + dir
+  end
+end
+
 local NOTE_HL = { info = "DiagnosticInfo", warning = "DiagnosticWarn", issue = "DiagnosticError" }
 
 local function setup(ctx)
@@ -76,6 +111,48 @@ local function setup(ctx)
         "an agent plans the fix of this PR's comments (on a thread: that one)")
     end
   end
+
+  -- ]a / [a: the agent's next / previous note - in this file's diff,
+  -- else the first (last) one in the next (previous) file that has any.
+  local function jump_note(dir)
+    local notes = (STATE.chat_notes or {})[ID] or {}
+    if #notes == 0 then return ctx.notify("The agent left no notes on this PR.") end
+    local buf = vim.api.nvim_get_current_buf()
+    local path = ctx.paths_by_buf[buf]
+    if path then
+      local row = M.next_row(M.note_rows(notes, path, ctx.maps_by_buf[buf]), vim.api.nvim_win_get_cursor(0)[1], dir)
+      if row then
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+        vim.cmd("normal! zz")
+        return
+      end
+    end
+    local model = ctx.ext.filelist
+    local ordered = model and model.ordered_files or {}
+    local cur
+    for i, f in ipairs(ordered) do if f == path then cur = i end end
+    local idx = M.next_note_file(notes, ordered, cur, dir)
+    if not idx then return ctx.notify(dir > 0 and "No further notes from the agent." or "No previous notes from the agent.") end
+    local opened = ctx.ext.open_file_at(idx)
+    if not opened then return end
+    ctx.ensure_diff_content(opened, function()
+      vim.schedule(function()
+        local dw = ctx.diff_win()
+        if not (dw and vim.api.nvim_win_is_valid(dw)) then return end
+        local b = vim.api.nvim_win_get_buf(dw)
+        if ctx.paths_by_buf[b] ~= opened then return end  -- moved on meanwhile
+        local rows = M.note_rows(notes, opened, ctx.maps_by_buf[b])
+        local row = dir > 0 and rows[1] or rows[#rows]
+        if not row then return ctx.notify("The agent's note in " .. opened .. " is on a line the diff doesn't show.") end
+        vim.api.nvim_set_current_win(dw)
+        pcall(vim.api.nvim_win_set_cursor, dw, { row, 0 })
+        vim.api.nvim_win_call(dw, function() vim.cmd("normal! zz") end)
+      end)
+    end)
+  end
+  ctx.add_key("diff", "next_note", function() jump_note(1) end,
+    "the agent's next note (on into the next file with notes)")
+  ctx.add_key("diff", "prev_note", function() jump_note(-1) end, "the agent's previous note")
 
   require("azure-cli.chat.view").register("review:" .. ID, function(win, sel)
     local buf = vim.api.nvim_win_get_buf(win)
