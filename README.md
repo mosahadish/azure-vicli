@@ -168,8 +168,9 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   a branch from develop for this work item" just work. Before it changes
   code it writes a plan you review like a PR: ask it why about any line,
   then approve. Several agents can work at once, one per work item, each
-  in its own conversation. Replies are drafted for you to send, and votes
-  ask first.
+  in its own conversation, and the main chat starts them, checks on them
+  and passes your instructions on. Replies are drafted for you to send,
+  and votes ask first.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`
