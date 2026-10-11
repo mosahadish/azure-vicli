@@ -64,6 +64,23 @@ def main():
         elif method == "session/prompt":
             turn += 1
             text = "turn {0}, pid {1}, {2}".format(turn, os.getpid(), tools_seen)
+            prompt = "".join(p.get("text", "") for p in params.get("prompt") or [])
+            if "PERMS" in prompt:
+                # Ask permission for a read and an edit, the way Copilot
+                # does mid-turn, and report which option each got.
+                picked = {}
+                for n, kind in enumerate(("read", "edit")):
+                    send({"jsonrpc": "2.0", "id": "perm-{0}".format(n), "method": "session/request_permission",
+                          "params": {"sessionId": params.get("sessionId"), "toolCall": {
+                              "toolCallId": "t{0}".format(n), "title": kind + " a file", "kind": kind},
+                              "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                          {"optionId": "no", "name": "Deny", "kind": "reject_once"}]}})
+                    for reply in sys.stdin:
+                        reply = json.loads(reply)
+                        if reply.get("id") == "perm-{0}".format(n):
+                            picked[kind] = ((reply.get("result") or {}).get("outcome") or {}).get("optionId")
+                            break
+                text += ", perms: read={0} edit={1}".format(picked.get("read"), picked.get("edit"))
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
                   "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}}})
             send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})

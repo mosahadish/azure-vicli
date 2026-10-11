@@ -65,6 +65,24 @@ local e3, err3 = send_and_wait("three")
 check("the next chat starts a fresh session", e3 ~= nil and e3.text:match("^turn 1,") ~= nil, err3 or (e3 and e3.text))
 check("its tools reach it too (the http server is reused)", e3 ~= nil and e3.text:find("current_view ok: True", 1, true) ~= nil,
   e3 and e3.text)
+
+-- Permission requests: a read never asks; an edit asks (the popup, stubbed
+-- here to answer Deny) - except while a /plan message runs, when it's
+-- refused without asking.
+local UI = require("azure-cli.ui")
+local real_choose, asked = UI.choose, {}
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
+local e4, err4 = send_and_wait("PERMS")
+check("a read is allowed without asking", e4 ~= nil and e4.text:find("read=yes", 1, true) ~= nil, err4 or (e4 and e4.text))
+check("an edit asks", #asked == 1 and asked[1]:find("edit", 1, true) ~= nil, vim.inspect(asked))
+check("and gets the answer given", e4 ~= nil and e4.text:find("edit=no", 1, true) ~= nil, e4 and e4.text)
+asked = {}
+local e5, err5 = send_and_wait("/plan PERMS")
+check("planning: a read is allowed", e5 ~= nil and e5.text:find("read=yes", 1, true) ~= nil, err5 or (e5 and e5.text))
+check("planning: an edit is refused", e5 ~= nil and e5.text:find("edit=no", 1, true) ~= nil, e5 and e5.text)
+check("planning: nothing asked", #asked == 0, vim.inspect(asked))
+UI.choose = real_choose
+
 CHAT.new_chat(true)
 os.remove(marker)
 

@@ -270,15 +270,14 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   -- yes/no popup azure-vicli's own tools use, the tool call's diff (if
   -- any) as the details. "Allow" picks the first allow_* option offered,
   -- "Deny" the first reject_*; azure-vicli can't tell "once" from
-  -- "always" apart in that popup, so it always answers "once".
+  -- "always" apart in that popup, so it always answers "once". Reading
+  -- and searching never ask (CORE.READ_ONLY_KINDS); while a /plan
+  -- message runs, changing files is refused without asking (CORE.PLAN_REFUSED_KINDS).
   local function on_permission(method, params, id, conn)
     if method ~= "session/request_permission" then return conn.respond(id, nil, "unsupported request") end
     local options = params.options or {}
     local tool = params.toolCall or {}
-    local details = {}
-    local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
-    if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
-    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), function(yes)
+    local function answer(yes)
       local pick
       for _, o in ipairs(options) do
         if yes and (o.kind == "allow_once" or o.kind == "allow_always") then pick = pick or o.optionId end
@@ -287,7 +286,17 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       pick = pick or (options[1] and options[1].optionId)
       if pick then conn.respond(id, { outcome = { outcome = "selected", optionId = pick } })
       else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
-    end, details)
+    end
+    if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
+    if entry.planning and CORE.PLAN_REFUSED_KINDS[tool.kind] then
+      table.insert(entry.tools, "\u{2717} " .. (tool.title or tool.kind) .. " (refused: planning changes no files)")
+      render_soon()
+      return answer(false)
+    end
+    local details = {}
+    local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
+    if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
+    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), answer, details)
   end
 
   local function send_prompt(pj)
@@ -441,7 +450,7 @@ send = function(text, opts)
   st.sent_pos = nil
 
   local shown_text = opts.display or text
-  local expanded = CORE.expand_prompt(text, CORE.prompts(config().prompts))
+  local expanded, prompt_name = CORE.expand_prompt(text, CORE.prompts(config().prompts))
 
   local VIEW = require("azure-cli.chat.view")
   local view_win = opts.view_win or CHAT().main_win()
@@ -466,7 +475,7 @@ send = function(text, opts)
   local replay = not first and not reuse
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
-    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "" }
+    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil }
   table.insert(st.entries, entry)
   if st.agent_id then
     -- A plan's own agent: its tool calls come with its id (the relay's

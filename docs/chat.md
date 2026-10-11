@@ -208,7 +208,10 @@ picks goes through `session/set_config_option`.
 - **Permissions.** A tool call Copilot wants permission for (editing a file,
   running a command) pops up the same yes/no prompt as azure-vicli's own
   tools, with its diff when it has one; "Allow"/"Deny" picks Copilot's
-  `allow_once`/`reject_once`. `--allow-tool azure-vicli` saves Copilot
+  `allow_once`/`reject_once`. Reading and searching files never ask -
+  they're always allowed - and while a `/plan` message runs, editing,
+  deleting or moving a file is refused without asking (a plan changes no
+  code). `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this

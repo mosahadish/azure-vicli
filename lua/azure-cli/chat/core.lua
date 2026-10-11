@@ -103,6 +103,13 @@ M.DEFAULT_PROMPTS = {
     .. "what's waiting on me, and anything blocked or failing.",
 }
 
+-- ACP tool-call kinds (agentclientprotocol.com's ToolKind) the agent's
+-- permission requests are answered for without asking you: reading and
+-- searching are always allowed, and while a /plan message runs, changing
+-- files is always refused - a plan changes no code.
+M.READ_ONLY_KINDS = { read = true, search = true, think = true }
+M.PLAN_REFUSED_KINDS = { edit = true, delete = true, move = true }
+
 -- The text one message sends: the preamble (first message, or every
 -- replayed one), the earlier conversation (replay only), the current view,
 -- what the message references, and the message. Pure.
