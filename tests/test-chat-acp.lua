@@ -171,6 +171,10 @@ local CORE0 = require("azure-cli.chat.core")
 check("premium requests: one per message", CORE0.requests_of(STATE.chat.entries) == 2, CORE0.requests_of(STATE.chat.entries))
 check("labels", CORE0.context_label(u1 and u1.context) == "ctx 25%" and CORE0.requests_label(2) == "2 req"
   and CORE0.requests_label(1.5) == "1.5 req" and CORE0.requests_label(nil) == "")
+local tl = send_and_wait("TOOLS")
+check("azure-vicli's own tools aren't listed twice (the bridge lists them)", tl ~= nil
+  and vim.tbl_contains(tl.tools, "\u{00B7} Read src/a.cs")
+  and not table.concat(tl.tools, "\n"):find("azure-vicli", 1, true), vim.inspect(tl and tl.tools))
 check("multiplier: per model, else default, else none",
   CORE0.request_multiplier({ premium_requests = { default = 1, opus = 10 } }, "opus") == 10
     and CORE0.request_multiplier({ premium_requests = { default = 1, opus = 10 } }, "sonnet") == 1

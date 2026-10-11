@@ -258,8 +258,13 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       local t = type(u.content) == "table" and u.content.text
       if type(t) == "string" then entry.text = entry.text .. t; render_soon() end
     elseif u.sessionUpdate == "tool_call" then
-      table.insert(entry.tools, "\u{00B7} " .. (u.title or u.name or "tool"))
-      render_soon()
+      -- Our own azure-vicli tools are logged by the bridge already, with
+      -- their arguments.
+      local title = tostring(u.title or u.name or "tool")
+      if not title:find("azure%-vicli") then
+        table.insert(entry.tools, "\u{00B7} " .. title)
+        render_soon()
+      end
     elseif u.sessionUpdate == "tool_call_update" and u.status == "failed" then
       table.insert(entry.tools, "\u{2717} " .. (u.title or "tool failed"))
       render_soon()

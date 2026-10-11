@@ -93,6 +93,13 @@ def main():
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
                       "update": {"sessionUpdate": "usage_update", "used": 50000, "size": 200000,
                                  "cost": {"amount": usage_cost, "currency": "USD"}}}})
+            # TOOLS: one of azure-vicli's own tools (as Copilot titles MCP
+            # tools: <server>-<tool>) and one of its own.
+            if "TOOLS" in prompt:
+                for n, title in enumerate(["azure-vicli-get_pull_request", "Read src/a.cs"]):
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
+                          "update": {"sessionUpdate": "tool_call", "toolCallId": "tl{0}".format(n), "title": title,
+                                     "kind": "read", "status": "completed"}}})
             # EXEC=<command, _ for spaces>: ask to run it, report the option.
             for n, cmd in enumerate(re.findall(r"EXEC=(\S+)", prompt)):
                 cmd = cmd.replace("_", " ")
