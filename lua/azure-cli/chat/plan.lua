@@ -145,24 +145,45 @@ end
 -- The plan's Files check for a change: `changed` = its paths.
 function M.check_change(rec, changed)
   if not rec then return nil end
-  return M.check_files(M.planned_files(current_lines(rec)), changed)
+  return M.check_files(M.planned_paths(rec), changed)
 end
 
--- Whether the agent may change `paths` (absolute, from its permission
--- request) without asking: each inside one change's worktree whose plan
--- is approved, and listed in that plan's Files section.
-function M.edit_planned(paths)
+-- The files a plan covers: its Files section, plus the ones you allowed
+-- the agent to change on top of it (M.allow_files).
+function M.planned_paths(rec)
+  local out = M.planned_files(current_lines(rec))
+  for _, p in ipairs(rec.allowed_files or {}) do out[#out + 1] = p end
+  return out
+end
+
+-- The agent's permission request to change `paths` (absolute) against
+-- the approved plans: "planned" (each inside one change's worktree whose
+-- plan is approved, and covered by it), "unplanned" (inside such a
+-- worktree, but not every file is covered), or nil (no approved plan
+-- for it). Also returns the plan's record and the paths' relative forms.
+function M.edit_check(paths)
   local TF = require("azure-cli.chat.tools_fix")
   local rec, rels = nil, {}
   for _, p in ipairs(paths or {}) do
     local under = TF.inside(TF.root(), p)
     local name, rel = (under or ""):match("^([^/]+)/(.+)$")
-    if not rel then return false end
+    if not rel then return nil end
     local r = M.for_worktree(TF.root() .. "/" .. name)
-    if not (r and r.status == "approved") or (rec and rec.key ~= r.key) then return false end
+    if not (r and r.status == "approved") or (rec and rec.key ~= r.key) then return nil end
     rec, rels[#rels + 1] = r, rel
   end
-  return rec ~= nil and M.paths_planned(M.planned_files(current_lines(rec)), rels)
+  if not rec then return nil end
+  return M.paths_planned(M.planned_paths(rec), rels) and "planned" or "unplanned", rec, rels
+end
+
+-- You allowed changing `rels` once: from now on they're part of the plan.
+function M.allow_files(rec, rels)
+  rec = M.load(rec.key) or rec
+  rec.allowed_files = rec.allowed_files or {}
+  for _, p in ipairs(rels) do
+    if not M.paths_planned(rec.allowed_files, { p }) then rec.allowed_files[#rec.allowed_files + 1] = p end
+  end
+  M.save(rec)
 end
 
 -- A new revision `markdown` by `by` ("agent" / "you"): the file rewritten

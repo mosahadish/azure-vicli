@@ -84,6 +84,10 @@ def main():
                 text += ", perms: read={0} edit={1}".format(picked.get("read"), picked.get("edit"))
             # EDITPATH=<path>: ask to edit that file, report the option.
             for n, path in enumerate(re.findall(r"EDITPATH=(\S+)", prompt)):
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
+                      "update": {"sessionUpdate": "agent_message_chunk", "content": {
+                          "type": "text", "text": "Looking.\n\nI need {0} for the shared helper.\n\n".format(
+                              path.rsplit("/", 1)[-1])}}}})
                 send({"jsonrpc": "2.0", "id": "edit-{0}".format(n), "method": "session/request_permission",
                       "params": {"sessionId": params.get("sessionId"), "toolCall": {
                           "toolCallId": "e{0}".format(n), "title": "Edit " + path, "kind": "edit",

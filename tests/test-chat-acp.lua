@@ -93,6 +93,21 @@ local e6, err6 = send_and_wait("EDITPATH=" .. wt .. "/src/a.py EDITPATH=" .. wt 
 check("approved plan: a planned file is edited without asking",
   e6 ~= nil and e6.text:find("src/a.py]=yes", 1, true) ~= nil, err6 or (e6 and e6.text))
 check("approved plan: an unplanned file asks", #asked == 1 and asked[1]:find("b.py", 1, true) ~= nil, vim.inspect(asked))
+check("saying it isn't in the plan, and why", #asked == 1 and asked[1]:find("doesn't include", 1, true) ~= nil
+  and asked[1]:find("Why: I need b.py for the shared helper.", 1, true) ~= nil, vim.inspect(asked))
+check("denied: not added to the plan", not (PLAN.load("wi-3001").allowed_files or {})[1])
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(1) end
+asked = {}
+local e7 = send_and_wait("EDITPATH=" .. wt .. "/src/b.py")
+check("allowed once", #asked == 1 and e7 ~= nil and e7.text:find("src/b.py]=yes", 1, true) ~= nil, vim.inspect(asked))
+check("and now it's part of the plan", vim.deep_equal(PLAN.load("wi-3001").allowed_files, { "src/b.py" }))
+asked = {}
+local e8 = send_and_wait("EDITPATH=" .. wt .. "/src/b.py")
+check("so the next edit to it doesn't ask", #asked == 0 and e8 ~= nil and e8.text:find("src/b.py]=yes", 1, true) ~= nil,
+  vim.inspect(asked))
+check("and the change check counts it as planned",
+  #PLAN.check_change(PLAN.load("wi-3001"), { "src/a.py", "src/b.py" }).unplanned == 0)
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
 PLAN.save({ key = "wi-3001", status = "draft", target = { work_item_id = 3001 }, threads = {},
   revisions = { { at = os.time(), by = "agent", markdown = "## Files\n- `src/a.py`\n" } } })
 asked = {}

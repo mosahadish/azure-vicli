@@ -212,8 +212,11 @@ picks goes through `session/set_config_option`.
   they're always allowed - and while a `/plan` message runs, editing,
   deleting or moving a file is refused without asking (a plan changes no
   code). Once you've approved the plan, changing a file it lists under
-  Files, inside its change's worktree, doesn't ask either; any other file
-  still does. `--allow-tool azure-vicli` saves Copilot
+  Files, inside its change's worktree, doesn't ask either. A file the plan
+  doesn't list asks, saying so and giving the agent's reason (the last
+  thing it wrote before asking); allow it once and it's part of the plan
+  from then on - later edits to it don't ask, and `show_fix`'s check
+  against the plan counts it as planned. `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this

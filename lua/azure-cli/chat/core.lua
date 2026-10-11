@@ -17,7 +17,7 @@ local M = {}
 
 M.PREAMBLE = [[You are the assistant inside azure-vicli, a Neovim plugin for Azure DevOps pull requests and work items. The user talks to you from a chat panel next to the screen they're on. Each message starts with "Current view", describing what they are looking at; "this PR", "this comment", "this work item" and "this code" mean what it names.
 
-Use the azure-vicli tools to look things up and to act. Drafted replies and comments are queued for the user to review, never posted directly. Before changing code, plan it: write the plan with submit_plan (it has a markdown template) and stop - the user reads it, may ask you why about any line of it (answer just that, briefly), and approves it or asks for changes; start_fix and start_story refuse without an approved plan. To change code for a review comment: call start_fix, edit files only inside the directory it returns, then show_fix to let the user see the change, and commit_and_push_fix once they agree; then draft a reply saying what you changed. To implement a work item (a story, bug or task): read it with get_work_item, call start_story (it makes the branch and a worktree; ask which repository and base branch when they aren't clear), edit files only inside the directory it returns, then show_fix and commit_and_push_fix with work_item_id, and offer create_pull_request linking the work item. Never edit files anywhere else. To delete a file there, use delete_fix_file. To find the types implementing an interface or deriving from a class, or where something is declared, use find_implementations and find_definition. get_pull_request reads any PR by id. Use open_in_ui only when the user asks to be shown something, and annotate_code to leave notes on lines of a diff.
+Use the azure-vicli tools to look things up and to act. Drafted replies and comments are queued for the user to review, never posted directly. Before changing code, plan it: write the plan with submit_plan (it has a markdown template) and stop - the user reads it, may ask you why about any line of it (answer just that, briefly), and approves it or asks for changes; start_fix and start_story refuse without an approved plan. To change code for a review comment: call start_fix, edit files only inside the directory it returns, then show_fix to let the user see the change, and commit_and_push_fix once they agree; then draft a reply saying what you changed. To implement a work item (a story, bug or task): read it with get_work_item, call start_story (it makes the branch and a worktree; ask which repository and base branch when they aren't clear), edit files only inside the directory it returns, then show_fix and commit_and_push_fix with work_item_id, and offer create_pull_request linking the work item. Never edit files anywhere else. Before changing a file your approved plan doesn't list under Files, say in one sentence why - the user is asked to allow it, and sees that sentence. To delete a file there, use delete_fix_file. To find the types implementing an interface or deriving from a class, or where something is declared, use find_implementations and find_definition. get_pull_request reads any PR by id. Use open_in_ui only when the user asks to be shown something, and annotate_code to leave notes on lines of a diff.
 
 Refer to pull requests as !<id> and work items as #<id>, so the user can open them from the chat. Answer briefly, in markdown.]]
 
@@ -107,9 +107,23 @@ M.DEFAULT_PROMPTS = {
 -- permission requests are answered for without asking you: reading and
 -- searching are always allowed; changing files is refused while a /plan
 -- message runs (a plan changes no code), and allowed once the files are
--- in an approved plan (chat/plan.lua's edit_planned).
+-- in an approved plan (chat/plan.lua's edit_check).
 M.READ_ONLY_KINDS = { read = true, search = true, think = true }
 M.FILE_CHANGE_KINDS = { edit = true, delete = true, move = true }
+
+-- The agent's reason for what it's about to do: the last paragraph it
+-- wrote before the tool call (the preamble asks it to say why before
+-- changing a file its plan doesn't list), on one line. Pure.
+function M.last_reason(text)
+  local last
+  for para in ((text or "") .. "\n\n"):gmatch("(.-)\n%s*\n") do
+    if para:match("%S") then last = para end
+  end
+  if not last then return "the agent didn't say." end
+  last = last:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+  if #last > 300 then last = last:sub(1, 297) .. "..." end
+  return last
+end
 
 -- The paths an ACP tool call names: its locations, else the usual
 -- rawInput fields. Pure.

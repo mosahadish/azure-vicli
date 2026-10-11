@@ -274,7 +274,8 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   -- and searching never ask (CORE.READ_ONLY_KINDS); changing files
   -- (CORE.FILE_CHANGE_KINDS) is refused without asking while a /plan
   -- message runs, and allowed without asking when every file is in an
-  -- approved plan's Files section, inside its worktree.
+  -- approved plan, inside its worktree. A file the approved plan doesn't
+  -- cover asks, with the agent's reason; allowing it adds it to the plan.
   local function on_permission(method, params, id, conn)
     if method ~= "session/request_permission" then return conn.respond(id, nil, "unsupported request") end
     local options = params.options or {}
@@ -296,11 +297,22 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
         render_soon()
         return answer(false)
       end
-      if require("azure-cli.chat.plan").edit_planned(CORE.tool_paths(tool)) then return answer(true) end
     end
     local details = {}
     local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
     if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
+    local PLAN = require("azure-cli.chat.plan")
+    local verdict, rec, rels = nil, nil, nil
+    if CORE.FILE_CHANGE_KINDS[tool.kind] then verdict, rec, rels = PLAN.edit_check(CORE.tool_paths(tool)) end
+    if verdict == "planned" then return answer(true) end
+    if verdict == "unplanned" then
+      local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
+        .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
+      return confirm_for(st.plan_key and st or nil)(question, function(yes)
+        if yes then PLAN.allow_files(rec, rels) end
+        answer(yes)
+      end, details)
+    end
     confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), answer, details)
   end
 
