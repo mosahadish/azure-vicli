@@ -840,8 +840,10 @@ do
   end
   local function need(e, why, ...)
     if not e then return fail(why) end
+    -- Older Neovims' vim.json.encode writes / as \/.
+    local text = (e.text or ""):gsub("\\/", "/")
     for _, s in ipairs({ ... }) do
-      if not (e.text or ""):find(s, 1, true) then return fail("\"" .. s .. "\" missing from the answer:\n" .. tostring(e.text)) end
+      if not text:find(s, 1, true) then return fail("\"" .. s .. "\" missing from the answer:\n" .. tostring(e.text)) end
     end
     return true
   end
@@ -930,6 +932,11 @@ do
   feed("[a")
   if not vim.wait(5000, function() return at_note(12) and vim.api.nvim_get_current_buf() == auth_buf end, 50) then
     return fail("[a didn't come back to auth.py's note")
+  end
+  -- Back where open_in_ui left it: the steps below expect throttle.py.
+  STATE.review_openers["101"]("src/throttle.py", "R", 4)
+  if not vim.wait(5000, function() return at_note(4) and vim.api.nvim_get_current_buf() == throttle_buf end, 50) then
+    return fail("couldn't go back to throttle.py:4")
   end
   table.remove(notes)
 
