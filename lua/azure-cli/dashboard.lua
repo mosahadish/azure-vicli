@@ -28,8 +28,8 @@
 -- (assigned to me or created by me).
 --
 -- M.open() (re)builds this dashboard's buffer/window/keymaps - called by
--- lua/azure-cli/init.lua's open_dashboard() and, to swap back from the
--- work-items dashboard, by workitems/dashboard.lua's "P" key directly.
+-- lua/azure-cli/init.lua's open_dashboard() and home.lua, which keeps it
+-- in a tab of its own next to the work items and the Agents screen.
 -- Every module-level `local` the old dofile()/:luafile script had now lives
 -- inside this function instead, so re-entering the dashboard resets them
 -- exactly as a re-source used to (see init.lua's own header comment).
@@ -1882,13 +1882,13 @@ KEYS.bind(buf, "dashboard", "open_workitem", open_linked_workitem, { desc = "the
 KEYS.bind(buf, "dashboard", "link_workitem", link_workitem, { desc = "link a work item to this PR" })
 KEYS.bind(buf, "dashboard", "unlink_workitem", unlink_workitem, { desc = "unlink a work item from this PR" })
 KEYS.bind(buf, "dashboard", "workitems", function()
-  require("azure-cli.workitems.dashboard").open()
-end, { desc = "switch to the work-items dashboard" })
+  require("azure-cli.home").go("workitems")
+end, { desc = "switch to the work-items dashboard (its own tab)" })
 KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 -- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
 -- the PR under the cursor (chat/view.lua).
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
-KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.chat.agents_view").open() end,
+KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
 require("azure-cli.chat.view").register("azurecli-dashboard", function(w)
   local pr = row_pr[vim.api.nvim_win_get_cursor(w)[1]]

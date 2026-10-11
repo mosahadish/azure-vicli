@@ -23,7 +23,7 @@ no rows shown) - configurable via `setup({collapsed_sections={...}})`, see
 [setup() options](configuration.md#setup-options); Mentions/Actionable/Waiting/Created stay
 open by default. `za` (or `<Space>`) on a section header toggles it, `zR` expands every
 section and `zM` collapses every section; the state persists for the rest
-of the session (even across a W/P dashboard swap). If the cursor's PR is in
+of the session (even across W/P switches between the dashboards). If the cursor's PR is in
 a section that gets collapsed, the cursor lands on that section's header
 instead of jumping elsewhere.
 

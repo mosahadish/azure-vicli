@@ -28,8 +28,8 @@
 --   ?      show this help
 --
 -- M.open() (re)builds this dashboard - called by lua/azure-cli/init.lua's
--- open_workitems() and, to swap back from the PR dashboard, by
--- dashboard.lua's "W" key and this file's own "P" key directly.
+-- open_workitems() and home.lua, which keeps it in a tab of its own next
+-- to the PR dashboard and the Agents screen (W / P / A switch).
 local CONFIG = require("azure-cli.config")
 local STATE = require("azure-cli.state")
 local RPC = require("azure-cli.rpc")
@@ -1341,9 +1341,9 @@ prefetch_neighbors = function()
   end
 end
 
--- Swap to the pull-request dashboard in this same window.
+-- Go to the pull-request dashboard's tab (home.lua).
 local function open_pr_list()
-  require("azure-cli.dashboard").open()
+  require("azure-cli.home").go("prs")
 end
 
 -- Copy the web link of the work item under the cursor to the system clipboard.
@@ -1597,7 +1597,7 @@ KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open the confi
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
 -- gq: the chat panel, told about the work item under the cursor.
 require("azure-cli.chat").bind_toggle(buf, "workitems")
-KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.chat.agents_view").open() end,
+KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
 -- gP: an agent per work item - the one under the cursor, or every one in
 -- the selected rows - each writing its plan (chat/agents.lua).

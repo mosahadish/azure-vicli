@@ -437,7 +437,7 @@ local function ensure_bufs()
   KEYS.bind(log_buf, "chat", "use_as_reply", function() use_as_reply() end, { desc = "draft this answer as a reply" })
   KEYS.bind(log_buf, "chat", "why", function() ask_why() end, { desc = "ask the agent why it did this" })
   -- Not in the input box: A there is Vim's own "append at the end".
-  KEYS.bind(log_buf, "chat", "agents", function() require("azure-cli.chat.agents_view").open() end,
+  KEYS.bind(log_buf, "chat", "agents", function() require("azure-cli.home").go("agents") end,
     { desc = "every plan's agent (the Agents screen)" })
   KEYS.bind(log_buf, "chat", "expand", function()
     -- <Tab>: all of this turn's tool calls and answer, or folded again.

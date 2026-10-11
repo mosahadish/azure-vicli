@@ -38,6 +38,12 @@ in for it, you can type "approve" or "unlink" instead of remembering the key.
 The action you pick runs where you were, cursor and all. Actions that only
 work on a visual selection aren't listed.
 
+**The three home screens** - Pull requests, Work items and Agents - each
+have a tab of their own: `P` goes to the pull requests, `W` to the work
+items, `A` to the Agents screen, from any of them (or click the tab). The
+standalone launcher opens all three at startup and keeps them the first
+three tabs, in that order; a PR or a plan you open goes after them.
+
 Press `g` and pause, and a small float in the bottom-right corner lists the
 screen's `g` keys and what each does (with the `↑` marks); the next key
 closes it and does what it always did - `gg`, a count (`5g`, pause, `g`), a
@@ -387,8 +393,9 @@ paste the output here after changing a default.
 | `help` | `?` |
 | `open` | `<CR>` |
 | `palette` | `g.` |
+| `pr_list` | `P` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `run_log` | `gH` |
-
+| `workitems` | `W` |
 <!-- END GENERATED KEYS TABLE -->

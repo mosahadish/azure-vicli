@@ -106,7 +106,7 @@ local DEFAULT_KEYS = {
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
-    quit = "q", help = "?", palette = "g.", approve = "gA",
+    quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {

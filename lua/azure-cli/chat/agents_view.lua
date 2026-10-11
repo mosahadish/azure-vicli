@@ -161,6 +161,7 @@ local HELP = {
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
   "Window",
+  { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
   { "refresh", "redraw" }, { "quit", "close" }, { "help", "this help" },
 }
 
@@ -223,6 +224,10 @@ local function setup(buf)
     for l = a, b do if view.rows[l] then rows[#rows + 1] = view.rows[l] end end
     approve_rows(rows)
   end, { desc = "approve the selected rows' plans", mode = "x" })
+  K.bind(buf, "agents", "pr_list", function() require("azure-cli.home").go("prs") end,
+    { desc = "the pull-request dashboard" })
+  K.bind(buf, "agents", "workitems", function() require("azure-cli.home").go("workitems") end,
+    { desc = "the work-items board" })
   K.bind(buf, "agents", "refresh", render, { desc = "redraw" })
   K.bind(buf, "agents", "quit", function()
     if view and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then

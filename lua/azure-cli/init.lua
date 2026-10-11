@@ -44,6 +44,8 @@ function M.open_dashboard()
     vim.cmd("tabnew")
   end
   require("azure-cli.dashboard").open()
+  -- The launcher's home tabs: Pull requests, Work items, Agents (home.lua).
+  if M._standalone then require("azure-cli.home").open_all() end
 end
 
 -- Opens the work-items dashboard the same way (see open_dashboard above);
@@ -56,6 +58,7 @@ function M.open_workitems()
     vim.cmd("tabnew")
   end
   require("azure-cli.workitems.dashboard").open()
+  if M._standalone then require("azure-cli.home").open_all() end
 end
 
 -- Opens the reviewer for PR `id` directly (:AzureCli review <id>), always in
