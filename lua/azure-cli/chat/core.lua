@@ -148,6 +148,91 @@ M.DEFAULT_PROMPTS = {
 M.READ_ONLY_KINDS = { read = true, search = true, think = true }
 M.FILE_CHANGE_KINDS = { edit = true, delete = true, move = true }
 
+-- Shell commands that only look (Copilot greps and lists through the
+-- shell rather than a read tool), lower-cased, `.exe` dropped. Each maps
+-- to the flags that would make it write or run something else.
+local LOOK_ONLY = {
+  rg = { "--pre", "--pre-glob" }, grep = {}, egrep = {}, fgrep = {}, findstr = {},
+  find = { "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls" },
+  fd = { "-x", "--exec", "-X", "--exec-batch" },
+  ls = {}, dir = {}, tree = {}, cat = {}, type = {}, head = {}, tail = {}, wc = {}, sort = { "-o", "--output" },
+  uniq = {}, cut = {}, echo = {}, pwd = {}, cd = {}, file = {}, stat = {}, which = {}, where = {},
+  basename = {}, dirname = {}, realpath = {},
+  ["get-content"] = {}, gc = {}, ["get-childitem"] = {}, gci = {}, ["select-string"] = {}, sls = {},
+  ["get-item"] = {}, ["test-path"] = {}, ["resolve-path"] = {}, ["get-location"] = {},
+  ["select-object"] = {}, select = {}, ["sort-object"] = {}, ["measure-object"] = {}, measure = {},
+  ["format-table"] = {}, ft = {}, ["format-list"] = {}, fl = {}, ["out-string"] = {},
+}
+-- git's: what each would write with, besides --output / --ext-diff.
+local GIT_LOOK_ONLY = {
+  log = {}, show = {}, diff = {}, status = {}, blame = {}, grep = { "-O", "--open-files-in-pager" },
+  ["ls-files"] = {}, ["ls-tree"] = {}, ["rev-parse"] = {}, describe = {}, shortlog = {}, ["cat-file"] = {},
+  ["merge-base"] = {}, ["show-ref"] = {},
+}
+
+-- A one-letter flag counts inside a cluster too (sort -ro out).
+local function bad_flag(words, from, flags)
+  for i = from, #words do
+    local w = words[i]
+    for _, f in ipairs(flags) do
+      if w == f or w:sub(1, #f + 1) == f .. "=" then return true end
+      if #f == 2 and w:match("^%-%w+$") and w:find(f:sub(2), 2, true) then return true end
+    end
+  end
+end
+
+local function look_only_part(part)
+  local words = vim.split(vim.trim(part), "%s+")
+  -- What a backslash escapes is that character (a Windows path's
+  -- backslashes go too, which doesn't matter for matching).
+  for k, w in ipairs(words) do words[k] = w:gsub("\\", "") end
+  local name = (words[1] or ""):lower():gsub("%.exe$", "")
+  if name == "git" then
+    -- Only these before the subcommand: -c / --config-env would set a pager.
+    local i = 2
+    while words[i] == "--no-pager" or words[i] == "-C" or words[i] == "-P" do i = i + (words[i] == "-C" and 2 or 1) end
+    local flags = GIT_LOOK_ONLY[words[i] or ""]
+    return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
+  end
+  local flags = LOOK_ONLY[name]
+  return flags ~= nil and not bad_flag(words, 2, flags)
+end
+
+-- Whether shell command `cmd` (a string, or an argv list) only reads:
+-- every part of it - split on |, &&, || and ; - is one of the commands
+-- above without a flag that writes, and nothing in it redirects, runs a
+-- subcommand or a script block (outside quotes: > < & ( ) { } `; inside
+-- double quotes: $( and `). Pure.
+function M.look_only_command(cmd)
+  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
+  if type(cmd) ~= "string" or not cmd:match("%S") then return false end
+  local bare, bad = {}, false
+  local i, n = 1, #cmd
+  while i <= n do
+    local c = cmd:sub(i, i)
+    if c == "'" or c == '"' then
+      local close = cmd:find(c, i + 1, true)
+      if not close then return false end
+      local inner = cmd:sub(i + 1, close - 1)
+      if c == '"' and (inner:find("$(", 1, true) or inner:find("`", 1, true)) then bad = true end
+      -- Kept as part of its word (find . "-delete" is still -delete), its
+      -- spaces and shell characters made harmless.
+      bare[#bare + 1] = inner:gsub("[%s|;&<>(){}`$\\]", "_")
+      i = close + 1
+    else
+      bare[#bare + 1] = c
+      i = i + 1
+    end
+  end
+  if bad then return false end
+  local s = table.concat(bare):gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
+  if s:find("[<>&(){}`$]") then return false end
+  for part in (s .. "\n"):gmatch("(.-)\n") do
+    if part:match("%S") and not look_only_part(part) then return false end
+  end
+  return true
+end
+
 -- The agent's reason for what it's about to do: the last paragraph it
 -- wrote before the tool call (the preamble asks it to say why before
 -- changing a file its plan doesn't list), on one line. Pure.

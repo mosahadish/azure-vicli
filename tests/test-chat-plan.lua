@@ -316,6 +316,25 @@ do
     and not PLAN.is_test_command("dotnet build", nil))
 end
 
+-- --- look_only_command -------------------------------------------------------------------------
+do
+  local C = require("azure-cli.chat.core")
+  local function all(list, want)
+    for _, c in ipairs(list) do if C.look_only_command(c) ~= want then return vim.inspect(c) end end
+  end
+  local wrong = all({ "grep -rn 'Config' src", "rg -n \"override|caller\" --type cs", "git log --oneline -20",
+    "cd C:\\w\\api && git diff HEAD~1 -- src", "Get-ChildItem -Recurse -Filter *.cs | Select-String 'Config'",
+    "find . -name '*.cs' | head -20", "git --no-pager show HEAD:src/a.cs", "ls -la; cat README.md",
+    { "rg", "-n", "Config" }, "git -C ../repo grep -n Foo", "findstr /s /n Config *.cs" }, true)
+  check("look_only_command: searching and listing", wrong == nil, wrong)
+  wrong = all({ "rm -rf x", "grep x > out.txt", "find . -delete", "find . \"-delete\"", "find . -exec rm {} ;",
+    "rg --pre=./evil x", "sort -ro out x", "git -c core.pager=evil log", "git push", "git branch -D x",
+    "cat $(rm x)", "echo \"$(rm x)\"", "ls `rm x`", "grep x & rm y", "Remove-Item x",
+    "Get-ChildItem | ForEach-Object { Remove-Item $_ }", "git diff --output=x", "git log --ext-diff",
+    "grep x 'unterminated", "fd . -x rm", "(rm x)", "r\\m -rf x", "", "dotnet build", "FOO=1 grep x" }, false)
+  check("look_only_command: anything that writes or runs something else", wrong == nil, wrong)
+end
+
 -- --- hunks ------------------------------------------------------------------------------------
 do
   local raw = { "diff --git a/x.lua b/x.lua", "index 1..2 100644", "--- a/x.lua", "+++ b/x.lua",

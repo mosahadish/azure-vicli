@@ -128,6 +128,13 @@ check("the plan's build and test commands run without asking", e9 ~= nil
   e9 and e9.text)
 check("another command asks", #asked == 1 and asked[1]:find("curl", 1, true) ~= nil, vim.inspect(asked))
 STATE.chat.plan_key = nil
+asked = {}
+local e9b = send_and_wait("EXEC=git_log_--oneline EXEC=grep_-rn_Config_src EXEC=rm_-rf_build")
+check("searching through the shell doesn't ask, in any conversation", e9b ~= nil
+  and e9b.text:find("exec[git log --oneline]=yes", 1, true) ~= nil
+  and e9b.text:find("exec[grep -rn Config src]=yes", 1, true) ~= nil, e9b and e9b.text)
+check("a command that changes something still asks", #asked == 1 and asked[1]:find("rm", 1, true) ~= nil,
+  vim.inspect(asked))
 vim.fn.mkdir(wt, "p")
 vim.fn.writefile({ "gitdir: x" }, wt .. "/.git")
 vim.fn.writefile({ "feature/3001" }, wt .. ".branch")

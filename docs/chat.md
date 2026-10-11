@@ -218,9 +218,14 @@ picks goes through `session/set_config_option`.
   running a command) pops up the same yes/no prompt as azure-vicli's own
   tools, with its diff when it has one; "Allow"/"Deny" picks Copilot's
   `allow_once`/`reject_once`. Reading and searching files never ask -
-  they're always allowed - and while a `/plan` message runs, editing,
-  deleting or moving a file is refused without asking (a plan changes no
-  code). Once you've approved the plan, changing a file it lists under
+  they're always allowed, and so is searching or listing through the
+  shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `git log` / `diff` /
+  `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
+  `Get-Content`, `Select-String`, and pipes of them. A command that could
+  write or run something else - a redirect, `$(...)`, a script block,
+  `find -exec`, `rg --pre`, any other program - still asks. While a
+  `/plan` message runs, editing, deleting or moving a file is refused
+  without asking (a plan changes no code). Once you've approved the plan, changing a file it lists under
   Files, inside its change's worktree, doesn't ask either. A file the plan
   doesn't list asks, saying so and giving the agent's reason (the last
   thing it wrote before asking); allow it once and it's part of the plan

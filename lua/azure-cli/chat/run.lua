@@ -322,6 +322,8 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
       return answer(true)
     end
+    -- Searching and listing through the shell (grep, git log, ...).
+    if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return answer(true) end
     if verdict == "unplanned" then
       local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
         .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
