@@ -53,13 +53,15 @@ lua/azure-cli/
   merge.lua       the complete-PR dialog shared by the dashboard's and the reviewer's gm
   log.lua         in-session error log (M.record/M.summary) + :AzureCli log
   editor.lua      floating comment editor (drafts, @ mentions)
+  home.lua        the three home screens (Pull requests, Work items, Agents), each in its own tab; P/W/A switch, closing a PR goes back to the tab it came from
   chat/           the chat panel: init.lua (conversations, the panel), run.lua (running the agent:
                   send, cancel, its MCP config), actions.lua (what the panel's keys do), view.lua (what's on screen),
                   tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
                   plan.lua (the plan: storage, its gate on start_fix/start_story, the tools - with
                   plan_text.lua's pure helpers and plan_view.lua's tab), threads.lua (ga: a
                   question answered under a line - the plan's and the change viewer's), agents.lua
-                  (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen)
+                  (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen),
+                  tools_agents.lua (the main chat's start_agents / list_agents / message_agent)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard
   review/
@@ -148,7 +150,7 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/log.lua` | The in-session error log every provider-failure path records into (`M.record`) and shows a one-line summary from (`M.summary`); `M.open` is [`:AzureCli log`](commands-and-keys.md#commands). |
 | `lua/azure-cli/chat/*.lua` | The [chat panel](chat.md): `init.lua` the split (transcript + input) that follows you into every azure-vicli tab, and each message's headless agent run (session resume via `followup`, else replay); `view.lua` the "what's on screen" snapshot every screen registers a describer for; `tools.lua` the agent's tools (reads, direct writes, writes that ask); `bridge.lua` the 127.0.0.1 + token endpoint `azure-cli.py --mcp` forwards MCP tool calls to. |
 | `lua/azure-cli/chat/core.lua`, `store.lua`, `refs.lua` | The chat's pure helpers (message composition, the stream reader for Claude Code's stream-json / json / plain output, saved prompts, `!`/`#` reference parsing, transcript rendering); saved conversations and the audit log under `stdpath("data")/azure-cli-chat/`; resolving, describing, completing and opening references. |
-| `lua/azure-cli/chat/tools_pr.lua`, `tools_board.lua`, `tools_fix.lua` | The agent's tool groups beyond the basics: build log, thread status, reviewers, description, create/complete PR, re-queue, `open_in_ui`, `annotate_code`; child tasks, assignment, sprints, comments; the fix flow (a worktree under `stdpath("cache")/azure-cli/fix-worktrees`, its diff, commit and push). `tools.lua` holds the registry, per-tool permissions, the audit log and the undoers. |
+| `lua/azure-cli/chat/tools_pr.lua`, `tools_board.lua`, `tools_fix.lua`, `tools_agents.lua` | The agent's tool groups beyond the basics: build log, thread status, reviewers, description, create/complete PR, re-queue, `open_in_ui`, `annotate_code`; child tasks, assignment, sprints, comments; the fix flow (a worktree under `stdpath("cache")/azure-cli/fix-worktrees`, its diff, commit and push); the main chat coordinating the agents (start, list, message them - refused inside an agent's own conversation). `tools.lua` holds the registry, per-tool permissions, the audit log and the undoers. |
 | `lua/azure-cli/review/chat.lua` | Reviewer-feature module: `gq` (and `gq` on a selection) in the reviewer, its describer (file, line, code, the change around the cursor, a selection's file lines, the thread), `STATE.review_openers` for `open_in_ui`, and drawing `annotate_code` notes (called from `decorate_comments`). |
 | `lua/azure-cli/editor.lua` | The floating comment editor (see [Reviewer](reviewer.md#reviewer)'s "Comment editor") - drafts, title formatting, `@` mention translation. |
 | `lua/azure-cli/rpc.lua` | Shared client for the `azure-cli.py --serve` daemon - one daemon per Neovim session, `require()`'d by every file above; `M.run(argv, opts)` is a `vim.fn.jobstart`-compatible drop-in that routes a provider call to the daemon when it's usable and falls back to a plain job otherwise. |
