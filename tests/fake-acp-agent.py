@@ -82,6 +82,21 @@ def main():
                             picked[kind] = ((reply.get("result") or {}).get("outcome") or {}).get("optionId")
                             break
                 text += ", perms: read={0} edit={1}".format(picked.get("read"), picked.get("edit"))
+            # EXEC=<command, _ for spaces>: ask to run it, report the option.
+            for n, cmd in enumerate(re.findall(r"EXEC=(\S+)", prompt)):
+                cmd = cmd.replace("_", " ")
+                send({"jsonrpc": "2.0", "id": "exec-{0}".format(n), "method": "session/request_permission",
+                      "params": {"sessionId": params.get("sessionId"), "toolCall": {
+                          "toolCallId": "x{0}".format(n), "title": cmd, "kind": "execute",
+                          "rawInput": {"command": cmd}},
+                          "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                      {"optionId": "no", "name": "Deny", "kind": "reject_once"}]}})
+                for reply in sys.stdin:
+                    reply = json.loads(reply)
+                    if reply.get("id") == "exec-{0}".format(n):
+                        opt = ((reply.get("result") or {}).get("outcome") or {}).get("optionId")
+                        text += ", exec[{0}]={1}".format(cmd, opt)
+                        break
             # EDITPATH=<path>: ask to edit that file, report the option.
             for n, path in enumerate(re.findall(r"EDITPATH=(\S+)", prompt)):
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),

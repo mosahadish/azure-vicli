@@ -176,6 +176,13 @@ function M.edit_check(paths)
   return M.paths_planned(M.planned_paths(rec), rels) and "planned" or "unplanned", rec, rels
 end
 
+-- Whether the agent may run shell command `cmd` without asking: plan
+-- `key` is approved and `cmd` is its Test plan command, or a line of it.
+function M.test_command_allowed(key, cmd)
+  local rec = M.load(key)
+  return rec ~= nil and rec.status == "approved" and M.is_test_command(cmd, M.test_command(current_lines(rec)))
+end
+
 -- You allowed changing `rels` once: from now on they're part of the plan.
 function M.allow_files(rec, rels)
   rec = M.load(rec.key) or rec

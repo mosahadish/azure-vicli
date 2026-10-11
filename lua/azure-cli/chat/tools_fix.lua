@@ -424,7 +424,8 @@ setmetatable(M, { __call = function(_, T)
       name = "run_tests",
       description = "Runs the tests on the start_fix / start_story change, in its directory: the user's own test "
         .. "command for the repository when they set one, else the command in your plan's Test plan section (a "
-        .. "```sh block), or `command`. Asks the user first, showing the command (not for their own). "
+        .. "```sh block), or `command`. Asks the user first, showing the command (not for their own, nor for an "
+        .. "approved plan's). "
         .. "Returns the exit code and the end of the output. Give pr_id for a fix, work_item_id for a story.",
       schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
         work_item_id = target_schema.properties.work_item_id,
@@ -436,11 +437,14 @@ setmetatable(M, { __call = function(_, T)
         local cmd = a.command or (t and require("azure-cli.chat.tests_run").command(t.dir, PLAN.for_worktree(t.dir)))
         return "run `" .. tostring(cmd or "?") .. "` in " .. (t and vim.fn.fnamemodify(t.dir, ":t") or "the worktree")
       end,
-      -- The user's own command (chat.test_cmd) needs no question.
+      -- The user's own command (chat.test_cmd) needs no question, nor does
+      -- the Test plan command of a plan you approved.
       preapproved = function(a, cb)
         local t = locate(a)
         if a.command or not t then return cb(false) end
-        local _, source = require("azure-cli.chat.tests_run").command(t.dir, require("azure-cli.chat.plan").for_worktree(t.dir))
+        local rec = require("azure-cli.chat.plan").for_worktree(t.dir)
+        local _, source = require("azure-cli.chat.tests_run").command(t.dir, rec)
+        if source == "plan" then return cb(rec.status == "approved", "the approved plan's Test plan") end
         cb(source == "config", "your chat.test_cmd")
       end,
       run = function(args, env, done)

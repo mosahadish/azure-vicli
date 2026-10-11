@@ -276,6 +276,8 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   -- message runs, and allowed without asking when every file is in an
   -- approved plan, inside its worktree. A file the approved plan doesn't
   -- cover asks, with the agent's reason; allowing it adds it to the plan.
+  -- Running the approved plan's Test plan command (or a line of it) in
+  -- the agent's own shell doesn't ask either.
   local function on_permission(method, params, id, conn)
     if method ~= "session/request_permission" then return conn.respond(id, nil, "unsupported request") end
     local options = params.options or {}
@@ -305,6 +307,11 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     local verdict, rec, rels = nil, nil, nil
     if CORE.FILE_CHANGE_KINDS[tool.kind] then verdict, rec, rels = PLAN.edit_check(CORE.tool_paths(tool)) end
     if verdict == "planned" then return answer(true) end
+    -- Building and testing the way the approved plan's Test plan says.
+    local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
+    if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
+      return answer(true)
+    end
     if verdict == "unplanned" then
       local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
         .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)

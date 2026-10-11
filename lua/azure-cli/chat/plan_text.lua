@@ -219,6 +219,22 @@ function M.test_command(lines)
   return nil
 end
 
+-- Whether shell command `cmd` is the plan's test command (`test_cmd`,
+-- test_command's " && "-joined lines) or one of its lines - give or take
+-- whitespace and a leading "cd <dir> &&". Pure.
+function M.is_test_command(cmd, test_cmd)
+  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
+  if type(cmd) ~= "string" or not test_cmd then return false end
+  local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
+  cmd = norm(cmd):gsub("^cd [^&;]+ ?&& ?", "")
+  if cmd == "" then return false end
+  if cmd == norm(test_cmd) then return true end
+  for part in (test_cmd .. " && "):gmatch("(.-) && ") do
+    if norm(part) == cmd then return true end
+  end
+  return false
+end
+
 -- The template's "## " headings `markdown` doesn't have. Pure.
 function M.missing(markdown, template)
   local have = {}

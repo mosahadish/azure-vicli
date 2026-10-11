@@ -108,11 +108,40 @@ check("so the next edit to it doesn't ask", #asked == 0 and e8 ~= nil and e8.tex
 check("and the change check counts it as planned",
   #PLAN.check_change(PLAN.load("wi-3001"), { "src/a.py", "src/b.py" }).unplanned == 0)
 UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
+
+-- Building and testing as the approved plan's Test plan says: the agent's
+-- own shell running it (in that plan's conversation) and run_tests
+-- don't ask; another command does.
+local rec = PLAN.load("wi-3001")
+rec.revisions[1].markdown = rec.revisions[1].markdown .. "\n## Test plan\n```sh\ndotnet build\ndotnet test\n```\n"
+PLAN.save(rec)
+STATE.chat.plan_key = "wi-3001"
+asked = {}
+local e9 = send_and_wait("EXEC=dotnet_build EXEC=dotnet_test EXEC=curl_example.com")
+check("the plan's build and test commands run without asking", e9 ~= nil
+  and e9.text:find("exec[dotnet build]=yes", 1, true) ~= nil and e9.text:find("exec[dotnet test]=yes", 1, true) ~= nil,
+  e9 and e9.text)
+check("another command asks", #asked == 1 and asked[1]:find("curl", 1, true) ~= nil, vim.inspect(asked))
+STATE.chat.plan_key = nil
+vim.fn.mkdir(wt, "p")
+vim.fn.writefile({ "gitdir: x" }, wt .. "/.git")
+vim.fn.writefile({ "feature/3001" }, wt .. ".branch")
+local RT = require("azure-cli.chat.tools").by_name.run_tests
+local pre, why
+RT.preapproved({ work_item_id = 3001 }, function(ok, w) pre, why = ok, w end)
+check("run_tests: the approved plan's command doesn't ask", pre == true, why)
+RT.preapproved({ work_item_id = 3001, command = "make" }, function(ok) pre = ok end)
+check("run_tests: a command of the agent's own asks", pre == false)
+
 PLAN.save({ key = "wi-3001", status = "draft", target = { work_item_id = 3001 }, threads = {},
   revisions = { { at = os.time(), by = "agent", markdown = "## Files\n- `src/a.py`\n" } } })
 asked = {}
 send_and_wait("EDITPATH=" .. wt .. "/src/a.py")
 check("a plan not approved yet: a planned file still asks", #asked == 1, vim.inspect(asked))
+RT.preapproved({ work_item_id = 3001 }, function(ok) pre = ok end)
+check("run_tests: a plan not approved yet asks", pre == false)
+vim.fn.delete(wt, "rf")
+os.remove(wt .. ".branch")
 os.remove(PLAN.root() .. "/wi-3001.json")
 UI.choose = real_choose
 

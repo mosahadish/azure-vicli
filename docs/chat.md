@@ -216,7 +216,10 @@ picks goes through `session/set_config_option`.
   doesn't list asks, saying so and giving the agent's reason (the last
   thing it wrote before asking); allow it once and it's part of the plan
   from then on - later edits to it don't ask, and `show_fix`'s check
-  against the plan counts it as planned. `--allow-tool azure-vicli` saves Copilot
+  against the plan counts it as planned. Building and testing the way an approved
+  plan's Test plan says doesn't ask either: `run_tests` with that
+  command, or the agent running it (or one of its lines) in its own
+  shell. Any other command asks. `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this

@@ -306,6 +306,14 @@ do
   check("command: yours first, else the plan's", c1 == "./run-tests" and s1 == "config" and c2 == "make check" and s2 == "plan",
     vim.inspect({ c1, s1, c2, s2 }))
   require("azure-cli").setup({})
+  local tc = "dotnet build && dotnet test --no-build"
+  check("is_test_command: the whole command, or one of its lines",
+    PLAN.is_test_command("dotnet build && dotnet test --no-build", tc) and PLAN.is_test_command("dotnet  build", tc)
+      and PLAN.is_test_command({ "dotnet", "test", "--no-build" }, tc))
+  check("is_test_command: after a cd", PLAN.is_test_command("cd C:/w/api-wi7 && dotnet test --no-build", tc))
+  check("is_test_command: anything else isn't", not PLAN.is_test_command("dotnet test; rm -rf /", tc)
+    and not PLAN.is_test_command("dotnet", tc) and not PLAN.is_test_command("", tc)
+    and not PLAN.is_test_command("dotnet build", nil))
 end
 
 -- --- hunks ------------------------------------------------------------------------------------
