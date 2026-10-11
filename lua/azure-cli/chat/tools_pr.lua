@@ -227,23 +227,21 @@ return function(T)
       risk = "read",
       run = function(args, _, done)
         local id = tostring(args.pr_id)
-        STATE().chat_notes = STATE().chat_notes or {}
-        STATE().chat_notes[id] = STATE().chat_notes[id] or {}
-        table.insert(STATE().chat_notes[id], { file = (args.file:gsub("^/", "")), line = args.line,
+        local count = require("azure-cli.chat.notes").add(id, { file = (args.file:gsub("^/", "")), line = args.line,
           side = args.side == "L" and "L" or "R", text = args.text, kind = args.kind or "info" })
         local redraw = STATE().review_redecorate and STATE().review_redecorate[id]
         if redraw then pcall(redraw) end
-        done("Noted " .. args.file .. ":" .. args.line .. " (" .. #STATE().chat_notes[id] .. " notes on PR !" .. id .. ").")
+        done("Noted " .. args.file .. ":" .. args.line .. " (" .. count .. " notes on PR !" .. id .. ").")
       end,
     },
     {
       name = "clear_annotations",
-      description = "Removes the notes annotate_code left on a pull request.",
+      description = "Removes the notes annotate_code left on a pull request (they're kept across restarts until then).",
       schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
       risk = "read",
       run = function(args, _, done)
         local id = tostring(args.pr_id)
-        if STATE().chat_notes then STATE().chat_notes[id] = nil end
+        require("azure-cli.chat.notes").clear(id)
         local redraw = STATE().review_redecorate and STATE().review_redecorate[id]
         if redraw then pcall(redraw) end
         done("Cleared the notes on PR !" .. id .. ".")

@@ -10,9 +10,10 @@
 --                under the cursor - or the selection, mapped to file lines
 --   opener       STATE.review_openers[id](path, side, line): the chat's
 --                open_in_ui tool showing this PR at a file and line
---   notes        the agent's annotate_code notes (STATE.chat_notes[id]),
---                drawn as virtual lines under their lines in the diff;
---                review/init.lua's decorate_comments calls M.decorate
+--   notes        the agent's annotate_code notes (chat/notes.lua, kept
+--                across restarts), drawn as virtual lines under their
+--                lines in the diff - "(may have moved)" once the line reads
+--                differently; review/init.lua's decorate_comments calls M.decorate
 --   ]a / [a      the next / previous of those notes, on into the next file
 --                (in the file list's order) that has any
 local M = {}
@@ -98,6 +99,7 @@ local NOTE_HL = { info = "DiagnosticInfo", warning = "DiagnosticWarn", issue = "
 
 local function setup(ctx)
   local STATE = require("azure-cli.state")
+  local NOTES = require("azure-cli.chat.notes")
   local ID = tostring(ctx.ID)
   local notes_ns = vim.api.nvim_create_namespace("azure_cli_chat_notes")
   for _, kind in ipairs({ "list", "diff", "overview", "nav" }) do
@@ -115,7 +117,7 @@ local function setup(ctx)
   -- ]a / [a: the agent's next / previous note - in this file's diff,
   -- else the first (last) one in the next (previous) file that has any.
   local function jump_note(dir)
-    local notes = (STATE.chat_notes or {})[ID] or {}
+    local notes = NOTES.get(ID)
     if #notes == 0 then return ctx.notify("The agent left no notes on this PR.") end
     local buf = vim.api.nvim_get_current_buf()
     local path = ctx.paths_by_buf[buf]
@@ -230,8 +232,8 @@ local function setup(ctx)
     if not vim.api.nvim_buf_is_valid(buf) then return end
     vim.api.nvim_buf_clear_namespace(buf, notes_ns, 0, -1)
     local path = ctx.paths_by_buf[buf]
-    local notes = (STATE.chat_notes or {})[ID]
-    if not (path and notes and #notes > 0) then return end
+    local notes = NOTES.get(ID)
+    if not (path and #notes > 0) then return end
     local by_loc = {}
     for _, n in ipairs(notes) do
       if n.file == path then
@@ -240,18 +242,25 @@ local function setup(ctx)
         table.insert(by_loc[k], n)
       end
     end
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local learned = false
     for bl, m in ipairs(ctx.maps_by_buf[buf] or {}) do
       local list = m.side and m.lineno and by_loc[m.side .. "\t" .. m.lineno]
       if list then
         local virt = {}
         for _, n in ipairs(list) do
+          -- The line as it read when the note was first drawn.
+          if n.code == nil then n.code, learned = lines[bl] or "", true end
+          local moved = NOTES.moved(n, lines[bl])
           for i, l in ipairs(vim.split(n.text, "\n", { plain = true })) do
+            if i == 1 and moved then l = l .. "  (may have moved: the line changed since)" end
             virt[#virt + 1] = { { (i == 1 and "    \u{2726} " or "      ") .. l, NOTE_HL[n.kind] or "DiagnosticInfo" } }
           end
         end
         pcall(vim.api.nvim_buf_set_extmark, buf, notes_ns, bl - 1, 0, { virt_lines = virt })
       end
     end
+    if learned then NOTES.save(ID) end
   end
   STATE.review_redecorate = STATE.review_redecorate or {}
   STATE.review_redecorate[ID] = function()

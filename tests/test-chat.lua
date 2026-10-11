@@ -498,6 +498,24 @@ do
   vim.fn.delete(tmp, "rf")
 end
 
+-- --- chat/notes.lua: annotate_code's notes, kept across restarts ----------------------
+do
+  local NOTES = require("azure-cli.chat.notes")
+  local STATE = require("azure-cli.state")
+  local n = NOTES.add(4242, { file = "a.py", line = 3, side = "R", text = "look", kind = "info" })
+  STATE.chat_notes["4242"][1].code = "x = 1"
+  NOTES.save(4242)
+  STATE.chat_notes = nil  -- a restart
+  local back = NOTES.get(4242)
+  check("notes: saved and read back after a restart", n == 1 and #back == 1 and back[1].text == "look"
+    and back[1].code == "x = 1", vim.inspect(back))
+  check("notes: moved once the line reads differently", NOTES.moved(back[1], "x = 2")
+    and not NOTES.moved(back[1], "  x =  1 ") and not NOTES.moved({ text = "t" }, "anything"))
+  NOTES.clear(4242)
+  STATE.chat_notes = nil
+  check("notes: clear forgets them on disk too", #NOTES.get(4242) == 0)
+end
+
 -- --- review/chat.lua -----------------------------------------------------------------
 do
   local t = RCHAT.thread({ id = 7, status = "fixed", path = "a.py", side = "R", lineno = 4,

@@ -907,6 +907,11 @@ do
     end
   end
   if not noted then return fail("the note isn't drawn in auth.py's diff") end
+  -- Kept for the next session, with the line it was drawn under.
+  local saved = require("azure-cli.shell").read_json(require("azure-cli.chat.store").root() .. "/notes/101.json", {})
+  if not (saved[1] and saved[1].text == "Lockout check here" and type(saved[1].code) == "string" and saved[1].code ~= "") then
+    return fail("the note wasn't saved with its line: " .. vim.inspect(saved))
+  end
   -- ]a / [a: the diff shows throttle.py (open_in_ui above), after
   -- auth.py in the file list - [a goes back to auth.py's note, and with a
   -- note in throttle.py too, ]a goes on into it and [a back again.

@@ -634,7 +634,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
 | `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
-| `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) | - |
+| `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
 | `link_pr_to_work_item` | Links a PR and a work item | no |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
 | `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
