@@ -58,7 +58,7 @@ solves the widths; see its own header comment for the exact rules).
 | `zR` | Expand every section |
 | `zM` | Collapse every section |
 | `gN` | Toggle desktop notifications for this session |
-| `gO` | Open the config file |
+| `gO` | Open a config file: the accounts (`azure-cli.yml`) or the options (`azure-cli.lua`, or your `setup()`) |
 | `r` | Refresh |
 | `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view, `gs` changes its state, `gl` links another and `gL` unlinks the one under the cursor. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |

@@ -110,9 +110,17 @@ function M.status()
   st.python = cmd[1]
   local n = config.accounts_from_setup()
   st.config = n and ("setup({accounts=...}) - " .. n .. " account(s)") or config.config_path()
+  -- The options: the standalone launcher reads azure-cli.lua next to the
+  -- yml; in your own Neovim they're your setup() call.
+  local opts_path = config.options_path()
+  if M.is_standalone() then
+    st.options = opts_path .. (vim.fn.filereadable(opts_path) == 1 and "" or " (not created yet - :AzureCli options)")
+  else
+    st.options = "setup() in your Neovim config"
+  end
   vim.notify(string.format(
-    "azure-cli: daemon running=%s fallback=%s pid=%s\npython=%s\nconfig=%s",
-    tostring(st.running), tostring(st.fallback), tostring(st.pid), st.python, st.config
+    "azure-cli: daemon running=%s fallback=%s pid=%s\npython=%s\nconfig=%s\noptions=%s",
+    tostring(st.running), tostring(st.fallback), tostring(st.pid), st.python, st.config, st.options
   ))
   return st
 end

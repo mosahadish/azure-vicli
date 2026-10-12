@@ -410,6 +410,21 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: :AzureCli status shows setup({python=..., config=...})'s resolved values" "$out"
   fi
 
+  # gO and :AzureCli status name both config files: the accounts
+  # (azure-cli.yml) and the options - azure-cli.lua next to it in the
+  # standalone launcher, your own setup() in plugin mode.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" \
+    -c "lua require('azure-cli').setup({ config = '/tmp/my-cfg/azure-cli.yml' })" \
+    -c "lua local c = require('azure-cli.shell').config_choices(); assert(#c == 2 and c[1].label:find('azure-cli.yml', 1, true) and c[2].label:find('setup({...})', 1, true), vim.inspect(c)); assert(require('azure-cli').status().options:find('setup()', 1, true))" \
+    -c "lua require('azure-cli').set_standalone(true); local c = require('azure-cli.shell').config_choices(); assert(c[2].label:find('/tmp/my-cfg/azure-cli.lua  (new', 1, true), c[2].label); assert(require('azure-cli').status().options:find('/tmp/my-cfg/azure-cli.lua (not created', 1, true))" \
+    -c "lua print('GO-SMOKE-OK')" \
+    -c "qa!" 2>&1)"
+  if [[ "$out" == *GO-SMOKE-OK* ]]; then
+    pass "smoke: gO offers the accounts and the options file, and :AzureCli status names both"
+  else
+    fail "smoke: gO offers the accounts and the options file, and :AzureCli status names both" "$out"
+  fi
+
   # setup({accounts=...}) smoke: a plugin install with no azure-cli.yml at
   # all - the accounts table (with a pat_file) is exported to the provider,
   # so the first :AzureCli opens the real dashboard buffer (not the

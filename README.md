@@ -162,6 +162,23 @@ and ask it to "configure azure-vicli". It follows
 [the configure-azure-vicli skill](.github/skills/configure-azure-vicli/SKILL.md):
 where the files go, the fields, and checking them with `--doctor`.
 
+### Keeping your settings in git
+
+Your settings live outside this folder on purpose - in `%APPDATA%` /
+`~/.config` (or your Neovim config) - so `git pull`, a plugin manager's
+update or a fresh clone never touches them. To version them, keep them in
+your dotfiles repo instead:
+
+- **Plugin:** your `setup({...})` call already lives in your Neovim config,
+  so it's in your dotfiles with it. Give accounts a `pat_file` (outside the
+  repo) rather than a `pat`, and nothing secret is committed.
+- **Standalone:** point `AZVICLI_CONFIG` at the `azure-cli.yml` in your
+  dotfiles (e.g. `~/dotfiles/azure-vicli/azure-cli.yml`); the launcher reads
+  `azure-cli.lua` from the same folder. Again, use `pat_file` for the
+  token.
+
+`:AzureCli status` prints which files are in use, and `gO` opens either one.
+
 ## What's in the box
 
 - **[Pull request dashboard](docs/dashboard.md)** - the PRs waiting on

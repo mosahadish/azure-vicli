@@ -961,7 +961,7 @@ local DASHBOARD_HELP_DESCS = {
   first_pr = "jump to the first PR",
   last_pr = "jump to the last PR",
   toasts = "toggle desktop notifications for this session",
-  config = "open the config file",
+  config = "open a config file",
   refresh = "refresh",
   workitems = "switch to the work-items dashboard",
   quit = "quit",
@@ -1862,7 +1862,7 @@ KEYS.bind(buf, "dashboard", "toasts", function()
   local on = NOTIFY.toggle()
   notify("Desktop notifications " .. (on and "enabled" or "disabled") .. " for this session.")
 end, { desc = "toggle desktop notifications for this session" })
-KEYS.bind(buf, "dashboard", "config", open_config_file, { desc = "open the config file" })
+KEYS.bind(buf, "dashboard", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(buf, "dashboard", "refresh", function() load(false, true) end, { desc = "refresh" })
 -- gg/G land on the first/last PR row rather than the box's blank padding
 -- (the table is centred vertically, so plain gg/G would otherwise stop on

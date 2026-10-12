@@ -201,7 +201,7 @@ module is picked up automatically), `bash -n` over every shell script (and
 the `azure-cli` launcher), twenty-nine Lua unit tests under `tests/` run
 by `luajit`, `python3 -m unittest discover` over `tests/test_*.py`, and,
 in headless `nvim`, ten more Lua tests that need Neovim itself (marked
-"Runs in headless nvim" below) and seven smokes:
+"Runs in headless nvim" below) and eight smokes:
 
 | Test | Covers |
 |---|---|
@@ -258,8 +258,10 @@ runner builds in a temp dir (two branches, `tgt` and `src`, exposed as
 `refs/remotes/origin/{tgt,src}` since that's what the prefetch pipeline
 diffs). Everything is cleaned up on exit.
 
-The seven headless `nvim` smokes and the ten nvim-run Lua tests
-(skipped, not failed, when `nvim` isn't on PATH). The smokes: `setup()`/`config.lua` - `require('azure-cli').setup()` then asserting
+The eight headless `nvim` smokes and the ten nvim-run Lua tests
+(skipped, not failed, when `nvim` isn't on PATH). The smokes: `gO`'s menu
+naming both config files (the options as `azure-cli.lua` in standalone
+mode, `setup()` otherwise) and `:AzureCli status`'s `options` line; `setup()`/`config.lua` - `require('azure-cli').setup()` then asserting
 `require('azure-cli.config').get().keys.diff.next_hunk` resolves - proves
 `require("azure-cli")` and its dependents actually resolve through
 `'runtimepath'` the way a plugin-manager install would (`--cmd "set

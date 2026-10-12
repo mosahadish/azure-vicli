@@ -13,7 +13,10 @@ The config file is `%APPDATA%\azure-cli.yml` on Windows and
 You don't create it by hand: the first `./azure-cli` or `:AzureCli` with no
 file there writes the template below (with `TODO` placeholders) and opens it;
 saving it opens the dashboard. `azure-cli --init-config` does the same from
-a terminal, and `gO` in any dashboard opens it later.
+a terminal. Later, `gO` on any screen asks which file to open: the
+accounts (`azure-cli.yml`) or the options (`azure-cli.lua` next to it - see
+[setup() options](#setup-options) - or, in your own Neovim, a pointer to
+your `setup()` call). `:AzureCli status` prints where both are.
 
 ```yaml
 accounts:
