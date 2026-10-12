@@ -49,3 +49,5 @@ vim.defer_fn(function()
   vim.api.nvim_set_current_win(v.plan_win)
   vim.api.nvim_win_set_cursor(v.plan_win, { 7, 0 })
 end, 400)
+-- Clear the :luafile line this was run with (it names a local path).
+vim.defer_fn(function() vim.cmd("echo \"\"") end, 700)

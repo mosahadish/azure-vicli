@@ -28,3 +28,5 @@ vim.defer_fn(function()
     end
   end
 end, 500)
+-- Clear the :luafile line this was run with (it names a local path).
+vim.defer_fn(function() vim.cmd("echo \"\"") end, 700)
