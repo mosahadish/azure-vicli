@@ -70,3 +70,17 @@ _Part of the [azure-vicli](../README.md) docs._
   or the platform cache directory's `azure-cli/` subfolder for a headless
   `azure-cli.py` call with no Lua session around it. Deleting this directory
   is always safe - everything in it is a cache, rebuilt on demand.
+- **The agent keeps asking permission**: searches and the approved
+  plan's tests don't ask; everything else does until you allow it. Allow
+  a skill once (`a` on its prompt) and what it does stops asking, or set
+  `chat.permissions` by group - `{ ["agent-commands"] = "allow" }` for the
+  agent's shell commands, `{ all = "allow" }` for nothing to ask at all
+  (see [Chat](chat.md#what-the-agent-can-do)). Each prompt says why it
+  asked, and the chat logs what became of every command.
+- **A skill isn't recognised**: `/skills` in the chat lists the ones
+  found, and where it looked when there are none. They're `*/SKILL.md`
+  folders under `chat.skill_dirs` (default `.github/skills`,
+  `.claude/skills`, `.agents/skills`, `.copilot/skills`), in the
+  repository the agent runs in (the PR's clone) and in your home folder.
+  Name it in your message (`/name`, "use the name skill") so its prompts
+  can offer **Allow all of skill …**.

@@ -184,7 +184,9 @@ where the files go, the fields, and checking them with `--doctor`.
   and tells you when reviewers comment - or starts planning the fix.
   Replies are drafted for you to send, and votes ask first. Once you
   approve a plan, its own tests and plain searches run without asking;
-  anything else asks, showing the exact command.
+  anything else asks, showing the exact command - unless you allowed the
+  skill doing it, or set `chat.permissions` (`all = "allow"` for an
+  autopilot where nothing asks). `/skills` lists the agent's skills.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

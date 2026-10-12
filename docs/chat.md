@@ -112,7 +112,9 @@ launcher sets them in its own palette.
 **Saved prompts.** `/triage`, `/review`, `/explain`, `/build`, `/plan` and `/standup`
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
-They run against what's on screen like any message. Add your own, replace
+They run against what's on screen like any message. (`/skills` isn't a
+prompt: it lists the agent's skills right in the chat, without asking the
+agent - see [Permissions](#github-copilot-cli).) Add your own, replace
 or remove the built-in ones with `chat.prompts`:
 
 ```lua
@@ -361,7 +363,10 @@ triage-pr-comments skill on this PR".
 
 You can hand this section to the agent itself (Copilot, Claude Code, ...)
 and it can do the setup for you: open the agent in this repository and tell
-it **"follow the agent setup steps in docs/chat.md"**.
+it **"follow the agent setup steps in docs/chat.md"**. For the rest of the
+config (accounts, keys, permissions, skills) there's a skill an agent picks
+up on its own - ask it to "configure azure-vicli" (see
+[Configuration](configuration.md)).
 
 **Agent setup steps.** You are configuring yourself as azure-vicli's chat
 agent. Do every step, check every flag against the installed CLI instead of
