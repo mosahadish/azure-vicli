@@ -438,7 +438,10 @@ note of your own. `dd` forgets one. The agent fixes them in the worktree
 and shows the change again.
 
 **Running the plan's tests.** The plan's Test plan section gives the
-command that checks the change, in a ` ```sh ` block. `gb` in the change
+command that checks the change, in a ` ```sh ` block - or, when the
+agent wrote none, the inline code there that starts with a test runner or
+build tool (`` `dotnet test` ``, `` `npm test` ``; `submit_plan` tells the
+agent when it found no command at all). `gb` in the change
 viewer runs it in the change's worktree - after asking, since the agent
 wrote it - and the file list's winbar shows the result (`✓ tests passed`,
 `✗ tests failed (exit 1)`, or `..., before the last change` once the

@@ -190,10 +190,42 @@ end
 
 -- The command the plan's Test plan section gives: its first ``` block
 -- (sh, bash, shell, cmd, pwsh, powershell or no language), lines joined
--- with " && ", or nil. Pure.
+-- with " && ". Without one, its inline `code` that starts with a test
+-- runner or build tool (`dotnet test`, `npm test`, `pytest -q`, ...),
+-- joined the same way. Else nil. Pure.
 local SHELL_LANGS = { [""] = true, sh = true, bash = true, shell = true, cmd = true, pwsh = true, powershell = true,
   console = true }
-function M.test_command(lines)
+local RUNNERS = { dotnet = true, npm = true, pnpm = true, yarn = true, npx = true, cargo = true, go = true, mvn = true,
+  gradle = true, ["./gradlew"] = true, gradlew = true, pytest = true, python = true, python3 = true, py = true,
+  make = true, ctest = true, tox = true, nox = true, jest = true, vitest = true, rspec = true, bundle = true,
+  ["./run-tests"] = true, ["./build.sh"] = true, ["./test.sh"] = true }
+-- Test runners that are a whole command on their own (`pytest`): only
+-- these may be given more arguments when the plan's line is one word -
+-- a bare `python` or `npx` would let anything through.
+local ONE_WORD = { pytest = true, jest = true, vitest = true, rspec = true, ctest = true, tox = true, nox = true,
+  make = true, ["./run-tests"] = true, ["./build.sh"] = true, ["./test.sh"] = true }
+local function inline_command(lines)
+  local inside, fenced, out, seen = false, false, {}, {}
+  for _, l in ipairs(lines) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("test", 1, true) ~= nil
+    elseif inside and not fenced then
+      for code in l:gmatch("`([^`]+)`") do
+        code = vim.trim(code)
+        local first = code:match("^(%S+)") or ""
+        if RUNNERS[first] and (code:find(" ", 1, true) or ONE_WORD[first]) and not code:find("[|&;<>$(){}]")
+            and not seen[code] then
+          seen[code] = true
+          out[#out + 1] = code
+        end
+      end
+    end
+  end
+  return #out > 0 and table.concat(out, " && ") or nil
+end
+local function fenced_command(lines)
   local inside, block, lang = false, nil, nil
   for _, l in ipairs(lines) do
     local fence = l:match("^%s*```%s*([%w]*)%s*$")
@@ -217,6 +249,9 @@ function M.test_command(lines)
     end
   end
   return nil
+end
+function M.test_command(lines)
+  return fenced_command(lines) or inline_command(lines)
 end
 
 -- The steps that go with a test runner: building and restoring the same
@@ -250,7 +285,10 @@ function M.is_test_command(cmd, test_cmd)
   end
   local function runs_tests(step)
     for _, l in ipairs(lines) do
-      if step == l or (step:sub(1, #l) == l and extra_ok(step:sub(#l + 1))) then return true end
+      if step == l then return true end
+      if (l:find(" ", 1, true) or ONE_WORD[l]) and step:sub(1, #l) == l and extra_ok(step:sub(#l + 1)) then
+        return true
+      end
       local tool = l:match("^(%S+)")
       for _, sub in ipairs(COMPANIONS[tool] or {}) do
         local head = tool .. " " .. sub

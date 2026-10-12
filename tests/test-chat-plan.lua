@@ -358,6 +358,15 @@ do
   local let = {}
   for _, c in ipairs(bad) do if yes(c) then let[#let + 1] = c end end
   check("is_test_command: still refuses anything else", #let == 0, vim.inspect(let))
+  check("is_test_command: a bare interpreter isn't a prefix for anything",
+    not PLAN.is_test_command("python evil.py", "python") and PLAN.is_test_command("pytest -k lock", "pytest"))
+  local function tcmd(md) return PLAN.test_command(vim.split(md, "\n")) end
+  check("test_command: from inline code when there's no block",
+    tcmd("## Goal\n`make it so`\n## Test plan\nRun `dotnet build` then `dotnet test --no-build`; see `src/a.cs`.\n## Risks\n`npm test`")
+      == "dotnet build && dotnet test --no-build", tcmd("## Test plan\nRun `dotnet test`"))
+  check("test_command: a block wins; not a bare interpreter or a pipe",
+    tcmd("## Test plan\n`dotnet test`\n```sh\nmake check\n```") == "make check"
+      and tcmd("## Test plan\n`python` and `dotnet test | tee x`") == nil)
 end
 
 -- --- look_only_command -------------------------------------------------------------------------

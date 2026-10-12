@@ -475,6 +475,13 @@ function M.tools(T)
         done({
           shown = true, revision = #rec.revisions, file = M.path(key),
           missing_sections = M.missing(args.markdown, M.template()),
+          -- How the tests run: without one the user can't run them (gb)
+          -- and every test run of yours asks.
+          test_command = M.test_command(current_lines(rec)) or vim.NIL,
+          test_command_note = not M.test_command(current_lines(rec))
+            and "Your Test plan has no command to run the tests. Add it in a ```sh block under ## Test plan (one "
+              .. "command per line) with submit_plan again, so the user can run it and, once the plan is approved, "
+              .. "you can run it (with more arguments, after its build step) without asking." or nil,
           next = "Stop here and wait for the user: they read the plan, may ask about lines of it, then approve it "
             .. "(you'll get a message) or ask for changes. Don't call start_fix / start_story before it's approved.",
           shown = not (env and env.background and env.background()),
