@@ -184,6 +184,22 @@ do
   check("agents rows: finished - its PR merged", rows[2].state:find("merged (PR !60)", 1, true) ~= nil, rows[2].state)
   check("agents rows: finished - its PR abandoned", rows[3].state:find("abandoned", 1, true) ~= nil, rows[3].state)
   check("agents rows: pushed, no PR yet", rows[4].state:find("pushed", 1, true) ~= nil, rows[4].state)
+  -- Grouped: what needs you first, the most recent first in each group.
+  local day = 86400
+  local list = {
+    { key = "a", group = 3, at = 10 }, { key = "b", group = 1, at = 5 }, { key = "c", group = 4, at = 1, closed_at = 1000 * day - 2 * day },
+    { key = "d", group = 1, at = 9 }, { key = "e", group = 2, at = 0 }, { key = "f", group = 2, at = 0 },
+    { key = "g", group = 4, at = 1, closed_at = 1000 * day - 8 * day },
+  }
+  local out, hidden = AV.arrange(list, 1000 * day)
+  local got = {}
+  for _, r in ipairs(out) do got[#got + 1] = r.header or r.key end
+  check("arrange: groups in order with counts, newest first, queued in their order",
+    table.concat(got, ",") == "Needs you (2),d,b,Working (2),e,f,In progress (1),a,Finished (1),c", table.concat(got, ","))
+  check("arrange: finished over a week ago hidden", hidden == 1)
+  out, hidden = AV.arrange(list, 1000 * day, true)
+  check("arrange: all shows them", hidden == 0 and out[#out].key == "g" and out[#out - 2].header == "Finished (2)")
+  check("agents rows: their groups", rows[1].group == 3 and rows[2].group == 4 and rows[3].group == 4)
 end
 
 -- --- open questions and your answers ---------------------------------------------------------

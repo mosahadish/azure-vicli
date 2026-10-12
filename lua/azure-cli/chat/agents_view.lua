@@ -4,15 +4,25 @@
 --
 --   Agents                                      2 working · 1 queued · max 3
 --
---    #3001  Throttle repeated login failures   ⠹ working  12s   ✎ start_story
+--   Needs you (1)
 --    #3002  --name takes the flag as its value ● plan waits for you    3m
+--
+--   Working (2)
+--    #3001  Throttle repeated login failures   ⠹ working  12s   ✎ start_story
 --    #3012  Tests for the lockout window       ⌛ waiting for an agent
 --
+--   Finished (1)
+--    #2990  Lock out after 5 failures          ✓ merged (PR !118)
+--
+-- Grouped by what needs you first (M.arrange), the most recent first in
+-- each group; finished means its PR was merged or abandoned
+-- (plan.pr_closed), and those over M.FINISHED_DAYS old hide until gF.
 -- <CR> opens the row's plan, gd its change, gH its run log, gq its plan's
 -- tab with that agent's conversation in the chat; <C-c> stops what it's
 -- doing. Redrawn every second while it's showing.
 --
 --   M.rows(convs, queued, plan_of, now)  the rows (pure)
+--   M.arrange(rows, now, all)            grouped and sorted (pure)
 --   M.open()
 local M = {}
 
@@ -29,7 +39,8 @@ end
 
 -- One row per plan's agent (conversations with a plan key) and per
 -- queued work item: { key, label, title, state, hl, detail, ago }.
--- `plan_of(key)` gives a plan's record (or nil). Pure.
+-- `plan_of(key)` gives a plan's record (or nil). Each has its `group`
+-- (M.GROUPS) and `at` (when it last did something). Pure.
 function M.rows(convs, queued, plan_of, now, frame)
   local rows, seen = {}, {}
   for _, c in ipairs(convs) do
@@ -37,36 +48,38 @@ function M.rows(convs, queued, plan_of, now, frame)
       seen[c.plan_key] = true
       local rec = plan_of(c.plan_key)
       local last = c.entries[#c.entries]
-      local state, hl
+      local state, hl, group
       local detail = ""
       if c.running then
+        group = 2
         state, hl = (frame or "*") .. " working", "AzureCliAccent"
         local tools = last and last.tools or {}
         detail = tools[#tools] or ""
       elseif rec and rec.pr_state == "completed" then
         state, hl = "\u{2713} merged (PR !" .. tostring(rec.pr and rec.pr.id or c.target and c.target.pr_id or "?") .. ")",
           "AzureCliStatusDone"
+        group = 4
       elseif rec and rec.pr_state == "abandoned" then
-        state, hl = "\u{2717} PR abandoned", "AzureCliMuted"
+        state, hl, group = "\u{2717} PR abandoned", "AzureCliMuted", 4
       elseif rec and rec.status == "draft" then
-        state, hl = "\u{25CF} plan waits for you", "AzureCliStatusDraft"
+        state, hl, group = "\u{25CF} plan waits for you", "AzureCliStatusDraft", 1
       elseif rec and rec.status == "changes_requested" then
-        state, hl = "\u{21BA} changes asked, not revised yet", "AzureCliStatusBad"
+        state, hl, group = "\u{21BA} changes asked, not revised yet", "AzureCliStatusBad", 1
       elseif rec and rec.status == "approved" then
-        state, hl = "\u{2713} approved", "AzureCliStatusOk"
+        state, hl, group = "\u{2713} approved", "AzureCliStatusOk", 3
       elseif rec and rec.status == "done" and type(rec.pr) == "table" then
-        state, hl = "\u{2713} PR !" .. tostring(rec.pr.id) .. " open", "AzureCliStatusDone"
+        state, hl, group = "\u{2713} PR !" .. tostring(rec.pr.id) .. " open", "AzureCliStatusDone", 3
       elseif rec and rec.status == "done" then
-        state, hl = "\u{2713} pushed", "AzureCliStatusDone"
+        state, hl, group = "\u{2713} pushed", "AzureCliStatusDone", 3
       elseif last and last.status and last.status ~= "done" then
-        state, hl = "\u{2717} " .. last.status, "AzureCliStatusBad"
+        state, hl, group = "\u{2717} " .. last.status, "AzureCliStatusBad", 1
       else
-        state, hl = "idle", "AzureCliMuted"
+        state, hl, group = "idle", "AzureCliMuted", 3
       end
       local started = last and last.started or c.created or now
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
-        target = c.target, conv = c, cost = require("azure-cli.chat.core").cost_of(c.entries),
+        target = c.target, conv = c, group = group, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
         requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
         waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
     end
@@ -74,13 +87,53 @@ function M.rows(convs, queued, plan_of, now, frame)
   for _, q in ipairs(queued) do
     if not seen[q.key] then
       rows[#rows + 1] = { key = q.key, label = q.label, title = q.title or "",
-        state = "\u{231B} waiting for an agent", hl = "AzureCliMuted", detail = "", ago = "", target = q.target }
+        state = "\u{231B} waiting for an agent", hl = "AzureCliMuted", detail = "", ago = "", target = q.target,
+        group = 2, at = 0 }
     end
   end
   return rows
 end
 
-local view = nil  -- { tab, win, buf, rows, timer }
+-- The screen's groups, in order: what needs you first.
+M.GROUPS = { "Needs you", "Working", "In progress", "Finished" }
+-- Finished agents older than this are hidden until gF shows them.
+M.FINISHED_DAYS = 7
+
+-- `rows` (M.rows) in their groups, the most recent first in each, with a
+-- { header = "Needs you (2)" } before each group that has any. Finished
+-- ones closed over M.FINISHED_DAYS ago are left out unless `all`; the
+-- second result is how many were. Pure.
+function M.arrange(rows, now, all)
+  local kept, hidden = {}, 0
+  for i, r in ipairs(rows) do
+    if r.group == 4 and not all and r.closed_at and now - r.closed_at > M.FINISHED_DAYS * 86400 then
+      hidden = hidden + 1
+    else
+      kept[#kept + 1] = { r = r, i = i }
+    end
+  end
+  table.sort(kept, function(a, b)
+    local ga, gb = a.r.group or 3, b.r.group or 3
+    if ga ~= gb then return ga < gb end
+    local ta, tb = a.r.closed_at or a.r.at or 0, b.r.closed_at or b.r.at or 0
+    if ta ~= tb then return ta > tb end
+    return a.i < b.i
+  end)
+  local counts = {}
+  for _, k in ipairs(kept) do counts[k.r.group or 3] = (counts[k.r.group or 3] or 0) + 1 end
+  local out, last = {}, nil
+  for _, k in ipairs(kept) do
+    local g = k.r.group or 3
+    if g ~= last then
+      out[#out + 1] = { header = M.GROUPS[g] .. " (" .. counts[g] .. ")" }
+      last = g
+    end
+    out[#out + 1] = k.r
+  end
+  return out, hidden
+end
+
+local view = nil  -- { tab, win, buf, rows, timer, all }
 local ns = vim.api.nvim_create_namespace("azure_cli_agents")
 
 local function render()
@@ -90,6 +143,8 @@ local function render()
   local PLAN = require("azure-cli.chat.plan")
   local frame = SPIN[math.floor((vim.uv or vim.loop).now() / 120) % #SPIN + 1]
   local rows = M.rows(CHAT().conversations(), AG.queued(), PLAN.load, os.time(), frame)
+  -- The rows move between groups as they go: the cursor follows its row.
+  local was = vim.api.nvim_win_is_valid(view.win) and view.rows[vim.api.nvim_win_get_cursor(view.win)[1]]
   view.rows = {}
   local width = vim.api.nvim_win_is_valid(view.win) and UI.text_width(view.win) or 100
   local lines, hls = { "" }, {}
@@ -105,24 +160,39 @@ local function render()
   local title_w = math.max(16, math.min(44, width - 55 - 20))
   local CORE = require("azure-cli.chat.core")
   local total, requests
-  for _, r in ipairs(rows) do
-    local label = UI.fit(r.label, 8)
-    local title = UI.fit(r.title, title_w)
-    local state = UI.fit(r.state, 26)
-    -- What it has used: its cost when it reports one, else its premium
-    -- requests; and how full its context is (ACP's usage_update).
-    local cost = UI.fit(r.cost and CORE.money(r.cost) or CORE.requests_label(r.requests), 7)
-    local ctx = CORE.context_label(r.context)
-    local detail = ctx ~= "" and (ctx .. (r.detail ~= "" and (" \u{00B7} " .. r.detail) or "")) or r.detail
-    local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. detail
-    lines[#lines + 1] = line
-    view.rows[#lines] = r
-    local s = #("  " .. label .. " " .. title .. "  ")
-    hls[#hls + 1] = { #lines - 1, 2, 2 + #label, "AzureCliAccent" }
-    hls[#hls + 1] = { #lines - 1, s, s + #state, r.hl }
-    hls[#hls + 1] = { #lines - 1, s + #state + 2, -1, "AzureCliMuted" }
+  local arranged, hidden = M.arrange(rows, os.time(), view.all)
+  for _, r in ipairs(arranged) do
+    if r.header then
+      if #lines > 1 then lines[#lines + 1] = "" end
+      lines[#lines + 1] = "  " .. r.header
+      hls[#hls + 1] = { #lines - 1, 0, -1, "AzureCliSection" }
+    else
+      local label = UI.fit(r.label, 8)
+      local title = UI.fit(r.title, title_w)
+      local state = UI.fit(r.state, 26)
+      -- What it has used: its cost when it reports one, else its premium
+      -- requests; and how full its context is (ACP's usage_update).
+      local cost = UI.fit(r.cost and CORE.money(r.cost) or CORE.requests_label(r.requests), 7)
+      local ctx = CORE.context_label(r.context)
+      local detail = ctx ~= "" and (ctx .. (r.detail ~= "" and (" \u{00B7} " .. r.detail) or "")) or r.detail
+      local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. detail
+      lines[#lines + 1] = line
+      view.rows[#lines] = r
+      local s = #("  " .. label .. " " .. title .. "  ")
+      hls[#hls + 1] = { #lines - 1, 2, 2 + #label, "AzureCliAccent" }
+      hls[#hls + 1] = { #lines - 1, s, s + #state, r.hl }
+      hls[#hls + 1] = { #lines - 1, s + #state + 2, -1, "AzureCliMuted" }
+    end
+  end
+  for _, r in ipairs(rows) do  -- the hidden ones too
     if r.cost then total = (total or 0) + r.cost end
     if r.requests then requests = (requests or 0) + r.requests end
+  end
+  if hidden > 0 then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  " .. hidden .. " finished more than " .. M.FINISHED_DAYS .. " days ago - "
+      .. require("azure-cli.keys").name("agents", "show_finished") .. " shows them"
+    hls[#hls + 1] = { #lines - 1, 0, -1, "AzureCliMuted" }
   end
   -- What's worth pressing now: approve only while a plan waits for you.
   if #rows > 0 then
@@ -142,6 +212,14 @@ local function render()
   vim.bo[view.buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.buf, 0, -1, false, lines)
   vim.bo[view.buf].modifiable = false
+  if vim.api.nvim_win_is_valid(view.win) and vim.api.nvim_win_get_buf(view.win) == view.buf then
+    local cur = vim.api.nvim_win_get_cursor(view.win)[1]
+    local want
+    for l, r in pairs(view.rows) do
+      if (was and r.key == was.key) or (not was and not view.rows[cur] and (not want or l < want)) then want = l end
+    end
+    if want and want ~= cur then pcall(vim.api.nvim_win_set_cursor, view.win, { want, 0 }) end
+  end
   vim.api.nvim_buf_clear_namespace(view.buf, ns, 0, -1)
   for _, h in ipairs(hls) do
     pcall(vim.api.nvim_buf_set_extmark, view.buf, ns, h[1], h[2],
@@ -176,6 +254,7 @@ local HELP = {
   { "cancel", "stop what that agent is doing" },
   "Window",
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
+  { "show_finished", "show (or hide again) the agents finished over " .. M.FINISHED_DAYS .. " days ago" },
   { "refresh", "redraw" }, { "quit", "close" }, { "help", "this help" },
 }
 
@@ -242,6 +321,10 @@ local function setup(buf)
     { desc = "the pull-request dashboard" })
   K.bind(buf, "agents", "workitems", function() require("azure-cli.home").go("workitems") end,
     { desc = "the work-items board" })
+  K.bind(buf, "agents", "show_finished", function()
+    view.all = not view.all
+    render()
+  end, { desc = "show the older finished agents" })
   K.bind(buf, "agents", "refresh", render, { desc = "redraw" })
   K.bind(buf, "agents", "quit", function()
     if view and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then
@@ -283,7 +366,6 @@ function M.open()
     view = nil
   end })
   render()
-  pcall(vim.api.nvim_win_set_cursor, view.win, { 2, 0 })
 end
 
 function M.current() return view end

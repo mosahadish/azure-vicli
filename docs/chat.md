@@ -594,16 +594,18 @@ first, so an answer never goes to a question you didn't read. The status
 strip counts what's going on: `⠹ 2 agents working · ⌛ 1 queued · ⚠ a
 question waits for you · ● 2 plans wait for you`.
 
-![The Agents screen: one row per plan's agent - working, its plan waiting for you, approved](images/chat-agents.png)
+![The Agents screen: its agents grouped - needs you, working, in progress, finished](images/chat-agents.png)
 
 **The Agents screen** (`A` on either dashboard, `A` in the chat's conversation,
-`:AzureCli agents`) lists every plan's agent - what it's doing (working,
-with its latest step; waiting for an agent; its plan waiting for you;
-approved; revising; pushed; `PR !123 open` once it opened one; finished -
-`merged` or `PR abandoned` - once that PR is closed, which it learns from
-the [watched PRs](#conversations-agents-and-models) check), how long since it
-last did something, and
-what it has used so far, and the winbar adds it up: its cost when the
+`:AzureCli agents`) lists every plan's agent, grouped by what needs you
+first - Needs you, Working, In progress, Finished - with the most recent
+first in each group (finished ones over 7 days old are hidden until `gF`).
+For each it shows what it's doing (working, with its latest step; waiting
+for an agent; its plan waiting for you; approved; revising; pushed;
+`PR !123 open` once it opened one; finished - `merged` or `PR abandoned` -
+once that PR is closed, which it learns from the
+[watched PRs](#conversations-agents-and-models) check), how long since it
+last did something, and what it has used so far, and the winbar adds it up: its cost when the
 agent reports one (Claude Code does, and an ACP agent can, through ACP's
 `usage_update`), else its premium requests (`agent.premium_requests`:
 each message counts as its model's multiplier). An ACP agent's
@@ -619,6 +621,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gH` | Its run log |
 | `gq` | Its plan's tab, with that agent's conversation in the chat |
 | `<C-c>` | Stop what it's doing |
+| `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `r` / `q` / `?` | Redraw / close / keys |
 
 **For review comments, too.** `gP` in the reviewer, on a comment

@@ -400,5 +400,6 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `run_log` | `gH` |
+| `show_finished` | `gF` |
 | `workitems` | `W` |
 <!-- END GENERATED KEYS TABLE -->
