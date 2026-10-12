@@ -14,7 +14,9 @@
 -- plan for their PR / work item is approved (setup({ chat = { plan_first =
 -- true | false | "stories" } }), default true). Pushing the change
 -- (commit_and_push_fix) marks the plan done, so the next change needs a
--- plan of its own.
+-- plan of its own. Opening a PR for it links the PR (link_pr); when that
+-- PR is merged or abandoned the plan is finished (pr_closed, from
+-- chat/watch.lua).
 --
 -- Kept under stdpath("data")/azure-cli-chat/plans/: <key>.md (the plan's
 -- text, the file gf edits) and <key>.json (its title, status, revisions
@@ -382,6 +384,43 @@ function M.mark_done(target)
     rec.done_at = os.time()
     VIEW().changed(rec)
   end
+end
+
+-- create_pull_request opened PR `pr` ({ id, org, project }): the plans of
+-- `work_item_ids`, and the story's whose branch is `source`, know their PR
+-- (the Agents screen shows it, and when it's closed - M.pr_closed).
+function M.link_pr(work_item_ids, source, pr)
+  local recs, seen = {}, {}
+  for _, id in ipairs(work_item_ids or {}) do
+    local rec = M.load("wi-" .. tostring(id))
+    if rec then recs[#recs + 1] = rec; seen[rec.key] = true end
+  end
+  local by_branch = M.for_pull_request(nil, source)
+  if by_branch and not seen[by_branch.key] then recs[#recs + 1] = by_branch end
+  for _, rec in ipairs(recs) do
+    rec.pr = { id = pr.id, org = pr.org, project = pr.project }
+    rec.pr_state, rec.closed_at = nil, nil
+    M.add_event(rec, "pr", "Opened PR !" .. tostring(pr.id))
+    VIEW().changed(rec)
+  end
+end
+
+-- PR `id` was completed or abandoned (`state`; chat/watch.lua saw it): the
+-- plans behind it - the PR's own, and the stories it was opened for - are
+-- finished. Returns how many it marked.
+function M.pr_closed(id, state)
+  local n = 0
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/*.json", false, true)) do
+    local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
+    if rec and rec.key and not rec.pr_state
+        and (rec.key == "pr-" .. tostring(id) or (type(rec.pr) == "table" and tostring(rec.pr.id) == tostring(id))) then
+      rec.pr_state, rec.closed_at = state, os.time()
+      M.add_event(rec, "closed", "PR !" .. tostring(id) .. (state == "completed" and " was merged" or " was abandoned"))
+      VIEW().changed(rec)
+      n = n + 1
+    end
+  end
+  return n
 end
 
 -- ---------------------------------------------------------------------------

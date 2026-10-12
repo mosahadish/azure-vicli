@@ -43,12 +43,19 @@ function M.rows(convs, queued, plan_of, now, frame)
         state, hl = (frame or "*") .. " working", "AzureCliAccent"
         local tools = last and last.tools or {}
         detail = tools[#tools] or ""
+      elseif rec and rec.pr_state == "completed" then
+        state, hl = "\u{2713} merged (PR !" .. tostring(rec.pr and rec.pr.id or c.target and c.target.pr_id or "?") .. ")",
+          "AzureCliStatusDone"
+      elseif rec and rec.pr_state == "abandoned" then
+        state, hl = "\u{2717} PR abandoned", "AzureCliMuted"
       elseif rec and rec.status == "draft" then
         state, hl = "\u{25CF} plan waits for you", "AzureCliStatusDraft"
       elseif rec and rec.status == "changes_requested" then
         state, hl = "\u{21BA} changes asked, not revised yet", "AzureCliStatusBad"
       elseif rec and rec.status == "approved" then
         state, hl = "\u{2713} approved", "AzureCliStatusOk"
+      elseif rec and rec.status == "done" and type(rec.pr) == "table" then
+        state, hl = "\u{2713} PR !" .. tostring(rec.pr.id) .. " open", "AzureCliStatusDone"
       elseif rec and rec.status == "done" then
         state, hl = "\u{2713} pushed", "AzureCliStatusDone"
       elseif last and last.status and last.status ~= "done" then

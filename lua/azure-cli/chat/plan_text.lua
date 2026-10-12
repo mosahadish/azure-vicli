@@ -293,6 +293,9 @@ local STATUS = {
 }
 -- The status line in the section list: text, highlight group. Pure.
 function M.status_label(rec)
+  -- Its PR merged or abandoned (plan.pr_closed): finished, whatever it was.
+  if rec.pr_state == "completed" then return "\u{2713} Finished: PR merged", "AzureCliStatusDone" end
+  if rec.pr_state == "abandoned" then return "\u{2717} Finished: PR abandoned", "AzureCliMuted" end
   local s = STATUS[rec.status] or STATUS.draft
   return s[1], s[2]
 end

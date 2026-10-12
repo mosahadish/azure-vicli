@@ -162,6 +162,9 @@ return function(T)
             if okd and d.id then
               pcall(require("azure-cli.chat.watch").add, { id = d.id, org = org, project = project, repo = args.repo,
                 title = args.title })
+              -- The plans it was opened for know it (the Agents screen).
+              pcall(require("azure-cli.chat.plan").link_pr, args.work_item_ids, args.source,
+                { id = d.id, org = org, project = project })
             end
             done("Opened PR !" .. tostring(id) .. " (" .. ((okd and d.url) or "") .. "). It shows on the dashboard at its next refresh.")
           end)

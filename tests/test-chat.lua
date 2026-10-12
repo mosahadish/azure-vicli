@@ -556,9 +556,20 @@ do
   check("watch: plan - an agent for just the new threads", #started == 1 and vim.deep_equal(started[1].threads, { 1, 3 })
     and notes[2] and notes[2]:find("2 new comments", 1, true) ~= nil and notes[2]:find("planning", 1, true) ~= nil,
     vim.inspect({ started, notes }))
+  -- Its plans: the PR's own, and a story's that opened it (link_pr).
+  local PL = require("azure-cli.chat.plan")
+  PL.save({ key = "pr-500", target = { pr_id = 500 }, status = "approved", revisions = {}, threads = {} })
+  PL.save({ key = "wi-77", target = { work_item_id = 77 }, status = "done", revisions = {}, threads = {} })
+  PL.save({ key = "wi-78", target = { work_item_id = 78 }, status = "done", revisions = {}, threads = {} })
+  PL.link_pr({ 77 }, "feature/none", { id = 500, org = "o", project = "p" })
+  check("link_pr: the story's plan knows its PR", PL.load("wi-77").pr.id == 500 and PL.load("wi-78").pr == nil)
   status = "completed"
   W.poll()
   check("watch: a completed PR isn't watched any more", not W.watched(500))
+  check("watch: its plans are finished", PL.load("pr-500").pr_state == "completed"
+    and PL.load("wi-77").pr_state == "completed" and PL.load("wi-77").closed_at and PL.load("wi-78").pr_state == nil)
+  check("finished: the plan's status says so", (PL.status_label(PL.load("wi-77"))):find("PR merged", 1, true) ~= nil)
+  for _, k in ipairs({ "pr-500", "wi-77", "wi-78" }) do pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".json") end
   W._reset()
   CH.current_agent, CH.note, CH.alert, T.provider, AG.start_for_prs = orig.agent, orig.note, orig.alert, orig.provider,
     orig.start

@@ -172,6 +172,18 @@ do
   check("agents rows: a failed answer", rows[3].state:find("failed (exit 1)", 1, true) ~= nil)
   check("agents rows: what each cost", rows[2].cost == 0.5 and rows[1].cost == nil)
   check("agents rows: queued", rows[4].label == "#3" and rows[4].state:find("waiting for an agent", 1, true) ~= nil)
+  local done = {
+    { plan_key = "wi-5", label = "#5", entries = {} }, { plan_key = "wi-6", label = "#6", entries = {} },
+    { plan_key = "pr-7", label = "!7", target = { pr_id = 7 }, entries = {} },
+    { plan_key = "wi-8", label = "#8", entries = {} },
+  }
+  local recs = { ["wi-5"] = { status = "done", pr = { id = 50 } }, ["wi-6"] = { status = "done", pr = { id = 60 },
+    pr_state = "completed" }, ["pr-7"] = { status = "approved", pr_state = "abandoned" }, ["wi-8"] = { status = "done" } }
+  rows = AV.rows(done, {}, function(k) return recs[k] end, 100)
+  check("agents rows: pushed with its PR open", rows[1].state:find("PR !50 open", 1, true) ~= nil, rows[1].state)
+  check("agents rows: finished - its PR merged", rows[2].state:find("merged (PR !60)", 1, true) ~= nil, rows[2].state)
+  check("agents rows: finished - its PR abandoned", rows[3].state:find("abandoned", 1, true) ~= nil, rows[3].state)
+  check("agents rows: pushed, no PR yet", rows[4].state:find("pushed", 1, true) ~= nil, rows[4].state)
 end
 
 -- --- open questions and your answers ---------------------------------------------------------

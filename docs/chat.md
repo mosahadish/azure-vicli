@@ -169,7 +169,8 @@ happens - `"suggest"` (default) puts a note in the chat (and a desktop
 notification), `"plan"` starts an agent that plans the fix of just those
 threads, as `gP` does; its plan waits for you on the Agents screen, and
 nothing changes until you approve it. A PR stops being watched once it's
-completed or abandoned. Comments that arrived while azure-vicli was closed
+completed or abandoned, and the agents behind it show as finished on the
+Agents screen. Comments that arrived while azure-vicli was closed
 are picked up at the first check after it starts. The list is kept in
 `stdpath("data")/azure-cli-chat/watched.json`.
 
@@ -598,7 +599,10 @@ question waits for you · ● 2 plans wait for you`.
 **The Agents screen** (`A` on either dashboard, `A` in the chat's conversation,
 `:AzureCli agents`) lists every plan's agent - what it's doing (working,
 with its latest step; waiting for an agent; its plan waiting for you;
-approved; revising; pushed), how long since it last did something, and
+approved; revising; pushed; `PR !123 open` once it opened one; finished -
+`merged` or `PR abandoned` - once that PR is closed, which it learns from
+the [watched PRs](#conversations-agents-and-models) check), how long since it
+last did something, and
 what it has used so far, and the winbar adds it up: its cost when the
 agent reports one (Claude Code does, and an ACP agent can, through ACP's
 `usage_update`), else its premium requests (`agent.premium_requests`:
