@@ -380,6 +380,12 @@ do
   assert(opts.hide_ancient_days == defaults.hide_ancient_days, "hide_ancient_days preserved")
   assert(opts.notifications == defaults.notifications, "notifications preserved")
   assert(#opts.collapsed_sections == #defaults.collapsed_sections, "collapsed_sections preserved")
+  for k, v in pairs(defaults.ui) do
+    assert(opts.ui and opts.ui[k] == v, "ui." .. k .. " preserved")
+  end
+  for field in pairs(config._CHAT_FIELDS) do
+    assert(text:find("%f[%w_]" .. field .. " =") or text:find("%f[%w_]" .. field .. ","), "the options file mentions chat." .. field)
+  end
   -- and setup() accepts the rendered table unchanged
   config.setup(opts)
   print("ok: render_options() round-trips the defaults through setup()")

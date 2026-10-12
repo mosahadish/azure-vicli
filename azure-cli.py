@@ -3960,8 +3960,10 @@ accounts:
     #   states: [New, Active, Resolved, Closed, Removed]  # optional; order = rank
     #   sprint_scope: parent  # optional; parent (tabs under the current sprint's parent) or all
 
-# Plugin users: timing, hide_ancient_days, python and config path are
-# setup() options in Neovim, not fields here - see docs/configuration.md.
+# Everything else - keys, timing, ui, the chat agent and its permissions,
+# ... - isn't set here: it goes in azure-cli.lua next to this file for the
+# standalone launcher (':AzureCli options' writes one with every option),
+# or in setup() for plugin users. See docs/configuration.md.
 """
 
 
