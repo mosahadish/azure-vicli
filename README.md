@@ -28,7 +28,7 @@ and can work on several work items at once.
 <td width="50%"><a href="docs/chat.md#plans-and-asking-why"><img src="docs/images/chat-ask-why.png" alt="The agent's change, file by file, with a question answered under one of its lines"></a><br><sub><b>Ask why</b> - the same <code>ga</code> on any line of the agent's change; the answer sits under the line.</sub></td>
 </tr>
 <tr>
-<td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: one row per plan's agent and what it's doing"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen shows what each is doing.</sub></td>
+<td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: its agents grouped by what needs you first"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen groups them by what needs you, and marks them finished once their PR is merged.</sub></td>
 <td width="50%"></td>
 </tr>
 </table>
@@ -176,7 +176,9 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   in its own conversation, and the main chat starts them, checks on them
   and passes your instructions on. It keeps watching the PRs it opened
   and tells you when reviewers comment - or starts planning the fix.
-  Replies are drafted for you to send, and votes ask first.
+  Replies are drafted for you to send, and votes ask first. Once you
+  approve a plan, its own tests and plain searches run without asking;
+  anything else asks, showing the exact command.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`
