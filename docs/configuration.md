@@ -2,6 +2,10 @@
 
 _Part of the [azure-vicli](../README.md) docs._
 
+An agent can do this for you: open it in the azure-vicli folder and ask it
+to "configure azure-vicli" - [the configure-azure-vicli skill](../.github/skills/configure-azure-vicli/SKILL.md)
+walks it through these files, before azure-vicli has ever run.
+
 ## Configuration
 
 The config file is `%APPDATA%\azure-cli.yml` on Windows and

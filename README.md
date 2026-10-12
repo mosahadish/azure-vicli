@@ -156,6 +156,12 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
    it.
 3. Press `?` on any screen for its keys.
 
+Or let an agent do it: open GitHub Copilot (or another agent that reads
+`.github/skills`) in this folder - before azure-vicli has ever run is fine -
+and ask it to "configure azure-vicli". It follows
+[the configure-azure-vicli skill](.github/skills/configure-azure-vicli/SKILL.md):
+where the files go, the fields, and checking them with `--doctor`.
+
 ## What's in the box
 
 - **[Pull request dashboard](docs/dashboard.md)** - the PRs waiting on
