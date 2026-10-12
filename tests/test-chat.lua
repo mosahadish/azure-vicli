@@ -576,6 +576,38 @@ do
   require("azure-cli.config").setup({})
 end
 
+-- --- a PR an agent opened: its comments go back to that agent ------------------------
+do
+  local PL = require("azure-cli.chat.plan")
+  local AG = require("azure-cli.chat.agents")
+  local CH = require("azure-cli.chat")
+  PL.save({ key = "wi-91", target = { work_item_id = 91 }, title = "Lockout", status = "done", revisions = {}, threads = {},
+    pr = { id = 610 } })
+  check("owner_of_pr: the plan that opened it", (PL.owner_of_pr(610) or {}).key == "wi-91" and PL.owner_of_pr(611) == nil)
+  local TF = require("azure-cli.chat.tools_fix")
+  local orig_find = TF.find_story
+  TF.find_story = function(id) if tostring(id) == "92" then return "/w/r-wi92", "feature/92-old" end end
+  PL.save({ key = "wi-92", target = { work_item_id = 92 }, status = "done", revisions = {}, threads = {} })
+  check("owner_of_pr: an older PR, by its story's branch", (PL.owner_of_pr(700, "feature/92-old") or {}).key == "wi-92"
+    and PL.owner_of_pr(700, "feature/other") == nil)
+  TF.find_story = orig_find
+  pcall(vim.fn.delete, PL.root() .. "/wi-92.json")
+  local orig = { send = CH.send, agent = CH.current_agent }
+  local sent = {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.send = function(text, o) sent[#sent + 1] = { text = text, key = o.conv.plan_key or o.conv.key, display = o.display } return {} end
+  AG.start_for_prs({ { id = 610, title = "T" }, { id = 611, title = "U" } }, { [610] = { 4 } })
+  local by = {}
+  for _, s in ipairs(sent) do by[s.key or "?"] = s end
+  check("start_for_prs: an agent's own PR goes to its conversation, as a new revision of its plan", by["wi-91"] ~= nil
+    and by["wi-91"].text:find("work_item_id 91", 1, true) ~= nil and by["wi-91"].text:find("thread 4", 1, true) ~= nil
+    and by["wi-91"].text:find("^/plan ") ~= nil, vim.inspect(sent))
+  check("start_for_prs: anyone else's PR gets an agent of its own", by["pr-611"] ~= nil, vim.inspect(sent))
+  CH.send, CH.current_agent = orig.send, orig.agent
+  AG.reset()
+  pcall(vim.fn.delete, PL.root() .. "/wi-91.json")
+end
+
 -- --- chat/notes.lua: annotate_code's notes, kept across restarts ----------------------
 do
   local NOTES = require("azure-cli.chat.notes")

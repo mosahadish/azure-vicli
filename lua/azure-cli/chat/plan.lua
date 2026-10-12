@@ -406,6 +406,20 @@ function M.link_pr(work_item_ids, source, pr)
   end
 end
 
+-- The work item's plan that opened PR `id` (link_pr) while that PR is
+-- still open: its agent is the one to fix what reviewers say. A PR opened
+-- before plans recorded theirs is found by its `source` branch being the
+-- story's. Or nil.
+function M.owner_of_pr(id, source)
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/wi-*.json", false, true)) do
+    local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
+    if rec and type(rec.pr) == "table" and tostring(rec.pr.id) == tostring(id) and not rec.pr_state then return rec end
+  end
+  local rec = source and source ~= "" and M.for_pull_request(nil, source) or nil
+  if rec and rec.pr == nil and not rec.pr_state then return rec end
+  return nil
+end
+
 -- PR `id` was completed or abandoned (`state`; chat/watch.lua saw it): the
 -- plans behind it - the PR's own, and the stories it was opened for - are
 -- finished. Returns how many it marked.

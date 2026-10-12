@@ -166,8 +166,9 @@ azure-vicli runs - the PR dashboard doesn't have to be open. Only other
 people's comments count, and ones arriving close together are taken
 together: once a poll finds no newer ones, `chat.on_new_comments` says what
 happens - `"suggest"` (default) puts a note in the chat (and a desktop
-notification), `"plan"` starts an agent that plans the fix of just those
-threads, as `gP` does; its plan waits for you on the Agents screen, and
+notification), `"plan"` has an agent plan the fix of just those
+threads, as `gP` does - the agent that opened the PR, when it was one of
+them; its plan waits for you on the Agents screen, and
 nothing changes until you approve it. A PR stops being watched once it's
 completed or abandoned, and the agents behind it show as finished on the
 Agents screen. Comments that arrived while azure-vicli was closed
@@ -643,7 +644,12 @@ else in the reviewer: of every active one); on the PR dashboard, `gP` on
 a row - or on selected rows - starts one agent per PR, each planning the
 fix of its open comments. They run side by side like the work items'
 (one agent per PR, since a PR's fix happens in one worktree), and the
-plan gate applies the same way: no change until you approve.
+plan gate applies the same way: no change until you approve. A PR an
+agent opened for a work item goes back to that agent instead - the one
+that wrote the original plan and knows the change: it plans the fix as a
+new revision of that plan (on the Agents screen it's the work item's row
+again, waiting for you), and once you approve, it changes its story's
+worktree and pushes to the PR's branch.
 
 Every plan opens in a tab of its own, and so does every change - opening
 another doesn't replace the one you were reading, and `r`, `gA` or `ga`
