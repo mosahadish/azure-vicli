@@ -158,6 +158,18 @@ UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons;
 send_and_wait("no skill here EXEC=kubectl_apply")
 check("without the skill it asks as before, with two buttons", #asked == 1 and #buttons == 2, vim.inspect(buttons))
 SK.available = orig_avail
+-- chat.permissions' "agent-commands": the agent's commands don't ask.
+require("azure-cli.config").get().chat.permissions = { ["agent-commands"] = "allow" }
+asked = {}
+local s3 = send_and_wait("EXEC=kubectl_apply EXEC=rm_-rf_tmp")
+check("agent-commands = allow: nothing asks", #asked == 0 and s3 and s3.text:find("exec[rm -rf tmp]=yes", 1, true) ~= nil
+  and table.concat(s3.tools or {}, "\n"):find("(allowed: chat.permissions)", 1, true) ~= nil,
+  vim.inspect({ asked, s3 and s3.text, s3 and s3.tools }))
+require("azure-cli.config").get().chat.permissions = { all = "deny" }
+local s4 = send_and_wait("EXEC=kubectl_apply")
+check("all = deny: refused without asking", #asked == 0 and s4 and s4.text:find("exec[kubectl apply]=no", 1, true) ~= nil,
+  vim.inspect({ asked, s4 and s4.text }))
+require("azure-cli.config").get().chat.permissions = nil
 local orig_report = SK.report
 SK.report = function() return "Skills (1) - /deploy-check" end
 local n_before = #STATE.chat.entries

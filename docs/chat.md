@@ -257,7 +257,8 @@ picks goes through `session/set_config_option`.
   `chat.skill_dirs` changes where they're looked for: the default is
   `{ ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }`;
   a relative folder is looked for in the repository and in your home
-  folder, `~/…` or an absolute path as it is.
+  folder, `~/…` or an absolute path as it is. To stop the prompts
+  altogether, see `chat.permissions`' groups ([below](#what-the-agent-can-do)).
   azure-vicli's own questions - posting, voting, pushing - still ask. A
   command that could
   write or run something else - a redirect, `$(...)`, a script block,
@@ -736,6 +737,25 @@ question), `"ask"`, or `"deny"` (the agent doesn't even see it):
 ```lua
 permissions = { create_branch = "ask", commit_and_push_fix = "deny", set_thread_status = "allow" },
 ```
+
+It also takes groups, so you don't have to name every tool:
+
+| Key | Covers |
+|---|---|
+| `"azure-vicli-tools"` | azure-vicli's own tools (posting, voting, pushing, opening PRs, ...) |
+| `"agent-commands"` | the agent's own prompts other than file edits: shell commands, fetching, ... |
+| `"agent-edits"` | the agent's own file edits |
+| `"all"` | everything above that its own group doesn't set |
+
+A tool's own name wins over its group, and a group wins over `"all"`. So
+`permissions = { all = "allow" }` is an autopilot where nothing asks, and
+`{ all = "allow", vote = "ask", ["agent-edits"] = "ask" }` is the same but
+still asks before a vote or a file edit. A group's `"ask"` leaves reads
+alone; for the agent's prompts, `"ask"` is the usual behaviour (searches,
+the plan's tests, planned edits and allowed skills still don't ask).
+`"allow"` / `"deny"` there show in the chat as `(allowed: chat.permissions)`
+/ `(refused: chat.permissions)`. Plans still wait for your approval, and
+planning still changes no files.
 
 **Undo.** Every change the agent makes is logged; `gH` lists them (newest
 first) and `u` on one undoes it where that's possible: unlinking, deleting a

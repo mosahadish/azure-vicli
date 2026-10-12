@@ -336,6 +336,11 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
         return answer(false)
       end
     end
+    -- chat.permissions' "agent-commands" / "agent-edits" / "all": allowed
+    -- or refused without asking.
+    local said = require("azure-cli.chat.tools").agent_permission(tool.kind)
+    if said == "allow" then log_cmd("allowed: chat.permissions", true); return answer(true) end
+    if said == "deny" then log_cmd("refused: chat.permissions", true); return answer(false) end
     -- The popup shows what it would run (or the agent's whole input, when
     -- it isn't a command or a diff): the title is the agent's own words.
     local details = {}

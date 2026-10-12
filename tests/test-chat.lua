@@ -142,6 +142,22 @@ do
   TOOLS.by_name.vote.run = orig
   check("ask: declined is reported, not run", not ran and answer[2] == true
     and answer[1]:find('declined: vote "Approve" on PR #1', 1, true) and logged[1]:find("declined", 1, true))
+  -- chat.permissions' groups: a tool's own name, then its group, then "all".
+  local P = TOOLS.permission
+  local vote, list_prs = TOOLS.by_name.vote, { name = "x", risk = "read" }
+  check("permissions: all = allow", P(vote, { all = "allow" }) == "allow")
+  check("permissions: the group over all", P(vote, { all = "deny", ["azure-vicli-tools"] = "allow" }) == "allow")
+  check("permissions: the tool's name over its group", P(vote, { ["azure-vicli-tools"] = "allow", vote = "ask" }) == "ask")
+  check("permissions: a group's ask leaves reads alone", P(list_prs, { all = "ask" }) == "allow"
+    and P({ name = "y", risk = "write" }, { all = "ask" }) == "ask")
+  check("permissions: the agent's groups don't touch azure-vicli's", P(vote, { ["agent-commands"] = "allow" }) == "ask")
+  require("azure-cli").setup({ chat = { permissions = { ["agent-edits"] = "allow", all = "deny" } } })
+  check("permissions: agent-edits for a file change, all for the rest",
+    TOOLS.agent_permission("edit") == "allow" and TOOLS.agent_permission("execute") == "deny")
+  require("azure-cli").setup({ chat = { permissions = { ["agent-commands"] = "allow" } } })
+  check("permissions: agent-commands for a command, nothing said for an edit",
+    TOOLS.agent_permission("execute") == "allow" and TOOLS.agent_permission("edit") == nil)
+  require("azure-cli").setup({})
   TOOLS.call("nope", {}, {}, function(text, err) answer = { text, err } end)
   check("call: unknown tool", answer[2] == true and answer[1]:find("unknown tool", 1, true))
 end
