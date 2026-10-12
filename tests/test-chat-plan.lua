@@ -199,6 +199,10 @@ do
   check("arrange: finished over a week ago hidden", hidden == 1)
   out, hidden = AV.arrange(list, 1000 * day, true)
   check("arrange: all shows them", hidden == 0 and out[#out].key == "g" and out[#out - 2].header == "Finished (2)")
+  local at = { [2] = true, [5] = true, [6] = true }  -- rows on lines 2, 5 and 6; headers and gaps between
+  check("step_to_row: over a gap and a header, both ways", AV.step_to_row(at, 2, 3, 8) == 5
+    and AV.step_to_row(at, 5, 4, 8) == 2 and AV.step_to_row(at, 5, 6, 8) == 6)
+  check("step_to_row: nothing further - stays", AV.step_to_row(at, 6, 7, 8) == 6 and AV.step_to_row(at, 2, 1, 8) == 2)
   check("agents rows: their groups", rows[1].group == 3 and rows[2].group == 4 and rows[3].group == 4)
 end
 

@@ -133,7 +133,22 @@ function M.arrange(rows, now, all)
   return out, hidden
 end
 
-local view = nil  -- { tab, win, buf, rows, timer, all }
+-- Where the cursor goes when it lands on line `to` (from line `from`) of
+-- a screen whose rows are `rows` (line -> row) and `last` lines long: `to`
+-- if it's a row, else the next row on the way it was going, else `from`.
+-- Pure.
+function M.step_to_row(rows, from, to, last)
+  if rows[to] then return to end
+  local dir = to >= from and 1 or -1
+  local l = to
+  while l >= 1 and l <= last do
+    if rows[l] then return l end
+    l = l + dir
+  end
+  return rows[from] and from or to
+end
+
+local view = nil  -- { tab, win, buf, rows, timer, all, placed, line }
 local ns = vim.api.nvim_create_namespace("azure_cli_agents")
 
 local function render()
@@ -213,12 +228,18 @@ local function render()
   vim.api.nvim_buf_set_lines(view.buf, 0, -1, false, lines)
   vim.bo[view.buf].modifiable = false
   if vim.api.nvim_win_is_valid(view.win) and vim.api.nvim_win_get_buf(view.win) == view.buf then
+    -- The first time, the first row; after that only a row the cursor
+    -- was on is followed (headers and gaps are stepped over as you move).
     local cur = vim.api.nvim_win_get_cursor(view.win)[1]
     local want
     for l, r in pairs(view.rows) do
-      if (was and r.key == was.key) or (not was and not view.rows[cur] and (not want or l < want)) then want = l end
+      if (was and r.key == was.key) or (not was and not view.placed and (not want or l < want)) then want = l end
     end
-    if want and want ~= cur then pcall(vim.api.nvim_win_set_cursor, view.win, { want, 0 }) end
+    if want then view.placed = true end
+    if want and want ~= cur then
+      view.line = want
+      pcall(vim.api.nvim_win_set_cursor, view.win, { want, 0 })
+    end
   end
   vim.api.nvim_buf_clear_namespace(view.buf, ns, 0, -1)
   for _, h in ipairs(hls) do
@@ -355,6 +376,14 @@ function M.open()
   pcall(vim.api.nvim_buf_set_name, view.buf, "azure-cli://agents")
   require("azure-cli.ui").plain_window(view.win, { cursorline = true })
   setup(view.buf)
+  -- j/k step over the group headers and the gaps between groups.
+  vim.api.nvim_create_autocmd("CursorMoved", { buffer = view.buf, callback = function()
+    if not view then return end
+    local to = vim.api.nvim_win_get_cursor(0)[1]
+    local go = M.step_to_row(view.rows, view.line or to, to, vim.api.nvim_buf_line_count(view.buf))
+    view.line = go
+    if go ~= to then pcall(vim.api.nvim_win_set_cursor, 0, { go, 0 }) end
+  end })
   local timer = (vim.uv or vim.loop).new_timer()
   view.timer = timer
   timer:start(1000, 1000, vim.schedule_wrap(function()
