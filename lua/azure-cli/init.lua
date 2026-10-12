@@ -29,7 +29,10 @@ end
 -- untouched when this is never called, so `:AzureCli dashboard` with no
 -- setup() works out of the box.
 function M.setup(opts)
-  return require("azure-cli.config").setup(opts)
+  local out = require("azure-cli.config").setup(opts)
+  -- The chat's PRs, watched for new comments (chat/watch.lua).
+  vim.schedule(function() pcall(function() require("azure-cli.chat.watch").start() end) end)
+  return out
 end
 
 -- Opens the PR dashboard: a new tab in plugin mode, the current window in
@@ -44,6 +47,8 @@ function M.open_dashboard()
     vim.cmd("tabnew")
   end
   require("azure-cli.dashboard").open()
+  -- The launcher's home tabs: Pull requests, Work items, Agents (home.lua).
+  if M._standalone then require("azure-cli.home").open_all() end
 end
 
 -- Opens the work-items dashboard the same way (see open_dashboard above);
@@ -56,6 +61,7 @@ function M.open_workitems()
     vim.cmd("tabnew")
   end
   require("azure-cli.workitems.dashboard").open()
+  if M._standalone then require("azure-cli.home").open_all() end
 end
 
 -- Opens the reviewer for PR `id` directly (:AzureCli review <id>), always in

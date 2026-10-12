@@ -139,5 +139,106 @@ config.setup({ keys = { dashboard = { quit = false } } })
 check("winbar label empty when unbound", keys.label("dashboard", "quit", "quit") == "")
 config.setup({})
 
+-- 9. The "keys that matter now" hints: first key of each bound action, the
+-- unbound ones left out; the key highlighted inside the muted line.
+config.setup({ keys = { plan = { revise = false, approve = { "gA", "Y" } } } })
+do
+  local lines, hls = keys.hint_lines({ { "plan", "approve", "approve" }, { "plan", "revise", "ask for changes" },
+    { "plan", "help", "all keys" } })
+  check("hint_lines: unbound skipped, first key", #lines == 2 and lines[1] == " gA  approve" and lines[2] == " ?   all keys")
+  check("hint_lines: line muted, key highlighted", hls[1][4] == "AzureCliMuted" and hls[2][2] == 1 and hls[2][3] == 3
+    and hls[2][4] == "AzureCliKeyHint" and hls[4][1] == 1)
+  local text, lhls = keys.hint_line({ { "plan", "approve", "approve" }, { "plan", "revise", "x" },
+    { "plan", "help", "all keys" } }, "  ")
+  check("hint_line: one line, separated", text == "  gA approve  \u{00B7}  ? all keys")
+  check("hint_line: key columns", #lhls == 2 and text:sub(lhls[1][1] + 1, lhls[1][2]) == "gA"
+    and text:sub(lhls[2][1] + 1, lhls[2][2]) == "?")
+  check("name: the key, or the action in words when unbound", keys.name("plan", "approve") == "gA"
+    and keys.name("plan", "revise") == "revise")
+  local fn_lines = keys.help_lines("plan", "T", { "G", { "approve", function() return "made " .. "now" end } })
+  check("help_lines: a description can be worked out when shown", fn_lines[4]:find("^  gA / Y%s+made now$") ~= nil,
+    table.concat(fn_lines, "\n"))
+  check("first: nil when unbound, else the first key", keys.first("plan", "revise") == nil and keys.first("plan", "approve") == "gA")
+end
+config.setup({})
+
+-- 10. `?` marks what changes Azure DevOps, with a legend; a screen whose
+-- same actions stay local (opts.writes = {}) has neither.
+do
+  local tbl = { "Act", { "vote", "vote" }, { "refresh", "refresh" } }
+  local lines = keys.help_lines("dashboard", "T", tbl)
+  local text = table.concat(lines, "\n")
+  check("help_lines: a write is marked", text:find("\n\u{2191} gv          vote", 1, true) ~= nil, text)
+  check("help_lines: the rest isn't", text:find("\n  r           refresh", 1, true) ~= nil, text)
+  check("help_lines: legend when something is marked", text:find("\u{2191} changes Azure DevOps", 1, true) ~= nil)
+  text = table.concat(keys.help_lines("diff", "T", { "Ask", { "comment", "queue" } }, { writes = {} }), "\n")
+  check("help_lines: opts.writes = {} marks nothing", not text:find("\u{2191}", 1, true), text)
+end
+
+-- 11. No default key is something that acts on one screen and something
+-- harmless on another - you'd learn it on the harmless one and press it on
+-- the other - unless the acting one asks before it does anything, so a
+-- mistaken press costs one "no". Acting = changes Azure DevOps (keys.WRITES)
+-- or lets an agent go ahead. A new clash fails here: give one of the two
+-- another key, or - if the acting one really asks first - add it below.
+do
+  local ACTS = {}
+  for surface, t in pairs(keys.WRITES) do for action in pairs(t) do ACTS[surface .. "." .. action] = true end end
+  ACTS["plan.approve"], ACTS["agents.approve"] = true, true
+  -- Acting keys that ask first (a dialog, an editor, a picker or a confirm).
+  local ASKS_FIRST = {
+    ["dashboard.complete"] = "the complete dialog", ["list.complete"] = "the complete dialog",
+    ["diff.complete"] = "the complete dialog", ["overview.complete"] = "the complete dialog",
+    ["workitems.assign"] = "asks whom", ["workitem_view.assign"] = "asks whom",
+    ["workitems.move_sprint"] = "picks the sprint", ["workitem_view.move_sprint"] = "picks the sprint",
+    ["workitems.priority"] = "picks the priority", ["workitem_view.priority"] = "picks the priority",
+    ["workitem_view.comment"] = "opens the editor",
+    ["overview.delete_comment"] = "confirms",
+    ["plan.approve"] = "asks how (and whether to let it push)", ["agents.approve"] = "asks how",
+    ["dashboard.requeue_build"] = "confirms (UI.confirm's popup)",
+  }
+  local function find_clashes()
+    local by_key = {}
+    for surface, t in pairs(config.get().keys) do
+      if surface ~= "prefix" then
+        for action in pairs(t) do
+          local spec = keys.resolve(surface, action)
+          for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
+            by_key[k] = by_key[k] or {}
+            table.insert(by_key[k], surface .. "." .. action)
+          end
+        end
+      end
+    end
+    local clashes = {}
+    for k, ids in pairs(by_key) do
+      local acting, other = {}, {}
+      for _, id in ipairs(ids) do
+        if ACTS[id] then acting[#acting + 1] = id else other[#other + 1] = id end
+      end
+      if #other > 0 then
+        for _, id in ipairs(acting) do
+          if not ASKS_FIRST[id] then
+            table.sort(other)
+            clashes[#clashes + 1] = k .. ": " .. id .. " acts without asking, but is " .. table.concat(other, ", ")
+              .. " elsewhere"
+          end
+        end
+      end
+    end
+    table.sort(clashes)
+    return clashes
+  end
+  local clashes = find_clashes()
+  check("no key acts on one screen and is harmless on another", #clashes == 0, table.concat(clashes, "\n"))
+  -- And the check bites: gL as the plan's run log again would be one.
+  config.setup({ keys = { plan = { run_log = "gL" } } })
+  clashes = find_clashes()
+  local text = table.concat(clashes, "\n")
+  check("the clash check catches gL as both unlink and the run log",
+    text:find("gL: dashboard.unlink_workitem acts without asking, but is plan.run_log elsewhere", 1, true) ~= nil, text)
+  config.setup({})
+end
+
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

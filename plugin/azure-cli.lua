@@ -9,7 +9,8 @@ if vim.g.loaded_azure_cli then
 end
 vim.g.loaded_azure_cli = true
 
-local SUBCOMMANDS = { "dashboard", "review", "workitems", "doctor", "toasts", "status", "log", "options", "help" }
+local SUBCOMMANDS = { "dashboard", "review", "workitems", "chat", "agents", "doctor", "toasts", "status", "log", "options",
+  "help" }
 
 local function show_help()
   local lines = {
@@ -18,6 +19,8 @@ local function show_help()
     "  :AzureCli dashboard   open the pull-request dashboard",
     "  :AzureCli review <id> open the reviewer for pull request <id>",
     "  :AzureCli workitems   open the work-items dashboard",
+    "  :AzureCli chat        show/hide the chat panel (gq on any azure-cli screen)",
+    "  :AzureCli agents      every plan's agent: what each is doing",
     "  :AzureCli doctor      check the setup: Neovim, python, config, sign-in per organization",
     "  :AzureCli toasts      toggle desktop notifications for this session",
     "  :AzureCli status      show the provider daemon's status",
@@ -51,6 +54,10 @@ local function dispatch(opts)
     azure_cli.open_review(id)
   elseif sub == "workitems" then
     azure_cli.open_workitems()
+  elseif sub == "chat" then
+    require("azure-cli.chat").toggle()
+  elseif sub == "agents" then
+    require("azure-cli.chat.agents_view").open()
   elseif sub == "toasts" then
     azure_cli.toggle_toasts()
   elseif sub == "status" then
@@ -73,7 +80,7 @@ end
 
 vim.api.nvim_create_user_command("AzureCli", dispatch, {
   nargs = "*",
-  desc = "Azure DevOps dashboard (dashboard | review <id> | workitems | doctor | toasts | status | log | options | help)",
+  desc = "Azure DevOps dashboard (dashboard | review <id> | workitems | chat | agents | doctor | toasts | status | log | options | help)",
   complete = function(arg_lead, cmd_line, _)
     local parts = vim.split(vim.trim(cmd_line), "%s+")
     -- parts[1] is "AzureCli" itself; completing the subcommand while only

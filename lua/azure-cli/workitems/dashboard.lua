@@ -28,8 +28,8 @@
 --   ?      show this help
 --
 -- M.open() (re)builds this dashboard - called by lua/azure-cli/init.lua's
--- open_workitems() and, to swap back from the PR dashboard, by
--- dashboard.lua's "W" key and this file's own "P" key directly.
+-- open_workitems() and home.lua, which keeps it in a tab of its own next
+-- to the PR dashboard and the Agents screen (W / P / A switch).
 local CONFIG = require("azure-cli.config")
 local STATE = require("azure-cli.state")
 local RPC = require("azure-cli.rpc")
@@ -1036,7 +1036,7 @@ local function pick_assignee(current, cb)
     local items = { { label = "(me)", value = "" } }
     for _, m in ipairs(members) do items[#items + 1] = { label = m.name, value = m.name } end
     items[#items + 1] = { label = "(type a name\u{2026})", typed = true }
-    PROMPT.select({ prompt = "Assign to", items = items,
+    PROMPT.select({ prompt = "Assign to", items = items, search = true,
       current = function(x) return x.value ~= nil and x.value ~= "" and x.value == current end }, function(choice)
       if not choice then return end
       if choice.typed then
@@ -1341,9 +1341,9 @@ prefetch_neighbors = function()
   end
 end
 
--- Swap to the pull-request dashboard in this same window.
+-- Go to the pull-request dashboard's tab (home.lua).
 local function open_pr_list()
-  require("azure-cli.dashboard").open()
+  require("azure-cli.home").go("prs")
 end
 
 -- Copy the web link of the work item under the cursor to the system clipboard.
@@ -1539,6 +1539,10 @@ local WORKITEMS_HELP = {
   { "unlink_pr", "unlink a pull request from the item under the cursor" },
   { "copy_link", "copy the item's link" },
   { "browser", "open in the browser" },
+  "Agents",
+  { "plan_agents", "an agent plans this work item (in visual mode: one agent per selected item)" },
+  { "agents", "every plan's agent: what each is doing (the Agents screen)" },
+  { "chat", "the chat, about the item under the cursor" },
   "Session",
   { "new", "new work item: type, title, and parent (if the cursor is on one)" },
   { "refresh", "refresh" },
@@ -1591,6 +1595,39 @@ KEYS.bind(buf, "workitems", "pr_list", open_pr_list, { desc = "switch to the pul
 KEYS.bind(buf, "workitems", "copy_link", yank_link, { desc = "copy the item's link" })
 KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open the config file" })
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
+-- gq: the chat panel, told about the work item under the cursor.
+require("azure-cli.chat").bind_toggle(buf, "workitems")
+KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.home").go("agents") end,
+  { desc = "every plan's agent (the Agents screen)" })
+-- gP: an agent per work item - the one under the cursor, or every one in
+-- the selected rows - each writing its plan (chat/agents.lua).
+KEYS.bind(buf, "workitems", "plan_agents", function()
+  require("azure-cli.chat.agents").start_for_items({ row_item[vim.api.nvim_win_get_cursor(0)[1]] })
+end, { desc = "an agent plans this work item" })
+KEYS.bind(buf, "workitems", "plan_agents", function()
+  local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
+  if a > b then a, b = b, a end
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  local items, seen = {}, {}
+  for l = a, b do
+    local it = row_item[l]
+    if type(it) == "table" and it.id and not seen[it.id] then
+      seen[it.id] = true
+      items[#items + 1] = it
+    end
+  end
+  require("azure-cli.chat.agents").start_for_items(items)
+end, { desc = "an agent per selected work item, each planning its item", mode = "x" })
+require("azure-cli.chat.view").register("azurecli-workitems", function(w)
+  local it = row_item[vim.api.nvim_win_get_cursor(w)[1]]
+  local snap = { screen = "work items dashboard" }
+  if type(it) == "table" and it.id then
+    snap.work_item = { id = it.id, type = it.type, title = it.title, state = it.state, assigned_to = it.assignedTo }
+  else
+    snap.note = "The cursor isn't on a work item; list_work_items shows the sprint."
+  end
+  return snap
+end)
 -- Same standalone-vs-plugin-tab distinction as the PR dashboard's own quit
 -- key (dashboard.lua) - this dashboard is reached from it by a same-tab
 -- swap ("W"), not a new tab, so quitting from here means the same thing.

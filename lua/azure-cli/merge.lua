@@ -145,12 +145,13 @@ function M.dialog(spec, on_confirm)
     width = width,
     height = #lines,
     style = "minimal",
-    border = "rounded",
+    border = require("azure-cli.ui").border(),
   })
   local UI = require("azure-cli.ui")
   UI.wo(win, "wrap", true)
   UI.wo(win, "linebreak", true)
   UI.wo(win, "breakindent", true)
+  UI.float_hl(win)
   vim.api.nvim_win_set_cursor(win, { M.ROW.work_items, 0 })
 
   local kopts = { buffer = buf, silent = true, nowait = true }

@@ -11,7 +11,21 @@
 -- value. cb(nil) means cancelled (Esc, q, an empty pick) - and unless
 -- opts.silent is set, a cancel is also announced with a "Cancelled."
 -- flash, since that used to be every call site's own first line.
+--
+-- With ui.confirm = "popup" (the default) a yes/no question and a short
+-- menu are ui.lua's popup instead (M.choose): buttons in the middle of the
+-- screen, a menu's entries numbered. Long lists, and ones a caller marks
+-- `search` (a picker's fuzzy search is the point), stay vim.ui.select, as
+-- does everything with ui.confirm = "select".
 local M = {}
+
+-- Up to this many entries a menu is a popup; more go to vim.ui.select.
+M.POPUP_MAX = 7
+
+local function popup_style()
+  local ok, cfg = pcall(function() return require("azure-cli.config").get() end)
+  return not (ok and cfg and cfg.ui and cfg.ui.confirm == "select")
+end
 
 local notify = require("azure-cli.shell").notify
 
@@ -25,6 +39,8 @@ local notify = require("azure-cli.shell").notify
 --                 the user can tell "change" from "set" at a glance
 --   opts.format   optional item -> string, instead of `label`/tostring
 --   opts.silent   don't flash "Cancelled." on a cancel
+--   opts.search   always vim.ui.select (a list worth searching), never the
+--                 popup
 -- cb(item, index) with the chosen entry (the caller's own table/string),
 -- or cb(nil) on cancel.
 function M.select(opts, cb)
@@ -52,6 +68,25 @@ function M.select(opts, cb)
     end
     if is_current(item) then s = s .. "  (current)" end
     return s
+  end
+  if popup_style() and not opts.search and #items <= M.POPUP_MAX then
+    local labels, focused = {}, 1
+    for i, it in ipairs(items) do
+      labels[i] = i .. "  " .. format(it)
+      if is_current(it) then focused = i end
+    end
+    local keys = {}
+    for i = 1, #items do keys[tostring(i)] = i end
+    require("azure-cli.ui").choose({ title = (opts.prompt or "Choose"):gsub("[:%s]+$", ""), buttons = labels,
+      default = focused, keys = keys, cancel = false, stack = true,
+      hint = "1-" .. #items .. " or Enter picks \u{00B7} j / k move \u{00B7} Esc cancels" }, function(i)
+      if not i then
+        if not opts.silent then notify("Cancelled.") end
+        return cb(nil)
+      end
+      cb(items[i], i)
+    end)
+    return
   end
   local prompt = opts.prompt or "Choose:"
   if not prompt:match("[:?]%s*$") then prompt = prompt .. ":" end
@@ -92,14 +127,19 @@ function M.input(opts, cb)
   end)
 end
 
--- M.confirm(opts, cb): a yes/no question. opts.prompt is the question,
--- opts.yes/opts.no relabel the two answers ("Merge", "Keep open"). cb(true)
--- only when the affirmative answer was picked; anything else - including
--- Esc - is cb(false), so a destructive action can never run by accident.
+-- M.confirm(opts, cb): a yes/no question, answered Yes or Cancel (Yes
+-- focused). opts.title and opts.prompt are the question (a title alone
+-- will do), opts.details text shown above it. cb(true) only for Yes;
+-- anything else - including Esc - is cb(false).
 function M.confirm(opts, cb)
   opts = opts or {}
-  local yes = opts.yes or "Yes"
-  local no = opts.no or "Cancel"
+  local yes, no = "Yes", "Cancel"
+  if popup_style() then
+    -- With a title, the question can be the title alone (no prompt).
+    local body = opts.prompt and { opts.prompt } or (opts.title and {} or { "Are you sure?" })
+    return require("azure-cli.ui").confirm({ title = opts.title, lines = body, yes = yes, no = no,
+      details = opts.details, details_ft = opts.details_ft }, cb)
+  end
   M.select({ prompt = opts.prompt or "Are you sure?", items = { yes, no }, silent = true }, function(choice)
     cb(choice == yes)
   end)

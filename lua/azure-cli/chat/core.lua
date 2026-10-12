@@ -1,0 +1,646 @@
+-- lua/azure-cli/chat/core.lua: the chat's pure helpers - no Neovim API
+-- here, so tests/test-chat.lua can pin them down (it still runs in a real
+-- nvim for vim.json/vim.split, which a few of them take as injected
+-- arguments anyway).
+--
+--   compose        the text one message sends the agent
+--   stream_*       reading the agent's stdout as it arrives: Claude Code's
+--                  --output-format stream-json events, its single json
+--                  envelope, or plain text, line by line
+--   parse_answer   the same over a finished run's whole output
+--   STREAM_JSON_STDIN  the default chat.agent.stdin: one stream-json request
+--   expand         {placeholder} templates
+--   render         the transcript's lines and what each one is
+--   prompts        saved prompts ("/triage ...")
+--   find_refs      #123 / !123 / PR 123 references in a text
+local M = {}
+
+M.PREAMBLE = [[You are the assistant inside azure-vicli, a Neovim plugin for Azure DevOps pull requests and work items. The user talks to you from a chat panel next to the screen they're on. Each message starts with "Current view", describing what they are looking at; "this PR", "this comment", "this work item" and "this code" mean what it names.
+
+Use the azure-vicli tools to look things up and to act. Drafted replies and comments are queued for the user to review, never posted directly. Before changing code, plan it: write the plan with submit_plan (it has a markdown template) and stop - the user reads it, may ask you why about any line of it (answer just that, briefly), and approves it or asks for changes; start_fix and start_story refuse without an approved plan. To change code for a review comment: call start_fix, edit files only inside the directory it returns, then show_fix to let the user see the change, and commit_and_push_fix once they agree; then draft a reply saying what you changed. To implement a work item (a story, bug or task): read it with get_work_item, call start_story (it makes the branch and a worktree; ask which repository and base branch when they aren't clear), edit files only inside the directory it returns, then show_fix and commit_and_push_fix with work_item_id, and offer create_pull_request linking the work item. Never edit files anywhere else. Before changing a file your approved plan doesn't list under Files, say in one sentence why - the user is asked to allow it, and sees that sentence. Build and test with run_tests: under an approved plan, its Test plan command runs without asking. To delete a file there, use delete_fix_file. To find the types implementing an interface or deriving from a class, or where something is declared, use find_implementations and find_definition. get_pull_request reads any PR by id. Use open_in_ui only when the user asks to be shown something, and annotate_code to leave notes on lines of a diff.
+
+Refer to pull requests as !<id> and work items as #<id>, so the user can open them from the chat. Answer briefly, in markdown.]]
+
+-- The status strip (the tab line's right end, or a statusline): `s` = {
+-- running = { frame, label, seconds } while the agent works, question =
+-- true while a yes/no waits for you, waiting = labels of the plans waiting
+-- for your review }. "" when there's nothing to say. Pure.
+-- With several agents, `working` = { { label, seconds } } and `frame`:
+-- one shows like `running`, more as "⠹ 3 agents working"; `queued` counts
+-- the ones waiting for an agent, `more_questions` the questions
+-- waiting behind the one asked.
+function M.strip_text(s)
+  s = s or {}
+  local parts = {}
+  local w = s.working or {}
+  if #w > 1 then
+    parts[#parts + 1] = (s.frame or "*") .. " " .. #w .. " agents working"
+  elseif #w == 1 then
+    parts[#parts + 1] = (s.frame or "*") .. " " .. w[1].label .. " " .. tostring(w[1].seconds) .. "s"
+  elseif s.running then
+    parts[#parts + 1] = s.running.frame .. " " .. s.running.label .. " " .. tostring(s.running.seconds) .. "s"
+  end
+  if (s.queued or 0) > 0 then parts[#parts + 1] = "\u{231B} " .. s.queued .. " queued" end
+  if s.question then
+    parts[#parts + 1] = "\u{26A0} " .. ((s.more_questions or 0) > 0 and ((s.more_questions + 1) .. " questions wait")
+      or "a question waits") .. " for you"
+  end
+  local w = s.waiting or {}
+  if #w == 1 then
+    parts[#parts + 1] = "\u{25CF} plan " .. w[1] .. " waits for you"
+  elseif #w > 1 then
+    parts[#parts + 1] = "\u{25CF} " .. #w .. " plans wait for you"
+  end
+  return table.concat(parts, "  \u{00B7}  ")
+end
+
+-- A conversation's cost so far: the sum of its answers' `cost` (each the
+-- difference in its process's running total - see send). nil when none
+-- reported one (an agent that doesn't, like an ACP one). Pure.
+function M.cost_of(entries)
+  local sum, any = 0, false
+  for _, e in ipairs(entries or {}) do
+    if type(e.cost) == "number" then sum, any = sum + e.cost, true end
+  end
+  return any and sum or nil
+end
+
+-- A conversation's premium requests so far (Copilot bills a message as one
+-- request times its model's multiplier - agent.premium_requests): the sum
+-- of its messages' `requests`, or nil when none counted. Pure.
+function M.requests_of(entries)
+  local sum, any = 0, false
+  for _, e in ipairs(entries or {}) do
+    if type(e.requests) == "number" then sum, any = sum + e.requests, true end
+  end
+  return any and sum or nil
+end
+
+-- What one message to `agent` on `model` counts as, in premium requests:
+-- agent.premium_requests[model], else its `default`; nil when the agent has
+-- no premium_requests (it isn't billed that way). Pure.
+function M.request_multiplier(agent, model)
+  local p = type(agent) == "table" and agent.premium_requests
+  if type(p) ~= "table" then return nil end
+  local m = (model and model ~= "" and p[model]) or p.default
+  if m == nil then m = 1 end
+  return tonumber(m)
+end
+
+-- "12 req", "1.5 req", "" for nil. Pure.
+function M.requests_label(n)
+  if type(n) ~= "number" then return "" end
+  return (n == math.floor(n) and tostring(math.floor(n)) or string.format("%.1f", n)) .. " req"
+end
+
+-- How full the agent's context is, from ACP's usage_update ({ used, size }):
+-- "ctx 27%", "" when unknown. Pure.
+function M.context_label(ctx)
+  if type(ctx) ~= "table" or not tonumber(ctx.used) or not tonumber(ctx.size) or tonumber(ctx.size) <= 0 then
+    return ""
+  end
+  return "ctx " .. math.floor(100 * tonumber(ctx.used) / tonumber(ctx.size) + 0.5) .. "%"
+end
+
+-- "$0.42", "<$0.01", "" for nil. Pure.
+function M.money(x)
+  if type(x) ~= "number" then return "" end
+  if x > 0 and x < 0.005 then return "<$0.01" end
+  return string.format("$%.2f", x)
+end
+
+-- What ga in the conversation sends: a question about one of the agent's steps (a tool call
+-- it made, `kind` "step") or a line of its answer ("line"), with the
+-- message it was answering. Pure.
+function M.why_message(quote, kind, asked, question)
+  local parts = { "About your " .. (kind == "step" and "step" or "answer") .. (asked and asked ~= ""
+    and (" to my \"" .. (#asked > 120 and (asked:sub(1, 117) .. "...") or asked) .. "\"") or "") .. ":" }
+  parts[#parts + 1] = "> " .. (quote or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = question
+  parts[#parts + 1] = ""
+  parts[#parts + 1] = "(Answer that question only, briefly. Don't redo or undo anything unless I ask.)"
+  return table.concat(parts, "\n")
+end
+
+-- Default saved prompts (setup({chat = {prompts = {...}}}) adds, replaces,
+-- or removes one with `name = false`). "/name rest" in the input box sends
+-- the prompt followed by `rest`.
+M.DEFAULT_PROMPTS = {
+  triage = "Triage this pull request's open comment threads: for each, say whether the reviewer is right "
+    .. "(fix / push back / question / already done), why, and draft a short reply with draft_reply.",
+  review = "Review this pull request's change for correctness bugs, missing tests and risky spots. "
+    .. "Leave notes on the lines that matter with annotate_code, and summarise here.",
+  explain = "Explain what this code or comment is about, and what the change does around it.",
+  plan = "Make a plan for this - the work item, or the review comment, in view - with submit_plan, following its "
+    .. "template. Read what you need first (get_work_item, get_pr_threads, the code), but don't change any code; "
+    .. "stop once the plan is submitted.",
+  build = "Why did this pull request's build fail? Read the build log and point at the cause.",
+  standup = "Write my standup: what moved since yesterday on my pull requests and work items, "
+    .. "what's waiting on me, and anything blocked or failing.",
+}
+
+-- ACP tool-call kinds (agentclientprotocol.com's ToolKind) the agent's
+-- permission requests are answered for without asking you: reading and
+-- searching are always allowed; changing files is refused while a /plan
+-- message runs (a plan changes no code), and allowed once the files are
+-- in an approved plan (chat/plan.lua's edit_check).
+M.READ_ONLY_KINDS = { read = true, search = true, think = true }
+M.FILE_CHANGE_KINDS = { edit = true, delete = true, move = true }
+
+-- Shell commands that only look (Copilot greps and lists through the
+-- shell rather than a read tool), lower-cased, `.exe` dropped. Each maps
+-- to the flags that would make it write or run something else.
+local LOOK_ONLY = {
+  rg = { "--pre", "--pre-glob" }, grep = {}, egrep = {}, fgrep = {}, findstr = {},
+  find = { "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls" },
+  fd = { "-x", "--exec", "-X", "--exec-batch" },
+  ls = {}, dir = {}, tree = {}, cat = {}, type = {}, head = {}, tail = {}, wc = {}, sort = { "-o", "--output" },
+  uniq = {}, cut = {}, echo = {}, pwd = {}, cd = {}, file = {}, stat = {}, which = {}, where = {},
+  basename = {}, dirname = {}, realpath = {},
+  ["get-content"] = {}, gc = {}, ["get-childitem"] = {}, gci = {}, ["select-string"] = {}, sls = {},
+  ["get-item"] = {}, ["test-path"] = {}, ["resolve-path"] = {}, ["get-location"] = {},
+  ["select-object"] = {}, select = {}, ["sort-object"] = {}, ["measure-object"] = {}, measure = {},
+  ["format-table"] = {}, ft = {}, ["format-list"] = {}, fl = {}, ["out-string"] = {},
+}
+-- git's: what each would write with, besides --output / --ext-diff.
+local GIT_LOOK_ONLY = {
+  log = {}, show = {}, diff = {}, status = {}, blame = {}, grep = { "-O", "--open-files-in-pager" },
+  ["ls-files"] = {}, ["ls-tree"] = {}, ["rev-parse"] = {}, describe = {}, shortlog = {}, ["cat-file"] = {},
+  ["merge-base"] = {}, ["show-ref"] = {},
+}
+
+-- A one-letter flag counts inside a cluster too (sort -ro out).
+local function bad_flag(words, from, flags)
+  for i = from, #words do
+    local w = words[i]
+    for _, f in ipairs(flags) do
+      if w == f or w:sub(1, #f + 1) == f .. "=" then return true end
+      if #f == 2 and w:match("^%-%w+$") and w:find(f:sub(2), 2, true) then return true end
+    end
+  end
+end
+
+local function look_only_part(part)
+  local words = vim.split(vim.trim(part), "%s+")
+  -- What a backslash escapes is that character (a Windows path's
+  -- backslashes go too, which doesn't matter for matching).
+  for k, w in ipairs(words) do words[k] = w:gsub("\\", "") end
+  local name = (words[1] or ""):lower():gsub("%.exe$", "")
+  if name == "git" then
+    -- Only these before the subcommand: -c / --config-env would set a pager.
+    local i = 2
+    while words[i] == "--no-pager" or words[i] == "-C" or words[i] == "-P" do i = i + (words[i] == "-C" and 2 or 1) end
+    local flags = GIT_LOOK_ONLY[words[i] or ""]
+    return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
+  end
+  local flags = LOOK_ONLY[name]
+  return flags ~= nil and not bad_flag(words, 2, flags)
+end
+
+-- Whether shell command `cmd` (a string, or an argv list) only reads:
+-- every part of it - split on |, &&, || and ; - is one of the commands
+-- above without a flag that writes, and nothing in it redirects, runs a
+-- subcommand or a script block (outside quotes: > < & ( ) { } `; inside
+-- double quotes: $( and `). Pure.
+function M.look_only_command(cmd)
+  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
+  if type(cmd) ~= "string" or not cmd:match("%S") then return false end
+  local bare, bad = {}, false
+  local i, n = 1, #cmd
+  while i <= n do
+    local c = cmd:sub(i, i)
+    if c == "'" or c == '"' then
+      local close = cmd:find(c, i + 1, true)
+      if not close then return false end
+      local inner = cmd:sub(i + 1, close - 1)
+      if c == '"' and (inner:find("$(", 1, true) or inner:find("`", 1, true)) then bad = true end
+      -- Kept as part of its word (find . "-delete" is still -delete), its
+      -- spaces and shell characters made harmless.
+      bare[#bare + 1] = inner:gsub("[%s|;&<>(){}`$\\]", "_")
+      i = close + 1
+    else
+      bare[#bare + 1] = c
+      i = i + 1
+    end
+  end
+  if bad then return false end
+  local s = table.concat(bare):gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
+  if s:find("[<>&(){}`$]") then return false end
+  for part in (s .. "\n"):gmatch("(.-)\n") do
+    if part:match("%S") and not look_only_part(part) then return false end
+  end
+  return true
+end
+
+-- The agent's reason for what it's about to do: the last paragraph it
+-- wrote before the tool call (the preamble asks it to say why before
+-- changing a file its plan doesn't list), on one line. Pure.
+function M.last_reason(text)
+  local last
+  for para in ((text or "") .. "\n\n"):gmatch("(.-)\n%s*\n") do
+    if para:match("%S") then last = para end
+  end
+  if not last then return "the agent didn't say." end
+  last = last:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+  if #last > 300 then last = last:sub(1, 297) .. "..." end
+  return last
+end
+
+-- The paths an ACP tool call names: its locations, else the usual
+-- rawInput fields. Pure.
+function M.tool_paths(tool)
+  local out, seen = {}, {}
+  local function add(p)
+    if type(p) == "string" and p ~= "" and not seen[p] then seen[p] = true; out[#out + 1] = p end
+  end
+  for _, l in ipairs(type(tool.locations) == "table" and tool.locations or {}) do
+    if type(l) == "table" then add(l.path) end
+  end
+  local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
+  for _, k in ipairs({ "path", "file_path", "filePath", "fileName", "source", "destination" }) do add(raw[k]) end
+  return out
+end
+
+-- The main chat's part (compose's opts.orchestrator): it coordinates the
+-- agents rather than planning and changing code itself - unless asked to.
+M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing code - implementing a work item, fixing a pull request's review comments - is done by agents of its own, one per work item or PR, each in its own conversation, and the user approves each plan. So for that, start agents with start_agents rather than planning or editing here yourself; only do it here when the user asks you to do it yourself. list_agents shows what each agent is doing and whose plan waits for the user; get_plan reads a plan; message_agent passes the user's instructions on to an agent. Approving a plan is the user's, never yours.]]
+
+-- The text one message sends: the preamble (first message, or every
+-- replayed one), the earlier conversation (replay only), the current view,
+-- what the message references, and the message. Pure.
+function M.compose(message, view_text, opts)
+  opts = opts or {}
+  local parts = {}
+  if opts.first or opts.history then
+    parts[#parts + 1] = M.PREAMBLE
+    if opts.orchestrator then parts[#parts + 1] = M.ORCHESTRATOR end
+  end
+  if opts.history and #opts.history > 0 then
+    parts[#parts + 1] = "## The conversation so far"
+    for _, e in ipairs(opts.history) do
+      if e.role == "you" then
+        parts[#parts + 1] = "User: " .. e.text
+      elseif e.role == "agent" and e.text and e.text ~= "" then
+        parts[#parts + 1] = "You: " .. e.text
+      end
+    end
+  end
+  parts[#parts + 1] = "## Current view\n" .. (view_text or "(unknown)")
+  if opts.refs and opts.refs ~= "" then parts[#parts + 1] = "## Referenced in the message\n" .. opts.refs end
+  parts[#parts + 1] = "## Message\n" .. message
+  return table.concat(parts, "\n\n")
+end
+
+local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
+
+-- ---------------------------------------------------------------------------
+-- Reading the agent's output.
+
+-- A fresh stream reader. `strip` is a list of Lua patterns: plain-text lines
+-- matching any are dropped (e.g. a CLI's own tool-call log).
+function M.stream_new(strip)
+  return { pending = "", texts = {}, plain = {}, final = nil, session = nil, tools = {}, strip = strip or {} }
+end
+
+local function stripped(st, line)
+  for _, pat in ipairs(st.strip) do
+    local ok, hit = pcall(string.find, line, pat)
+    if ok and hit then return true end
+  end
+  return false
+end
+
+-- A short label for one of the agent's own tool calls (stream-json
+-- tool_use), e.g. "Read src/a.py". Our own azure-vicli tools are logged by
+-- the bridge already, so they're skipped here.
+local function tool_label(item)
+  local name = tostring(item.name or "?")
+  if name:find("azure%-vicli") then return nil end
+  local input = type(item.input) == "table" and item.input or {}
+  local detail = input.file_path or input.path or input.pattern or input.command or input.url or input.query
+  if type(detail) == "string" then
+    detail = detail:gsub("%s+", " ")
+    if #detail > 60 then detail = detail:sub(1, 57) .. "..." end
+    return name .. " " .. detail
+  end
+  return name
+end
+
+local function stream_line(st, line, decode)
+  line = line:gsub("\r$", "")
+  if line:sub(1, 1) == "{" then
+    local ok, ev = pcall(decode, line)
+    if ok and type(ev) == "table" then
+      if type(ev.session_id) == "string" and ev.session_id ~= "" then st.session = ev.session_id end
+      if ev.type == "assistant" and type(ev.message) == "table" then
+        local chunk = {}
+        for _, c in ipairs(type(ev.message.content) == "table" and ev.message.content or {}) do
+          if type(c) == "table" and c.type == "text" and type(c.text) == "string" then
+            chunk[#chunk + 1] = c.text
+          elseif type(c) == "table" and c.type == "tool_use" then
+            local label = tool_label(c)
+            if label then st.tools[#st.tools + 1] = label end
+          end
+        end
+        if #chunk > 0 then st.texts[#st.texts + 1] = table.concat(chunk, "") end
+        return
+      end
+      if type(ev.result) == "string" then
+        st.final = ev.result
+        st.is_error = ev.is_error == true
+        -- Claude Code's cost so far for this process (cumulative), and this
+        -- turn's tokens.
+        if type(ev.total_cost_usd) == "number" then st.cost_total = ev.total_cost_usd end
+        if type(ev.usage) == "table" then
+          local u = ev.usage
+          st.tokens = (tonumber(u.input_tokens) or 0) + (tonumber(u.output_tokens) or 0)
+            + (tonumber(u.cache_creation_input_tokens) or 0) + (tonumber(u.cache_read_input_tokens) or 0)
+        end
+        return
+      end
+      if ev.type then return end  -- system/user/other stream events
+    end
+  end
+  if not stripped(st, line) then st.plain[#st.plain + 1] = line end
+end
+
+-- Feeds jobstart's on_stdout `data` (a list whose first element continues
+-- the previous chunk's last line, and whose last element is a partial
+-- line). Returns true when something visible changed.
+function M.stream_feed(st, data, decode)
+  if not data or #data == 0 then return false end
+  local before = #st.texts + #st.plain + #st.tools + (st.final and 1 or 0)
+  st.pending = st.pending .. data[1]
+  for i = 2, #data do
+    stream_line(st, st.pending, decode)
+    st.pending = data[i]
+  end
+  return #st.texts + #st.plain + #st.tools + (st.final and 1 or 0) ~= before
+end
+
+-- Flushes the last partial line (call when the job exits).
+function M.stream_finish(st, decode)
+  if st.pending ~= "" then stream_line(st, st.pending, decode) end
+  st.pending = ""
+end
+
+-- What to show right now: the final answer once there is one, else the
+-- assistant text so far, else the plain text so far.
+function M.stream_text(st)
+  if st.final then return trim(st.final) end
+  if #st.texts > 0 then return trim(table.concat(st.texts, "\n\n")) end
+  -- Plain output: drop leading/trailing blank lines only.
+  local lines = {}
+  for _, l in ipairs(st.plain) do lines[#lines + 1] = l end
+  while #lines > 0 and lines[1]:match("^%s*$") do table.remove(lines, 1) end
+  while #lines > 0 and lines[#lines]:match("^%s*$") do table.remove(lines) end
+  return table.concat(lines, "\n")
+end
+
+-- A finished run's whole output, read the same way. Returns text,
+-- session_id. `pattern` (chat.agent.session_pattern) finds a session id in
+-- plain output.
+function M.parse_answer(out, err, decode, pattern, strip)
+  local st = M.stream_new(strip)
+  local lines = {}
+  for l in ((out or "") .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = l end
+  -- A multi-line json envelope (pretty-printed) is one document.
+  local whole = trim(out)
+  if whole:sub(1, 1) == "{" then
+    local ok, d = pcall(decode, whole)
+    if ok and type(d) == "table" then lines = { (whole:gsub("\n", " ")) } end
+  end
+  for _, l in ipairs(lines) do stream_line(st, l, decode) end
+  local text = M.stream_text(st)
+  if st.final and st.is_error and text == "" then text = "(the agent reported an error)" end
+  local session = st.session
+  if not session and type(pattern) == "string" and pattern ~= "" then
+    session = M.find_session(pattern, out, err)
+  end
+  return text, session, st.tools
+end
+
+function M.find_session(pattern, ...)
+  for _, s in ipairs({ ... }) do
+    local ok, id = pcall(string.match, s or "", pattern)
+    if ok and type(id) == "string" and id ~= "" then return id end
+  end
+  return nil
+end
+
+-- The default chat.agent.stdin: each message as one line of Claude Code's
+-- --input-format stream-json "user message", which a CLI started with it
+-- reads until stdin closes - the agent's process stays running between
+-- messages. {message_json} is the message already JSON-quoted.
+M.STREAM_JSON_STDIN = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}'
+
+function M.expand(template, vars, quote)
+  if type(template) ~= "string" then return template end
+  return (template:gsub("{([%w_]+)}", function(name)
+    local v = vars[name]
+    if v == nil then return nil end
+    v = tostring(v)
+    return quote and quote(v) or v
+  end))
+end
+
+-- An agent's models as { label, value } pairs: a string is both.
+function M.models(agent)
+  local out = {}
+  for _, m in ipairs((agent and agent.models) or {}) do
+    if type(m) == "string" then out[#out + 1] = { label = m, value = m }
+    elseif type(m) == "table" and m.value then out[#out + 1] = { label = m.label or m.value, value = m.value } end
+  end
+  return out
+end
+
+-- ---------------------------------------------------------------------------
+-- Saved prompts.
+
+-- The prompts in effect: the defaults, then the user's (a string replaces
+-- or adds one, false removes one). Pure.
+function M.prompts(user)
+  local out = {}
+  for k, v in pairs(M.DEFAULT_PROMPTS) do out[k] = v end
+  for k, v in pairs(user or {}) do
+    if v == false then out[k] = nil else out[k] = v end
+  end
+  return out
+end
+
+-- "/name rest" -> the prompt (plus rest), name; anything else -> text, nil.
+function M.expand_prompt(text, prompts)
+  local name, rest = text:match("^/([%w_%-]+)%s*(.-)%s*$")
+  if name and prompts[name] then
+    return prompts[name] .. (rest ~= "" and ("\n\n" .. rest) or ""), name
+  end
+  return text, nil
+end
+
+-- ---------------------------------------------------------------------------
+-- References.
+
+-- Every #123 / !123 / "PR 123" / "PR #123" in `text`, in order, without
+-- repeats: { kind = "pr"|"any", id, s, e } (byte span, 1-based). "!" and
+-- "PR" mean a pull request; a bare "#" is either - a PR in the list or
+-- else a work item (resolved later). Pure.
+function M.find_refs(text)
+  local out, seen = {}, {}
+  local function add(kind, id, s, e)
+    out[#out + 1] = { kind = kind, id = tonumber(id), s = s, e = e }
+    seen[s] = true
+  end
+  local i = 1
+  while true do
+    local s, e, id = text:find("[Pp][Rr]%s*#?(%d+)", i)
+    if not s then break end
+    if s == 1 or not text:sub(s - 1, s - 1):match("[%w_]") then add("pr", id, s, e) end
+    i = e + 1
+  end
+  for s, sigil, id, e in text:gmatch("()([#!])(%d+)()") do
+    local covered = false
+    for _, r in ipairs(out) do if s >= r.s and s <= r.e then covered = true end end
+    local prev = s > 1 and text:sub(s - 1, s - 1) or ""
+    if not covered and not prev:match("[%w_&]") then add(sigil == "!" and "pr" or "any", id, s, e - 1) end
+  end
+  table.sort(out, function(a, b) return a.s < b.s end)
+  local uniq, keys = {}, {}
+  for _, r in ipairs(out) do
+    local key = r.kind .. r.id
+    if not keys[key] then keys[key] = true; uniq[#uniq + 1] = r end
+  end
+  return uniq, out
+end
+
+-- ---------------------------------------------------------------------------
+-- The transcript.
+
+-- Lines plus what each line is, for colouring: a "You" / "<agent>"
+-- heading per turn (the name, then a dimmer " · on PR #101" / " ·
+-- working… 4s"), your text, the agent's tool calls as they happen, then
+-- its markdown answer. Returns lines, roles (line -> one of you_head, you,
+-- agent_head, agent, agent_log, tool_read, tool_write, tool_err, note,
+-- intro, fold; nil for
+-- the gap between turns), name_end (heading line -> byte where its dim
+-- part starts) and entry_at (line -> index into entries). Pure.
+--
+-- A finished answer with more than COLLAPSE_TOOLS tool calls shows them as
+-- one summary line ("· 6 lookups, 2 changes"), keeping the ones that
+-- failed, were declined, were allowed without asking or warn (✗ ✓ !) on
+-- their own lines; an answer longer than FOLD_LINES shows its first
+-- KEEP_LINES and "… N more lines" (role "fold"). An entry with `open` set
+-- (<Tab> on it) shows everything.
+M.COLLAPSE_TOOLS, M.FOLD_LINES, M.KEEP_LINES = 3, 40, 30
+function M.render(entries, now, agent_label)
+  local lines, roles, name_end, entry_at = {}, {}, {}, {}
+  local cur
+  local function add(l, role) lines[#lines + 1] = l; roles[#lines] = role; entry_at[#lines] = cur end
+  local function add_text(t, role) for l in ((t or "") .. "\n"):gmatch("(.-)\n") do add(l, role) end end
+  local function head(name, extra, role)
+    add(name .. (extra ~= "" and ("  \u{00B7}  " .. extra) or ""), role)
+    name_end[#lines] = #name
+  end
+  if #entries == 0 then
+    add("Chat", "agent_head")
+    name_end[1] = 4
+    add("", "intro")
+    add_text("Ask about what you're looking at - \"triage this PR's comments\", \"what do you think about "
+      .. "this comment?\", \"create a branch from develop for this work item\".\nType below; "
+      .. require("azure-cli.keys").name("chat", "send") .. " sends. "
+      .. "/triage, /review, /build, /standup run saved prompts (" .. require("azure-cli.keys").name("chat", "prompts")
+      .. " lists them).", "intro")
+    return lines, roles, name_end, entry_at
+  end
+  for i, e in ipairs(entries) do
+    cur = nil
+    if i > 1 then add("", nil) end
+    cur = i
+    if e.role == "you" then
+      head("You", e.where or "", "you_head")
+      add_text(e.text, "you")
+    elseif e.role == "agent" then
+      local bits = {}
+      if e.status == "running" then
+        bits[#bits + 1] = "working\u{2026} " .. math.max(0, (now or 0) - (e.started or now or 0)) .. "s"
+      elseif e.status and e.status ~= "done" then
+        bits[#bits + 1] = e.status
+      end
+      if e.mode == "replay" then bits[#bits + 1] = "replayed" end
+      head(e.label or agent_label or "Agent", table.concat(bits, "  \u{00B7}  "), "agent_head")
+      local tools = e.tools or {}
+      local function role_of(t) return t:find("^\u{2717}") and "tool_err" or (t:find("^\u{270E}") and "tool_write" or "tool_read") end
+      if not e.open and e.status ~= "running" and #tools > M.COLLAPSE_TOOLS then
+        local reads, writes, kept = 0, 0, {}
+        for _, tl in ipairs(tools) do
+          if tl:find("^\u{2717}") or tl:find("^\u{2713}") or tl:find("^!") then
+            kept[#kept + 1] = tl
+          elseif tl:find("^\u{270E}") then
+            writes = writes + 1
+          else
+            reads = reads + 1
+          end
+        end
+        local parts = {}
+        if reads > 0 then parts[#parts + 1] = reads .. " lookup" .. (reads == 1 and "" or "s") end
+        if writes > 0 then parts[#parts + 1] = writes .. " change" .. (writes == 1 and "" or "s") end
+        add("  " .. (writes > 0 and "\u{270E} " or "\u{00B7} ") .. table.concat(parts, ", ") .. "  (<Tab> shows them)",
+          writes > 0 and "tool_write" or "tool_read")
+        for _, tl in ipairs(kept) do add("  " .. tl, role_of(tl)) end
+      else
+        for _, tl in ipairs(tools) do add("  " .. tl, role_of(tl)) end
+      end
+      if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("", "agent") end
+      if e.text and e.text ~= "" then
+        local body = {}
+        for l in (e.text .. "\n"):gmatch("(.-)\n") do body[#body + 1] = l end
+        local kinds = M.answer_roles(body)
+        local shown = (not e.open and #body > M.FOLD_LINES) and M.KEEP_LINES or #body
+        for k = 1, shown do add(body[k], kinds[k]) end
+        if shown < #body then add("\u{2026} " .. (#body - shown) .. " more lines  (<Tab> unfolds)", "fold") end
+      end
+    else
+      add_text(e.text or "", "note")
+    end
+  end
+  return lines, roles, name_end, entry_at
+end
+
+-- An agent CLI's own log of its steps inside its answer (Copilot's
+-- "● Read x.cs" with "│ ..." / "└ 35 lines read" under it, "× Run ..." for
+-- a failed one): the role each of `lines` gets - agent_log for a step and
+-- the non-blank lines under it, tool_err for a failed one, agent for the
+-- answer itself. Pure.
+local STEP = { "^%s*\u{25CF}%s", "^%s*\u{2713}%s", "^%s*\u{2714}%s" }
+local FAILED = { "^%s*\u{00D7}%s", "^%s*\u{2717}%s", "^%s*\u{2718}%s" }
+function M.answer_roles(lines)
+  local roles, block = {}, nil
+  for i, l in ipairs(lines) do
+    local start
+    for _, p in ipairs(STEP) do if l:find(p) then start = "agent_log" end end
+    for _, p in ipairs(FAILED) do if l:find(p) then start = "tool_err" end end
+    if start then
+      block = start
+    elseif l:match("^%s*$") then
+      block = nil
+    elseif block and not l:match("^%s") and not l:find("^[\u{2502}\u{2514}\u{251C}]") then
+      block = nil  -- unindented text right after a step: the answer again
+    end
+    roles[i] = start or block or "agent"
+  end
+  return roles
+end
+
+-- A conversation's title for the history list: its first message, cut.
+function M.title(entries)
+  for _, e in ipairs(entries or {}) do
+    if e.role == "you" then
+      local t = (e.text or ""):gsub("%s+", " ")
+      if #t > 60 then t = t:sub(1, 57) .. "..." end
+      return t
+    end
+  end
+  return "(empty)"
+end
+
+return M

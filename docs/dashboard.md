@@ -23,7 +23,7 @@ no rows shown) - configurable via `setup({collapsed_sections={...}})`, see
 [setup() options](configuration.md#setup-options); Mentions/Actionable/Waiting/Created stay
 open by default. `za` (or `<Space>`) on a section header toggles it, `zR` expands every
 section and `zM` collapses every section; the state persists for the rest
-of the session (even across a W/P dashboard swap). If the cursor's PR is in
+of the session (even across W/P switches between the dashboards). If the cursor's PR is in
 a section that gets collapsed, the cursor lands on that section's header
 instead of jumping elsewhere.
 
@@ -53,7 +53,7 @@ solves the widths; see its own header comment for the exact rules).
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
-| `gr` | Re-queue build validation |
+| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't) |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
 | `zM` | Collapse every section |
@@ -62,6 +62,7 @@ solves the widths; see its own header comment for the exact rules).
 | `r` | Refresh |
 | `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view, `gs` changes its state, `gl` links another and `gL` unlinks the one under the cursor. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
+| `gq` | Show/hide the [chat panel](chat.md); the agent knows which PR is under the cursor |
 | `W` | Switch to the work-items dashboard |
 | `q` | Quit |
 

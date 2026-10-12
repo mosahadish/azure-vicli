@@ -40,10 +40,105 @@ function M.resolve(surface, action)
   return prefix .. keyspec
 end
 
+-- The first key resolved for surface/action, or nil when it's unbound - for
+-- a message or hint that names the key ("approve it again (gA)").
+function M.first(surface, action)
+  local k = M.resolve(surface, action)
+  if type(k) == "table" then k = k[1] end
+  return k
+end
+
+-- Every normal-mode action bound on each buffer, in binding order, for the
+-- palette: actions[buf] = { list = { { surface, action, key, desc, fn } },
+-- at = { [surface .. "." .. action] = index }, surfaces = { [surface] = true } }.
+local actions = {}
+
+-- The palette (`palette`, g.): every action bound on `buf` by its
+-- description and key, through vim.ui.select - so Telescope's / fzf-lua's
+-- picker, when one replaces it, makes it searchable. The choice runs in the
+-- window the palette was opened from, cursor where it was.
+function M.palette(buf)
+  local reg = actions[buf]
+  if not reg then return end
+  local items = {}
+  for _, a in ipairs(reg.list) do
+    if a.action ~= "palette" then items[#items + 1] = a end
+  end
+  local win = vim.api.nvim_get_current_win()
+  require("azure-cli.prompt").select({ items = items, prompt = "Do", silent = true, search = true,
+    format = function(a) return a.desc .. "  (" .. a.key .. ")" end }, function(a)
+    if not a then return end
+    vim.schedule(function()
+      if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_set_current_win, win) end
+      a.fn()
+    end)
+  end)
+end
+
+-- Whether `buf` is one of ours: it got a key through M.bind.
+function M.has(buf)
+  return actions[buf] ~= nil
+end
+
+-- The keys on `buf` whose action changes Azure DevOps (M.WRITES): { [key] =
+-- true }. None on a buffer marked vim.b.azure_cli_keys_local - one that
+-- shares the reviewer's surfaces but keeps those actions to itself (the
+-- agent's change viewer).
+function M.writes_on(buf)
+  local out = {}
+  local reg = actions[buf]
+  if not reg or vim.b[buf].azure_cli_keys_local then return out end
+  for _, a in ipairs(reg.list) do
+    if (M.WRITES[a.surface] or {})[a.action] then
+      local spec = M.resolve(a.surface, a.action)
+      for _, k in ipairs(type(spec) == "table" and spec or { spec }) do out[k] = true end
+    end
+  end
+  return out
+end
+
+-- Notes surface/action as bound on `buf` (normal mode only - the palette
+-- can't hand a visual selection over), and binds the palette key for that
+-- surface the first time the buffer gets one of its keys. Not under the
+-- plain-luajit shim the key tests run with (no vim.api there).
+local function record(buf, surface, action, key, desc, fn)
+  if not vim.api then return end
+  if buf == 0 then buf = vim.api.nvim_get_current_buf() end
+  local reg = actions[buf]
+  if not reg then
+    reg = { list = {}, at = {}, surfaces = {} }
+    actions[buf] = reg
+    pcall(vim.api.nvim_create_autocmd, "BufWipeout", { buffer = buf, once = true,
+      callback = function() actions[buf] = nil end })
+    pcall(function() require("azure-cli.keyhints").attach(buf) end)
+  end
+  local id = surface .. "." .. action
+  local entry = { surface = surface, action = action, key = key, desc = desc, fn = fn }
+  if reg.at[id] then reg.list[reg.at[id]] = entry
+  else
+    reg.list[#reg.list + 1] = entry
+    reg.at[id] = #reg.list
+  end
+  if not reg.surfaces[surface] then
+    reg.surfaces[surface] = true
+    if action ~= "palette" then
+      M.bind(buf, surface, "palette", function() M.palette(buf) end, { desc = "every action here, searchable" })
+    end
+  end
+end
+
+-- The key for surface/action as a message names it: the first one bound,
+-- else (unbound) the action in words - so "(gS sends)" stays true when the
+-- key is rebound.
+function M.name(surface, action)
+  return M.first(surface, action) or (tostring(action):gsub("_", " "))
+end
+
 -- Binds `fn` to every key resolved for surface/action on `buf`, or does
 -- nothing when the action is unbound. `opts.mode` defaults to "n" (pass
 -- "x" for a visual-mode mapping, e.g. the diff pane's comment_range);
 -- `opts.desc` is forwarded to vim.keymap.set (which-key etc. read it).
+-- A buffer's first key of a surface also binds that surface's palette.
 function M.bind(buf, surface, action, fn, opts)
   opts = opts or {}
   local keyspec = M.resolve(surface, action)
@@ -55,7 +150,29 @@ function M.bind(buf, surface, action, fn, opts)
   for _, k in ipairs(keylist) do
     vim.keymap.set(mode, k, fn, kopts)
   end
+  if mode == "n" then
+    record(buf, surface, action, keylist[1], opts.desc or (tostring(action):gsub("_", " ")), fn)
+  end
 end
+
+-- The actions that change something on Azure DevOps, per surface: `?`
+-- marks them (M.help_lines), and tests/test-keys.lua keeps a key from being
+-- one of these on one screen and something harmless on another. A
+-- comment in batch mode only queues - it's still marked, gS posts it.
+M.WRITES = {
+  dashboard = { complete = true, link_workitem = true, unlink_workitem = true, requeue_build = true, vote = true },
+  list = { batch_submit = true, comment_file = true, pr_comment = true, complete = true, link_workitem = true,
+    unlink_workitem = true, vote = true },
+  diff = { comment = true, comment_range = true, comment_file = true, reply = true, status = true, vote = true,
+    complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
+  overview = { comment = true, reply = true, status = true, edit_comment = true, delete_comment = true, vote = true,
+    complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
+  workitems = { assign = true, edit_title = true, link_pr = true, unlink_pr = true, move_sprint = true, new = true,
+    priority = true, state = true },
+  workitem_view = { assign = true, comment = true, edit_title = true, link_pr = true, unlink_pr = true,
+    move_sprint = true, priority = true, state = true },
+}
+local WRITE_MARK = "\u{2191}"
 
 -- One `?`-popup line for surface/action ("  key[, key2]    desc"), or nil
 -- when the action is unbound (so a popup builder can just skip a nil line).
@@ -71,6 +188,8 @@ function M.line(surface, action, desc)
   if not keyspec then return nil end
   -- A missing description must never take the whole popup down (it once
   -- did: a nil here made `?` throw) - fall back to the action's own name.
+  -- A function: worked out now, for a description that names other keys.
+  if type(desc) == "function" then desc = desc() end
   desc = desc or (tostring(action):gsub("_", " "))
   local keystr = type(keyspec) == "table" and table.concat(keyspec, " / ") or keyspec
   return M.line_raw(keystr, desc)
@@ -86,9 +205,13 @@ end
 -- motions this tool doesn't bind); `opts.extra` ({ key, desc } entries
 -- from feature modules) goes under `opts.extra_title`; `opts.notes`
 -- (strings) close the popup. Unbound actions are skipped, and a group
--- with nothing left in it is skipped too.
+-- with nothing left in it is skipped too. An action in M.WRITES[surface]
+-- (or `opts.writes`, for a screen sharing a surface whose same actions stay
+-- local - the agent's change viewer) gets a "↑" before its key.
 function M.help_lines(surface, title, table_, opts)
   opts = opts or {}
+  local writes = opts.writes or M.WRITES[surface] or {}
+  local marked = false
   local lines = { title }
   if opts.now and #opts.now > 0 then
     lines[#lines + 1] = "  now: " .. table.concat(opts.now, "  ")
@@ -106,6 +229,10 @@ function M.help_lines(surface, title, table_, opts)
       group_open = false
     else
       local line = M.line(surface, a[1], a[2])
+      if line and writes[a[1]] then
+        line = WRITE_MARK .. " " .. line:sub(3)
+        marked = true
+      end
       if line then
         if pending_group and not group_open then open_group(pending_group) end
         if first and opts.fixed then
@@ -120,11 +247,60 @@ function M.help_lines(surface, title, table_, opts)
     open_group(opts.extra_title or "Features")
     for _, e in ipairs(opts.extra) do lines[#lines + 1] = M.line_raw(e.key, e.desc) end
   end
+  if marked then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = WRITE_MARK .. " changes Azure DevOps"
+  end
+  local pal = M.first(surface, "palette")
+  if pal then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = M.line_raw(pal, "every action here, searchable")
+  end
   for _, n in ipairs(opts.notes or {}) do
     lines[#lines + 1] = ""
     lines[#lines + 1] = n
   end
   return lines
+end
+
+-- The "keys that matter now" block a screen's side list ends with (the
+-- plan's sections, the change's files): " key  what it does" for each
+-- { surface, action, desc } in `list` that's bound - the screen picks the
+-- entries from its state, so a draft plan offers approve and an approved
+-- one doesn't. The descriptions line up after the widest key. Returns
+-- lines, hls: { block row (0-based), from, to, group } - the line muted,
+-- its key in AzureCliKeyHint.
+function M.hint_lines(list)
+  local lines, hls, bound, kw = {}, {}, {}, 0
+  for _, h in ipairs(list) do
+    local k = M.first(h[1], h[2])
+    if k then
+      bound[#bound + 1] = { k, h[3] }
+      kw = math.max(kw, vim.fn.strdisplaywidth(k))
+    end
+  end
+  for _, b in ipairs(bound) do
+    local k = b[1]
+    lines[#lines + 1] = " " .. k .. string.rep(" ", kw - vim.fn.strdisplaywidth(k) + 2) .. b[2]
+    hls[#hls + 1] = { #lines - 1, 0, #lines[#lines], "AzureCliMuted" }
+    hls[#hls + 1] = { #lines - 1, 1, 1 + #k, "AzureCliKeyHint" }
+  end
+  return lines, hls
+end
+
+-- The same block as one line for a wide screen (the Agents list):
+-- "key what it does · key what it does", and hls as { from, to, group }.
+function M.hint_line(list, lead)
+  local text, hls = lead or "", {}
+  for _, h in ipairs(list) do
+    local k = M.first(h[1], h[2])
+    if k then
+      if #hls > 0 then text = text .. "  \u{00B7}  " end
+      hls[#hls + 1] = { #text, #text + #k, "AzureCliKeyHint" }
+      text = text .. k .. " " .. h[3]
+    end
+  end
+  return text, hls
 end
 
 -- A short "key: hint" winbar chip for surface/action, or "" when unbound -

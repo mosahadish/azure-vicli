@@ -53,25 +53,33 @@ local function check(name, cond)
 end
 
 -- M.winbar -------------------------------------------------------------
+-- What it reads as (W), then how it's coloured.
+local function W(parts, tags) return M.strip_hl(M.winbar(parts, tags)) end
+
+check("winbar: the first part is the title, tags and help in their own groups",
+  M.winbar({ "PR #1", "x" }, { "[t]" }) == " %#AzureCliWinbarTitle#PR #1%<%#AzureCliWinbarSep# \u{00B7} %#AzureCliWinbar#x"
+    .. "%#AzureCliWinbar#   %#AzureCliWinbarTag#[t]%#AzureCliWinbar#   %#AzureCliWinbarHelp#?: help%#AzureCliWinbar#")
+check("winbar: a % in the text is escaped", M.winbar({ "50%" }, {}):find("50%%", 1, true) ~= nil
+  and W({ "50%" }, {}) == "50%   ?: help")
 
 check("winbar: context + tags + help",
-  M.winbar({ "PR #123", "feature/x -> main", "14 files" }, { "[active-only]", "[ignore-ws]" })
+  W({ "PR #123", "feature/x -> main", "14 files" }, { "[active-only]", "[ignore-ws]" })
   == "PR #123 \u{00B7} feature/x -> main \u{00B7} 14 files   [active-only] [ignore-ws]   ?: help")
 
 check("winbar: no tags",
-  M.winbar({ "Overview", "PR #123" }, {}) == "Overview \u{00B7} PR #123   ?: help")
+  W({ "Overview", "PR #123" }, {}) == "Overview \u{00B7} PR #123   ?: help")
 
 check("winbar: no context, only tags",
-  M.winbar({}, { "[narrow]" }) == "[narrow]   ?: help")
+  W({}, { "[narrow]" }) == "[narrow]   ?: help")
 
 check("winbar: nothing at all still has help",
-  M.winbar({}, {}) == "?: help")
+  W({}, {}) == "?: help")
 
 check("winbar: blank context entries are skipped",
-  M.winbar({ "x", "", "y" }, {}) == "x \u{00B7} y   ?: help")
+  W({ "x", "", "y" }, {}) == "x \u{00B7} y   ?: help")
 
 check("winbar: blank tag entries are skipped",
-  M.winbar({ "x" }, { "", "[a]", "" }) == "x   [a]   ?: help")
+  W({ "x" }, { "", "[a]", "" }) == "x   [a]   ?: help")
 
 -- M.fit -----------------------------------------------------------------
 
@@ -86,7 +94,7 @@ check("fit: zero width is empty", M.fit("abc", 0) == "")
 check("fit: nil is padding", M.fit(nil, 3) == "   ")
 
 check("winbar: nil parts/tags default to empty",
-  M.winbar(nil, nil) == "?: help")
+  W(nil, nil) == "?: help")
 
 -- M.layout ---------------------------------------------------------------
 

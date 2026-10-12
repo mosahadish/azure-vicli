@@ -41,8 +41,10 @@ with lazy.nvim/packer - see [Install](../README.md#install)):
 lua/azure-cli/
   init.lua        setup(), open_dashboard()/open_review(id)/open_workitems(), standalone flag
   config.lua      setup() defaults (incl. every surface's `keys`) + merge/validate, provider_cmd()
-  keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines
-  ui.lua          shared winbar formatting (UI.winbar), the column-width solver (UI.layout), floats, highlight links
+  keys.lua        resolves a surface+action to the configured key(s); binds, renders ? popup lines, the g. palette
+  keyhints.lua    g and a pause: the float of the screen's g keys (a buffer-local g that replays what follows)
+  palette.lua     azure-vicli's own colours (the standalone launcher's; ui.palette = "azure-vicli")
+  ui.lua          the shared look: winbars (UI.winbar), floats and their border, theme groups (UI.THEME), tabline/statusline, the column-width solver (UI.layout)
   shell.lua       shared housekeeping: flash, config file, browser/clipboard, JSON state files, failed-job summary
   state.lua       the one shared table every surface reads/writes (list/content caches, daemon state, ...)
   migrate.lua     one-time data-file rename, M.ensure(old, new)
@@ -51,6 +53,17 @@ lua/azure-cli/
   merge.lua       the complete-PR dialog shared by the dashboard's and the reviewer's gm
   log.lua         in-session error log (M.record/M.summary) + :AzureCli log
   editor.lua      floating comment editor (drafts, @ mentions)
+  home.lua        the three home screens (Pull requests, Work items, Agents), each in its own tab; P/W/A switch, closing a PR goes back to the tab it came from
+  chat/           the chat panel: init.lua (conversations, the panel), run.lua (running the agent:
+                  send, cancel, its MCP config), actions.lua (what the panel's keys do), view.lua (what's on screen),
+                  tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
+                  plan.lua (the plan: storage, its gate on start_fix/start_story, the tools - with
+                  plan_text.lua's pure helpers and plan_view.lua's tab), threads.lua (ga: a
+                  question answered under a line - the plan's and the change viewer's), agents.lua
+                  (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen),
+                  notes.lua (annotate_code's notes, saved per PR), watch.lua (the chat's
+                  PRs, polled for new comments: suggest /triage, or start an agent),
+                  tools_agents.lua (the main chat's start_agents / list_agents / message_agent)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard
   review/
@@ -137,6 +150,10 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/notify.lua` | OS-level toast notifications (Windows/Linux/macOS), rate-limited, `require()`'d by the dashboard; also `M.flash` - the in-editor floating status notifications (see [setup() options](configuration.md#setup-options)' `notifications`). |
 | `lua/azure-cli/merge.lua` | The complete-PR dialog (merge type, work-item/branch toggles, build/threads/votes summary and warnings) that both the dashboard's `gm` and the reviewer's `gm` open; its `MERGE_TYPES` list, `build_label`, `warnings` and `lines` are pure and shared with the winbar. |
 | `lua/azure-cli/log.lua` | The in-session error log every provider-failure path records into (`M.record`) and shows a one-line summary from (`M.summary`); `M.open` is [`:AzureCli log`](commands-and-keys.md#commands). |
+| `lua/azure-cli/chat/*.lua` | The [chat panel](chat.md): `init.lua` the split (transcript + input) that follows you into every azure-vicli tab, and each message's headless agent run (session resume via `followup`, else replay); `view.lua` the "what's on screen" snapshot every screen registers a describer for; `tools.lua` the agent's tools (reads, direct writes, writes that ask); `bridge.lua` the 127.0.0.1 + token endpoint `azure-cli.py --mcp` forwards MCP tool calls to. |
+| `lua/azure-cli/chat/core.lua`, `store.lua`, `refs.lua` | The chat's pure helpers (message composition, the stream reader for Claude Code's stream-json / json / plain output, saved prompts, `!`/`#` reference parsing, transcript rendering); saved conversations and the audit log under `stdpath("data")/azure-cli-chat/`; resolving, describing, completing and opening references. |
+| `lua/azure-cli/chat/tools_pr.lua`, `tools_board.lua`, `tools_fix.lua`, `tools_agents.lua` | The agent's tool groups beyond the basics: build log, thread status, reviewers, description, create/complete PR, re-queue, `open_in_ui`, `annotate_code`; child tasks, assignment, sprints, comments; the fix flow (a worktree under `stdpath("cache")/azure-cli/fix-worktrees`, its diff, commit and push); the main chat coordinating the agents (start, list, message them - refused inside an agent's own conversation). `tools.lua` holds the registry, per-tool permissions, the audit log and the undoers. |
+| `lua/azure-cli/review/chat.lua` | Reviewer-feature module: `gq` (and `gq` on a selection) in the reviewer, its describer (file, line, code, the change around the cursor, a selection's file lines, the thread), `STATE.review_openers` for `open_in_ui`, and drawing `annotate_code` notes (called from `decorate_comments`). |
 | `lua/azure-cli/editor.lua` | The floating comment editor (see [Reviewer](reviewer.md#reviewer)'s "Comment editor") - drafts, title formatting, `@` mention translation. |
 | `lua/azure-cli/rpc.lua` | Shared client for the `azure-cli.py --serve` daemon - one daemon per Neovim session, `require()`'d by every file above; `M.run(argv, opts)` is a `vim.fn.jobstart`-compatible drop-in that routes a provider call to the daemon when it's usable and falls back to a plain job otherwise. |
 | `lua/azure-cli/review/nav.lua` | Reviewer-feature module (see "Extending the reviewer" below): code navigation without an LSP - `gd` (go to definition, ranked by `def_score`), `gr` (find references), `gf` (open this file at the PR's revision), `g/` (search the changed files), the two-float peek view and the read-only revision buffers you keep navigating from, with `<BS>` walking back one jump. Loaded **first** of the review modules: `review/{commits,followup,since}.lua` reach the peek and those buffers through the `ctx` fields filled in from its return value. |
@@ -208,6 +225,8 @@ the `azure-cli` launcher), twenty-one Lua unit tests under `tests/`,
 | `test-config.lua` | `config.lua`'s `setup()` options beyond `keys` (already `test-keys.lua`'s): `python`/`config` precedence (env `AZVICLI_PY` > `setup()` > probe; `setup({config=...})` always wins) and validation, `M.config_path()`, the `AZVICLI_PREFETCH_DIR`/`AZVICLI_HIDE_ANCIENT_DAYS` defaults `provider_cmd()` sets (never overwriting an ambient value), `timing`/`hide_ancient_days` defaults/partial-override/validation, `cached_prs`/`threads_ttl_seconds` actually landing on a real `cache.lua` instance via `setup()` (pre-seeded into `package.loaded` so `config.lua`'s own internal `require("azure-cli.cache")` resolves to the same table the test inspects), and `collapsed_sections` defaults/override/reset/empty-table/validation |
 | `test-ui.lua` | `ui.lua`'s pure `UI.winbar` (context/tags/help joining, blank entries skipped) and `UI.layout` (growing to ideal by weight, `grow` columns soaking up leftover width, the lowest-priority-first drop order when even the minimums don't fit, an undroppable column surviving regardless) |
 | `test-review-filelist.lua` | `review/filelist.lua`'s pure `M.diff_stats` (add/del counts from a parsed-diff map) and `M.build` (directory grouping and sorting, common-prefix trimming - including "no common prefix" and a lone file still getting its own header row - the row_to_file/file_to_row/ordered_files maps, status-letter/stats/thread-count row formatting including the uncached "(?)" and no-status-yet cases, and the AzureCliFileDir/Added/Deleted/Renamed highlight assignment, "M" deliberately getting none) |
+| `test-chat.lua` | Runs in headless nvim (needs `vim.json`/`vim.api` at load): the chat's message composition (first/resumed/replayed), answer parsing (Claude Code's envelope, plain text, `session_pattern`), `can_resume`, models, transcript rendering, the view description, the tool list's shape and ask/write split, a declined "ask" tool never running, and `review/chat.lua`'s thread shape; the stream reader (partial lines, stream-json events, our own MCP tools not listed twice, `strip`), saved prompts, reference parsing/resolution/completion, permissions (overrides, a denied tool hidden and refused), the store (in a scratch directory: saving, a slim audit entry, undone marks) and the reviewer's hunk/selection-line helpers |
+| `test_chat_provider.py` | `azure-cli.py`'s `--wi-edit create-branch` (the exact source ref out of a prefix-matched `filter=`, the all-zero `oldObjectId` POST, the `vstfs:///Git/Ref/...%2FGB<branch>` "Branch" link, no link without a work item, a rejected update, a failed link still reporting the branch) and the `--mcp` relay (`initialize`, notifications, `tools/list`/`tools/call` relayed, tool errors as tool results, an unreachable bridge, `mcp_serve`'s line loop, and a real TCP round trip carrying the token); also `delete-branch` (refusing once someone pushed), `--build-log` (failed records, issues, log tails, a JSON-lines log body), `--add-reviewer` (identity search on vssps for Services, the collection on Server, an ambiguous name), `--set-description` and `--create-pr` (work item refs, draft) |
 | `test_provider.py` | `azure-cli.py`'s YAML-subset config parser; PR classification (every branch of the assigned/created/draft/declined/signed-off/waiting/actionable rules, including `AZVICLI_HIDE_ANCIENT_DAYS` widening/narrowing/falling back on an invalid value from the hard-coded 30); thread and @-mention counting; build-status aggregation and policy/missing-reviewer derivation; vote ratio, reviewer summary and humanized-date formatting; `Config.path()`'s `AZVICLI_CONFIG` override (with `~` expansion); and an NDJSON serialization check of the emitted field list. HTTP is mocked by swapping `AzureDevOpsPullRequestSource.fetch` for a fake - no network access or live Azure DevOps instance is needed. |
 | `test_pr_actions.py` | `azure-cli.py`'s PR-action subcommands (`PrActions` - threads/iterations passthrough, posting/replying/editing/deleting comments, thread status, vote, complete, auto-complete) and the `AZVICLI_PREFETCH=1`/`all` branch-prefetch modes. HTTP is mocked the same way `test_provider.py` mocks it (`PrActions.fetch` swapped for a fake); git is exercised for real for `post_inline`'s git-show line-length lookup. Also `default_prefetch_dir()`'s platform branches (Windows `%LOCALAPPDATA%`, else `$XDG_CACHE_HOME`, each with its own no-env fallback) and both call sites (`PrActions.__init__`, `cmd_prefetch`) actually using it when `AZVICLI_PREFETCH_DIR` is unset. |
 | `test_work_items.py` | `azure-cli.py`'s work-item subcommands (`WorkItemActions` - `--wi-list`'s sprint resolution/WIQL/batch fetch, `--wi-detail`'s parent/child/comment/pull-request assembly and HTML flattening, `--wi-state`'s transitions/reasons derivation and state changes, `--wi-edit`'s create/set/comment/link-pr/unlink-pr JSON Patch bodies). HTTP is mocked the same way, via `WorkItemActions.fetch`. Also `work_items.states:`/`sprint_scope:` parsing and defaults, and the `states`/wider-iteration-list `--wi-list current`/`sprints` output they carry (including an undated iteration sorting last under `sprint_scope: all`). |
@@ -237,13 +256,31 @@ and the fake-provider demo - `bash tests/demo.sh --headless` (see
 asserting the dashboard lists the fake PRs, through `rpc.lua`'s real daemon
 client, and that the reviewer then opens PR #101 with its file list, through
 the warm-all prefetch's real `git fetch` and the reviewer's `git diff`
-pipeline.
+pipeline. It also drives the [chat panel](chat.md) with
+`tests/fake-chat-agent.py`, a real MCP client of `azure-cli.py --mcp`: from
+a thread in auth.py's diff it checks the view the agent is given, a drafted
+reply landing in the batch queue unposted, `gm`'s model and a resumed
+session, a branch created on the fake origin and linked to #3001, a vote
+that asks and is denied, and the panel following into the dashboard's tab.
+A second step covers the rest: a streamed (stream-json) answer, a visual
+selection and a `!102` reference carried into the message, `/build`
+reading a build log, `open_in_ui` landing the reviewer on `throttle.py:4`, an
+`annotate_code` note drawn in the diff, the fix flow (worktree, diff, asked
+before the push, the commit on the fake origin's branch), the board tools
+and undoing the link from `gH`, `gr`, switching agents with `gM` (a
+replayed turn) and `gh` bringing a conversation back.
 
 `tests/gen-keys-table.lua` (`luajit tests/gen-keys-table.lua`) prints the
 [Keys](commands-and-keys.md#keys) section's tables straight from `config.lua`'s defaults - not
 part of the `run.sh` gate (there's nothing to assert; it's a generator, not
 a test), but re-run it and paste the output over that section after
 changing a default, so the two can't quietly drift apart.
+
+`tests/test-keys.lua` also refuses a default key that changes something on
+one screen (an action in `keys.lua`'s `WRITES`, or approving a plan) and is
+harmless on another, unless the acting one asks first: it lists those in
+`ASKS_FIRST`, each with how it asks. A new action that writes to Azure
+DevOps goes in `WRITES`, so `?` marks it and the check covers it.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `bash tests/run.sh` on
 every push and pull request.
@@ -311,8 +348,10 @@ python3 tests/screenshots.py            # rewrites docs/images/*.png
 The images under `docs/images/` are generated, not hand-taken: the script
 runs `tests/demo.sh --standalone` in a fixed-size detached `tmux` pane,
 walks through the fake provider's fixtures (dashboard, PR #101, its diff,
-the inline thread, the complete dialog, work items, a work item), captures
-each screen with its colours and rasterises it through ImageMagick's
+the inline thread, the complete dialog, work items, a work item, then the
+chat's plan window and a question under a line of a change - those two
+scenes are seeded by `tests/shot-plan.lua` and `tests/shot-change.lua`
+through `:luafile`, since no agent runs), captures each screen with its colours and rasterises it through ImageMagick's
 `pango:` coder. Needs tmux, an ImageMagick with pango support and a
 monospace font (Noto Sans Mono by default - `--font` picks another); no
 display. Re-run it after a UI change and commit the result; add a step to

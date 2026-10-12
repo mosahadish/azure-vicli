@@ -21,6 +21,14 @@ instant.
 <td width="50%"><a href="docs/reviewer.md"><img src="docs/images/complete-dialog.png" alt="The complete dialog: merge type, work-item and branch toggles, and a build, thread and vote summary"></a><br><sub><b>Complete</b> - merge type, toggles, and a warning when the build, threads or votes argue against merging.</sub></td>
 <td width="50%"><a href="docs/work-items.md"><img src="docs/images/workitems.png" alt="The work-items dashboard: sprint tabs, items grouped by type with state, priority and age"></a><br><sub><b>Work items</b> - your sprint's stories and bugs, with tabs for the other sprints.</sub></td>
 </tr>
+<tr>
+<td width="50%"><a href="docs/chat.md#plans-and-asking-why"><img src="docs/images/chat-plan.png" alt="The agent's plan: sections on the left, the rendered plan with questions answered under its lines, the chat panel on the right"></a><br><sub><b>Plan</b> - the agent plans before it touches code; ask "why?" about any line (<code>ga</code>), approve with <code>gA</code>.</sub></td>
+<td width="50%"><a href="docs/chat.md#plans-and-asking-why"><img src="docs/images/chat-ask-why.png" alt="The agent's change, file by file, with a question answered under one of its lines"></a><br><sub><b>Ask why</b> - the same <code>ga</code> on any line of the agent's change; the answer sits under the line.</sub></td>
+</tr>
+<tr>
+<td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: one row per plan's agent and what it's doing"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen shows what each is doing.</sub></td>
+<td width="50%"></td>
+</tr>
 </table>
 
 _Every screenshot is generated from the test suite's [fake provider](docs/development.md#trying-it-without-azure-devops), so the people and PRs in them are made up._
@@ -35,8 +43,8 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - [Running](#running)
 - [License](#license)
 - Docs: [dashboard](docs/dashboard.md) · [reviewer](docs/reviewer.md) ·
-  [work items](docs/work-items.md) · [commands and keys](docs/commands-and-keys.md) ·
-  [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
+  [work items](docs/work-items.md) · [chat](docs/chat.md) ·
+  [commands and keys](docs/commands-and-keys.md) · [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) ·
   [development](docs/development.md)
 
 ## Requirements
@@ -154,6 +162,15 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   and follow-up views, per-commit diffs and no-LSP code navigation.
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
   assignee, priority, sprint moves, discussion and PR links.
+- **[Chat](docs/chat.md)** - an AI agent (Claude Code, the Copilot CLI, ...)
+  in a panel next to every screen (`gq`). It sees the PR, work item, file
+  or comment under your cursor, so "triage this PR's comments" or "create
+  a branch from develop for this work item" just work. Before it changes
+  code it writes a plan you review like a PR: ask it why about any line,
+  then approve. Several agents can work at once, one per work item, each
+  in its own conversation, and the main chat starts them, checks on them
+  and passes your instructions on. Replies are drafted for you to send,
+  and votes ask first.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

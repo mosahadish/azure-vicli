@@ -41,6 +41,13 @@ cd "$REPO_ROOT"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Every test gets its own Neovim data/cache/state/config directories: the
+# chat's conversations, plans and audit log, the per-agent MCP config files
+# and the rest must never land in (or be read from) the real ones.
+export XDG_DATA_HOME="$TMP/xdg-data" XDG_CACHE_HOME="$TMP/xdg-cache" XDG_STATE_HOME="$TMP/xdg-state"
+export XDG_CONFIG_HOME="$TMP/xdg-config"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
+
 PASS=0
 FAIL=0
 FAILED_NAMES=()
@@ -68,15 +75,15 @@ SH_FILES=(azure-cli install.sh tests/demo.sh)
 # sign of trouble: Lua/LuaJIT builtins these files actually use, plus `vim`
 # (the host global every UI file assumes), `require` (every module resolves
 # its sibling modules through Neovim's package.path/rtp with it now - see
-# lua/azure-cli/init.lua) and `_G` (unused by anything under lua/ any more,
-# kept allowed as harmless back-compat in case a future file still wants a
-# process-wide value require()'s module caching doesn't fit).
+# lua/azure-cli/init.lua) and `_G` (keyhints.lua's: whether which-key or
+# mini.clue is there - _G.package.loaded, _G.MiniClue).
 # setmetatable is review/comments.lua's (and, the same way, review/commits.lua's
 # and review/range.lua's) own: each module table doubles as a plain table of
 # pure helpers (for its tests/test-review-*.lua) and a callable
 # `require(path)(ctx)` (for review/init.lua's EXT wiring) via a __call
-# metamethod.
-ALLOWED_GLOBALS=(_G debug dofile error ipairs math os pairs pcall require select setmetatable string table tonumber tostring type vim)
+# metamethod. rawset is chat/init.lua's: a plan's own conversation keeps
+# its fields raw and hands the rest to the main one (__newindex).
+ALLOWED_GLOBALS=(_G debug dofile error ipairs math next os pairs pcall rawset require select setmetatable string table tonumber tostring type vim)
 
 mkdir -p "$TMP/lua" "$TMP/sh"
 
@@ -429,6 +436,94 @@ if command -v nvim >/dev/null 2>&1; then
     fail "smoke: setup({accounts={{pat_file=...}}}) needs no config file and the provider reads the token" "$out"
   fi
 
+  # The chat panel's pure helpers (chat/*.lua, review/chat.lua) need
+  # vim.json and vim.api at load, so their unit tests run in a real nvim.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat tests passed"* ]]; then
+    pass "test-chat.lua (headless nvim)"
+  else
+    fail "test-chat.lua (headless nvim)" "$out"
+  fi
+
+  # The comment editor leaves insert mode behind it (needs the main loop).
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-editor-mode.lua" 2>&1)"
+  if [[ "$out" == *EDITOR-MODE-OK* ]]; then
+    pass "test-editor-mode.lua (headless nvim, real input)"
+  else
+    fail "test-editor-mode.lua (headless nvim, real input)" "$out"
+  fi
+
+  # The chat bridge over a real socket: the token, and the request size cap.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-bridge.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all bridge tests passed"* ]]; then
+    pass "test-chat-bridge.lua (headless nvim)"
+  else
+    fail "test-chat-bridge.lua (headless nvim)" "$out"
+  fi
+
+  # The yes/no popup (UI.confirm): its layout and every way out.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-confirm.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all confirm tests passed"* ]]; then
+    pass "test-confirm.lua (headless nvim)"
+  else
+    fail "test-confirm.lua (headless nvim)" "$out"
+  fi
+
+  # The action palette (g.): a buffer's actions, run in its window.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-keys-palette.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all palette tests passed"* ]]; then
+    pass "test-keys-palette.lua (headless nvim)"
+  else
+    fail "test-keys-palette.lua (headless nvim)" "$out"
+  fi
+
+  # g and a pause list the screen's g keys; the next key does what it did.
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-key-hints.lua" 2>&1)"
+  if [[ "$out" == *KEY-HINTS-OK* ]]; then
+    pass "test-key-hints.lua (headless nvim, real input)"
+  else
+    fail "test-key-hints.lua (headless nvim, real input)" "$out"
+  fi
+
+  # Quitting while agents work, with more queued, exits right away.
+  start=$(date +%s)
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-chat-exit.lua" 2>&1)"
+  rc=$?
+  took=$(( $(date +%s) - start ))
+  if [ $rc -ne 124 ] && [ "$took" -lt 10 ] && [[ "$out" == *CHAT-EXIT-STARTED* ]]; then
+    pass "test-chat-exit.lua (quitting while agents work doesn't hang)"
+  else
+    fail "test-chat-exit.lua (quitting while agents work doesn't hang)" "rc $rc after ${took}s: $out"
+  fi
+
+  # The plan, the questions under a line, the change viewer's file list.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-plan.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-plan tests passed"* ]]; then
+    pass "test-chat-plan.lua (headless nvim)"
+  else
+    fail "test-chat-plan.lua (headless nvim)" "$out"
+  fi
+
+  # chat/init.lua's `send`: one agent process for the whole conversation
+  # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
+  # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-persistent.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-persistent tests passed"* ]]; then
+    pass "test-chat-persistent.lua (headless nvim)"
+  else
+    fail "test-chat-persistent.lua (headless nvim)" "$out"
+  fi
+
+  # agent.acp: one warm ACP session across messages, and azure-cli.py
+  # --mcp-http for an agent that only takes http MCP servers (Copilot's
+  # --acp) - tests/fake-acp-agent.py calls the tools over it.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-acp.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-acp tests passed"* ]]; then
+    pass "test-chat-acp.lua (headless nvim)"
+  else
+    fail "test-chat-acp.lua (headless nvim)" "$out"
+  fi
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua
@@ -468,6 +563,31 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
   else
     fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
+  fi
+  if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
+    pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"
+  else
+    fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
+  fi
+  if [[ "$out" == *PLAN-SMOKE-OK* ]]; then
+    pass "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves"
+  else
+    fail "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" "$out"
+  fi
+  if [[ "$out" == *AGENTS-SMOKE-OK* ]]; then
+    pass "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation"
+  else
+    fail "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" "$out"
+  fi
+  if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
+    pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
+  else
+    fail "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" "$out"
+  fi
+  if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
+    pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
+  else
+    fail "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" "$out"
   fi
   if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
     pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"

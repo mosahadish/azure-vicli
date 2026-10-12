@@ -253,6 +253,7 @@ local function render(data)
 
   pcall(function()
     UI.wo(0, "winbar", UI.winbar({ "#" .. tostring(it.id or "?"), it.type or "", it.state or "" }, {}))
+    vim.b.azure_cli_title = "#" .. tostring(it.id or "?")
   end)
 end
 
@@ -610,6 +611,18 @@ KEYS.bind(buf, "workitem_view", "refresh", function() if ID ~= "" then load(ID, 
 KEYS.bind(buf, "workitem_view", "back", leave, { desc = "close and return to the dashboard" })
 KEYS.bind(buf, "workitem_view", "quit", leave, { desc = "close and return to the dashboard" })
 KEYS.bind(buf, "workitem_view", "help", show_help, { desc = "this help" })
+-- gq: the chat panel, told which work item this view shows.
+require("azure-cli.chat").bind_toggle(buf, "workitem_view")
+require("azure-cli.chat.view").register("azurecli-workitem", function()
+  local snap = { screen = "work item detail view", work_item = { id = tonumber(ID) or ID } }
+  local c = STATE.WI_DETAIL_CACHE[ID]
+  local ok, d = pcall(vim.json.decode, c and c.body or "")
+  local item = ok and type(d) == "table" and (d.item or d) or nil
+  if type(item) == "table" then
+    snap.work_item.type, snap.work_item.title, snap.work_item.state = item.type, item.title, item.state
+  end
+  return snap
+end)
 
 if ID == "" then
   set_lines({ "No work item id (AZVICLI_WI_ID) set." })

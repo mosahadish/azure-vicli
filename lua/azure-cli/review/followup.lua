@@ -602,23 +602,25 @@ local function open_picker(ctx, kind, new_iterations, review_point, anchored, un
   end
   local ok, lwin = pcall(vim.api.nvim_open_win, lbuf, true, {
     relative = "editor", row = row0, col = col, width = list_w, height = height,
-    style = "minimal", border = "rounded", title = title_text(), title_pos = "left",
+    style = "minimal", border = require("azure-cli.ui").border(), title = title_text(), title_pos = "left",
   })
   if not ok then
     lwin = vim.api.nvim_open_win(lbuf, true, {
       relative = "editor", row = row0, col = col, width = list_w, height = height,
-      style = "minimal", border = "rounded",
+      style = "minimal", border = require("azure-cli.ui").border(),
     })
   end
   require("azure-cli.ui").wo(lwin, "cursorline", true)
+  require("azure-cli.ui").float_hl(lwin)
   require("azure-cli.ui").wo(lwin, "wrap", false)
 
   local pbuf = vim.api.nvim_create_buf(false, true)
   local pwin = vim.api.nvim_open_win(pbuf, false, {
     relative = "editor", row = row0, col = col + list_w + 2, width = prev_w, height = height,
-    style = "minimal", border = "rounded", focusable = false,
+    style = "minimal", border = require("azure-cli.ui").border(), focusable = false,
   })
   require("azure-cli.ui").wo(pwin, "number", true)
+  require("azure-cli.ui").float_hl(pwin)
   require("azure-cli.ui").wo(pwin, "wrap", false)
   require("azure-cli.ui").wo(pwin, "cursorline", false)
 
