@@ -135,6 +135,32 @@ check("searching through the shell doesn't ask, in any conversation", e9b ~= nil
   and e9b.text:find("exec[grep -rn Config src]=yes", 1, true) ~= nil, e9b and e9b.text)
 check("a command that changes something still asks", #asked == 1 and asked[1]:find("rm", 1, true) ~= nil,
   vim.inspect(asked))
+-- A skill: its prompts ask with a third button; picking it allows the
+-- skill from then on, and its later prompts don't ask.
+local SK = require("azure-cli.chat.skills")
+local orig_avail = SK.available
+SK.available = function() return { "deploy-check" } end
+local buttons
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(3) end
+asked = {}
+local s1 = send_and_wait("use the deploy-check skill EXEC=kubectl_apply")
+check("a skill's prompt offers to allow the skill", buttons and buttons[3] == "Allow all of skill deploy-check"
+  and asked[1]:find("(skill deploy-check)", 1, true) ~= nil, vim.inspect({ buttons, asked }))
+check("allowing it allows this one", s1 and s1.text:find("exec[kubectl apply]=yes", 1, true) ~= nil, s1 and s1.text)
+asked = {}
+local s2 = send_and_wait("/deploy-check again EXEC=kubectl_rollout EXEC=rm_-rf_tmp")
+check("then the skill's prompts don't ask", #asked == 0 and s2 and s2.text:find("exec[kubectl rollout]=yes", 1, true)
+  ~= nil and s2.text:find("exec[rm -rf tmp]=yes", 1, true) ~= nil, vim.inspect({ asked, s2 and s2.text }))
+check("and the chat says the skill allowed them", table.concat(s2 and s2.tools or {}, "\n")
+  :find("$ kubectl rollout  (allowed: skill deploy-check)", 1, true) ~= nil, vim.inspect(s2 and s2.tools))
+asked = {}
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(2) end
+send_and_wait("no skill here EXEC=kubectl_apply")
+check("without the skill it asks as before, with two buttons", #asked == 1 and #buttons == 2, vim.inspect(buttons))
+SK.available = orig_avail
+pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
+SK._reset()
+asked = {}
 -- The popup shows the command itself, and the chat logs each one with
 -- what became of it.
 local shown

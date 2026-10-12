@@ -243,7 +243,17 @@ picks goes through `session/set_config_option`.
   `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
   `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
   of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
-  `2>&1`). A command that could
+  `2>&1`). **Skills you allow** don't ask either: while an answer uses one
+  of the agent's skills (a `SKILL.md` in the repository's `.github/skills`,
+  `.claude/skills`, `.agents/skills` or `.copilot/skills`, or yours in your
+  home folder) - your message names it (`/triage-pr-comments`, "use the
+  triage-pr-comments skill") or the agent reports loading it - its
+  prompts get a third button, **Allow all of skill …** (`a`), and once you
+  pick it every command and file edit the skill makes is accepted, now and
+  next time; each still shows in the chat as `(allowed: skill …)`.
+  `chat.allowed_skills = { "triage-pr-comments" }` allows one up front.
+  azure-vicli's own questions - posting, voting, pushing - still ask. A
+  command that could
   write or run something else - a redirect, `$(...)`, a script block,
   `find -exec`, `rg --pre`, any other program - still asks. While a
   `/plan` message runs, editing, deleting or moving a file is refused
@@ -330,7 +340,7 @@ to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
-(default false), `suggest_on_new_comments` (default true), `on_new_comments`
+(default false), `allowed_skills` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
 (`"suggest"` or `"plan"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
 (default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).

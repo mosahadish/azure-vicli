@@ -744,9 +744,11 @@ vim.api.nvim_create_autocmd({ "FocusGained", "FocusLost" }, {
 -- you answer waits here, so each answer goes to the question you read.
 local asking, waiting_questions = false, {}
 
-local function confirm(question, cb, details)
+-- `extra`: a third button's label (an "always" for this kind of request);
+-- picking it calls cb(true, true).
+local function confirm(question, cb, details, extra)
   if asking then
-    table.insert(waiting_questions, { question, cb, details })
+    table.insert(waiting_questions, { question, cb, details, extra })
     MAIN().questions_waiting = #waiting_questions
     M.set_winbars()
     return
@@ -759,25 +761,28 @@ local function confirm(question, cb, details)
   M.set_winbars()
   -- It can pop up while you're typing something else: Deny is focused, and
   -- keys only count after a moment (ui.lua's M.choose).
-  require("azure-cli.ui").choose({ title = "The agent asks", lines = { question }, buttons = { "Allow", "Deny" },
-    default = 2, keys = { y = 1, n = 2 }, cancel = 2, details = details, details_ft = is_diff, arm_ms = 400 },
+  require("azure-cli.ui").choose({ title = "The agent asks", lines = { question },
+    buttons = extra and { "Allow", "Deny", extra } or { "Allow", "Deny" },
+    default = 2, keys = extra and { y = 1, n = 2, a = 3 } or { y = 1, n = 2 }, cancel = 2, details = details,
+    details_ft = is_diff, arm_ms = 400,
+    hint = extra and "y allow \u{00B7} n deny \u{00B7} a " .. extra:lower() .. " \u{00B7} Esc deny \u{00B7} Tab moves" or nil },
   function(i)
-    local yes = i == 1
+    local yes = i == 1 or i == 3
     MAIN().question = nil
     asking = false
-    cb(yes)
+    cb(yes, i == 3)
     local nxt = table.remove(waiting_questions, 1)
     MAIN().questions_waiting = #waiting_questions
     M.set_winbars()
-    if nxt then vim.schedule(function() confirm(nxt[1], nxt[2], nxt[3]) end) end
+    if nxt then vim.schedule(function() confirm(nxt[1], nxt[2], nxt[3], nxt[4]) end) end
   end)
 end
 M.confirm = confirm
 
 -- A question from conversation `conv`'s agent says whose it is: "[#3001] ...".
 local function confirm_for(conv)
-  return function(question, cb, details)
-    confirm(((conv and conv.label) and ("[" .. conv.label .. "] ") or "") .. question, cb, details)
+  return function(question, cb, details, extra)
+    confirm(((conv and conv.label) and ("[" .. conv.label .. "] ") or "") .. question, cb, details, extra)
   end
 end
 

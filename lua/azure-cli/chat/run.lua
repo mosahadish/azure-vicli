@@ -261,6 +261,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       -- Our own azure-vicli tools are logged by the bridge already, with
       -- their arguments.
       local title = tostring(u.title or u.name or "tool")
+      entry.skill = entry.skill or require("azure-cli.chat.skills").in_tool_call(u, entry.skill_names)
       if not title:find("azure%-vicli") then
         table.insert(entry.tools, "\u{00B7} " .. title)
         render_soon()
@@ -315,10 +316,15 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     cmd = type(cmd) == "string" and vim.trim(cmd) or nil
     -- What a shell command was and what became of it, under the tool call
     -- in the chat (and so in the run log, gH).
-    local function log_cmd(outcome)
-      if not cmd or cmd == "" then return end
-      local one = cmd:gsub("%s*\n%s*", " ; ")
-      table.insert(entry.tools, "  \u{21B3} $ " .. (#one > 160 and (one:sub(1, 157) .. "...") or one) .. "  (" .. outcome .. ")")
+    local function log_cmd(outcome, always)
+      local one = cmd and cmd ~= "" and cmd:gsub("%s*\n%s*", " ; ") or nil
+      if not one and always then
+        local paths = CORE.tool_paths(tool)
+        one = (tool.title or tool.kind or "tool") .. (#paths > 0 and (" " .. table.concat(paths, ", ")) or "")
+      end
+      if not one then return end
+      table.insert(entry.tools, "  \u{21B3} " .. (cmd and cmd ~= "" and "$ " or "") .. (#one > 160 and (one:sub(1, 157) .. "...") or one)
+        .. "  (" .. outcome .. ")")
       render_soon()
     end
     local function allow_quietly(why) log_cmd("allowed: " .. why); return answer(true) end
@@ -356,18 +362,30 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     end
     -- Searching and listing through the shell (grep, git log, ...).
     if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
+    -- A skill you've allowed: whatever it does through the agent's tools.
+    local SKILLS = require("azure-cli.chat.skills")
+    if entry.skill and SKILLS.allowed(entry.skill) then
+      log_cmd("allowed: skill " .. entry.skill, true)
+      return answer(true)
+    end
+    -- Otherwise a third button allows that skill from now on.
+    local extra = entry.skill and ("Allow all of skill " .. entry.skill) or nil
+    local function remember(always) if always and entry.skill then SKILLS.allow(entry.skill) end end
     if verdict == "unplanned" then
       local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
         .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
-      return confirm_for(st.plan_key and st or nil)(question, function(yes)
+      return confirm_for(st.plan_key and st or nil)(question, function(yes, always)
         if yes then PLAN.allow_files(rec, rels) end
+        remember(always)
         answer(yes)
-      end, details)
+      end, details, extra)
     end
-    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), function(yes)
-      log_cmd(yes and "you allowed it" or "you denied it")
+    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
+      .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
+      remember(always)
+      log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
       answer(yes)
-    end, details)
+    end, details, extra)
   end
 
   local function send_prompt(pj)
@@ -567,6 +585,11 @@ send = function(text, opts)
     label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil,
     requests = CORE.request_multiplier(agent, model), model = model }
   table.insert(st.entries, entry)
+  -- The agent's skills where it runs, and the one this message asks for
+  -- (chat/skills.lua: an allowed one's permission prompts don't ask).
+  local SKILLS = require("azure-cli.chat.skills")
+  entry.skill_names = SKILLS.available(agent_cwd(snap))
+  entry.skill = SKILLS.named_in(shown_text .. "\n" .. expanded, entry.skill_names)
   if st.agent_id then
     -- A plan's own agent: its tool calls come with its id (the relay's
     -- AZVICLI_CHAT_AGENT / X-Azvicli-Agent) and land in this conversation.

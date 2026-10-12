@@ -151,6 +151,35 @@ do
         == "## Test plan\nRun it.\n\n_From the plan for #4 (revision 2, 1 question answered)._", d)
 end
 
+-- --- chat/skills.lua: the agent's skills, and the ones you allowed ---------------------------
+do
+  local SK = require("azure-cli.chat.skills")
+  local names = { "triage-pr-comments", "review" }
+  check("skills: named as /x, the x skill, skill x, `x`", SK.named_in("/triage-pr-comments on this PR", names)
+    == "triage-pr-comments" and SK.named_in("use the Triage-PR-Comments skill", names) == "triage-pr-comments"
+    and SK.named_in("run skill: review now", names) == "review" and SK.named_in("try `review`", names) == "review")
+  check("skills: not just a word in passing", SK.named_in("please review this", names) == nil
+    and SK.named_in("/triage-pr-commentsx", names) == nil and SK.named_in("", names) == nil)
+  check("skills: a tool call loading one", SK.in_tool_call({ title = "Skill", rawInput = { skill = "review" } }, names)
+    == "review" and SK.in_tool_call({ title = "Read review.md" }, names) == nil)
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir .. "/.github/skills/deploy-check", "p")
+  vim.fn.writefile({ "---", "name: deploy-check", "---" }, dir .. "/.github/skills/deploy-check/SKILL.md")
+  vim.fn.mkdir(dir .. "/.claude/skills/not-a-skill", "p")
+  check("skills: found where the agent runs", vim.tbl_contains(SK.available(dir), "deploy-check")
+    and not vim.tbl_contains(SK.available(dir), "not-a-skill"))
+  SK._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
+  require("azure-cli").setup({ chat = { allowed_skills = { "review" } } })
+  check("skills: allowed in setup", SK.allowed("review") and not SK.allowed("deploy-check"))
+  SK.allow("deploy-check")
+  SK._reset()
+  check("skills: allowed from the popup, kept", SK.allowed("deploy-check"))
+  require("azure-cli").setup({})
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
+  SK._reset()
+end
+
 -- --- approving with pushing allowed: the push and the PR without asking ----------------------
 do
   local wi = { key = "wi-55", target = { work_item_id = 55 }, revisions = { { markdown = "x" } }, threads = {}, allow_push = true }
