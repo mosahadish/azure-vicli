@@ -1,5 +1,5 @@
 -- lua/azure-cli/chat/tools_pr.lua: the chat agent's pull-request tools
--- beyond the basics in chat/tools.lua - a failed build's log, thread
+-- beyond the basics in chat/tools.lua - a failed build's log and tests, thread
 -- status, reviewers, the description, opening and completing PRs,
 -- re-queueing the build - plus the two that act on the screen rather than
 -- on Azure DevOps: open_in_ui (show the user something) and annotate_code
@@ -56,6 +56,30 @@ return function(T)
           if okd and type(d) == "table" then
             d.status = pr.buildStatus
             if #(d.failed or {}) == 0 then d.note = "No failed steps in this build." end
+          end
+          done(okd and d or out)
+        end)
+      end,
+    },
+    {
+      name = "get_test_results",
+      description = "The tests that failed in a pull request's build: each failed test's name, its error message "
+        .. "and the start of its stack trace, from the build's test runs. Use this (not the shell, curl or az) to see "
+        .. "why CI tests failed; get_build_log gives the failed steps' logs.",
+      schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
+      risk = "read",
+      run = function(args, _, done)
+        local pr = T.need_pr(args, done)
+        if not pr then return end
+        local bid = build_id(pr)
+        if not bid then return done("PR !" .. pr.id .. " has no build (status: " .. tostring(pr.buildStatus) .. ").") end
+        T.provider({ "--test-results", bid }, T.pr_env(pr), function(ok, out, err)
+          if not ok then return done(nil, "could not read the test results of build " .. bid .. ": " .. err) end
+          local okd, d = pcall(vim.json.decode, out)
+          if okd and type(d) == "table" then
+            d.status = pr.buildStatus
+            if #(d.runs or {}) == 0 then d.note = "This build published no test results - get_build_log shows its logs."
+            elseif #(d.failed or {}) == 0 then d.note = "No test failed in this build." end
           end
           done(okd and d or out)
         end)

@@ -654,6 +654,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `find_implementations`, `find_definition` | Across a whole repository (the fix/story worktree, a PR's source branch, or a local clone): the types implementing an interface or deriving from a class, and the ones deriving from those; where a type or member is declared. Text-based (`git grep` and declaration patterns for C#, Java, TypeScript, Kotlin, Python, ...), no build needed | - |
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
+| `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
 | `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |

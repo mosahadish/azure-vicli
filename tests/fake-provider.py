@@ -858,6 +858,20 @@ class Fake:
         print(json.dumps({"build": bid, "failed": failed}))
         return 0
 
+    def cmd_test_results(self, rest):
+        if not self.need_pr():
+            return 1
+        pr = self.pr()
+        bid = int(rest[0]) if rest and rest[0].isdigit() else 0
+        failed = []
+        if pr["buildStatus"] == "failed":
+            failed = [{"test": "tests/test_util.py::test_name_flag", "run": "pytest",
+                       "error": "AssertionError: expected 'x', got '--name'",
+                       "stack": "tests/test_util.py:12: in test_name_flag\n    assert parse(['--name', 'x']) == 'x'"}]
+        print(json.dumps({"build": bid, "runs": [{"id": 1, "name": "pytest", "total": 4, "failed": len(failed)}],
+                          "failed": failed}))
+        return 0
+
     def cmd_add_reviewer(self, rest):
         if not self.need_pr():
             return 1
@@ -1315,6 +1329,7 @@ def dispatch(ws, argv, env):
         "--wi-state": lambda: f.cmd_wi_state(rest),
         "--wi-edit": lambda: f.cmd_wi_edit(rest),
         "--build-log": lambda: f.cmd_build_log(rest),
+        "--test-results": lambda: f.cmd_test_results(rest),
         "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
         "--set-description": lambda: f.cmd_set_description(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),

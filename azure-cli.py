@@ -1672,7 +1672,7 @@ PR_ACTION_FLAGS = (
     "--threads", "--iterations", "--post", "--file-comment", "--pr-comment",
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
-    "--build-log", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
+    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2172,6 +2172,50 @@ class PrActions:
         print(json.dumps({"build": int(build_id), "failed": failed}, ensure_ascii=False))
         return 0
 
+    def test_results(self, build_id, limit=30):
+        """The tests that failed in a build: its test runs (Runs - List,
+        buildUri=vstfs:///Build/Build/<id>), then each run's failed results
+        (Results - List, outcomes=Failed) with their error message and the
+        start of the stack trace. Prints JSON {"build", "runs": [{"id",
+        "name", "total", "failed"}], "failed": [{"test", "run", "error",
+        "stack"}]} - at most `limit` failures.
+        """
+        if not _is_uint(build_id):
+            print("Invalid build id.", file=sys.stderr)
+            return 1
+        base = "{0}/{1}/_apis/test".format(self.org, self.project)
+        uri = urllib.parse.quote("vstfs:///Build/Build/{0}".format(build_id), safe="")
+        try:
+            listed = self.fetch("{0}/runs?buildUri={1}".format(base, uri), pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST test runs failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        runs, failed = [], []
+        for run in (listed or {}).get("value") or []:
+            total = run.get("totalTests") or 0
+            passed = run.get("passedTests") or 0
+            bad = max(0, total - passed - (run.get("notApplicableTests") or 0))
+            runs.append({"id": run.get("id"), "name": run.get("name"), "total": total, "failed": bad})
+            if not bad or len(failed) >= limit:
+                continue
+            try:
+                res = self.fetch("{0}/Runs/{1}/results?outcomes=Failed&$top=200".format(base, run.get("id")),
+                                 pat=self.pat, api_version="6.0")
+            except AdoHttpError as e:
+                failed.append({"run": run.get("name"), "error": "(could not read its results: HTTP {0})".format(e.status)})
+                continue
+            for r in (res or {}).get("value") or []:
+                # Older servers ignore `outcomes`: keep the failed ones here.
+                if r.get("outcome") not in ("Failed", "Aborted", "Error", "Timeout"):
+                    continue
+                if len(failed) >= limit:
+                    break
+                stack = "\n".join((r.get("stackTrace") or "").splitlines()[:30])
+                failed.append({"test": r.get("automatedTestName") or r.get("testCaseTitle"), "run": run.get("name"),
+                               "error": (r.get("errorMessage") or "")[:2000], "stack": stack})
+        print(json.dumps({"build": int(build_id), "runs": runs, "failed": failed}, ensure_ascii=False))
+        return 0
+
     def _identities_base(self):
         """Identity search lives on vssps.dev.azure.com for Azure DevOps
         Services, and on the collection itself on Azure DevOps Server."""
@@ -2410,6 +2454,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.set_auto_complete(arg(0), arg(1) or None, arg(2, "true"), arg(3, "true"))
     if flag == "--build-log":
         return actions.build_log(arg(0))
+    if flag == "--test-results":
+        return actions.test_results(arg(0))
     if flag == "--add-reviewer":
         return actions.add_reviewer(arg(0), arg(1, "false"))
     if flag == "--set-description":

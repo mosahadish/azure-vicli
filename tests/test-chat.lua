@@ -468,7 +468,7 @@ do
       r[1] == "agent" and r[3] == "agent_log" and r[4] == "agent_log" and r[5] == "agent_log" and r[7] == "agent"
         and r[8] == "tool_err" and r[9] == "tool_err" and r[11] == "agent", vim.inspect(r))
   end
-  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
+  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log and TOOLS.by_name.get_test_results
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
     and TOOLS.undoers.set_field and TOOLS.undoers.thread_status)

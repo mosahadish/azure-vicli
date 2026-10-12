@@ -135,7 +135,7 @@ M.DEFAULT_PROMPTS = {
   plan = "Make a plan for this - the work item, or the review comment, in view - with submit_plan, following its "
     .. "template. Read what you need first (get_work_item, get_pr_threads, the code), but don't change any code; "
     .. "stop once the plan is submitted.",
-  build = "Why did this pull request's build fail? Read the build log and point at the cause.",
+  build = "Why did this pull request's build fail? Read the build log and the failed tests, and point at the cause.",
   standup = "Write my standup: what moved since yesterday on my pull requests and work items, "
     .. "what's waiting on me, and anything blocked or failing.",
 }
