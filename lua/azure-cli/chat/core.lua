@@ -160,7 +160,8 @@ local LOOK_ONLY = {
   basename = {}, dirname = {}, realpath = {},
   ["get-content"] = {}, gc = {}, ["get-childitem"] = {}, gci = {}, ["select-string"] = {}, sls = {},
   ["get-item"] = {}, ["test-path"] = {}, ["resolve-path"] = {}, ["get-location"] = {},
-  ["select-object"] = {}, select = {}, ["sort-object"] = {}, ["measure-object"] = {}, measure = {},
+  ["where-object"] = {}, ["out-null"] = {}, ["select-object"] = {}, select = {}, ["sort-object"] = {},
+  ["measure-object"] = {}, measure = {},
   ["format-table"] = {}, ft = {}, ["format-list"] = {}, fl = {}, ["out-string"] = {},
 }
 -- git's: what each would write with, besides --output / --ext-diff.
@@ -225,7 +226,11 @@ function M.look_only_command(cmd)
     end
   end
   if bad then return false end
-  local s = table.concat(bare):gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
+  -- Throwing errors away, or merging them, writes nothing: 2>/dev/null,
+  -- 2>$null, *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file).
+  local s = (table.concat(bare) .. " "):gsub("[12*]?>%s*/dev/null(%s)", "%1"):gsub("[12*]?>%s*%$null(%s)", "%1")
+    :gsub("2>&1(%s)", "%1")
+  s = s:gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
   if s:find("[<>&(){}`$]") then return false end
   for part in (s .. "\n"):gmatch("(.-)\n") do
     if part:match("%S") and not look_only_part(part) then return false end

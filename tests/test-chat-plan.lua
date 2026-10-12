@@ -378,13 +378,18 @@ do
   local wrong = all({ "grep -rn 'Config' src", "rg -n \"override|caller\" --type cs", "git log --oneline -20",
     "cd C:\\w\\api && git diff HEAD~1 -- src", "Get-ChildItem -Recurse -Filter *.cs | Select-String 'Config'",
     "find . -name '*.cs' | head -20", "git --no-pager show HEAD:src/a.cs", "ls -la; cat README.md",
-    { "rg", "-n", "Config" }, "git -C ../repo grep -n Foo", "findstr /s /n Config *.cs" }, true)
+    { "rg", "-n", "Config" }, "git -C ../repo grep -n Foo", "findstr /s /n Config *.cs",
+    "Get-ChildItem -Recurse -Filter *.cs -ErrorAction SilentlyContinue 2>$null | Select-Object -First 20",
+    "grep -rn x src 2>/dev/null | head", "git log -5 2>&1", "Get-ChildItem src | Where-Object Name -like '*Test*'",
+    "Get-Content a.cs *>$null" }, true)
   check("look_only_command: searching and listing", wrong == nil, wrong)
   wrong = all({ "rm -rf x", "grep x > out.txt", "find . -delete", "find . \"-delete\"", "find . -exec rm {} ;",
     "rg --pre=./evil x", "sort -ro out x", "git -c core.pager=evil log", "git push", "git branch -D x",
     "cat $(rm x)", "echo \"$(rm x)\"", "ls `rm x`", "grep x & rm y", "Remove-Item x",
     "Get-ChildItem | ForEach-Object { Remove-Item $_ }", "git diff --output=x", "git log --ext-diff",
-    "grep x 'unterminated", "fd . -x rm", "(rm x)", "r\\m -rf x", "", "dotnet build", "FOO=1 grep x" }, false)
+    "grep x 'unterminated", "fd . -x rm", "(rm x)", "r\\m -rf x", "", "dotnet build", "FOO=1 grep x",
+    "grep x 2>/dev/nullx", "grep x 2>out.txt", "grep x >$nullx", "ls 2>$env:TEMP/x", "Get-ChildItem | Where-Object { $_.Delete() }",
+    "grep x 2>&1 > out.txt" }, false)
   check("look_only_command: anything that writes or runs something else", wrong == nil, wrong)
 end
 

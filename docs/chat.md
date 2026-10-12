@@ -240,7 +240,9 @@ picks goes through `session/set_config_option`.
   they're always allowed, and so is searching or listing through the
   shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `git log` / `diff` /
   `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
-  `Get-Content`, `Select-String`, and pipes of them. A command that could
+  `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
+  of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
+  `2>&1`). A command that could
   write or run something else - a redirect, `$(...)`, a script block,
   `find -exec`, `rg --pre`, any other program - still asks. While a
   `/plan` message runs, editing, deleting or moving a file is refused
