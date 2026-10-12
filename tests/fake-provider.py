@@ -683,7 +683,10 @@ class Fake:
         if pr is None:
             print("ERROR: HTTP 404 GET: pull request {0} not found".format(pid), file=sys.stderr)
             return 1
-        print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(pid, [])), ensure_ascii=False))
+        rec = to_record(self.ws, pr, self.state["threads"].get(pid, []))
+        # As the real --get-pr: `state` is the PR's status, not a dashboard section.
+        rec["state"] = "completed" if pr.get("completed") else "active"
+        print(json.dumps(rec, ensure_ascii=False))
         return 0
 
     def cmd_whoami(self, rest):

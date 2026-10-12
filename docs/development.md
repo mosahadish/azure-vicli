@@ -61,7 +61,8 @@ lua/azure-cli/
                   plan_text.lua's pure helpers and plan_view.lua's tab), threads.lua (ga: a
                   question answered under a line - the plan's and the change viewer's), agents.lua
                   (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen),
-                  notes.lua (annotate_code's notes, saved per PR),
+                  notes.lua (annotate_code's notes, saved per PR), watch.lua (the chat's
+                  PRs, polled for new comments: suggest /triage, or start an agent),
                   tools_agents.lua (the main chat's start_agents / list_agents / message_agent)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard

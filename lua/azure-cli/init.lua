@@ -29,7 +29,10 @@ end
 -- untouched when this is never called, so `:AzureCli dashboard` with no
 -- setup() works out of the box.
 function M.setup(opts)
-  return require("azure-cli.config").setup(opts)
+  local out = require("azure-cli.config").setup(opts)
+  -- The chat's PRs, watched for new comments (chat/watch.lua).
+  vim.schedule(function() pcall(function() require("azure-cli.chat.watch").start() end) end)
+  return out
 end
 
 -- Opens the PR dashboard: a new tab in plugin mode, the current window in

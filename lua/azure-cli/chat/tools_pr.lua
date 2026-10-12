@@ -158,6 +158,11 @@ return function(T)
             if not ok then return done(nil, err) end
             local okd, d = pcall(vim.json.decode, out)
             local id = okd and d.id or "?"
+            -- Its reviewers' comments (chat/watch.lua).
+            if okd and d.id then
+              pcall(require("azure-cli.chat.watch").add, { id = d.id, org = org, project = project, repo = args.repo,
+                title = args.title })
+            end
             done("Opened PR !" .. tostring(id) .. " (" .. ((okd and d.url) or "") .. "). It shows on the dashboard at its next refresh.")
           end)
       end,

@@ -159,6 +159,20 @@ note appears in the conversation suggesting `/triage` (no agent runs;
 true`, the first time the dashboard loads each day the chat runs `/standup`
 in a fresh conversation and tells you when it's ready.
 
+**The chat's own PRs are watched.** A pull request the chat opened
+(`create_pull_request`) or pushed a fix to (`commit_and_push_fix`) is
+checked for new comments every `chat.watch_seconds` (default 120) while
+azure-vicli runs - the PR dashboard doesn't have to be open. Only other
+people's comments count, and ones arriving close together are taken
+together: once a poll finds no newer ones, `chat.on_new_comments` says what
+happens - `"suggest"` (default) puts a note in the chat (and a desktop
+notification), `"plan"` starts an agent that plans the fix of just those
+threads, as `gP` does; its plan waits for you on the Agents screen, and
+nothing changes until you approve it. A PR stops being watched once it's
+completed or abandoned. Comments that arrived while azure-vicli was closed
+are picked up at the first check after it starts. The list is kept in
+`stdpath("data")/azure-cli-chat/watched.json`.
+
 ## Setting it up
 
 The panel's placement, and the agent it talks to, go in `setup()` (or the
@@ -304,7 +318,8 @@ to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
-(default false), `suggest_on_new_comments` (default true), `plan_first`
+(default false), `suggest_on_new_comments` (default true), `on_new_comments`
+(`"suggest"` or `"plan"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
 (default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).
 

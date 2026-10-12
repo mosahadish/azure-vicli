@@ -1047,6 +1047,38 @@ do
     return fail("the story wasn't pushed: " .. subject)
   end
 
+  -- The fix pushed to !101 (and the story's new PR) are watched for new
+  -- comments, dashboard or not: Alice answering is said in the chat.
+  local W = require("azure-cli.chat.watch")
+  local wfile = require("azure-cli.chat.store").root() .. "/watched.json"
+  ok = vim.wait(10000, function()
+    local wl = require("azure-cli.shell").read_json(wfile, {})
+    return wl["101"] ~= nil and wl["101"].seen ~= nil
+  end, 100)
+  if not ok then return fail("PR !101 isn't watched after the agent pushed its fix") end
+  vim.fn.system({ "python3", "-c", [[
+import json, os, sys
+p = os.path.join(os.environ["AZVICLI_FAKE_WS"], "state.json")
+s = json.load(open(p, encoding="utf-8"))
+t = s["threads"]["101"][0]
+t["comments"].append({"id": 900, "parentCommentId": 1, "content": "Thanks - one more thing here.",
+  "author": {"id": "aaaaaaaa-0000-0000-0000-000000000001", "displayName": "Alice Andersson"},
+  "publishedDate": "2026-10-12T00:00:00Z", "lastUpdatedDate": "2026-10-12T00:00:00Z",
+  "commentType": "text", "isDeleted": False})
+json.dump(s, open(p, "w", encoding="utf-8"))
+]] })
+  local function poll()
+    local finished = false
+    W.poll(function() finished = true end)
+    vim.wait(10000, function() return finished end, 50)
+  end
+  poll(); poll()
+  local said
+  for _, en in ipairs(STATE.chat.entries) do
+    if en.role == "note" and en.text:find("!101", 1, true) and en.text:find("1 new comment", 1, true) then said = en.text end
+  end
+  if not said then return fail("Alice's new comment on !101 wasn't said in the chat") end
+
   -- get_pull_request on a PR that isn't on the dashboard fetches it (and
   -- the other PR tools then work for it); the code-search tools.
   local cache = STATE.PR_LIST_CACHE

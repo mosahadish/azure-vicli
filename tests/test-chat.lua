@@ -498,6 +498,73 @@ do
   vim.fn.delete(tmp, "rf")
 end
 
+-- --- chat/watch.lua: the chat's PRs, watched for new comments --------------------------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local AG = require("azure-cli.chat.agents")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    start = AG.start_for_prs }
+  local notes, started, busy, status = {}, {}, false, "active"
+  local threads = { { id = 1, comments = { { id = 1, author = { id = "me" }, content = "mine" } } } }
+  local function comment(tid, cid, who)
+    for _, t in ipairs(threads) do
+      if t.id == tid then table.insert(t.comments, { id = cid, author = { id = who }, content = "c" }) return end
+    end
+    table.insert(threads, { id = tid, comments = { { id = cid, author = { id = who }, content = "c" } } })
+  end
+  CH.current_agent = function() return { name = "x" } end
+  CH.note = function(t) notes[#notes + 1] = t end
+  CH.alert = function() end
+  T.provider = function(argv, _, cb)
+    if argv[1] == "--get-pr" then
+      return cb(true, vim.json.encode({ id = 500, title = "T", state = status, org = "o", project = "p", repo = "r" }), "")
+    end
+    cb(true, vim.json.encode({ value = threads }), "")
+  end
+  AG.start_for_prs = function(prs, of)
+    if busy then return "busy", {} end
+    started[#started + 1] = { id = prs[1].id, threads = of[prs[1].id] }
+    return "ok", { "PR !500" }
+  end
+  ST.whoami = { ["o|p"] = { id = "me" } }
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  require("azure-cli.config").setup({})
+  W.add({ id = 500, org = "o", project = "p", repo = "r" })
+  W.poll()
+  check("watch: what's there when it starts isn't new", W.watched(500) and #notes == 0 and #started == 0)
+  comment(2, 1, "alice")
+  W.poll()
+  check("watch: new ones wait for a quiet poll", #notes == 0)
+  W.poll()
+  check("watch: then the chat says so (suggest)", #notes == 1 and notes[1]:find("1 new comment", 1, true) ~= nil
+    and notes[1]:find("/triage", 1, true) ~= nil and #started == 0, vim.inspect(notes))
+  comment(1, 2, "me")
+  W.poll(); W.poll()
+  check("watch: my own comments don't count", #notes == 1, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_new_comments = "plan" } })
+  comment(1, 3, "bob"); comment(3, 1, "carol")
+  busy = true
+  W.poll(); W.poll()
+  check("watch: plan - its agent busy, it waits", #started == 0 and #notes == 1)
+  W._reset()  -- a restart in between: what's pending is kept
+  busy = false
+  W.poll()
+  check("watch: plan - an agent for just the new threads", #started == 1 and vim.deep_equal(started[1].threads, { 1, 3 })
+    and notes[2] and notes[2]:find("2 new comments", 1, true) ~= nil and notes[2]:find("planning", 1, true) ~= nil,
+    vim.inspect({ started, notes }))
+  status = "completed"
+  W.poll()
+  check("watch: a completed PR isn't watched any more", not W.watched(500))
+  W._reset()
+  CH.current_agent, CH.note, CH.alert, T.provider, AG.start_for_prs = orig.agent, orig.note, orig.alert, orig.provider,
+    orig.start
+  require("azure-cli.config").setup({})
+end
+
 -- --- chat/notes.lua: annotate_code's notes, kept across restarts ----------------------
 do
   local NOTES = require("azure-cli.chat.notes")

@@ -242,7 +242,7 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
-  test_cmd = "any", toasts = "any",
+  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -290,6 +290,12 @@ local function validate_chat(chat)
     if not ok then
       error("azure-cli.setup: chat.test_cmd must be a command string, or a table of repository name -> command string")
     end
+  end
+  if out.on_new_comments ~= nil and out.on_new_comments ~= "suggest" and out.on_new_comments ~= "plan" then
+    error("azure-cli.setup: chat.on_new_comments must be \"suggest\" or \"plan\"")
+  end
+  if out.watch_seconds ~= nil and out.watch_seconds < 30 then
+    error("azure-cli.setup: chat.watch_seconds must be at least 30")
   end
   if out.max_agents ~= nil and (out.max_agents < 1 or out.max_agents ~= math.floor(out.max_agents)) then
     error("azure-cli.setup: chat.max_agents must be a whole number, at least 1")
