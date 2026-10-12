@@ -6,7 +6,9 @@ It shows the pull requests waiting on you, lets you review and comment on them
 with vim navigation, and has a second dashboard for the work items assigned to
 you in the current sprint. Everything a review needs is prefetched in the
 background, so opening a PR, switching files, and jumping to a definition are
-instant.
+instant. An AI agent (Claude Code or GitHub Copilot) sits next to every
+screen: it sees what you're looking at, plans changes for you to approve,
+and can work on several work items at once.
 
 ![The pull request dashboard: PRs grouped by what they need from you, with build state, votes and thread counts](docs/images/dashboard.png)
 
@@ -60,6 +62,9 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - An Azure DevOps personal access token (PAT) with Code read/write and Work
   Items read/write scopes, on every account in the config file. A PAT is
   always required; there is no Azure AD sign-in.
+- Optional, for the [chat](docs/chat.md): an agent CLI - Claude Code or the
+  GitHub Copilot CLI (or any command that reads a prompt and prints an
+  answer).
 
 ## Install
 
@@ -169,8 +174,9 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   code it writes a plan you review like a PR: ask it why about any line,
   then approve. Several agents can work at once, one per work item, each
   in its own conversation, and the main chat starts them, checks on them
-  and passes your instructions on. Replies are drafted for you to send,
-  and votes ask first.
+  and passes your instructions on. It keeps watching the PRs it opened
+  and tells you when reviewers comment - or starts planning the fix.
+  Replies are drafted for you to send, and votes ask first.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`
@@ -192,7 +198,8 @@ azure-cli.cmd         # Windows cmd.exe / PowerShell
 
 `azure-cli`/`azure-cli.cmd` are thin launchers that run `azure-cli.py`
 under `python3`/`python`. With no arguments they launch Neovim with the
-dashboard. Headless flags exist for scripting (and work identically whether
+three home screens - Pull requests, Work items and Agents - each in its own
+tab (`P` / `W` / `A` switch between them). Headless flags exist for scripting (and work identically whether
 you invoke `./azure-cli`, `azure-cli.cmd`, or `python3 azure-cli.py`
 directly):
 
