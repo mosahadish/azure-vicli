@@ -135,6 +135,17 @@ check("searching through the shell doesn't ask, in any conversation", e9b ~= nil
   and e9b.text:find("exec[grep -rn Config src]=yes", 1, true) ~= nil, e9b and e9b.text)
 check("a command that changes something still asks", #asked == 1 and asked[1]:find("rm", 1, true) ~= nil,
   vim.inspect(asked))
+-- The popup shows the command itself, and the chat logs each one with
+-- what became of it.
+local shown
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; shown = o.details; cb(2) end
+local e9c = send_and_wait("EXEC=git_status EXEC=rm_-rf_out")
+check("the popup shows the command", shown and table.concat(shown, "\n"):find("rm -rf out", 1, true) ~= nil,
+  vim.inspect(shown))
+local log = table.concat(e9c and e9c.tools or {}, "\n")
+check("the chat logs each command and its outcome", log:find("$ git status  (allowed: only looks)", 1, true) ~= nil
+  and log:find("$ rm -rf out  (you denied it)", 1, true) ~= nil, log)
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
 vim.fn.mkdir(wt, "p")
 vim.fn.writefile({ "gitdir: x" }, wt .. "/.git")
 vim.fn.writefile({ "feature/3001" }, wt .. ".branch")

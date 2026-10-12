@@ -283,9 +283,11 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
 
   -- The agent asking permission before a tool call: shown with the same
   -- yes/no popup azure-vicli's own tools use, the tool call's diff (if
-  -- any) as the details. "Allow" picks the first allow_* option offered,
-  -- "Deny" the first reject_*; azure-vicli can't tell "once" from
-  -- "always" apart in that popup, so it always answers "once". Reading
+  -- any, else the command it would run) as the details; each shell
+  -- command is logged in the chat with its outcome. "Allow" picks the
+  -- first allow_* option offered, "Deny" the first reject_*; azure-vicli
+  -- can't tell "once" from "always" apart in that popup, so it always
+  -- answers "once". Reading
   -- and searching never ask (CORE.READ_ONLY_KINDS); changing files
   -- (CORE.FILE_CHANGE_KINDS) is refused without asking while a /plan
   -- message runs, and allowed without asking when every file is in an
@@ -307,6 +309,19 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       if pick then conn.respond(id, { outcome = { outcome = "selected", optionId = pick } })
       else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
     end
+    local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
+    local cmd = raw.command or raw.cmd
+    if type(cmd) == "table" then cmd = table.concat(vim.tbl_map(tostring, cmd), " ") end
+    cmd = type(cmd) == "string" and vim.trim(cmd) or nil
+    -- What a shell command was and what became of it, under the tool call
+    -- in the chat (and so in the run log, gH).
+    local function log_cmd(outcome)
+      if not cmd or cmd == "" then return end
+      local one = cmd:gsub("%s*\n%s*", " ; ")
+      table.insert(entry.tools, "  \u{21B3} $ " .. (#one > 160 and (one:sub(1, 157) .. "...") or one) .. "  (" .. outcome .. ")")
+      render_soon()
+    end
+    local function allow_quietly(why) log_cmd("allowed: " .. why); return answer(true) end
     if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
     if CORE.FILE_CHANGE_KINDS[tool.kind] then
       if entry.planning then
@@ -315,20 +330,32 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
         return answer(false)
       end
     end
+    -- The popup shows what it would run (or the agent's whole input, when
+    -- it isn't a command or a diff): the title is the agent's own words.
     local details = {}
-    local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
-    if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
+    local diff = raw.diff
+    if type(diff) == "string" then
+      for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end
+    elseif cmd and cmd ~= "" then
+      table.insert(details, "Command:")
+      for l in (cmd .. "\n"):gmatch("(.-)\n") do table.insert(details, "  " .. l) end
+    elseif next(raw) and not CORE.FILE_CHANGE_KINDS[tool.kind] then
+      local ok, json = pcall(vim.json.encode, raw)
+      if ok then
+        table.insert(details, "Input:")
+        for i = 1, math.min(20, math.ceil(#json / 100)) do table.insert(details, "  " .. json:sub(i * 100 - 99, i * 100)) end
+      end
+    end
     local PLAN = require("azure-cli.chat.plan")
     local verdict, rec, rels = nil, nil, nil
     if CORE.FILE_CHANGE_KINDS[tool.kind] then verdict, rec, rels = PLAN.edit_check(CORE.tool_paths(tool)) end
     if verdict == "planned" then return answer(true) end
     -- Building and testing the way the approved plan's Test plan says.
-    local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
     if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
-      return answer(true)
+      return allow_quietly("the plan's tests")
     end
     -- Searching and listing through the shell (grep, git log, ...).
-    if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return answer(true) end
+    if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
     if verdict == "unplanned" then
       local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
         .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
@@ -337,7 +364,10 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
         answer(yes)
       end, details)
     end
-    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), answer, details)
+    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), function(yes)
+      log_cmd(yes and "you allowed it" or "you denied it")
+      answer(yes)
+    end, details)
   end
 
   local function send_prompt(pj)

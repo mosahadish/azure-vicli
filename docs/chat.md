@@ -231,8 +231,12 @@ picks goes through `session/set_config_option`.
   agent that doesn't advertise `http` gets the stdio server.
 - **Permissions.** A tool call Copilot wants permission for (editing a file,
   running a command) pops up the same yes/no prompt as azure-vicli's own
-  tools, with its diff when it has one; "Allow"/"Deny" picks Copilot's
-  `allow_once`/`reject_once`. Reading and searching files never ask -
+  tools, with its diff when it has one - or the exact command it would
+  run, since Copilot's title is only its own description of it;
+  "Allow"/"Deny" picks Copilot's `allow_once`/`reject_once`. Every shell
+  command shows in the chat under its step, with what became of it
+  (`↳ $ git status  (allowed: only looks)`, `(you denied it)`), and so in
+  the run log (`gH`). Reading and searching files never ask -
   they're always allowed, and so is searching or listing through the
   shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `git log` / `diff` /
   `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
