@@ -28,3 +28,5 @@ local c3 = CHAT.conversation("wi-3012", { label = "#3012", target = { work_item_
 c3.entries = { { role = "you", text = "/plan #3012" }, { role = "agent", status = "done", started = now - 900, text = "Approved." } }
 CHAT.hide()
 require("azure-cli.chat.agents_view").open()
+-- Clear the :luafile line this was run with (it names a local path).
+vim.defer_fn(function() vim.cmd("echo \"\"") end, 300)
