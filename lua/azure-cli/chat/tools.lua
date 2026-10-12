@@ -618,8 +618,9 @@ function M.call(name, args, env, cb)
   end
   if perm == "ask" then
     local what = tool.confirm and tool.confirm(args) or name
+    local because  -- why a question the plan would have skipped is asked after all
     local function ask(details)
-      env.confirm("The agent wants to " .. what .. ".", function(yes)
+      env.confirm("The agent wants to " .. what .. "." .. (because and (" Asking because " .. because .. ".") or ""), function(yes)
         if yes then
           go()
         else
@@ -630,8 +631,10 @@ function M.call(name, args, env, cb)
     end
     local function asking() if tool.details then tool.details(args, ask) else ask(nil) end end
     -- A tool can skip the question when you've already said yes some other
-    -- way (commit_and_push_fix under a plan you approved with pushing
-    -- allowed) - never when chat.permissions says "ask" for it outright.
+    -- way (commit_and_push_fix and create_pull_request under a plan you
+    -- approved with pushing allowed) - never when chat.permissions says
+    -- "ask" for it outright. preapproved's cb(ok, why): what allowed it, or
+    -- why it asks after all (nil: nothing to explain).
     local explicit = (perms() or {})[name] == "ask"
     if tool.preapproved and not explicit then
       return tool.preapproved(args, function(ok, why)
@@ -639,6 +642,7 @@ function M.call(name, args, env, cb)
           env.log("\u{2713} " .. name .. ": allowed by " .. tostring(why or "you"))
           go()
         else
+          because = why
           asking()
         end
       end)

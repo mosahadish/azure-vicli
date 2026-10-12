@@ -432,6 +432,17 @@ function M.approval_message(rec, lines)
   local text = "I approve the plan for " .. label .. " (revision " .. #rec.revisions .. "). Go ahead and make the "
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
+  if rec.allow_push then
+    local id = rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id))
+    text = text .. "\n\nYou may push without waiting for me: after show_fix, "
+      .. (M.test_command(lines) and ("run the plan's tests with run_tests (only run_tests counts - not your own "
+        .. "shell), fix the change until they pass, then ") or "")
+      .. "call commit_and_push_fix (" .. id .. ") - it won't ask."
+      .. (rec.target.work_item_id and (" Then open its pull request with create_pull_request (source your story "
+        .. "branch, target the branch you started from, work_item_ids [" .. rec.target.work_item_id .. "], no "
+        .. "description - the plan's is used - and not a draft); it won't ask either.") or "")
+      .. " If the tests keep failing, stop and tell me what's wrong instead of pushing."
+  end
   local answers = M.answers_block(rec, lines)
   if #answers > 0 then
     text = text .. "\n\nMy answers to your open questions:\n" .. table.concat(answers, "\n")

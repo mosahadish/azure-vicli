@@ -312,10 +312,10 @@ function M.ask_approval(keys, cb)
     if rec and M.test_command(current_lines(rec)) then has_cmd = true end
   end
   local what = #keys == 1 and ("the plan for " .. M.target_label(M.load(keys[1]).target)) or (#keys .. " plans")
-  local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
-    or "Approve, and let it push without asking"
+  local plain, with_push = "Approve", has_cmd and "Approve, and let it push and open the PR once the tests pass"
+    or "Approve, and let it push and open the PR without asking"
   require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
-      "The agent goes ahead with it. Letting it push skips the question before its push"
+      "The agent goes ahead with it. Letting it push skips the questions before its push and its pull request"
         .. (has_cmd and ", once the plan's tests pass on its change." or "."),
     }, buttons = { plain, with_push, "Cancel" }, keys = { a = 1, p = 2 }, cancel = 3,
     hint = "a approve \u{00B7} p approve and let it push \u{00B7} Esc cancel \u{00B7} Tab moves" }, function(i)
@@ -345,7 +345,7 @@ function M.approve(key, allow_push)
   local entry = CHAT.send(M.approval_message(rec, current_lines(rec)), {
     conv = conv, view_win = VIEW().plan_win(key),
     display = "Approved the plan for " .. M.target_label(rec.target)
-      .. (rec.allow_push and " (it may push once the tests pass)." or "."),
+      .. (rec.allow_push and " (it may push and open the PR once the tests pass)." or "."),
   })
   if entry then
     for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
@@ -368,13 +368,33 @@ end
 -- in worktree `dir`: cb(ok, why).
 function M.push_allowed(target, dir, cb)
   local rec = M.load(M.key(target))
-  if not (rec and rec.allow_push) then return cb(false, "not allowed") end
+  if not (rec and rec.allow_push) then return cb(false) end  -- nothing to explain: you didn't allow it
   local TR = require("azure-cli.chat.tests_run")
   local has_cmd = M.test_command(current_lines(rec)) ~= nil
   require("azure-cli.chat.tools_fix").diff(dir, function(ok, diff)
     if not ok then return cb(false, diff) end
     cb(M.push_check(rec, has_cmd, TR.load(dir), TR.fingerprint(diff)))
   end, require("azure-cli.chat.tools").git)
+end
+
+-- Whether create_pull_request `a` may skip its question: the work item's
+-- plan was approved with pushing allowed, its change is pushed, it has no
+-- PR yet, and `a` is that PR - from its story's branch into the branch it
+-- started from, linking the work item. cb(ok, why) - why only when the
+-- plan allowed it but this isn't quite it.
+function M.pr_allowed(a, cb)
+  local rec = M.for_pull_request(a.work_item_ids, a.source)
+  if not (rec and rec.allow_push and rec.target and rec.target.work_item_id) then return cb(false) end
+  local wi = rec.target.work_item_id
+  local _, branch, base = require("azure-cli.chat.tools_fix").find_story(wi)
+  local linked = false
+  for _, id in ipairs(a.work_item_ids or {}) do if tostring(id) == tostring(wi) then linked = true end end
+  if type(rec.pr) == "table" then return cb(false, "the plan for #" .. wi .. " already opened PR !" .. tostring(rec.pr.id)) end
+  if rec.status ~= "done" then return cb(false, "the plan's change isn't pushed yet") end
+  if branch and a.source ~= branch then return cb(false, "it isn't from the story's branch (" .. branch .. ")") end
+  if base and a.target ~= base then return cb(false, "it targets " .. tostring(a.target) .. ", not " .. base .. ", which the story started from") end
+  if not linked then return cb(false, "it doesn't link #" .. wi) end
+  cb(true, "the approved plan (pushing and its PR allowed)")
 end
 
 -- commit_and_push_fix pushed the change: its plan is done.

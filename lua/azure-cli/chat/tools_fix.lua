@@ -69,13 +69,16 @@ function M.inside(wt, path)
   return table.concat(parts, "/")
 end
 
--- Work item `id`'s story worktree, whichever repository: dir, branch.
+-- Work item `id`'s story worktree, whichever repository: dir, branch, and
+-- the branch it started from when start_story recorded it (<dir>.branch:
+-- the branch, then its base).
 function M.find_story(id)
   for _, d in ipairs(vim.fn.glob(M.root() .. "/*-wi" .. tostring(id), false, true)) do
     if is_repo(d) then
       local ok, lines = pcall(vim.fn.readfile, d .. ".branch")
       local branch = ok and lines[1] and vim.trim(lines[1]) or ""
-      if branch ~= "" then return d, branch end
+      local base = ok and lines[2] and vim.trim(lines[2]) or ""
+      if branch ~= "" then return d, branch, base ~= "" and base or nil end
     end
   end
   return nil
@@ -280,7 +283,7 @@ setmetatable(M, { __call = function(_, T)
             T.git({ "git", "-C", clone, "worktree", "prune" }, function()
               T.git({ "git", "-C", clone, "worktree", "add", "-q", "--detach", wt, "origin/" .. args.name }, function(ok, _, err)
                 if not ok then return failed("creating the worktree failed: " .. err) end
-                vim.fn.writefile({ args.name }, wt .. ".branch")
+                vim.fn.writefile({ args.name, args.from or "" }, wt .. ".branch")
                 done({ directory = wt, branch = args.name, repo = args.repo,
                   next = "Edit files under the directory, then call show_fix with work_item_id." }, nil, undo)
               end)
@@ -390,8 +393,8 @@ setmetatable(M, { __call = function(_, T)
         local t = locate(a)
         if not t then return cb(false) end
         local target = t.wi and { work_item_id = t.wi } or { pr_id = a.pr_id }
-        require("azure-cli.chat.plan").push_allowed(target, t.dir, function(ok)
-          cb(ok, "the approved plan (pushing allowed, tests passed)")
+        require("azure-cli.chat.plan").push_allowed(target, t.dir, function(ok, why)
+          cb(ok, ok and "the approved plan (pushing allowed, tests passed)" or why)
         end)
       end,
       run = function(args, env, done)
@@ -416,8 +419,17 @@ setmetatable(M, { __call = function(_, T)
               T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
                 pcall(require("azure-cli.chat.plan").event_for_worktree, wt, "pushed",
                   "Pushed " .. vim.trim(sha) .. " to " .. t.branch .. ": " .. tostring(args.message))
-                done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")."
-                  .. (t.wi and " Offer to open a pull request for it (create_pull_request, linking the work item)." or ""))
+                local rec = t.wi and require("azure-cli.chat.plan").load("wi-" .. tostring(t.wi))
+                local base = t.wi and select(3, M.find_story(t.wi)) or nil
+                local next_step = ""
+                if rec and rec.allow_push and rec.pr == nil then
+                  next_step = " The approved plan lets you open its pull request without asking: call "
+                    .. "create_pull_request now - source " .. t.branch .. ", target " .. (base or "the branch you started from")
+                    .. ", work_item_ids [" .. t.wi .. "], no description (the plan's is used), not a draft."
+                elseif t.wi and not (rec and rec.pr) then
+                  next_step = " Offer to open a pull request for it (create_pull_request, linking the work item)."
+                end
+                done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")." .. next_step)
               end)
             end)
           end)
@@ -448,8 +460,10 @@ setmetatable(M, { __call = function(_, T)
         if a.command or not t then return cb(false) end
         local rec = require("azure-cli.chat.plan").for_worktree(t.dir)
         local _, source = require("azure-cli.chat.tests_run").command(t.dir, rec)
-        if source == "plan" then return cb(rec.status == "approved", "the approved plan's Test plan") end
-        cb(source == "config", "your chat.test_cmd")
+        if source == "plan" then
+          return cb(rec.status == "approved", rec.status == "approved" and "the approved plan's Test plan" or nil)
+        end
+        cb(source == "config", source == "config" and "your chat.test_cmd" or nil)
       end,
       run = function(args, env, done)
         local t, why = locate(args)

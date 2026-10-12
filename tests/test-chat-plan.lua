@@ -151,6 +151,46 @@ do
         == "## Test plan\nRun it.\n\n_From the plan for #4 (revision 2, 1 question answered)._", d)
 end
 
+-- --- approving with pushing allowed: the push and the PR without asking ----------------------
+do
+  local wi = { key = "wi-55", target = { work_item_id = 55 }, revisions = { { markdown = "x" } }, threads = {}, allow_push = true }
+  local lines = { "## Test plan", "```sh", "dotnet test", "```" }
+  local m = PLAN.approval_message(wi, lines)
+  check("approval_message: may push - run_tests, push, then open the PR", m:find("run_tests", 1, true) ~= nil
+    and m:find("commit_and_push_fix (work_item_id 55)", 1, true) ~= nil and m:find("create_pull_request", 1, true) ~= nil
+    and m:find("not a draft", 1, true) ~= nil, m)
+  local pr = { key = "pr-9", target = { pr_id = 9 }, revisions = { { markdown = "x" } }, threads = {}, allow_push = true }
+  m = PLAN.approval_message(pr, {})
+  check("approval_message: a PR's plan pushes (no tests to run), opens no PR", m:find("commit_and_push_fix (pr_id 9)", 1, true)
+    ~= nil and not m:find("create_pull_request", 1, true) and not m:find("run_tests", 1, true), m)
+  wi.allow_push = nil
+  check("approval_message: plain approval says nothing of pushing", not PLAN.approval_message(wi, lines):find("push", 1, true))
+
+  local TF = require("azure-cli.chat.tools_fix")
+  local orig = TF.find_story
+  TF.find_story = function(id) if tostring(id) == "55" then return "/w/r-wi55", "feature/55-x", "develop" end end
+  PLAN.save({ key = "wi-55", target = { work_item_id = 55 }, status = "done", allow_push = true, revisions = {}, threads = {} })
+  local function allowed(a)
+    local r
+    PLAN.pr_allowed(a, function(ok, why) r = { ok, why } end)
+    return r
+  end
+  local good = { source = "feature/55-x", target = "develop", work_item_ids = { 55 } }
+  check("pr_allowed: its PR, once pushed", allowed(good)[1] == true)
+  check("pr_allowed: into another branch asks, saying why", allowed({ source = "feature/55-x", target = "main",
+    work_item_ids = { 55 } })[2]:find("not develop", 1, true) ~= nil)
+  check("pr_allowed: without linking the work item asks", allowed({ source = "feature/55-x", target = "develop" })[1] == false)
+  local rec = PLAN.load("wi-55"); rec.status = "approved"; PLAN.save(rec)
+  check("pr_allowed: before the push asks", allowed(good)[2] == "the plan's change isn't pushed yet")
+  rec.status, rec.pr = "done", { id = 3 }; PLAN.save(rec)
+  check("pr_allowed: a second PR asks", (allowed(good)[2] or ""):find("already opened PR !3", 1, true) ~= nil)
+  rec.pr, rec.allow_push = nil, nil; PLAN.save(rec)
+  local r = allowed(good)
+  check("pr_allowed: not allowed - asks, nothing to explain", r[1] == false and r[2] == nil)
+  TF.find_story = orig
+  pcall(vim.fn.delete, PLAN.root() .. "/wi-55.json")
+end
+
 -- --- the Agents screen's rows ---------------------------------------------------------------
 do
   local AV = require("azure-cli.chat.agents_view")

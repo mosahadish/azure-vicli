@@ -1323,7 +1323,7 @@ do
   -- gA: approved; the agent starts the story now and shows the change.
   vim.api.nvim_set_current_win(v.plan_win)
   n = #st.entries
-  pick = "let it push once the tests pass"
+  pick = "let it push and open the PR once the tests pass"
   feed("gA")
   pick = "Allow"  -- the agent's run_tests asks next
   local strip_running = CHAT.strip()
@@ -1339,7 +1339,7 @@ do
       or not e.text:find("show_fix:", 1, true) then
     return fail("approving didn't let the story start: " .. e.text)
   end
-  if st.entries[n + 1].text ~= "Approved the plan for #3002 (it may push once the tests pass)." then
+  if st.entries[n + 1].text ~= "Approved the plan for #3002 (it may push and open the PR once the tests pass)." then
     return fail("the approval isn't in the chat as such: " .. st.entries[n + 1].text)
   end
   if not e.text:find('"passed":true', 1, true) then return fail("run_tests (asked, allowed) didn't pass: " .. e.text) end

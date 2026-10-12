@@ -164,6 +164,8 @@ return function(T)
         local d = require("azure-cli.chat.plan").description_for(a.description, a.from_plan, a.work_item_ids, a.source)
         cb(d ~= "" and vim.list_extend({ "Description:", "" }, vim.split(d, "\n", { plain = true })) or nil)
       end,
+      -- The PR of a plan you approved with pushing allowed opens without asking.
+      preapproved = function(a, cb) require("azure-cli.chat.plan").pr_allowed(a, cb) end,
       run = function(args, _, done)
         args.description = require("azure-cli.chat.plan").description_for(args.description, args.from_plan,
           args.work_item_ids, args.source)

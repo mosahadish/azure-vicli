@@ -459,13 +459,22 @@ widgets = ".venv/bin/python -m pytest -q", api = "dotnet test" }`. It runs
 in the worktree like the plan's, but without the question (it's yours),
 for `gb` and for the agent's `run_tests` alike.
 
-**Letting an approved plan push.** `gA` offers two ways to approve: just
-approve, or approve *and let it push once the tests pass*. With the
-second, `commit_and_push_fix` doesn't ask you - the chat says it was
-allowed by the plan - as long as the plan is still approved (a new
-revision takes it back), and, when the plan has a test command, the tests
-passed on exactly the change being pushed. Anything else, it asks as
-usual; `chat.permissions = { commit_and_push_fix = "ask" }` always asks.
+**Letting an approved plan push and open its PR.** `gA` offers two ways
+to approve: just approve, or approve *and let it push and open the PR
+once the tests pass*. With the second, the agent is told so and carries
+on by itself: it makes the change and shows it, runs the plan's tests
+with `run_tests` (tests it runs in its own shell don't count), fixes the
+change until they pass, pushes, and - for a work item - opens its pull
+request, a normal one, linking the work item with the plan as its
+description. Neither the push nor the PR asks you - the chat says they
+were allowed by the plan - as long as the plan is still approved (a new
+revision takes it back), the tests passed on exactly the change being
+pushed (when the plan has a test command), and the PR is that plan's one
+PR, from its story's branch into the branch it started from. Anything
+else asks as usual, and the question says why it asks after all ("Asking
+because the tests ran on an earlier version of the change").
+`chat.permissions = { commit_and_push_fix = "ask" }` (or
+`create_pull_request`) always asks.
 
 **Hunk by hunk.** `gy` on a change marks it accepted (a `✓` beside it,
 and `✓ 2/5 accepted` in the winbar - press it again to take that back);
@@ -479,7 +488,7 @@ their line when the text around them changes.
 
 | Key (plan window) | Action |
 |---|---|
-| `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push once the tests pass) |
+| `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push and open the PR once the tests pass) |
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
 | `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
 | `gr` | Answer the open question under the cursor (its Open questions section) - sent along when you approve |
