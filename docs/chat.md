@@ -252,7 +252,11 @@ picks goes through `session/set_config_option`.
   against the plan counts it as planned. Building and testing the way an approved
   plan's Test plan says doesn't ask either: `run_tests` with that
   command, or the agent running it (or one of its lines) in its own
-  shell. Any other command asks. `--allow-tool azure-vicli` saves Copilot
+  shell - with more arguments too (`dotnet test --no-build --filter …`),
+  after a `cd` / `Set-Location` into a directory, with the same tool's
+  build and restore steps (`dotnet build`, `npm ci`, `cargo check`, …),
+  and piped into a command that only looks (`2>&1 | Select-Object -Last
+  50`). A redirect into a file, `$(...)` or any other program asks. `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this

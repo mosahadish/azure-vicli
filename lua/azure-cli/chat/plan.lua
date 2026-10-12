@@ -179,7 +179,8 @@ function M.edit_check(paths)
 end
 
 -- Whether the agent may run shell command `cmd` without asking: plan
--- `key` is approved and `cmd` is its Test plan command, or a line of it.
+-- `key` is approved and `cmd` runs its Test plan command (is_test_command:
+-- a line of it, with more arguments, its tool's build step, ...).
 function M.test_command_allowed(key, cmd)
   local rec = M.load(key)
   return rec ~= nil and rec.status == "approved" and M.is_test_command(cmd, M.test_command(current_lines(rec)))

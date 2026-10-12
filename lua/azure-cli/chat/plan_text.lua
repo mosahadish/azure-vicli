@@ -219,20 +219,67 @@ function M.test_command(lines)
   return nil
 end
 
--- Whether shell command `cmd` is the plan's test command (`test_cmd`,
--- test_command's " && "-joined lines) or one of its lines - give or take
--- whitespace and a leading "cd <dir> &&". Pure.
+-- The steps that go with a test runner: building and restoring the same
+-- way runs the same code the tests do. tool -> the subcommands allowed
+-- (with any arguments) when the plan's test command uses that tool.
+local COMPANIONS = {
+  dotnet = { "build", "restore", "test" }, npm = { "ci", "install", "test", "run build", "run test" },
+  pnpm = { "install", "test", "run build", "run test" }, yarn = { "install", "test", "build", "run build", "run test" },
+  cargo = { "build", "check", "test" }, go = { "build", "vet", "test" }, mvn = { "compile", "test", "verify" },
+  gradle = { "build", "test" }, ["./gradlew"] = { "build", "test" }, ["gradlew"] = { "build", "test" },
+}
+
+-- Whether shell command `cmd` runs the plan's tests (`test_cmd`,
+-- test_command's " && "-joined lines). Each step of `cmd` (split on &&
+-- and ;) has to be one of its lines - or one with more arguments, or the
+-- same tool's build/restore (COMPANIONS) - optionally piped into commands
+-- that only look (`| tail -50`, `| Select-Object -Last 50`) and with
+-- 2>&1; a leading cd / Set-Location / pushd into a directory is dropped.
+-- Nothing else - no redirect into a file, no $(...), no other program.
+-- Pure.
 function M.is_test_command(cmd, test_cmd)
   if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
   if type(cmd) ~= "string" or not test_cmd then return false end
   local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
-  cmd = norm(cmd):gsub("^cd [^&;]+ ?&& ?", "")
-  if cmd == "" then return false end
-  if cmd == norm(test_cmd) then return true end
+  local lines = {}
   for part in (test_cmd .. " && "):gmatch("(.-) && ") do
-    if norm(part) == cmd then return true end
+    if norm(part) ~= "" then lines[#lines + 1] = norm(part) end
   end
-  return false
+  local function extra_ok(rest)
+    return rest == "" or (rest:sub(1, 1) == " " and not rest:find("[|&;<>`$(){}]"))
+  end
+  local function runs_tests(step)
+    for _, l in ipairs(lines) do
+      if step == l or (step:sub(1, #l) == l and extra_ok(step:sub(#l + 1))) then return true end
+      local tool = l:match("^(%S+)")
+      for _, sub in ipairs(COMPANIONS[tool] or {}) do
+        local head = tool .. " " .. sub
+        if step:sub(1, #head) == head and extra_ok(step:sub(#head + 1)) then return true end
+      end
+    end
+    return false
+  end
+  cmd = norm(cmd):gsub(" 2>&1", "")
+  if cmd == "" or cmd:find("||", 1, true) then return false end
+  local steps = {}
+  for step in (cmd:gsub(" ?&& ?", ";") .. ";"):gmatch("(.-);") do
+    step = norm(step)
+    if step ~= "" then steps[#steps + 1] = step end
+  end
+  if #steps == 0 then return false end
+  local CORE = require("azure-cli.chat.core")
+  for i, step in ipairs(steps) do
+    local lower = step:lower()
+    local dir_change = i < #steps and (lower:match("^cd ") or lower:match("^set%-location ") or lower:match("^sl ")
+      or lower:match("^pushd ")) and not step:find("[|&<>`$(){}]")
+    if not dir_change then
+      local first, piped = step:match("^([^|]-) ?| ?(.+)$")
+      if not first then first = step end
+      if not runs_tests(norm(first)) then return false end
+      if piped and not CORE.look_only_command(piped) then return false end
+    end
+  end
+  return true
 end
 
 -- The template's "## " headings `markdown` doesn't have. Pure.
