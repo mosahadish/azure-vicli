@@ -16,6 +16,39 @@ Never print, copy or commit a PAT: ask the user to paste it into the file
 themselves. Don't put settings in this repository - the user's config lives
 outside it.
 
+## First: standalone or plugin?
+
+azure-vicli runs two ways, and where settings go depends on which:
+
+- **Standalone**: its own Neovim session, started with `./azure-cli`
+  (`azure-cli.cmd` on Windows) from this folder. Settings live in
+  `azure-cli.yml` and `azure-cli.lua` (below). Good for someone who
+  doesn't use Neovim otherwise - nothing to add to a Neovim config.
+- **Plugin**: `:AzureCli` inside the user's own Neovim, installed through
+  their plugin manager (lazy.nvim, packer). Accounts can stay in
+  `azure-cli.yml`; options go in their `setup({...})` call.
+
+Look before asking:
+
+- Their Neovim config (`%LOCALAPPDATA%\nvim` on Windows, `~/.config/nvim`
+  elsewhere) mentions `azure-vicli` or `require("azure-cli")` -> plugin.
+- An `azure-cli.lua` next to `azure-cli.yml` -> standalone.
+
+If that doesn't settle it - or nothing is set up yet - **ask the user which
+they want**, with the one-line description of each above, before writing
+anything. Suggest standalone when they don't have a Neovim config of their
+own, plugin when they do.
+
+For a new plugin install, adding the plugin to their plugin manager is an
+edit to their Neovim config: show them the snippet from the README's
+[As a plugin](../../../README.md#as-a-plugin) and ask before adding it. For
+standalone, `bash install.sh` checks the dependencies (Neovim, git-bash,
+python); run it only if the user agrees.
+
+Also ask whether they keep their settings in a dotfiles repo; if so, see
+the README's [Keeping your settings in git](../../../README.md#keeping-your-settings-in-git)
+and put them there.
+
 ## Where the config lives
 
 There are two files, side by side in one folder:
@@ -25,7 +58,7 @@ There are two files, side by side in one folder:
 | `azure-cli.yml` | accounts: org URL, project, PAT, clones folder, work items | `%APPDATA%\azure-cli.yml` | `$XDG_CONFIG_HOME/azure-cli.yml` (default `~/.config/azure-cli.yml`) |
 | `azure-cli.lua` | everything else (the `setup()` options): keys, timing, ui, chat | `%APPDATA%\azure-cli.lua` | `~/.config/azure-cli.lua` |
 
-How to tell which applies:
+Per install type:
 
 - **Standalone launcher** (`azure-cli` / `azure-cli.cmd`): both files above.
   `azure-cli.lua` is `return { ... }` - create it if it's missing.
@@ -39,9 +72,8 @@ How to tell which applies:
 - **Another path**: `setup({ config = "..." })` or the `AZVICLI_CONFIG`
   environment variable moves `azure-cli.yml` (and `azure-cli.lua` with it).
 
-Not sure? Ask the user whether they run the `azure-cli` launcher or load
-it as a plugin; once it runs, `:AzureCli status` prints the config file in
-use.
+Once it runs, `:AzureCli status` prints both files in use, and `gO`
+opens either one.
 
 Starting from nothing (run these here, in the repository):
 
