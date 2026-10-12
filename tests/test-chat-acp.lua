@@ -158,6 +158,14 @@ UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons;
 send_and_wait("no skill here EXEC=kubectl_apply")
 check("without the skill it asks as before, with two buttons", #asked == 1 and #buttons == 2, vim.inspect(buttons))
 SK.available = orig_avail
+local orig_report = SK.report
+SK.report = function() return "Skills (1) - /deploy-check" end
+local n_before = #STATE.chat.entries
+CHAT.send("/skills", { view_win = win })
+local last = STATE.chat.entries[#STATE.chat.entries]
+check("/skills lists them in the chat, without asking the agent", #STATE.chat.entries == n_before + 2
+  and last.role == "note" and last.text == "Skills (1) - /deploy-check" and not STATE.chat.running, vim.inspect(last))
+SK.report = orig_report
 pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
 SK._reset()
 asked = {}

@@ -554,7 +554,7 @@ function M.render(entries, now, agent_label)
       .. "this comment?\", \"create a branch from develop for this work item\".\nType below; "
       .. require("azure-cli.keys").name("chat", "send") .. " sends. "
       .. "/triage, /review, /build, /standup run saved prompts (" .. require("azure-cli.keys").name("chat", "prompts")
-      .. " lists them).", "intro")
+      .. " lists them); /skills lists the agent's skills.", "intro")
     return lines, roles, name_end, entry_at
   end
   for i, e in ipairs(entries) do

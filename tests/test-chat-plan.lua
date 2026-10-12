@@ -168,6 +168,28 @@ do
   vim.fn.mkdir(dir .. "/.claude/skills/not-a-skill", "p")
   check("skills: found where the agent runs", vim.tbl_contains(SK.available(dir), "deploy-check")
     and not vim.tbl_contains(SK.available(dir), "not-a-skill"))
+  vim.fn.writefile({ "---", "name: deploy-check", "description: \"Checks a deploy\"", "---" },
+    dir .. "/.github/skills/deploy-check/SKILL.md")
+  vim.fn.mkdir(dir .. "/.claude/skills/notes", "p")
+  vim.fn.writefile({ "# Takes notes", "", "body" }, dir .. "/.claude/skills/notes/SKILL.md")
+  local by = {}
+  for _, s in ipairs(SK.list(dir)) do by[s.name] = s end
+  check("skills: a description from the front matter, else the first line",
+    by["deploy-check"] and by["deploy-check"].description == "Checks a deploy" and by.notes
+      and by.notes.description == "Takes notes", vim.inspect(by))
+  local report = SK.report(dir)
+  check("skills: /skills lists them", report:find("/deploy-check  - Checks a deploy", 1, true) ~= nil
+    and report:find("/notes  - Takes notes", 1, true) ~= nil, report)
+  vim.fn.mkdir(dir .. "/mine/own", "p")
+  vim.fn.writefile({ "x" }, dir .. "/mine/own/SKILL.md")
+  require("azure-cli").setup({ chat = { skill_dirs = { "mine", dir .. "/.claude/skills" } } })
+  local found = SK.available(dir)
+  check("skills: chat.skill_dirs replaces the folders, relative or absolute",
+    vim.tbl_contains(found, "own") and vim.tbl_contains(found, "notes") and not vim.tbl_contains(found, "deploy-check"),
+    vim.inspect(found))
+  require("azure-cli").setup({ chat = { skill_dirs = { "mine" } } })
+  check("skills: none found says where it looked", SK.report(vim.fn.tempname()):find("^No skills found%. Looked for %*/SKILL%.md in mine") ~= nil)
+  check("skills: chat.skill_dirs must be folders", not pcall(require("azure-cli").setup, { chat = { skill_dirs = { 1 } } }))
   SK._reset()
   pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
   require("azure-cli").setup({ chat = { allowed_skills = { "review" } } })

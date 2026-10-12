@@ -252,6 +252,12 @@ picks goes through `session/set_config_option`.
   pick it every command and file edit the skill makes is accepted, now and
   next time; each still shows in the chat as `(allowed: skill …)`.
   `chat.allowed_skills = { "triage-pr-comments" }` allows one up front.
+  `/skills` in the chat lists the skills found (each one's description,
+  folder, and ✓ when allowed) without asking the agent.
+  `chat.skill_dirs` changes where they're looked for: the default is
+  `{ ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }`;
+  a relative folder is looked for in the repository and in your home
+  folder, `~/…` or an absolute path as it is.
   azure-vicli's own questions - posting, voting, pushing - still ask. A
   command that could
   write or run something else - a redirect, `$(...)`, a script block,
@@ -340,7 +346,7 @@ to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
-(default false), `allowed_skills` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
+(default false), `allowed_skills` and `skill_dirs` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
 (`"suggest"` or `"plan"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
 (default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).

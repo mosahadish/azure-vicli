@@ -63,7 +63,7 @@ lua/azure-cli/
                   (gP: an agent per work item, the max_agents queue), agents_view.lua (the Agents screen),
                   notes.lua (annotate_code's notes, saved per PR), watch.lua (the chat's
                   PRs, polled for new comments: suggest /triage, or start an agent),
-                  skills.lua (the agent's SKILL.md skills; an allowed one's prompts don't ask),
+                  skills.lua (the agent's SKILL.md skills, /skills; an allowed one's prompts don't ask),
                   tools_agents.lua (the main chat's start_agents / list_agents / message_agent)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard

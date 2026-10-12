@@ -244,6 +244,7 @@ local CHAT_FIELDS = {
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
   test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", allowed_skills = "table",
+  skill_dirs = "table",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -284,6 +285,9 @@ local function validate_chat(chat)
   end
   for _, s in ipairs(out.allowed_skills or {}) do
     if type(s) ~= "string" then error("azure-cli.setup: chat.allowed_skills must be a list of skill names") end
+  end
+  for _, s in ipairs(out.skill_dirs or {}) do
+    if type(s) ~= "string" or s == "" then error("azure-cli.setup: chat.skill_dirs must be a list of folders") end
   end
   if out.test_cmd ~= nil then
     local ok = type(out.test_cmd) == "string"
