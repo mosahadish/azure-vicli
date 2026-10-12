@@ -44,7 +44,7 @@ function M.config_choices()
   local opts_path = config.options_path()
   local options = standalone
     and (vim.fn.fnamemodify(opts_path, ":~") .. (vim.fn.filereadable(opts_path) == 1 and "" or "  (new, every option at its default)"))
-    or "setup({...}) in your Neovim config"
+    or "setup({...}) in your Neovim config  (shows every option, to copy)"
   return {
     { label = "Accounts - " .. accounts, open = M.open_accounts_file },
     { label = "Options  - " .. options, open = M.open_options_file },
@@ -56,14 +56,27 @@ function M.open_config_file()
     function(item) if item then item.open() end end)
 end
 
--- The options: the standalone launcher's azure-cli.lua (written with every
--- option at its default if it's missing). In plugin mode it isn't read -
--- setup() is - so this says so instead.
+-- The options (gO, :AzureCli options): the standalone launcher's
+-- azure-cli.lua (written with every option at its default if it's
+-- missing). In plugin mode no file is read - your setup() call is - so it
+-- shows the same list in a scratch buffer to copy from, writing nothing.
 function M.open_options_file()
   if not require("azure-cli").is_standalone() then
-    M.notify("azure-cli: in your own Neovim the options are what you pass to require(\"azure-cli\").setup({...}) "
-      .. "(or lazy.nvim's opts) in your config, " .. vim.fn.fnamemodify(vim.fn.stdpath("config"), ":~")
-      .. " - azure-cli.lua is only read by the standalone launcher.")
+    local lines = {
+      "-- Every azure-vicli option at its default, to copy from - this buffer isn't saved anywhere.",
+      "-- In your own Neovim, options are what you pass to require(\"azure-cli\").setup({...})",
+      "-- (or lazy.nvim's opts) in your config, " .. vim.fn.fnamemodify(vim.fn.stdpath("config"), ":~") .. ".",
+      "-- Copy only what you change; azure-cli.lua is only read by the standalone launcher.",
+      "",
+    }
+    vim.list_extend(lines, vim.split(require("azure-cli.config").render_options(), "\n", { plain = true, trimempty = true }))
+    vim.cmd("tabnew")
+    local buf = vim.api.nvim_get_current_buf()
+    vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    pcall(vim.api.nvim_buf_set_name, buf, "azure-cli options (for setup())")
+    vim.bo[buf].filetype = "lua"
+    vim.bo[buf].modified = false
     return
   end
   local path, created = require("azure-cli.config").write_options()

@@ -25,7 +25,7 @@ local function show_help()
     "  :AzureCli toasts      toggle desktop notifications for this session",
     "  :AzureCli status      show the provider daemon's status",
     "  :AzureCli log         show this session's error log",
-    "  :AzureCli options     create (if missing) and open azure-cli.lua, every setup() option at its default",
+    "  :AzureCli options     every option at its default: azure-cli.lua (standalone), or a list to copy into setup()",
     "  :AzureCli help        this message",
   }
   vim.notify(table.concat(lines, "\n"))
@@ -65,12 +65,7 @@ local function dispatch(opts)
   elseif sub == "log" then
     require("azure-cli.log").open()
   elseif sub == "options" then
-    local config = require("azure-cli.config")
-    local path, created = config.write_options()
-    if created then
-      vim.notify("azure-cli: wrote " .. path .. " with every option at its default.")
-    end
-    vim.cmd("tabnew " .. vim.fn.fnameescape(path))
+    require("azure-cli.shell").open_options_file()
   elseif sub == "help" then
     show_help()
   else

@@ -416,6 +416,7 @@ if command -v nvim >/dev/null 2>&1; then
   out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" \
     -c "lua require('azure-cli').setup({ config = '/tmp/my-cfg/azure-cli.yml' })" \
     -c "lua local c = require('azure-cli.shell').config_choices(); assert(#c == 2 and c[1].label:find('azure-cli.yml', 1, true) and c[2].label:find('setup({...})', 1, true), vim.inspect(c)); assert(require('azure-cli').status().options:find('setup()', 1, true))" \
+    -c "lua require('azure-cli.shell').open_options_file(); assert(vim.bo.buftype == 'nofile' and vim.tbl_contains(vim.api.nvim_buf_get_lines(0, 0, -1, false), 'return {'), 'no scratch options list'); assert(vim.fn.filereadable('/tmp/my-cfg/azure-cli.lua') == 0, 'plugin mode wrote azure-cli.lua')" \
     -c "lua require('azure-cli').set_standalone(true); local c = require('azure-cli.shell').config_choices(); assert(c[2].label:find('/tmp/my-cfg/azure-cli.lua  (new', 1, true), c[2].label); assert(require('azure-cli').status().options:find('/tmp/my-cfg/azure-cli.lua (not created', 1, true))" \
     -c "lua print('GO-SMOKE-OK')" \
     -c "qa!" 2>&1)"

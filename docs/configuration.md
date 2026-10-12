@@ -97,8 +97,10 @@ failing silently or only surfacing later.
 **Standalone launcher users** have no `init.lua` to call `setup()` from.
 Put an `azure-cli.lua` next to your `azure-cli.yml` (same directory) that
 returns the same table, and the launcher passes it to `setup()`.
-`:AzureCli options` writes one with every option at its default so you can
-edit from a complete list:
+`:AzureCli options` (or `gO` -> Options) writes one with every option at
+its default so you can edit from a complete list. In your own Neovim the
+same command shows that list in a scratch buffer to copy from instead -
+the plugin never reads `azure-cli.lua`:
 
 ```lua
 -- %APPDATA%\azure-cli.lua  (or ~/.config/azure-cli.lua)
