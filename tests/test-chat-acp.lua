@@ -318,6 +318,47 @@ check("start_agents starts one", started and started:find("Planning #3006", 1, t
 local c6 = CHAT.find_conversation("wi-3006")
 vim.wait(20000, function() return c6 and not c6.running end, 20)
 
+-- Claude Code's --permission-prompt-tool (mcp__azure-vicli__permission):
+-- its requests reach the same rules and popup as an ACP agent's.
+do
+  local RUN = require("azure-cli.chat.run")
+  local t = RUN.claude_tool({ tool_name = "Bash", input = { command = "git log -3", description = "Show commits" } })
+  check("claude_tool: Bash is a command", t.kind == "execute" and t.rawInput.command == "git log -3"
+    and t.title == "Bash: Show commits", vim.inspect(t))
+  t = RUN.claude_tool({ tool_name = "Edit", input = { file_path = "a.lua", old_string = "x = 1", new_string = "x = 2" } })
+  check("claude_tool: an edit, with its diff for the popup", t.kind == "edit"
+    and t.rawInput.diff == "--- a.lua\n+++ a.lua\n-x = 1\n+x = 2", vim.inspect(t))
+  check("claude_tool: reads and searches", RUN.claude_tool({ tool_name = "Grep", input = {} }).kind == "search"
+    and RUN.claude_tool({ tool_name = "mcp__other__x", input = {} }).kind == "other")
+
+  local BRIDGE = require("azure-cli.chat.bridge")
+  local handler = BRIDGE.handler
+  local listed
+  handler({ method = "list" }, function(r) listed = r end)
+  local names = {}
+  for _, x in ipairs(listed and listed.tools or {}) do names[x.name] = true end
+  check("the bridge lists the permission tool", names.permission == true)
+  local function ask(tool_name, input)
+    local ans
+    handler({ method = "call", name = "permission", arguments = { tool_name = tool_name, input = input } },
+      function(r) ans = vim.json.decode(r.text) end)
+    vim.wait(2000, function() return ans ~= nil end, 10)
+    return ans
+  end
+  asked = {}
+  UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
+  local a = ask("Bash", { command = "git log -3" })
+  check("a look-only command is allowed without asking", a and a.behavior == "allow"
+    and a.updatedInput.command == "git log -3" and #asked == 0, vim.inspect({ a, asked }))
+  a = ask("Bash", { command = "rm -rf build" })
+  check("anything else asks, and Deny refuses it", a and a.behavior == "deny" and #asked == 1, vim.inspect({ a, asked }))
+  UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(1) end
+  a = ask("Write", { file_path = "notes.txt", content = "hi" })
+  check("an edit asks, and Allow allows it with its input", a and a.behavior == "allow"
+    and a.updatedInput.file_path == "notes.txt" and #asked == 2, vim.inspect({ a, asked }))
+  UI.choose = real_choose
+end
+
 CHAT.new_chat(true)
 os.remove(marker)
 

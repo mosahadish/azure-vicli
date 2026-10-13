@@ -303,19 +303,29 @@ agent = {
   models = { "sonnet", "opus", "haiku" },   -- gm picks one; the first is the default
   cmd = { "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
           "--model", "{model}", "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
-          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
+          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob",
+          "--permission-prompt-tool", "mcp__azure-vicli__permission" },
 },
 ```
 
 - Each message goes to its stdin as one line of Claude Code's stream-json
   "user message" (the default `stdin`), and its events stream into the
   panel as they're written.
-- `--allowedTools "mcp__azure-vicli"` lets Claude Code use azure-vicli's
-  tools without its own prompts (it can't show them in a headless run);
-  which changes still ask you is azure-vicli's business, see
-  [below](#what-the-agent-can-do).
-- `Edit,Write` and `--add-dir {fix_root}` are for the fix and story flows,
-  as above.
+- **Permissions.** Claude Code can't show a prompt in a headless run, so
+  `--permission-prompt-tool mcp__azure-vicli__permission` hands every
+  request `--allowedTools` doesn't cover to azure-vicli, which answers it
+  exactly as it answers Copilot's (see [GitHub Copilot
+  CLI](#github-copilot-cli) above): searching and listing through the shell
+  doesn't ask, nor do an approved plan's tests and allowed skills; an edit
+  outside the plan's files, and any other command, pops up the yes/no
+  prompt with the command or the diff; while `/plan` runs, editing is
+  refused. Without that flag a tool `--allowedTools` doesn't list is
+  refused silently - the agent says it was denied, and you never see why.
+- `--allowedTools "mcp__azure-vicli,Read,Grep,Glob"`: azure-vicli's tools
+  and reading never ask. Leave `Edit`/`Write` and `Bash` out of it - listed
+  there, they'd skip azure-vicli's checks (the plan's Files, a plan that
+  changes no code).
+- `--add-dir {fix_root}` is for the fix and story flows, as above.
 
 ### Fields
 
@@ -403,9 +413,10 @@ couldn't confirm.
    - choosing a model, and the valid model names (`acp` agents get it over
      ACP - no flag needed);
    - for "fix this comment": letting it edit files in an extra directory,
-     `{fix_root}` (Claude Code: `--add-dir {fix_root}` and `Edit,Write` in
-     `--allowedTools`; Copilot: `--add-dir {fix_root}`) - only if the user
-     wants the agent changing code.
+     `{fix_root}` (Claude Code: `--add-dir {fix_root}` and
+     `--permission-prompt-tool mcp__azure-vicli__permission`; Copilot:
+     `--add-dir {fix_root}`) - only if the user wants the agent changing
+     code.
 3. **Find where the user's options live.** If their Neovim config calls
    `require("azure-cli").setup({...})`, edit that call. Otherwise it's the
    standalone launcher's `azure-cli.lua` next to `azure-cli.yml`:
@@ -814,15 +825,13 @@ The repository has to be cloned locally: `<clones_dir>/<repo>`, as for
 reviews. `u` in `gH` deletes the branch again as long as nothing was pushed
 to it.
 
-**The agent has to be allowed to edit there.** Claude Code runs headless, so
-it can't ask you for its own permissions: anything you didn't allow up front
-is refused, and the agent stops with something like "permission denied and
-could not request permission from user". Allow file edits in `{fix_root}`
-(Claude Code: `--add-dir {fix_root}` and `Edit,Write`). Copilot over ACP
-asks you through azure-vicli's yes/no prompt instead, but still needs
-`--add-dir {fix_root}` to reach that directory (see
-[above](#github-copilot-cli)). Allowing a shell as well (to build and run
-tests) is your call; azure-vicli never needs it.
+**The agent has to be allowed to edit there.** The agent's CLI runs
+headless, so it asks you through azure-vicli: Copilot over ACP, Claude Code
+through `--permission-prompt-tool mcp__azure-vicli__permission` (see
+[Claude Code](#claude-code)). Without that flag, anything Claude Code wasn't
+allowed up front is refused, and the agent stops with something like
+"permission denied and could not request permission from user". Either
+still needs `--add-dir {fix_root}` to reach that directory.
 
 ## How it works
 

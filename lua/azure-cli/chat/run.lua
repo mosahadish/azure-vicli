@@ -109,10 +109,163 @@ local function where_label(snap)
   return nil
 end
 
+-- Whether an agent may use one of its own tools (a shell command, a file
+-- edit, ...): the rules every agent's requests go through, whatever its
+-- protocol - ACP's session/request_permission (send_acp) and Claude Code's
+-- --permission-prompt-tool (the bridge's "permission" call, below). `st`
+-- is the conversation (nil: the main chat), `entry` the message being
+-- answered, `tool` an ACP tool call ({ kind, title, rawInput, locations });
+-- answer(yes) runs once it's decided - at once, or after the popup.
+--
+local function decide_permission(st, entry, tool, answer)
+  st = st or {}
+  local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
+  local cmd = raw.command or raw.cmd
+  if type(cmd) == "table" then cmd = table.concat(vim.tbl_map(tostring, cmd), " ") end
+  cmd = type(cmd) == "string" and vim.trim(cmd) or nil
+  -- What a shell command was and what became of it, under the tool call
+  -- in the chat (and so in the run log, gH).
+  local function log_cmd(outcome, always)
+    local one = cmd and cmd ~= "" and cmd:gsub("%s*\n%s*", " ; ") or nil
+    if not one and always then
+      local paths = CORE.tool_paths(tool)
+      one = (tool.title or tool.kind or "tool") .. (#paths > 0 and (" " .. table.concat(paths, ", ")) or "")
+    end
+    if not one then return end
+    table.insert(entry.tools, "  \u{21B3} " .. (cmd and cmd ~= "" and "$ " or "") .. (#one > 160 and (one:sub(1, 157) .. "...") or one)
+      .. "  (" .. outcome .. ")")
+    render_soon()
+  end
+  local function allow_quietly(why) log_cmd("allowed: " .. why); return answer(true) end
+  if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
+  if CORE.FILE_CHANGE_KINDS[tool.kind] then
+    if entry.planning then
+      table.insert(entry.tools, "\u{2717} " .. (tool.title or tool.kind) .. " (refused: planning changes no files)")
+      render_soon()
+      return answer(false)
+    end
+  end
+  -- chat.permissions' "agent-commands" / "agent-edits" / "all": allowed
+  -- or refused without asking.
+  local said = require("azure-cli.chat.tools").agent_permission(tool.kind)
+  if said == "allow" then log_cmd("allowed: chat.permissions", true); return answer(true) end
+  if said == "deny" then log_cmd("refused: chat.permissions", true); return answer(false) end
+  -- The popup shows what it would run (or the agent's whole input, when
+  -- it isn't a command or a diff): the title is the agent's own words.
+  local details = {}
+  local diff = raw.diff
+  if type(diff) == "string" then
+    for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end
+  elseif cmd and cmd ~= "" then
+    table.insert(details, "Command:")
+    for l in (cmd .. "\n"):gmatch("(.-)\n") do table.insert(details, "  " .. l) end
+  elseif next(raw) and not CORE.FILE_CHANGE_KINDS[tool.kind] then
+    local ok, json = pcall(vim.json.encode, raw)
+    if ok then
+      table.insert(details, "Input:")
+      for i = 1, math.min(20, math.ceil(#json / 100)) do table.insert(details, "  " .. json:sub(i * 100 - 99, i * 100)) end
+    end
+  end
+  local PLAN = require("azure-cli.chat.plan")
+  local verdict, rec, rels = nil, nil, nil
+  if CORE.FILE_CHANGE_KINDS[tool.kind] then verdict, rec, rels = PLAN.edit_check(CORE.tool_paths(tool)) end
+  if verdict == "planned" then return answer(true) end
+  -- Building and testing the way the approved plan's Test plan says.
+  if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
+    return allow_quietly("the plan's tests")
+  end
+  -- Searching and listing through the shell (grep, git log, ...).
+  if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
+  -- A skill you've allowed: whatever it does through the agent's tools.
+  local SKILLS = require("azure-cli.chat.skills")
+  if entry.skill and SKILLS.allowed(entry.skill) then
+    log_cmd("allowed: skill " .. entry.skill, true)
+    return answer(true)
+  end
+  -- Otherwise a third button allows that skill from now on.
+  local extra = entry.skill and ("Allow all of skill " .. entry.skill) or nil
+  local function remember(always) if always and entry.skill then SKILLS.allow(entry.skill) end end
+  if verdict == "unplanned" then
+    local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
+      .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
+    return confirm_for(st.plan_key and st or nil)(question, function(yes, always)
+      if yes then PLAN.allow_files(rec, rels) end
+      remember(always)
+      answer(yes)
+    end, details, extra)
+  end
+  confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
+    .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
+    remember(always)
+    log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
+    answer(yes)
+  end, details, extra)
+end
+M.decide_permission = decide_permission
+
+-- Claude Code's tools by the ACP kind decide_permission reads.
+local CLAUDE_KINDS = {
+  Bash = "execute", Edit = "edit", MultiEdit = "edit", Write = "edit", NotebookEdit = "edit",
+  Read = "read", NotebookRead = "read", LS = "read", Glob = "search", Grep = "search",
+  WebFetch = "fetch", WebSearch = "fetch",
+}
+
+-- A Claude Code permission request ({ tool_name, input }, what its
+-- --permission-prompt-tool is called with) as the ACP tool call
+-- decide_permission takes: the kind its tool name means, the input as
+-- rawInput, and an edit's old/new text as a diff for the popup. Pure.
+function M.claude_tool(args)
+  args = type(args) == "table" and args or {}
+  local name = tostring(args.tool_name or "")
+  local input = type(args.input) == "table" and args.input or {}
+  local raw = vim.deepcopy(input)
+  local function lines(s) return vim.split(tostring(s or ""), "\n", { plain = true }) end
+  local path = input.file_path or input.notebook_path
+  local diff
+  if name == "Edit" and input.old_string then
+    diff = { "--- " .. tostring(path), "+++ " .. tostring(path) }
+    for _, l in ipairs(lines(input.old_string)) do diff[#diff + 1] = "-" .. l end
+    for _, l in ipairs(lines(input.new_string)) do diff[#diff + 1] = "+" .. l end
+  elseif name == "Write" and input.content then
+    diff = { "+++ " .. tostring(path) }
+    for i, l in ipairs(lines(input.content)) do
+      if i > 200 then diff[#diff + 1] = "+..."; break end
+      diff[#diff + 1] = "+" .. l
+    end
+  end
+  if diff then raw.diff = table.concat(diff, "\n") end
+  local what = input.description or path or input.pattern or input.url
+  return { kind = CLAUDE_KINDS[name] or "other", rawInput = raw,
+    title = name .. (what and (": " .. tostring(what)) or "") }
+end
+
+-- The bridge's own tool for Claude Code's --permission-prompt-tool
+-- (mcp__azure-vicli__permission): Claude Code asks it instead of refusing
+-- what --allowedTools doesn't cover, and gets decide_permission's answer.
+local PERMISSION_TOOL = {
+  name = "permission",
+  description = "azure-vicli's answer to Claude Code's own permission prompts (--permission-prompt-tool). "
+    .. "Claude Code calls it; don't call it yourself.",
+  inputSchema = { type = "object", properties = { tool_name = { type = "string" }, input = { type = "object" },
+    tool_use_id = { type = "string" } }, required = { "tool_name", "input" } },
+}
+
 local function bridge_handler(entry_ref, conv)
   return function(req, reply)
     local TOOLS = require("azure-cli.chat.tools")
-    if req.method == "list" then return reply({ tools = TOOLS.describe() }) end
+    if req.method == "list" then
+      local tools = TOOLS.describe()
+      tools[#tools + 1] = PERMISSION_TOOL
+      return reply({ tools = tools })
+    end
+    if req.method == "call" and req.name == "permission" then
+      local args = type(req.arguments) == "table" and req.arguments or {}
+      local input = type(args.input) == "table" and next(args.input) and args.input or vim.empty_dict()
+      return decide_permission(conv, entry_ref() or { tools = {} }, M.claude_tool(args), function(yes)
+        reply({ text = vim.json.encode(yes and { behavior = "allow", updatedInput = input }
+          or { behavior = "deny", message = "The user didn't allow this." }) })
+      end)
+    end
     if req.method == "call" then
       local entry = entry_ref() or { tools = {} }
       return TOOLS.call(req.name, req.arguments, tool_env(entry, conv), function(text, is_err)
@@ -310,87 +463,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       if pick then conn.respond(id, { outcome = { outcome = "selected", optionId = pick } })
       else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
     end
-    local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
-    local cmd = raw.command or raw.cmd
-    if type(cmd) == "table" then cmd = table.concat(vim.tbl_map(tostring, cmd), " ") end
-    cmd = type(cmd) == "string" and vim.trim(cmd) or nil
-    -- What a shell command was and what became of it, under the tool call
-    -- in the chat (and so in the run log, gH).
-    local function log_cmd(outcome, always)
-      local one = cmd and cmd ~= "" and cmd:gsub("%s*\n%s*", " ; ") or nil
-      if not one and always then
-        local paths = CORE.tool_paths(tool)
-        one = (tool.title or tool.kind or "tool") .. (#paths > 0 and (" " .. table.concat(paths, ", ")) or "")
-      end
-      if not one then return end
-      table.insert(entry.tools, "  \u{21B3} " .. (cmd and cmd ~= "" and "$ " or "") .. (#one > 160 and (one:sub(1, 157) .. "...") or one)
-        .. "  (" .. outcome .. ")")
-      render_soon()
-    end
-    local function allow_quietly(why) log_cmd("allowed: " .. why); return answer(true) end
-    if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
-    if CORE.FILE_CHANGE_KINDS[tool.kind] then
-      if entry.planning then
-        table.insert(entry.tools, "\u{2717} " .. (tool.title or tool.kind) .. " (refused: planning changes no files)")
-        render_soon()
-        return answer(false)
-      end
-    end
-    -- chat.permissions' "agent-commands" / "agent-edits" / "all": allowed
-    -- or refused without asking.
-    local said = require("azure-cli.chat.tools").agent_permission(tool.kind)
-    if said == "allow" then log_cmd("allowed: chat.permissions", true); return answer(true) end
-    if said == "deny" then log_cmd("refused: chat.permissions", true); return answer(false) end
-    -- The popup shows what it would run (or the agent's whole input, when
-    -- it isn't a command or a diff): the title is the agent's own words.
-    local details = {}
-    local diff = raw.diff
-    if type(diff) == "string" then
-      for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end
-    elseif cmd and cmd ~= "" then
-      table.insert(details, "Command:")
-      for l in (cmd .. "\n"):gmatch("(.-)\n") do table.insert(details, "  " .. l) end
-    elseif next(raw) and not CORE.FILE_CHANGE_KINDS[tool.kind] then
-      local ok, json = pcall(vim.json.encode, raw)
-      if ok then
-        table.insert(details, "Input:")
-        for i = 1, math.min(20, math.ceil(#json / 100)) do table.insert(details, "  " .. json:sub(i * 100 - 99, i * 100)) end
-      end
-    end
-    local PLAN = require("azure-cli.chat.plan")
-    local verdict, rec, rels = nil, nil, nil
-    if CORE.FILE_CHANGE_KINDS[tool.kind] then verdict, rec, rels = PLAN.edit_check(CORE.tool_paths(tool)) end
-    if verdict == "planned" then return answer(true) end
-    -- Building and testing the way the approved plan's Test plan says.
-    if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
-      return allow_quietly("the plan's tests")
-    end
-    -- Searching and listing through the shell (grep, git log, ...).
-    if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
-    -- A skill you've allowed: whatever it does through the agent's tools.
-    local SKILLS = require("azure-cli.chat.skills")
-    if entry.skill and SKILLS.allowed(entry.skill) then
-      log_cmd("allowed: skill " .. entry.skill, true)
-      return answer(true)
-    end
-    -- Otherwise a third button allows that skill from now on.
-    local extra = entry.skill and ("Allow all of skill " .. entry.skill) or nil
-    local function remember(always) if always and entry.skill then SKILLS.allow(entry.skill) end end
-    if verdict == "unplanned" then
-      local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
-        .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
-      return confirm_for(st.plan_key and st or nil)(question, function(yes, always)
-        if yes then PLAN.allow_files(rec, rels) end
-        remember(always)
-        answer(yes)
-      end, details, extra)
-    end
-    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
-      .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
-      remember(always)
-      log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
-      answer(yes)
-    end, details, extra)
+    decide_permission(st, entry, tool, answer)
   end
 
   local function send_prompt(pj)
