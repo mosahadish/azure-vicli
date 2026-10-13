@@ -3669,8 +3669,12 @@ local base_refresh_threads = refresh_threads
 refresh_threads = function(opts)
   if refresh_threads_inflight then return end
   refresh_threads_inflight = true
+  local done = opts and opts.on_done
   local ok, err = pcall(base_refresh_threads, vim.tbl_extend("force", opts or {}, {
-    on_done = function() refresh_threads_inflight = false end,
+    on_done = function()
+      refresh_threads_inflight = false
+      if done then done() end
+    end,
   }))
   if not ok then
     refresh_threads_inflight = false
@@ -3690,6 +3694,9 @@ STATE.review_threads_timer = vim.fn.timer_start(
     STATE.review_threads_timer = nil
   end
 end, { ["repeat"] = -1 })
+-- The same refetch the poll above runs, for tests/demo-smoke.lua (opts as
+-- for refresh_threads: on_done runs once it lands).
+STATE.review_refresh_threads = function(opts) refresh_threads(opts) end
 
 -- The file list keeps its absolute width across a terminal resize
 -- otherwise, with the diff pane absorbing all of the change.
@@ -3713,6 +3720,7 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- EXT, which the IIFE already closes over for a dozen other fields, costs
 -- it no additional upvalues at all.
 STATE.review_cleanup = function()
+  STATE.review_refresh_threads = nil
   for _, name in ipairs({ "review_threads_timer", "review_badge_timer" }) do
     if STATE[name] then pcall(vim.fn.timer_stop, STATE[name]); STATE[name] = nil end
   end

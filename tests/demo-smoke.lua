@@ -1784,6 +1784,46 @@ do
   if not (opener and opener()) then return fail("the reviewer for PR #101 isn't open for the batch check") end
   local s = STATE.batch["101"]
   for i = #s.items, 1, -1 do STATE.batch_drop["101"](s.items[i]) end
+  -- A queued reply dropped after a background refresh is gone from the
+  -- diff at once (the refresh re-carries it into a new copy of its thread).
+  local function drawn_anywhere(text)
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(b) then
+        for _, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+          if l:find(text, 1, true) then return true end
+        end
+        for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, -1, 0, -1, { details = true })) do
+          for _, vl in ipairs(m[4].virt_lines or {}) do
+            for _, chunk in ipairs(vl) do if (chunk[1] or ""):find(text, 1, true) then return true end end
+          end
+          for _, chunk in ipairs(m[4].virt_text or {}) do if (chunk[1] or ""):find(text, 1, true) then return true end end
+        end
+      end
+    end
+  end
+  local fst = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  local tid
+  for _, t in ipairs(fst.threads["101"]) do
+    if t.comments[1].content:find("distinct error", 1, true) then tid = t.id end
+  end
+  if not tid then return fail("no auth.py:12 thread on PR #101 for the queued-reply check") end
+  if not STATE.batch_live["101"]({ kind = "reply", thread_id = tid, text = "batch smoke reply", label = "Reply",
+      args = { "--reply", tostring(tid), "batch smoke reply" } }) then
+    return fail("couldn't queue a reply on PR #101")
+  end
+  local refreshed = false
+  -- A poll already in flight skips this one, so ask until one runs.
+  if not vim.wait(15000, function()
+    if not refreshed then STATE.review_refresh_threads({ on_done = function() refreshed = true end }) end
+    return refreshed
+  end, 200) then return fail("the thread refresh never finished") end
+  if not drawn_anywhere("3 comments") then return fail("the queued reply doesn't show in the PR after a refresh") end
+  STATE.batch_drop["101"](s.items[#s.items])
+  vim.wait(200)
+  if #s.items ~= 0 then return fail("dropping the queued reply left it queued: " .. vim.inspect(s.items)) end
+  if drawn_anywhere("3 comments") or drawn_anywhere("batch smoke reply") then
+    return fail("a queued reply dropped after a thread refresh still shows in the PR")
+  end
   local function queue(path, line, text)
     STATE.batch_live["101"]({ kind = "thread", text = text, bucket = "line", where = path .. "\tR\t" .. line,
       path = path, side = "R", lineno = line, label = "Comment", args = { "--post", path, "R", tostring(line), text } })
