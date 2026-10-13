@@ -377,9 +377,9 @@ The images under `docs/images/` are generated, not hand-taken: the script
 runs `tests/demo.sh --standalone` in a fixed-size detached `tmux` pane,
 walks through the fake provider's fixtures (dashboard, PR #101, its diff,
 the inline thread, the complete dialog, work items, a work item, then the
-chat's plan window and a question under a line of a change - those two
-scenes are seeded by `tests/shot-plan.lua` and `tests/shot-change.lua`
-through `:luafile`, since no agent runs), captures each screen with its colours and rasterises it through ImageMagick's
+chat's plan window, a question under a line of a change, the Agents
+screen and the `/skills` popup - those scenes are seeded by
+`tests/shot-{plan,change,agents,skills}.lua` through `:luafile`, since no agent runs), captures each screen with its colours and rasterises it through ImageMagick's
 `pango:` coder. Needs tmux, an ImageMagick with pango support and a
 monospace font (Noto Sans Mono by default - `--font` picks another); no
 display. Re-run it after a UI change and commit the result; add a step to

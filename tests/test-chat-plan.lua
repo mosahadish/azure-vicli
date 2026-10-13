@@ -192,14 +192,15 @@ do
   check("skills: chat.skill_dirs must be folders", not pcall(require("azure-cli").setup, { chat = { skill_dirs = { 1 } } }))
   SK._reset()
   pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
-  require("azure-cli").setup({ chat = { allowed_skills = { "review" } } })
-  check("skills: allowed in setup", SK.allowed("review") and not SK.allowed("deploy-check"))
+  local okc, errc = pcall(require("azure-cli").setup, { chat = { allowed_skills = { "review" } } })
+  check("skills: chat.allowed_skills is gone, and says to use /skills", not okc and tostring(errc):find("/skills", 1, true) ~= nil, errc)
+  require("azure-cli").setup({})
+  check("skills: none allowed to start with", not SK.allowed("review") and not SK.allowed("deploy-check"))
   SK.allow("deploy-check")
   SK._reset()
   check("skills: allowed from the popup, kept", SK.allowed("deploy-check"))
   check("skills: disallowed again, kept", SK.disallow("deploy-check") and not SK.allowed("deploy-check")
     and (SK._reset() or true) and not SK.allowed("deploy-check"))
-  check("skills: one allowed in setup can't be disallowed here", SK.disallow("review") == false and SK.allowed("review"))
   -- /skills' popup: <Space> allows / makes it ask again, <CR> uses one.
   local used
   local pwin, pbuf = SK.popup(dir, function(name) used = name end)

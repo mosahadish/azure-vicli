@@ -4,8 +4,8 @@
 -- (shell commands, file edits) are accepted without asking - azure-vicli's
 -- own questions (posting, voting, pushing) still ask.
 --
--- Allowed: chat.allowed_skills = { "triage-pr-comments" } in setup(), plus
--- the ones "Allow all of skill X" in a permission popup remembered, kept in
+-- Allowed: the ones you allowed from /skills (<Space>) or with "Allow all
+-- of skill X" in a permission popup, kept in
 -- stdpath("data")/azure-cli-chat/allowed_skills.json.
 --
 -- Where skills are looked for: chat.skill_dirs, default the usual ones
@@ -28,8 +28,7 @@
 --   M.in_tool_call(u, names) the one a tool call loads, or nil (pure)
 --   M.allowed(name)         whether you've allowed it
 --   M.allow(name)           remembers it as allowed
---   M.disallow(name)        forgets that; false when chat.allowed_skills
---                           allows it (only the config can take it back)
+--   M.disallow(name)        forgets that
 local M = {}
 
 M.DIRS = { ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }
@@ -144,9 +143,6 @@ end
 
 function M.allowed(name)
   if not name then return false end
-  for _, n in ipairs((require("azure-cli.config").get().chat or {}).allowed_skills or {}) do
-    if n == name then return true end
-  end
   return vim.tbl_contains(load(), name)
 end
 
@@ -157,12 +153,7 @@ function M.allow(name)
   require("azure-cli.shell").write_json(file(), stored)
 end
 
-local function in_config(name)
-  return vim.tbl_contains((require("azure-cli.config").get().chat or {}).allowed_skills or {}, name)
-end
-
 function M.disallow(name)
-  if in_config(name) then return false end
   local list = load()
   for i = #list, 1, -1 do
     if list[i] == name then table.remove(list, i) end
@@ -224,10 +215,7 @@ function M.popup(cwd, on_use)
     local s = current()
     if not s then return end
     if s.allowed then
-      if not M.disallow(s.name) then
-        return require("azure-cli.shell").notify("/" .. s.name .. " is allowed by chat.allowed_skills in your config - "
-          .. "take it out there to have its prompts ask again.", vim.log.levels.WARN)
-      end
+      M.disallow(s.name)
       s.allowed = false
     else
       M.allow(s.name)

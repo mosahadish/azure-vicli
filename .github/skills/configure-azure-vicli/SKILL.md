@@ -170,10 +170,10 @@ it removes their chance to stop a push or a vote. Details:
   repository the agent runs in and in the home folder. Default
   `{ ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }`;
   `~/...` or an absolute path is used as it is.
-- `chat.allowed_skills = { "triage-pr-comments" }`: skills (folder names)
-  whose commands and edits don't ask.
-
-`/skills` in the chat lists what's found.
+Which skills are allowed (their commands and edits don't ask) isn't
+config: `/skills` in the chat opens a popup of what's found, where
+`<Space>` allows one or makes it ask again. An old `chat.allowed_skills`
+makes setup fail - take it out.
 
 ## Check it
 

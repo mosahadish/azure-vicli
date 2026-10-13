@@ -29,7 +29,7 @@ and can work on several work items at once.
 </tr>
 <tr>
 <td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: its agents grouped by what needs you first"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen groups them by what needs you, and marks them finished once their PR is merged.</sub></td>
-<td width="50%"></td>
+<td width="50%"><a href="docs/chat.md#github-copilot-cli"><img src="docs/images/chat-skills.png" alt="The /skills popup over the chat: each skill with its description and folder, a check mark on the allowed ones"></a><br><sub><b>Skills</b> - <code>/skills</code> lists the agent's skills; <code>Space</code> allows one (its prompts stop asking), <code>Enter</code> starts a message with it.</sub></td>
 </tr>
 </table>
 

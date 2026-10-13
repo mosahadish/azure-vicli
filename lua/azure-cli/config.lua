@@ -243,8 +243,7 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
-  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", allowed_skills = "table",
-  skill_dirs = "table",
+  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -270,6 +269,9 @@ local function validate_chat(chat)
   if type(chat) ~= "table" then error("azure-cli.setup: `chat` must be a table") end
   local out = vim.deepcopy(DEFAULTS_CHAT)
   for k, v in pairs(chat) do
+    if k == "allowed_skills" then
+      error("azure-cli.setup: chat.allowed_skills is gone - allow a skill from /skills in the chat (<Space>); remove it")
+    end
     if not CHAT_FIELDS[k] then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in chat") end
     if CHAT_FIELDS[k] ~= "any" and type(v) ~= CHAT_FIELDS[k] then
       error("azure-cli.setup: chat." .. k .. " must be a " .. CHAT_FIELDS[k])
@@ -282,9 +284,6 @@ local function validate_chat(chat)
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
   if out.toasts ~= nil and out.toasts ~= false and out.toasts ~= "unfocused" and out.toasts ~= "always" then
     error("azure-cli.setup: chat.toasts must be \"unfocused\", \"always\" or false")
-  end
-  for _, s in ipairs(out.allowed_skills or {}) do
-    if type(s) ~= "string" then error("azure-cli.setup: chat.allowed_skills must be a list of skill names") end
   end
   for _, s in ipairs(out.skill_dirs or {}) do
     if type(s) ~= "string" or s == "" then error("azure-cli.setup: chat.skill_dirs must be a list of folders") end
@@ -773,7 +772,6 @@ function M.render_options()
   w("    --   [\"azure-vicli-tools\"] = \"ask\", [\"agent-commands\"] = \"allow\", [\"agent-edits\"] = \"ask\",")
   w("    --   vote = \"ask\",")
   w("    -- },")
-  w("    -- allowed_skills = { \"triage-pr-comments\" },  -- skills whose commands and edits don't ask")
   w("    -- skill_dirs = { \".github/skills\", \".claude/skills\", \".agents/skills\", \".copilot/skills\" },  -- the default")
   w("    -- prompts = { security = \"Look for injection and secrets in this PR.\", standup = false },")
   w("    -- plan_first = true,           -- plan before changing code")
