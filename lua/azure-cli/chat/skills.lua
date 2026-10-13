@@ -56,17 +56,37 @@ local function roots(cwd)
   return out
 end
 
--- SKILL.md's front matter `description:`, else its first text line.
+-- SKILL.md's front matter `description:` - a folded/literal block
+-- (`description: >`) joined into one line - else the first text line after
+-- the front matter.
 local function description(f)
   local ok, lines = pcall(vim.fn.readfile, f, "", 40)
   if not ok then return "" end
   local first
-  for _, l in ipairs(lines) do
-    local d = l:match("^description:%s*(.-)%s*$")
-    if d and d ~= "" then return (d:gsub("^[\"'](.*)[\"']$", "%1")) end
-    if not first and l:match("%S") and not l:match("^%-%-%-") and not l:match("^[%w_]+:") then
+  local front = lines[1] and lines[1]:match("^%-%-%-%s*$") ~= nil
+  local i = front and 2 or 1
+  while i <= #lines do
+    local l = lines[i]
+    if front and l:match("^%-%-%-%s*$") then
+      front = false
+    elseif front then
+      local d = l:match("^description:%s*(.-)%s*$")
+      if d and d:match("^[>|][%-+]?%d*$") then
+        local parts = {}
+        i = i + 1
+        while i <= #lines and (lines[i]:match("^%s+%S") or lines[i] == "") do
+          if lines[i] ~= "" then parts[#parts + 1] = vim.trim(lines[i]) end
+          i = i + 1
+        end
+        if #parts > 0 then return table.concat(parts, " ") end
+        i = i - 1
+      elseif d and d ~= "" then
+        return (d:gsub("^[\"'](.*)[\"']$", "%1"))
+      end
+    elseif not first and l:match("%S") then
       first = l:gsub("^#+%s*", "")
     end
+    i = i + 1
   end
   return first or ""
 end
@@ -115,20 +135,32 @@ function M.named_in(text, names)
   text = (text or ""):lower()
   for _, name in ipairs(names or {}) do
     local n = esc(name:lower())
+    -- Only an explicit ask: "/name", "the name skill", "skill name". A
+    -- name in backticks alone ("what does `test` do?") is just a word -
+    -- and naming an allowed skill stops its prompts asking.
     if text:find("%f[%w/]/" .. n .. "%f[^%w%-_]") or text:find("%f[%w%-_]" .. n .. "%f[^%w%-_]%s+skill")
-        or text:find("skill[%s:`\"']+" .. n .. "%f[^%w%-_]") or text:find("`" .. n .. "`", 1) then
+        or text:find("skill[%s:`\"']+" .. n .. "%f[^%w%-_]") then
       return name
     end
   end
   return nil
 end
 
+-- Only a call that really loads a skill counts: a tool called Skill (Claude
+-- Code's; "Skill" is the title Copilot reports for it) naming it, or a read
+-- of its own <name>/SKILL.md. A call that merely mentions "skill" and the
+-- name - `grep -r skill build/`, say - doesn't: an allowed skill's prompts
+-- stop asking for the rest of the answer, so a loose match here would
+-- switch that on by accident.
 function M.in_tool_call(u, names)
   local ok, raw = pcall(vim.json.encode, type(u.rawInput) == "table" and u.rawInput or {})
-  local hay = (tostring(u.title or "") .. " " .. tostring(u.name or "") .. " " .. (ok and raw or "")):lower()
-  if not hay:find("skill", 1, true) then return nil end
+  raw = (ok and raw or ""):lower():gsub("\\/", "/")
+  local title, tool = tostring(u.title or ""):lower(), tostring(u.name or ""):lower()
+  local loader = tool == "skill" or title:match("^skill%f[^%w]") ~= nil
   for _, name in ipairs(names or {}) do
-    if hay:find("%f[%w%-_]" .. esc(name:lower()) .. "%f[^%w%-_]") then return name end
+    local n = esc(name:lower())
+    if loader and (title .. " " .. raw):find("%f[%w%-_]" .. n .. "%f[^%w%-_]") then return name end
+    if (title .. " " .. raw):find("[/\\]" .. n .. "[/\\]skill%.md") then return name end
   end
   return nil
 end

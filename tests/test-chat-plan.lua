@@ -155,13 +155,22 @@ end
 do
   local SK = require("azure-cli.chat.skills")
   local names = { "triage-pr-comments", "review" }
-  check("skills: named as /x, the x skill, skill x, `x`", SK.named_in("/triage-pr-comments on this PR", names)
+  check("skills: named as /x, the x skill, skill x", SK.named_in("/triage-pr-comments on this PR", names)
     == "triage-pr-comments" and SK.named_in("use the Triage-PR-Comments skill", names) == "triage-pr-comments"
-    and SK.named_in("run skill: review now", names) == "review" and SK.named_in("try `review`", names) == "review")
+    and SK.named_in("run skill: review now", names) == "review" and SK.named_in("use skill `review`", names) == "review")
+  check("skills: a name in backticks alone isn't asking for it", SK.named_in("what does `review` do?", names) == nil)
   check("skills: not just a word in passing", SK.named_in("please review this", names) == nil
     and SK.named_in("/triage-pr-commentsx", names) == nil and SK.named_in("", names) == nil)
   check("skills: a tool call loading one", SK.in_tool_call({ title = "Skill", rawInput = { skill = "review" } }, names)
     == "review" and SK.in_tool_call({ title = "Read review.md" }, names) == nil)
+  check("skills: Claude Code's Skill tool, or a read of the skill's SKILL.md",
+    SK.in_tool_call({ name = "Skill", rawInput = { command = "triage-pr-comments" } }, names) == "triage-pr-comments"
+    and SK.in_tool_call({ title = "Read .claude/skills/review/SKILL.md",
+      rawInput = { file_path = "/r/.claude/skills/review/SKILL.md" } }, names) == "review")
+  check("skills: a call that only mentions skill and the name isn't loading it",
+    SK.in_tool_call({ title = "grep -r skill review/", rawInput = { command = "grep -r skill review/" } }, names) == nil
+    and SK.in_tool_call({ title = "Edit docs/skills.md", rawInput = { file_path = "docs/skills.md", new_string = "review" } },
+      names) == nil)
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir .. "/.github/skills/deploy-check", "p")
   vim.fn.writefile({ "---", "name: deploy-check", "---" }, dir .. "/.github/skills/deploy-check/SKILL.md")
@@ -177,6 +186,21 @@ do
   check("skills: a description from the front matter, else the first line",
     by["deploy-check"] and by["deploy-check"].description == "Checks a deploy" and by.notes
       and by.notes.description == "Takes notes", vim.inspect(by))
+  do
+    local d2 = vim.fn.tempname()
+    vim.fn.mkdir(d2 .. "/.github/skills/folded", "p")
+    vim.fn.writefile({ "---", "name: folded", "description: >-", "  Checks the deploy", "  before it ships", "---" },
+      d2 .. "/.github/skills/folded/SKILL.md")
+    vim.fn.mkdir(d2 .. "/.github/skills/nodesc", "p")
+    vim.fn.writefile({ "---", "name: nodesc", "allowed-tools: Bash", "---", "", "# Does the thing" },
+      d2 .. "/.github/skills/nodesc/SKILL.md")
+    local by2 = {}
+    for _, s in ipairs(SK.list(d2)) do by2[s.name] = s end
+    check("skills: a folded description block is joined, not \">\"",
+      by2.folded and by2.folded.description == "Checks the deploy before it ships", vim.inspect(by2.folded))
+    check("skills: without a description, the first line after the front matter",
+      by2.nodesc and by2.nodesc.description == "Does the thing", vim.inspect(by2.nodesc))
+  end
   local report = SK.report(dir)
   check("skills: /skills lists them", report:find("/deploy-check  - Checks a deploy", 1, true) ~= nil
     and report:find("/notes  - Takes notes", 1, true) ~= nil, report)

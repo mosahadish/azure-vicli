@@ -263,6 +263,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.accounts_by_org(), [])
         self.assertEqual(cfg.github_accounts()[0].api_url, "https://api.github.com")
 
+    def test_clones_dir_expands_the_home_folder(self):
+        cfg = ac.Config.from_string("accounts:\n  - host: github\n    clones_dir: ~/src\n")
+        self.assertEqual(cfg.accounts[0].clones_dir, os.path.expanduser("~/src"))
+
     def test_unknown_host_and_work_items_on_github(self):
         cfg = ac.Config.from_dict({"accounts": [{"host": "gitlab"},
                                                 {"host": "github", "work_items": {"team": "x"}}]})

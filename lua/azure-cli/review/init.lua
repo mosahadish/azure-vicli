@@ -3315,10 +3315,13 @@ local function apply_threads_json(json, opts)
         end
 
         redecorate_all()
-        refresh_overview_row()
         refresh_file_rows()
         render_overview()
       end
+      -- Every time, not only on a change: a PR with no comments at all
+      -- never changes from "none" to "none", which left its Overview row
+      -- saying "loading..." for good. One line, so it costs nothing.
+      refresh_overview_row()
       if not opts.seed then threads_baseline_established = true end
 
       if opts.announce then

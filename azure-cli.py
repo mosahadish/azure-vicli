@@ -264,7 +264,8 @@ class AccountConfig:
         self.pat_file = pat_file if isinstance(pat_file, str) and pat_file.strip() else None
         self._token = None
         self.hide_ancient = bool(hide_ancient) if hide_ancient is not None else None
-        self.clones_dir = clones_dir
+        # `~` expands, as in pat_file: - the Lua side runs git in it as given.
+        self.clones_dir = os.path.expanduser(clones_dir) if isinstance(clones_dir, str) and clones_dir else clones_dir
         self.work_items = work_items if isinstance(work_items, dict) else None
 
     def is_github(self):
