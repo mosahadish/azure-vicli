@@ -276,10 +276,26 @@ is simpler.
    - README, configuration.md (a GitHub account), reviewer.md and
      dashboard.md (what differs per host), the configure skill.
    - A GitHub screenshot.
-6. *(later, optional)* **GitHub Issues as work items.**
-   - Open/closed plus state reason; labels for type and priority;
-     milestones as sprints; sub-issues; closing keywords for PR links.
-   - Its own plan once 0–5 are in.
+6. **GitHub Issues and Projects** (wanted, decided 2026-10-13).
+   - **Its own Issues tab** (`I`), shown only when a GitHub account has an
+     `issues:` block; `W` stays Azure work items. An Azure-only setup never
+     sees it.
+   - Config on the GitHub account: `issues: { project: <number or title> }`
+     (a Projects v2 project). Needs the token's `project` scope
+     (`gh auth refresh -s project`).
+   - Built on the work-items screens, with GitHub's words:
+
+     | Work-items screen | GitHub |
+     |---|---|
+     | Sprint tabs | The project's Iteration field (milestones without one) |
+     | State column, `gs` | The project's Status field options; closing an issue (completed / not planned) |
+     | Type, priority | Issue type or labels; a Priority field if the project has one |
+     | Detail view | Body, comments, sub-issues, linked PRs |
+     | Create, assign, comment, move to sprint | New issue (added to the project), assignees, comments, Iteration |
+     | Branch / linked PR | A branch linked to the issue; `Closes #n`, the PR's linked issues |
+
+   - A project for azure-vicli itself (Status + Iteration fields, issues for
+     the remaining phases) to build and dogfood against.
 
 Rough size: Phase 0 touches about 15 Lua files with mostly mechanical
 changes. Phases 1–4 are mostly new Python (about 1,000–1,500 lines with
