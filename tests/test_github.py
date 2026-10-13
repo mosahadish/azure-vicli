@@ -282,14 +282,164 @@ class ConfigTests(unittest.TestCase):
                          "https://ghe.example.com/api/v3")
 
 
+class RestClient(gh.Client):
+    """Records REST calls and answers them from `answers` (by method +
+    path prefix); GraphQL by a word in the query, like FakeClient."""
+
+    def __init__(self, answers=None, graphql=None):
+        gh.Client.__init__(self, "https://api.github.com", "t")
+        self.calls = []
+        answers = answers or {}
+        graphql = graphql or {}
+
+        def fetch(method, url, token, data=None):
+            path = url[len("https://api.github.com"):]
+            self.calls.append((method, path, data))
+            if path == "/graphql":
+                for word, ans in graphql.items():
+                    if word in data["query"]:
+                        return {"data": ans}
+                raise AssertionError("unexpected query")
+            for (m, prefix), ans in answers.items():
+                if m == method and path.startswith(prefix):
+                    return ans
+            return {}
+        self.fetch = fetch
+
+    def writes(self):
+        return [c for c in self.calls if c[0] != "GET" and c[1] != "/graphql"]
+
+
+HEAD = {("GET", "/repos/o/r/pulls/5"): {"head": {"sha": "HEADSHA"}}}
+
+
+def actions(client):
+    return gh.Actions(account(), {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"}, client)
+
+
+def quiet(fn, *args):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = fn(*args)
+    return code, out.getvalue().strip()
+
+
+class WriteTests(unittest.TestCase):
+    def test_a_line_comment(self):
+        c = RestClient(HEAD)
+        self.assertEqual(quiet(actions(c).post_inline, "a.go", "R", "12", "why?"), (0, "Comment posted."))
+        self.assertEqual(c.writes(), [("POST", "/repos/o/r/pulls/5/comments",
+                                       {"body": "why?", "commit_id": "HEADSHA", "path": "a.go", "side": "RIGHT",
+                                        "line": 12})])
+
+    def test_a_line_outside_the_hunks_says_why(self):
+        c = RestClient(HEAD)
+
+        def refuse(method, url, token, data=None):
+            if method == "POST":
+                raise gh.GitHubHttpError(422, url, json.dumps({
+                    "message": "Validation Failed",
+                    "errors": ["pull_request_review_thread.line must be part of the diff"]}))
+            return {"head": {"sha": "HEADSHA"}}
+        c.fetch = refuse
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(quiet(actions(c).post_inline, "a.go", "R", "400", "x")[0], 1)
+        self.assertIn("outside the diff's hunks", err.getvalue())
+
+    def test_a_range_on_the_left(self):
+        c = RestClient(HEAD)
+        quiet(actions(c).post_inline, "a.go", "L", "3", "x", "7")
+        self.assertEqual(c.writes()[0][2], {"body": "x", "commit_id": "HEADSHA", "path": "a.go", "side": "LEFT",
+                                            "start_line": 3, "start_side": "LEFT", "line": 7})
+
+    def test_bad_input_and_blank_text(self):
+        c = RestClient(HEAD)
+        self.assertEqual(quiet(actions(c).post_inline, "a.go", "X", "3", "x")[0], 1)
+        self.assertEqual(quiet(actions(c).post_inline, "a.go", "R", "0", "x")[0], 1)
+        self.assertEqual(quiet(actions(c).post_inline, "a.go", "R", "3", "  "), (0, "Cancelled."))
+        self.assertEqual(c.writes(), [])
+
+    def test_file_and_pr_comments(self):
+        c = RestClient(HEAD)
+        quiet(actions(c).post_file_comment, "b.go", "file note")
+        quiet(actions(c).post_pr_comment, "overall")
+        self.assertEqual(c.writes(), [
+            ("POST", "/repos/o/r/pulls/5/comments",
+             {"body": "file note", "commit_id": "HEADSHA", "path": "b.go", "subject_type": "file"}),
+            ("POST", "/repos/o/r/issues/5/comments", {"body": "overall"})])
+
+    def test_replies_in_a_thread_and_in_the_conversation(self):
+        c = RestClient()
+        self.assertEqual(quiet(actions(c).post_reply, "77", "yes"), (0, "Reply posted."))
+        quiet(actions(c).post_reply, "0", "general")
+        self.assertEqual(c.writes(), [("POST", "/repos/o/r/pulls/5/comments/77/replies", {"body": "yes"}),
+                                      ("POST", "/repos/o/r/issues/5/comments", {"body": "general"})])
+
+    def test_edit_and_delete_pick_review_or_issue_comments(self):
+        c = RestClient()
+        self.assertEqual(quiet(actions(c).edit_comment, "77", "78", "new"), (0, "Comment 78 (thread 77) updated."))
+        quiet(actions(c).edit_comment, "0", "90", "new")
+        self.assertEqual(quiet(actions(c).delete_comment, "77", "78"), (0, "Comment 78 (thread 77) deleted."))
+        self.assertEqual([(m, p) for m, p, _ in c.writes()], [
+            ("PATCH", "/repos/o/r/pulls/comments/78"), ("PATCH", "/repos/o/r/issues/comments/90"),
+            ("DELETE", "/repos/o/r/pulls/comments/78")])
+
+    def threads(self):
+        return {"reviewThreads": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+            {"id": "PRRT_a", "comments": {"nodes": [{"databaseId": 77}]}}]}}}},
+            "resolveReviewThread": {"resolveReviewThread": {}},
+            "unresolveReviewThread": {"unresolveReviewThread": {}}}
+
+    def test_resolve_and_reopen(self):
+        c = RestClient(graphql=self.threads())
+        self.assertEqual(quiet(actions(c).set_thread_status, "77", "fixed"), (0, "Thread 77 set to fixed."))
+        self.assertEqual(quiet(actions(c).set_thread_status, "77", "active"), (0, "Thread 77 set to active."))
+        muts = [d for m, p, d in c.calls if p == "/graphql" and d["query"].startswith("mutation")]
+        self.assertIn("resolveReviewThread", muts[0]["query"])
+        self.assertIn("unresolveReviewThread", muts[1]["query"])
+        self.assertEqual(muts[0]["variables"], {"id": "PRRT_a"})
+
+    def test_unknown_thread_and_the_conversation_have_no_status(self):
+        c = RestClient(graphql=self.threads())
+        self.assertEqual(quiet(actions(c).set_thread_status, "12", "fixed")[0], 1)
+        self.assertEqual(quiet(actions(c).set_thread_status, "0", "fixed")[0], 1)
+
+    def test_votes_are_reviews(self):
+        c = RestClient(HEAD)
+        self.assertEqual(quiet(actions(c).set_vote, "10"), (0, "Vote set to 10."))
+        quiet(actions(c).set_vote, "-5")
+        quiet(actions(c).set_vote, "-5", "rename it")
+        self.assertEqual([d for _, _, d in c.writes()], [
+            {"event": "APPROVE", "commit_id": "HEADSHA"},
+            {"event": "REQUEST_CHANGES", "commit_id": "HEADSHA", "body": "Changes requested."},
+            {"event": "REQUEST_CHANGES", "commit_id": "HEADSHA", "body": "rename it"}])
+        self.assertEqual(quiet(actions(c).set_vote, "5")[0], 1)
+
+    def test_reset_dismisses_my_latest_review(self):
+        c = RestClient({("GET", "/user"): {"login": "me"},
+                        ("GET", "/repos/o/r/pulls/5/reviews"): [
+                            {"id": 1, "user": {"login": "me"}, "state": "APPROVED"},
+                            {"id": 2, "user": {"login": "bob"}, "state": "APPROVED"},
+                            {"id": 3, "user": {"login": "me"}, "state": "COMMENTED"}]})
+        self.assertEqual(quiet(actions(c).set_vote, "0"), (0, "Vote set to 0."))
+        self.assertEqual(c.writes(), [("PUT", "/repos/o/r/pulls/5/reviews/1/dismissals",
+                                       {"message": "Dismissed by its author.", "event": "DISMISS"})])
+
+    def test_error_text_is_github_s_message(self):
+        e = gh.GitHubHttpError(422, "u", json.dumps({"message": "Validation Failed",
+                                                     "errors": [{"message": "line must be part of the diff"}]}))
+        self.assertEqual(str(e), "HTTP 422: Validation Failed: line must be part of the diff")
+
+
 class ActionTests(unittest.TestCase):
-    def test_writes_are_not_there_yet(self):
+    def test_merging_is_not_there_yet(self):
         cfg = ac.Config.from_dict({"accounts": [{"host": "github", "pat": "t"}]})
         env = {"AZVICLI_ORG": "https://api.github.com", "AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r",
                "AZVICLI_PR": "5"}
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            code = ac._github_pr_action("--vote", ["10"], cfg.accounts[0], env)
+            code = ac._github_pr_action("--complete", ["squash"], cfg.accounts[0], env)
         self.assertEqual(code, 1)
         self.assertIn("isn't available for GitHub", err.getvalue())
 

@@ -3984,14 +3984,27 @@ def cmd_prefetch(env=None):
 # ---------------------------------------------------------------------------
 
 
-# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md: reads first,
-# writes in the phases after).
-_GITHUB_READS = ("--threads", "--iterations", "--get-pr")
+# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md: merging, CI and
+# the rest come in a later phase), with how each maps onto github_host.Actions.
+_GITHUB_ACTIONS = {
+    "--threads": lambda a, arg: a.threads(),
+    "--iterations": lambda a, arg: a.iterations(),
+    "--get-pr": lambda a, arg: a.get_pr(),
+    "--post": lambda a, arg: a.post_inline(arg(0), arg(1), arg(2), arg(3), arg(4)),
+    "--file-comment": lambda a, arg: a.post_file_comment(arg(0), arg(1)),
+    "--pr-comment": lambda a, arg: a.post_pr_comment(arg(0)),
+    "--reply": lambda a, arg: a.post_reply(arg(0), arg(1)),
+    "--status": lambda a, arg: a.set_thread_status(arg(0), arg(1)),
+    "--edit-comment": lambda a, arg: a.edit_comment(arg(0), arg(1), arg(2)),
+    "--delete-comment": lambda a, arg: a.delete_comment(arg(0), arg(1)),
+    "--vote": lambda a, arg: a.set_vote(arg(0), arg(1)),
+}
 
 
 def _github_pr_action(flag, rest, account, env):
     gh = github()
-    if flag not in _GITHUB_READS:
+    run = _GITHUB_ACTIONS.get(flag)
+    if run is None:
         print("{0} isn't available for GitHub pull requests yet.".format(flag), file=sys.stderr)
         return 1
     if not _is_uint(env.get("AZVICLI_PR") or ""):
@@ -4000,12 +4013,11 @@ def _github_pr_action(flag, rest, account, env):
     actions = gh.Actions(account, env)
     if not actions.ensure_client():
         return 1
+
+    def arg(i, default=""):
+        return rest[i] if i < len(rest) else default
     try:
-        if flag == "--threads":
-            return actions.threads()
-        if flag == "--iterations":
-            return actions.iterations()
-        return actions.get_pr()
+        return run(actions, arg)
     except Exception as ex:  # noqa: BLE001 - one line on stderr, like the Azure actions
         print("GitHub {0} failed: {1}".format(flag.lstrip("-"), ex), file=sys.stderr)
         return 1

@@ -2008,10 +2008,36 @@ do
     return th ~= nil and th.json:find("Gizmo thread", 1, true) ~= nil
   end, 100)
   if not ok then return fail("gizmos#7's threads never loaded under its key") end
+  -- gv offers GitHub's three verdicts; "Request changes" asks what needs
+  -- changing and sends it with the vote, to gizmos' PR.
+  require("azure-cli").setup({ ui = { confirm = "select" } })
+  local real_select, real_input = vim.ui.select, vim.ui.input
+  local offered
+  vim.ui.select = function(items, _, cb)
+    offered = {}
+    for _, it in ipairs(items) do offered[#offered + 1] = it.label end
+    for i, it in ipairs(items) do
+      if it.label == "Request changes" then return cb(it, i) end
+    end
+    cb(nil)
+  end
+  vim.ui.input = function(_, cb) cb("rename spin()") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
+  feed("gv")
+  ok = vim.wait(10000, function()
+    local l = io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a")
+    return l:find('["--vote", "-5", "rename spin()"]', 1, true) ~= nil
+  end, 100)
+  vim.ui.select, vim.ui.input = real_select, real_input
+  if table.concat(offered or {}, "|") ~= "Approve|Request changes|Dismiss my review" then
+    return fail("gv on a GitHub PR offered " .. vim.inspect(offered))
+  end
+  if not ok then return fail("Request changes never reached the provider with its reason") end
   vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
   local d = open_and_wait("demo-gh~doohickeys~7", "gizmo.py")
   if not d then return fail("doohickeys#7 never opened in the reviewer") end
-  if vim.api.nvim_get_current_tabpage() == gtab then return fail("doohickeys#7 reused gizmos#7's tab") end
+  local dtab = vim.api.nvim_get_current_tabpage()
+  if dtab == gtab then return fail("doohickeys#7 reused gizmos#7's tab") end
   ok = vim.wait(15000, function()
     local th = CACHE.threads("demo-gh~doohickeys~7")
     return th ~= nil and th.json:find("Doohickey thread", 1, true) ~= nil
@@ -2024,6 +2050,26 @@ do
   if not log:find("AZVICLI_REPO=doohickeys", 1, true) then
     return fail("no provider call named the doohickeys repository")
   end
+  -- Back in gizmos#7's tab, a vote is gizmos' - though opening doohickeys
+  -- rewrote the global AZVICLI_* environment since (the reviewer pins its
+  -- own PR on every call).
+  vim.api.nvim_set_current_tabpage(gtab)
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
+  vim.ui.select = function(items, _, cb) cb(items[1], 1) end
+  feed("gv")
+  local vote_line
+  ok = vim.wait(10000, function()
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find('["--vote", "10"]', 1, true) then vote_line = l end
+    end
+    return vote_line ~= nil
+  end, 100)
+  vim.ui.select = real_select
+  if not ok then return fail("Approve from gizmos#7's tab never reached the provider") end
+  if not vote_line:find("AZVICLI_REPO=gizmos ", 1, true) then
+    return fail("a vote from gizmos#7's tab went to another PR: " .. vote_line)
+  end
+  vim.api.nvim_set_current_tabpage(dtab)
   vim.cmd("tabclose")
   vim.api.nvim_set_current_tabpage(gtab)
   vim.cmd("tabclose")

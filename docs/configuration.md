@@ -79,11 +79,16 @@ accounts:
 `project_name`, `org_url` and `work_items` don't apply (the work-item screens
 stay Azure DevOps'). `:AzureCli doctor` checks the sign-in.
 
-So far a GitHub PR is read-only: the dashboard lists it in the same sections
-(asked to review, waiting, signed off, drafts, created by me), and the
-reviewer shows its files, diffs, commits and conversations - review threads
-on their lines, the Conversation tab as one thread. Commenting, reviewing,
-merging and the agent's tools on a GitHub PR are still to come; trying one
+On the dashboard a GitHub PR sits in the same sections (asked to review,
+waiting, signed off, drafts, created by me). The reviewer shows its files,
+diffs, commits and conversations - review threads on their lines, the
+Conversation tab as one thread - and takes comments, replies, edits and
+deletes as on Azure. `s` resolves a conversation or opens it again, and `gv`
+offers GitHub's verdicts: Approve, Request changes (it asks what needs
+changing - GitHub wants a reason) and Dismiss my review (GitHub allows that
+with write access to the repository). GitHub takes a line comment only on a
+changed line or the few around one; elsewhere, comment on the file. Merging,
+builds and the agent's tools on a GitHub PR are still to come; trying one
 says so.
 
 ### Accounts in setup() instead of a file (plugin)

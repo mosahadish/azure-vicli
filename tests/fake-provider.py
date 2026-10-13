@@ -57,8 +57,9 @@ PROJECT = "Demo"
 # PR number on purpose.
 GH_API = "https://api.github.com"
 GH_OWNER = "demo-gh"
-# The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_READS).
-GH_READS = ("--threads", "--iterations", "--get-pr")
+# The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
+GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
+              "--status", "--edit-comment", "--delete-comment", "--vote")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -1420,7 +1421,7 @@ def dispatch(ws, argv, env):
         "--get-pr": lambda: f.cmd_get_pr(),
     }
     handler = table.get(flag)
-    if handler is not None and f.is_github() and flag.startswith("--") and flag not in GH_READS \
+    if handler is not None and f.is_github() and flag.startswith("--") and flag not in GH_ACTIONS \
             and flag in PR_ACTION_FLAGS:
         print("{0} isn't available for GitHub pull requests yet.".format(flag), file=sys.stderr)
         return 1

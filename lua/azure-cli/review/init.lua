@@ -388,7 +388,27 @@ EXT.on_comment_popup = {}
 -- the already-running daemon when one is usable and falls back to a plain
 -- jobstart otherwise. A statement, not a new top-level local - see EXT's
 -- own comment above.
-EXT.rpc = require("azure-cli.rpc")
+--
+-- Every call carries THIS reviewer's PR (EXT.pr_env, captured when it
+-- opened): rpc.lua otherwise forwards whatever AZVICLI_* the global
+-- environment holds, and the dashboard rewrites those for each PR it opens
+-- - so with two reviewer tabs, a vote or comment from the first went to
+-- the second PR. A caller's own opts.env still wins, field by field.
+EXT.pr_env = {
+  AZVICLI_PR = ID, AZVICLI_PR_KEY = KEY, AZVICLI_ORG = ORG, AZVICLI_PROJECT = PROJECT,
+  AZVICLI_REPO = env.AZVICLI_REPO or "", AZVICLI_SOURCE = SOURCE, AZVICLI_TARGET = TARGET,
+  AZVICLI_REPO_PATH = REPO_PATH,
+}
+EXT.rpc = setmetatable({
+  run = function(argv, opts)
+    opts = opts or {}
+    local e = {}
+    for k, v in pairs(EXT.pr_env) do e[k] = v end
+    for k, v in pairs(opts.env or {}) do e[k] = v end
+    opts.env = e
+    return require("azure-cli.rpc").run(argv, opts)
+  end,
+}, { __index = require("azure-cli.rpc") })
 -- EXT.provider builds the argv every PR-action/prefetch job runs: the
 -- python data provider (azure-cli.py) directly, next to review-pr.sh's
 -- old $BASH/$SCRIPT pair. AZVICLI_PY/AZVICLI_PROVIDER are exported by the
@@ -1688,10 +1708,10 @@ local function cast_vote()
     current = function(o) return cur ~= nil and tostring(o.key) == cur end },
     function(vote)
   if not vote then return end
-  local function go()
+  local function go(reason)
   notify("Voting: " .. vote.label .. "...")
   local out = {}
-  EXT.rpc.run(EXT.provider({ "--vote", vote.key }), {
+  EXT.rpc.run(EXT.provider({ "--vote", vote.key, reason }), {
     detach = true,
     stdout_buffered = true,
     stderr_buffered = true,
@@ -1719,6 +1739,9 @@ local function cast_vote()
   if vote.confirm then
     require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?" },
       function(yes) if yes then go() end end)
+  elseif vote.reason then
+    require("azure-cli.prompt").input({ prompt = vote.label .. " - what needs changing?" },
+      function(text) if text then go(text) end end)
   else
     go()
   end
@@ -3491,7 +3514,7 @@ EXT.fetch_new_commits = function()
       AZVICLI_PR = tostring(ID),
       AZVICLI_ORG = ORG,
       AZVICLI_PROJECT = PROJECT,
-      AZVICLI_REPO = env.AZVICLI_REPO or "",
+      AZVICLI_REPO = EXT.pr_env.AZVICLI_REPO,
       AZVICLI_SOURCE = SOURCE,
       AZVICLI_TARGET = TARGET,
       AZVICLI_REPO_PATH = REPO_PATH,

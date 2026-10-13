@@ -57,7 +57,9 @@ local GITHUB = {
   host = "github",
   votes = {
     { key = "10", name = "approve", label = "Approve", signed = true, glyph = "\u{2713}" },
-    { key = "-5", name = "request_changes", label = "Request changes", glyph = "\u{2717}" },
+    -- `reason`: GitHub wants a few words with it - the menus ask, and the
+    -- text goes to --vote after the key.
+    { key = "-5", name = "request_changes", label = "Request changes", glyph = "\u{2717}", reason = true },
     { key = "0",  name = "reset", label = "Dismiss my review", reset = true },
   },
   -- A conversation is resolved or not; the provider reports them as

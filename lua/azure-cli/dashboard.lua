@@ -1768,9 +1768,16 @@ local function vote_pr()
   PROMPT.select({ prompt = "Vote on PR #" .. pr.id .. "  " .. (pr.title or ""), items = HOSTS.caps(pr).votes,
     current = function(o) return cur ~= nil and tostring(o.key) == cur end }, function(opt)
     if not opt then return end
-    run_action({ "--vote", opt.key }, "Voting on", function(p)
-      return set_my_vote(p, opt.key)
-    end)
+    local function go(reason)
+      run_action({ "--vote", opt.key, reason }, "Voting on", function(p)
+        return set_my_vote(p, opt.key)
+      end)
+    end
+    if opt.reason then
+      PROMPT.input({ prompt = opt.label .. " - what needs changing?" }, function(text) if text then go(text) end end)
+    else
+      go()
+    end
   end)
 end
 

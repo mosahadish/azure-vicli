@@ -48,10 +48,28 @@ def bind(module):
 
 class GitHubHttpError(Exception):
     def __init__(self, status, url, body):
-        Exception.__init__(self, "HTTP {0}: {1}".format(status, (body or "")[:300]))
+        Exception.__init__(self, "HTTP {0}: {1}".format(status, _error_text(body)))
         self.status = status
         self.url = url
         self.body = body
+
+
+def _error_text(body):
+    """GitHub's error JSON as one line: its message plus each error's own
+    ("Validation Failed: line must be part of the diff")."""
+    try:
+        data = json.loads(body or "")
+    except ValueError:
+        return (body or "")[:300]
+    if not isinstance(data, dict):
+        return (body or "")[:300]
+    parts = [str(data.get("message") or "")]
+    for e in data.get("errors") or []:
+        if isinstance(e, dict):
+            parts.append(str(e.get("message") or e.get("code") or ""))
+        elif e:
+            parts.append(str(e))
+    return ": ".join(p for p in parts if p)[:300]
 
 
 def api_base(api_url):
@@ -543,10 +561,34 @@ def whoami(client):
 STATUS = {"OPEN": "active", "MERGED": "completed", "CLOSED": "abandoned"}
 
 
+THREAD_NODES_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    reviewThreads(first: 100) { nodes { id comments(first: 1) { nodes { databaseId } } } } } }
+}
+"""
+
+RESOLVE = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }"
+UNRESOLVE = "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { id } } }"
+
+# Review events by vote (see the module comment); 0 dismisses my review.
+REVIEW_EVENTS = {"10": "APPROVE", "-5": "REQUEST_CHANGES"}
+
+# Statuses that leave a conversation open; anything else resolves it.
+OPEN_STATUSES = ("active", "pending")
+
+
+def _blank(text):
+    return text is None or not str(text).strip()
+
+
+def _uint(s):
+    return isinstance(s, str) and s.isdigit()
+
+
 class Actions(object):
     """The PR actions for a GitHub PR, answering azure-cli.py's PR_ACTION
-    flags with the same output. Writes arrive in later phases; until then
-    they say so."""
+    flags with the same output (the same one-line messages on success)."""
 
     def __init__(self, account, env, client=None):
         self.account = account
@@ -578,6 +620,163 @@ class Actions(object):
         data = self.client.graphql(ITERATIONS_QUERY, self._vars())
         pr = ((data.get("repository") or {}).get("pullRequest")) or {}
         print(json.dumps(ado_iterations(pr, (data.get("viewer") or {}).get("login")), ensure_ascii=False))
+        return 0
+
+    # -- writes ----------------------------------------------------------
+
+    def _repo(self, path):
+        return "/repos/{0}/{1}{2}".format(urllib.parse.quote(self.owner, safe=""),
+                                          urllib.parse.quote(self.repo, safe=""), path)
+
+    def _head(self):
+        return ((self.client.rest("GET", self._repo("/pulls/" + self.pr)) or {}).get("head") or {}).get("sha")
+
+    def post_inline(self, path, side, line_s, text, end_s=""):
+        """A comment on one line, or on lines line..end, of the right (new)
+        or left (old) side. GitHub takes these only on lines in the diff's
+        hunks; elsewhere it answers 422, passed on as the error."""
+        if not path or not _uint(line_s) or line_s == "0":
+            print("Invalid line.")
+            return 1
+        if side not in ("R", "L"):
+            print("Invalid side.")
+            return 1
+        if _blank(text):
+            print("Cancelled.")
+            return 0
+        line = int(line_s)
+        end = int(end_s) if _uint(end_s) else None
+        gh_side = "RIGHT" if side == "R" else "LEFT"
+        data = {"body": text, "commit_id": self._head(), "path": path, "side": gh_side}
+        if end is not None and end > line:
+            data.update({"start_line": line, "start_side": gh_side, "line": end})
+        else:
+            data["line"] = line
+        try:
+            self.client.rest("POST", self._repo("/pulls/{0}/comments".format(self.pr)), data)
+        except GitHubHttpError as e:
+            if e.status == 422 and "part of the diff" in str(e):
+                import sys
+                print("GitHub takes a line comment only on a changed line or the few lines around one - "
+                      "that line is outside the diff's hunks. A file comment (on the file list) works anywhere.",
+                      file=sys.stderr)
+                return 1
+            raise
+        print("Comment posted.")
+        return 0
+
+    def post_file_comment(self, path, text):
+        if not path:
+            print("No file selected.")
+            return 1
+        if _blank(text):
+            print("Cancelled.")
+            return 0
+        self.client.rest("POST", self._repo("/pulls/{0}/comments".format(self.pr)),
+                         {"body": text, "commit_id": self._head(), "path": path, "subject_type": "file"})
+        print("Comment posted.")
+        return 0
+
+    def post_pr_comment(self, text):
+        if _blank(text):
+            print("Cancelled.")
+            return 0
+        self.client.rest("POST", self._repo("/issues/{0}/comments".format(self.pr)), {"body": text})
+        print("Comment posted.")
+        return 0
+
+    def post_reply(self, thread_id, text):
+        """A reply in a review thread (its id is its first comment's), or -
+        thread 0, the Conversation tab - a new comment there."""
+        if not _uint(thread_id):
+            print("Invalid thread id: '{0}'".format(thread_id))
+            return 1
+        if _blank(text):
+            print("Cancelled.")
+            return 0
+        if thread_id == "0":
+            self.client.rest("POST", self._repo("/issues/{0}/comments".format(self.pr)), {"body": text})
+        else:
+            self.client.rest("POST", self._repo("/pulls/{0}/comments/{1}/replies".format(self.pr, thread_id)),
+                             {"body": text})
+        print("Reply posted.")
+        return 0
+
+    def _comment_path(self, thread_id, comment_id):
+        kind = "issues" if thread_id == "0" else "pulls"
+        return self._repo("/{0}/comments/{1}".format(kind, comment_id))
+
+    def edit_comment(self, thread_id, comment_id, text):
+        if not _uint(thread_id) or not _uint(comment_id):
+            print("Invalid thread/comment id.")
+            return 1
+        if _blank(text):
+            print("Cancelled.")
+            return 0
+        self.client.rest("PATCH", self._comment_path(thread_id, comment_id), {"body": text})
+        print("Comment {0} (thread {1}) updated.".format(comment_id, thread_id))
+        return 0
+
+    def delete_comment(self, thread_id, comment_id):
+        if not _uint(thread_id) or not _uint(comment_id):
+            print("Invalid thread/comment id.")
+            return 1
+        self.client.rest("DELETE", self._comment_path(thread_id, comment_id))
+        print("Comment {0} (thread {1}) deleted.".format(comment_id, thread_id))
+        return 0
+
+    def set_thread_status(self, thread_id, status):
+        """Resolves the conversation, or (active/pending) opens it again."""
+        if not _uint(thread_id):
+            print("Invalid thread id: '{0}'".format(thread_id))
+            return 1
+        if thread_id == "0":
+            print("The Conversation tab isn't a thread anyone resolves.")
+            return 1
+        data = self.client.graphql(THREAD_NODES_QUERY, self._vars())
+        nodes = (((data.get("repository") or {}).get("pullRequest") or {}).get("reviewThreads") or {}).get(
+            "nodes") or []
+        node = next((n.get("id") for n in nodes
+                     if str((((n.get("comments") or {}).get("nodes") or [{}])[0] or {}).get("databaseId")) == thread_id),
+                    None)
+        if not node:
+            print("Thread {0} isn't on this pull request.".format(thread_id))
+            return 1
+        reopen = (status or "").lower() in OPEN_STATUSES
+        self.client.graphql(UNRESOLVE if reopen else RESOLVE, {"id": node})
+        print("Thread {0} set to {1}.".format(thread_id, "active" if reopen else "fixed"))
+        return 0
+
+    def set_vote(self, vote, body=""):
+        """10 approves, -5 requests changes (GitHub wants a reason: `body`,
+        else a stock one), 0 dismisses my latest approving/requesting
+        review - which GitHub allows only with write access to the repo."""
+        if vote == "0":
+            return self._dismiss_my_review()
+        event = REVIEW_EVENTS.get(vote)
+        if not event:
+            print("Invalid vote for GitHub: '{0}' (10 approve, -5 request changes, 0 dismiss)".format(vote))
+            return 1
+        data = {"event": event, "commit_id": self._head()}
+        if not _blank(body):
+            data["body"] = body
+        elif event == "REQUEST_CHANGES":
+            data["body"] = "Changes requested."
+        self.client.rest("POST", self._repo("/pulls/{0}/reviews".format(self.pr)), data)
+        print("Vote set to {0}.".format(vote))
+        return 0
+
+    def _dismiss_my_review(self):
+        me = (self.client.rest("GET", "/user") or {}).get("login")
+        reviews = self.client.rest("GET", self._repo("/pulls/{0}/reviews?per_page=100".format(self.pr))) or []
+        mine = [r for r in reviews if ((r or {}).get("user") or {}).get("login") == me
+                and (r or {}).get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+        if not mine:
+            print("Vote set to 0.")  # nothing of mine stands: already "no vote"
+            return 0
+        self.client.rest("PUT", self._repo("/pulls/{0}/reviews/{1}/dismissals".format(self.pr, mine[-1]["id"])),
+                         {"message": "Dismissed by its author.", "event": "DISMISS"})
+        print("Vote set to 0.")
         return 0
 
     def get_pr(self):
