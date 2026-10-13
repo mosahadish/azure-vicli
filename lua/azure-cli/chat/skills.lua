@@ -20,11 +20,16 @@
 --   M.dirs()                the folders looked in (config, else DIRS)
 --   M.list(cwd)             { name, path, description, allowed } per skill
 --   M.available(cwd)        skill names in `cwd` and the user's skill folders
---   M.report(cwd)           /skills: the list as text
+--   M.report(cwd)           the list as text (/skills when none are found)
+--   M.popup(cwd, on_use)    /skills: the list in a popup - <Space> allows a
+--                           skill or makes it ask again, <CR> calls
+--                           on_use(name) to start a message with /name
 --   M.named_in(text, names) the first of `names` that `text` asks for (pure)
 --   M.in_tool_call(u, names) the one a tool call loads, or nil (pure)
 --   M.allowed(name)         whether you've allowed it
 --   M.allow(name)           remembers it as allowed
+--   M.disallow(name)        forgets that; false when chat.allowed_skills
+--                           allows it (only the config can take it back)
 local M = {}
 
 M.DIRS = { ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }
@@ -150,6 +155,95 @@ function M.allow(name)
   table.insert(load(), name)
   vim.fn.mkdir(require("azure-cli.chat.store").root(), "p")
   require("azure-cli.shell").write_json(file(), stored)
+end
+
+local function in_config(name)
+  return vim.tbl_contains((require("azure-cli.config").get().chat or {}).allowed_skills or {}, name)
+end
+
+function M.disallow(name)
+  if in_config(name) then return false end
+  local list = load()
+  for i = #list, 1, -1 do
+    if list[i] == name then table.remove(list, i) end
+  end
+  vim.fn.mkdir(require("azure-cli.chat.store").root(), "p")
+  require("azure-cli.shell").write_json(file(), stored)
+  return true
+end
+
+-- The popup's lines: per skill a row with its mark, /name and description,
+-- and one with its folder. Returns lines, row -> skill index.
+function M.popup_lines(list)
+  local lines, at = {}, {}
+  for i, s in ipairs(list) do
+    local d = s.description ~= "" and ("  " .. s.description) or ""
+    lines[#lines + 1] = " " .. (s.allowed and "\u{2713}" or " ") .. " /" .. s.name .. d
+    at[#lines] = i
+    lines[#lines + 1] = "     " .. vim.fn.fnamemodify(s.path, ":~")
+    at[#lines] = i
+  end
+  return lines, at
+end
+
+function M.popup(cwd, on_use)
+  local list = M.list(cwd)
+  if #list == 0 then return nil end
+  local UI = require("azure-cli.ui")
+  local lines, at = M.popup_lines(list)
+  local win, buf = UI.open_float(lines, {
+    title = "Skills (" .. #list .. ") \u{00B7} \u{2713} allowed: its prompts don't ask", center = true, min_width = 60,
+    footer = "<CR> use in the chat \u{00B7} <Space> allow / ask",
+  })
+  if not win then return nil end
+  UI.wo(win, "wrap", false)
+  UI.wo(win, "cursorline", true)
+  local ns = vim.api.nvim_create_namespace("azure_cli_skills_popup")
+  local function paint()
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modifiable = false
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    for row, l in ipairs(lines) do
+      local s = list[at[row]]
+      if l:sub(1, 5) == "     " then
+        vim.api.nvim_buf_add_highlight(buf, ns, "Comment", row - 1, 0, -1)
+      else
+        local from, to = l:find("/" .. s.name, 1, true)
+        if s.allowed then vim.api.nvim_buf_add_highlight(buf, ns, "DiagnosticOk", row - 1, 0, from - 1) end
+        vim.api.nvim_buf_add_highlight(buf, ns, "Identifier", row - 1, from - 1, to)
+      end
+    end
+  end
+  paint()
+  local function current()
+    return list[at[vim.api.nvim_win_get_cursor(win)[1]]]
+  end
+  local kopts = { buffer = buf, silent = true, nowait = true }
+  vim.keymap.set("n", "<Space>", function()
+    local s = current()
+    if not s then return end
+    if s.allowed then
+      if not M.disallow(s.name) then
+        return require("azure-cli.shell").notify("/" .. s.name .. " is allowed by chat.allowed_skills in your config - "
+          .. "take it out there to have its prompts ask again.", vim.log.levels.WARN)
+      end
+      s.allowed = false
+    else
+      M.allow(s.name)
+      s.allowed = true
+    end
+    local row = vim.api.nvim_win_get_cursor(win)
+    lines, at = M.popup_lines(list)
+    paint()
+    pcall(vim.api.nvim_win_set_cursor, win, row)
+  end, kopts)
+  vim.keymap.set("n", "<CR>", function()
+    local s = current()
+    pcall(vim.api.nvim_win_close, win, true)
+    if s and on_use then on_use(s.name) end
+  end, kopts)
+  return win, buf
 end
 
 -- Tests: forget what's loaded.

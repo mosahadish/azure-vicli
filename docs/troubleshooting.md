@@ -77,8 +77,8 @@ _Part of the [azure-vicli](../README.md) docs._
   agent's shell commands, `{ all = "allow" }` for nothing to ask at all
   (see [Chat](chat.md#what-the-agent-can-do)). Each prompt says why it
   asked, and the chat logs what became of every command.
-- **A skill isn't recognised**: `/skills` in the chat lists the ones
-  found, and where it looked when there are none. They're `*/SKILL.md`
+- **A skill isn't recognised**: `/skills` in the chat shows the ones
+  found in a popup, and says where it looked when there are none. They're `*/SKILL.md`
   folders under `chat.skill_dirs` (default `.github/skills`,
   `.claude/skills`, `.agents/skills`, `.copilot/skills`), in the
   repository the agent runs in (the PR's clone) and in your home folder.

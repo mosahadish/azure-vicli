@@ -528,15 +528,27 @@ send = function(text, opts)
     notify("The agent is still answering - wait, or stop it (<C-c>).", vim.log.levels.WARN)
     return
   end
-  -- /skills: the agent's skills where it would run (chat/skills.lua),
-  -- answered here - nothing goes to the agent.
+  -- /skills: the agent's skills where it would run (chat/skills.lua), in a
+  -- popup that allows them and starts a message with one - nothing goes to
+  -- the agent. With none found, the chat says where it looked.
   if text:match("^%s*/skills%s*$") then
     if from_input and I().input_buf() and vim.api.nvim_buf_is_valid(I().input_buf()) then
       vim.api.nvim_buf_set_lines(I().input_buf(), 0, -1, false, { "" })
     end
     local snap = opts.snap or require("azure-cli.chat.view").snapshot(opts.view_win or CHAT().main_win())
+    local SKILLS = require("azure-cli.chat.skills")
+    if SKILLS.popup(agent_cwd(snap), function(name)
+      CHAT().show(true)
+      local ib = I().input_buf()
+      if ib and vim.api.nvim_buf_is_valid(ib) then
+        vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "/" .. name .. " " })
+        if vim.api.nvim_get_current_buf() == ib then pcall(vim.api.nvim_win_set_cursor, 0, { 1, #name + 2 }) end
+      end
+    end) then
+      return
+    end
     table.insert(st.entries, { role = "you", text = text, where = where_label(snap), view = snap })
-    table.insert(st.entries, { role = "note", text = require("azure-cli.chat.skills").report(agent_cwd(snap)) })
+    table.insert(st.entries, { role = "note", text = SKILLS.report(agent_cwd(snap)) })
     render()
     return
   end

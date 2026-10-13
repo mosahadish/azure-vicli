@@ -170,14 +170,25 @@ local s4 = send_and_wait("EXEC=kubectl_apply")
 check("all = deny: refused without asking", #asked == 0 and s4 and s4.text:find("exec[kubectl apply]=no", 1, true) ~= nil,
   vim.inspect({ asked, s4 and s4.text }))
 require("azure-cli.config").get().chat.permissions = nil
-local orig_report = SK.report
-SK.report = function() return "Skills (1) - /deploy-check" end
+local orig_report, orig_popup = SK.report, SK.popup
+local on_use
+SK.popup = function(_, cb) on_use = cb return 1 end
 local n_before = #STATE.chat.entries
 CHAT.send("/skills", { view_win = win })
+check("/skills opens the popup, without asking the agent or adding to the chat",
+  on_use ~= nil and #STATE.chat.entries == n_before and not STATE.chat.running)
+on_use("deploy-check")
+check("/skills: using one starts the message with it",
+  table.concat(vim.api.nvim_buf_get_lines(CHAT._.input_buf(), 0, -1, false), "\n") == "/deploy-check ")
+vim.cmd("stopinsert")
+vim.api.nvim_buf_set_lines(CHAT._.input_buf(), 0, -1, false, { "" })
+SK.popup = function() return nil end
+SK.report = function() return "No skills found." end
+CHAT.send("/skills", { view_win = win })
 local last = STATE.chat.entries[#STATE.chat.entries]
-check("/skills lists them in the chat, without asking the agent", #STATE.chat.entries == n_before + 2
-  and last.role == "note" and last.text == "Skills (1) - /deploy-check" and not STATE.chat.running, vim.inspect(last))
-SK.report = orig_report
+check("/skills with none found says so in the chat", #STATE.chat.entries == n_before + 2
+  and last.role == "note" and last.text == "No skills found." and not STATE.chat.running, vim.inspect(last))
+SK.report, SK.popup = orig_report, orig_popup
 pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
 SK._reset()
 asked = {}

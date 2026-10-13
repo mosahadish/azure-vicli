@@ -113,8 +113,8 @@ launcher sets them in its own palette.
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
 They run against what's on screen like any message. (`/skills` isn't a
-prompt: it lists the agent's skills right in the chat, without asking the
-agent - see [Permissions](#github-copilot-cli).) Add your own, replace
+prompt: it opens a popup of the agent's skills, without asking the agent -
+see [Permissions](#github-copilot-cli).) Add your own, replace
 or remove the built-in ones with `chat.prompts`:
 
 ```lua
@@ -254,8 +254,13 @@ picks goes through `session/set_config_option`.
   pick it every command and file edit the skill makes is accepted, now and
   next time; each still shows in the chat as `(allowed: skill …)`.
   `chat.allowed_skills = { "triage-pr-comments" }` allows one up front.
-  `/skills` in the chat lists the skills found (each one's description,
-  folder, and ✓ when allowed) without asking the agent.
+  `/skills` in the chat opens a popup of the skills found (each one's
+  description, folder, and ✓ when allowed) without asking the agent:
+  `<Space>` allows the skill under the cursor, or makes its prompts ask
+  again (one allowed by `chat.allowed_skills` stays allowed until you take
+  it out of your config), and `<CR>` starts your message with it
+  (`/name `) in the input box. With none found, the chat says where it
+  looked.
   `chat.skill_dirs` changes where they're looked for: the default is
   `{ ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }`;
   a relative folder is looked for in the repository and in your home

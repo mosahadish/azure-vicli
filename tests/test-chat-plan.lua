@@ -197,6 +197,28 @@ do
   SK.allow("deploy-check")
   SK._reset()
   check("skills: allowed from the popup, kept", SK.allowed("deploy-check"))
+  check("skills: disallowed again, kept", SK.disallow("deploy-check") and not SK.allowed("deploy-check")
+    and (SK._reset() or true) and not SK.allowed("deploy-check"))
+  check("skills: one allowed in setup can't be disallowed here", SK.disallow("review") == false and SK.allowed("review"))
+  -- /skills' popup: <Space> allows / makes it ask again, <CR> uses one.
+  local used
+  local pwin, pbuf = SK.popup(dir, function(name) used = name end)
+  local function key(k) vim.fn.maparg(k, "n", false, true).callback() end
+  local plines = vim.api.nvim_buf_get_lines(pbuf, 0, -1, false)
+  local drow
+  for i, l in ipairs(plines) do if not drow and l:find("/deploy-check", 1, true) then drow = i end end
+  check("skills popup: a row per skill with its description, then its folder", drow
+    and plines[drow] == "   /deploy-check  Checks a deploy" and plines[drow + 1]:sub(-#"/skills/deploy-check") == "/skills/deploy-check", vim.inspect(plines))
+  vim.api.nvim_win_set_cursor(pwin, { drow + 1, 0 })
+  key("<Space>")
+  check("skills popup: <Space> allows it (from its folder line too), shown and kept",
+    SK.allowed("deploy-check") and vim.api.nvim_buf_get_lines(pbuf, drow - 1, drow, false)[1]:find("^ \u{2713} /deploy%-check") ~= nil,
+    vim.api.nvim_buf_get_lines(pbuf, 0, -1, false))
+  key("<Space>")
+  check("skills popup: <Space> again makes it ask", not SK.allowed("deploy-check"))
+  key("<CR>")
+  check("skills popup: <CR> closes it and uses the skill", used == "deploy-check" and not vim.api.nvim_win_is_valid(pwin), used)
+  check("skills popup: none found opens nothing", SK.popup(vim.fn.tempname(), function() end) == nil)
   require("azure-cli").setup({})
   pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
   SK._reset()

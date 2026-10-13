@@ -203,7 +203,7 @@ your dotfiles repo instead:
   approve a plan, its own tests and plain searches run without asking;
   anything else asks, showing the exact command - unless you allowed the
   skill doing it, or set `chat.permissions` (`all = "allow"` for an
-  autopilot where nothing asks). `/skills` lists the agent's skills.
+  autopilot where nothing asks). `/skills` opens a popup of the agent's skills to allow them or start a message with one.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`
