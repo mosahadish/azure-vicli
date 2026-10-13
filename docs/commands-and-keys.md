@@ -345,6 +345,7 @@ paste the output here after changing a default.
 | `history` | `gh` |
 | `model` | `gm` |
 | `new_chat` | `gn` |
+| `newline` | `<S-CR>` / `<C-j>` |
 | `next_message` | `<Down>` |
 | `open_ref` | `<CR>` |
 | `palette` | `g.` |
@@ -353,7 +354,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `send` | `<CR>` |
-| `send_insert` | `<C-s>` |
+| `send_insert` | `<CR>` / `<C-s>` |
 | `toggle` | `gq` |
 | `use_as_reply` | `gr` |
 | `why` | `ga` |

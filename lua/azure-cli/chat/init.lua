@@ -381,7 +381,10 @@ function M.set_winbars()
       local KEYS = require("azure-cli.keys")
       local send = KEYS.resolve("chat", "send")
       if type(send) == "table" then send = send[1] end
+      local newline = KEYS.resolve("chat", "newline")
+      if type(newline) == "table" then newline = table.concat(newline, "/") end
       pcall(UI.wo, w.input, "winbar", "%#AzureCliWinbarHelp# " .. (send and (send .. " sends") or "")
+        .. (newline and (" \u{00B7} " .. newline .. " new line") or "")
         .. " \u{00B7} /prompt \u{00B7} !PR #item \u{00B7} ? keys%<")
     end
   end
@@ -483,8 +486,20 @@ local function ensure_bufs()
     end
   end, { desc = "unfold / fold this answer and its tool calls" })
   KEYS.bind(input_buf, "chat", "send", function() send() end, { desc = "send the message" })
-  KEYS.bind(input_buf, "chat", "send_insert", function() vim.cmd("stopinsert") send() end,
-    { desc = "send the message", mode = "i" })
+  -- While typing: send, unless the completion menu is open (<CR> there
+  -- accepts the /prompt, !PR or #item); newline breaks the line instead.
+  local send_insert = KEYS.resolve("chat", "send_insert")
+  for _, k in ipairs(type(send_insert) == "table" and send_insert or { send_insert }) do
+    vim.keymap.set("i", k, function()
+      if vim.fn.pumvisible() == 1 then return vim.api.nvim_replace_termcodes(k, true, false, true) end
+      vim.schedule(function() vim.cmd("stopinsert") send() end)
+      return ""
+    end, { buffer = input_buf, expr = true, silent = true, desc = "send the message" })
+  end
+  local newline = KEYS.resolve("chat", "newline")
+  for _, k in ipairs(type(newline) == "table" and newline or { newline }) do
+    vim.keymap.set("i", k, "<CR>", { buffer = input_buf, silent = true, desc = "a new line in the message" })
+  end
   KEYS.bind(input_buf, "chat", "prev_message", function() history_step(-1) end, { desc = "the previous message sent" })
   KEYS.bind(input_buf, "chat", "next_message", function() history_step(1) end, { desc = "the next message sent" })
   -- The same keys while typing, unless the completion menu is open.

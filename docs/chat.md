@@ -44,7 +44,8 @@ until you hide it. The conversation is the same in every tab.
 
 | Key (in the panel) | Action |
 |---|---|
-| `<CR>` (input box, normal mode) / `<C-s>` (while typing) | Send the message |
+| `<CR>` (input box, normal mode or while typing) / `<C-s>` (while typing) | Send the message; with the completion menu open, `<CR>` picks the entry instead |
+| `<S-CR>` / `<C-j>` (while typing) | A new line in the message (`<S-CR>` where the terminal reports it, `<C-j>` everywhere) |
 | `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
 | `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |

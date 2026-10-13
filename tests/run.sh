@@ -471,6 +471,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-editor-mode.lua (headless nvim, real input)" "$out"
   fi
 
+  # The chat input: <CR> sends while typing, <C-j> breaks the line (real input).
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-chat-insert-send.lua" 2>&1)"
+  if [[ "$out" == *CHAT-INSERT-SEND-OK* ]]; then
+    pass "test-chat-insert-send.lua (headless nvim, real input)"
+  else
+    fail "test-chat-insert-send.lua (headless nvim, real input)" "$out"
+  fi
+
   # The chat bridge over a real socket: the token, and the request size cap.
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-bridge.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all bridge tests passed"* ]]; then

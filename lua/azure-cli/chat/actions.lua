@@ -127,6 +127,7 @@ show_help = function()
   local lines = KEYS.help_lines("chat", "Chat keys", {
     "Talk",
     { "send", "send the message (in the input box)" }, { "send_insert", "send while typing" },
+    { "newline", "a new line while typing" },
     { "focus_input", "type a message (in the conversation)" },
     { "prev_message", "the previous message you sent" }, { "next_message", "the next one" },
     { "prompts", "run a saved prompt (/name in the input box does the same)" },
