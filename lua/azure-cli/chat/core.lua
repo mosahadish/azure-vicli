@@ -195,6 +195,22 @@ local function look_only_part(part)
     local flags = GIT_LOOK_ONLY[words[i] or ""]
     return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
   end
+  if name == "sed" then
+    -- Printing lines by number only (sed -n 7,30p f, sed -n '$p'): no
+    -- -i, no script file, no command but p/q - sed's w and e write and run.
+    local script
+    for k = 2, #words do
+      local w = words[k]
+      if w == "-n" or w == "--quiet" or w == "--silent" or w == "-E" or w == "-r" or w == "-s" then
+        -- reading flags
+      elseif w:match("^%-") then
+        return false
+      elseif not script then
+        script = w
+      end
+    end
+    return script ~= nil and script:match("^[%d%$]+,?[%d%$]*[pq]$") ~= nil
+  end
   local flags = LOOK_ONLY[name]
   return flags ~= nil and not bad_flag(words, 2, flags)
 end

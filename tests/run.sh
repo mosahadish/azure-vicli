@@ -38,6 +38,12 @@ set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Nothing from the environment we were started in: a run from inside
+# Neovim (the chat agent's run_tests, a :terminal) inherits the plugin's
+# AZVICLI_* exports - the prefetch dir, the PR the dashboard last opened -
+# which the tests would otherwise read as their own.
+for v in $(env | sed -n 's/^\(AZVICLI_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

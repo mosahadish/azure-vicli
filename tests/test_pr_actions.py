@@ -680,6 +680,9 @@ class DefaultPrefetchDirTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=False), \
                  mock.patch.object(ac, "default_prefetch_dir", return_value=cache_dir), \
                  mock.patch.object(ac.subprocess, "run") as run:
+                # Absent for real: a run started from inside Neovim (the
+                # chat agent's run_tests) inherits the plugin's own value.
+                os.environ.pop("AZVICLI_PREFETCH_DIR", None)
                 run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
                 rc = ac.cmd_prefetch()
             self.assertEqual(rc, 0)

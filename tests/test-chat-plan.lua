@@ -529,7 +529,8 @@ do
     { "rg", "-n", "Config" }, "git -C ../repo grep -n Foo", "findstr /s /n Config *.cs",
     "Get-ChildItem -Recurse -Filter *.cs -ErrorAction SilentlyContinue 2>$null | Select-Object -First 20",
     "grep -rn x src 2>/dev/null | head", "git log -5 2>&1", "Get-ChildItem src | Where-Object Name -like '*Test*'",
-    "Get-Content a.cs *>$null" }, true)
+    "Get-Content a.cs *>$null", "sed -n 7,30p a.lua", "grep -n x f | sed -n 1,20p | cut -c1-90; echo ----; grep -n y g" },
+    true)
   check("look_only_command: searching and listing", wrong == nil, wrong)
   wrong = all({ "rm -rf x", "grep x > out.txt", "find . -delete", "find . \"-delete\"", "find . -exec rm {} ;",
     "rg --pre=./evil x", "sort -ro out x", "git -c core.pager=evil log", "git push", "git branch -D x",
@@ -537,7 +538,7 @@ do
     "Get-ChildItem | ForEach-Object { Remove-Item $_ }", "git diff --output=x", "git log --ext-diff",
     "grep x 'unterminated", "fd . -x rm", "(rm x)", "r\\m -rf x", "", "dotnet build", "FOO=1 grep x",
     "grep x 2>/dev/nullx", "grep x 2>out.txt", "grep x >$nullx", "ls 2>$env:TEMP/x", "Get-ChildItem | Where-Object { $_.Delete() }",
-    "grep x 2>&1 > out.txt" }, false)
+    "grep x 2>&1 > out.txt", "sed -i s/a/b/ f", "sed s/a/b/ f", "sed -n 1w out f", "sed -n 1e f", "sed -f s.sed f" }, false)
   check("look_only_command: anything that writes or runs something else", wrong == nil, wrong)
 end
 
