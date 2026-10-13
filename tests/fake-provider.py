@@ -59,7 +59,7 @@ GH_API = "https://api.github.com"
 GH_OWNER = "demo-gh"
 # The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
-              "--status", "--edit-comment", "--delete-comment", "--vote")
+              "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -853,6 +853,15 @@ class Fake:
             return 1
         tid, text = (rest + ["", ""])[:2]
         t = self.find_thread(tid)
+        if t is None and tid == "0" and self.is_github() and text.strip():
+            # GitHub's Conversation tab (thread 0) starts with its first comment.
+            t = {"id": 0, "status": "active", "isDeleted": False, "conversation": True, "comments": [],
+                 "publishedDate": now_iso(), "lastUpdatedDate": now_iso(), "threadContext": None, "properties": {}}
+            self.threads().append(t)
+            t["comments"].append(self.new_comment(text, 0, 1))
+            self.ws.save(self.state)
+            print("Reply posted.")
+            return 0
         if not tid.isdigit() or t is None:
             print("Invalid thread id.")
             return 1
@@ -1009,6 +1018,31 @@ class Fake:
         mine["vote"] = int(vote)
         self.ws.save(self.state)
         print("Vote set to {0}.".format(vote))
+        return 0
+
+    def cmd_submit_review(self, rest):
+        """GitHub's whole-queue review (github_host.py's submit_review): each
+        item through the same handler it would have gone out by alone, the
+        body as a Conversation comment, then the verdict - as one call."""
+        if not self.is_github():
+            print("--submit-review is for GitHub pull requests; Azure DevOps has no review to submit.",
+                  file=sys.stderr)
+            return 1
+        if not self.need_pr():
+            return 1
+        payload = json.loads(rest[0]) if rest else {}
+        handlers = {"--post": self.cmd_post, "--file-comment": self.cmd_file_comment, "--reply": self.cmd_reply}
+        with contextlib.redirect_stdout(io.StringIO()):
+            for args in payload.get("items") or []:
+                if args[0] not in handlers or handlers[args[0]](args[1:]) != 0:
+                    print("{0} can't be part of a review.".format(args[0]), file=sys.stderr)
+                    return 1
+            if payload.get("body"):
+                self.cmd_reply(["0", payload["body"]])
+            if str(payload.get("event")) in ("10", "-5"):
+                self.cmd_vote([str(payload["event"])])
+        n = len(payload.get("items") or [])
+        print("Review submitted ({0} comment{1}).".format(n, "" if n == 1 else "s"))
         return 0
 
     def cmd_complete(self, rest):
@@ -1371,7 +1405,7 @@ class Fake:
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
                    "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
                    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
-                   "--get-pr")
+                   "--get-pr", "--submit-review")
 
 
 def dispatch(ws, argv, env):
@@ -1419,6 +1453,7 @@ def dispatch(ws, argv, env):
         "--set-description": lambda: f.cmd_set_description(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
+        "--submit-review": lambda: f.cmd_submit_review(rest),
     }
     handler = table.get(flag)
     if handler is not None and f.is_github() and flag.startswith("--") and flag not in GH_ACTIONS \

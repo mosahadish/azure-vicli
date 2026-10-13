@@ -2024,15 +2024,55 @@ do
   vim.ui.input = function(_, cb) cb("rename spin()") end
   vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
   feed("gv")
+  -- Done, not just sent: nothing left in flight with the daemon (a request
+  -- still out when the smoke quits can keep Neovim from exiting).
+  local function provider_idle()
+    local st = require("azure-cli.state").rpc
+    return not st or next(st.pending or {}) == nil
+  end
   ok = vim.wait(10000, function()
     local l = io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a")
-    return l:find('["--vote", "-5", "rename spin()"]', 1, true) ~= nil
+    return l:find('["--vote", "-5", "rename spin()"]', 1, true) ~= nil and provider_idle()
   end, 100)
   vim.ui.select, vim.ui.input = real_select, real_input
   if table.concat(offered or {}, "|") ~= "Approve|Request changes|Dismiss my review" then
     return fail("gv on a GitHub PR offered " .. vim.inspect(offered))
   end
   if not ok then return fail("Request changes never reached the provider with its reason") end
+  -- gS on GitHub: the queue goes out as one review, the Conversation reply
+  -- as its body, nothing comment by comment.
+  local STATE = require("azure-cli.state")
+  local gkey = "demo-gh~gizmos~7"
+  local live = STATE.batch_live and STATE.batch_live[gkey]
+  if not (live and live({ kind = "thread", text = "native line", bucket = "line", where = "gizmo.py\tR\t2",
+      path = "gizmo.py", side = "R", lineno = 2, args = { "--post", "gizmo.py", "R", "2", "native line" } })
+      and live({ kind = "reply", thread_id = 0, text = "native conversation" })) then
+    return fail("couldn't queue on gizmos#7")
+  end
+  vim.ui.select = function(items, _, cb)
+    for i, it in ipairs(items) do if it.label == "Approve" then return cb(it, i) end end
+    cb(nil)
+  end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
+  feed("gS")
+  local review_line
+  ok = vim.wait(10000, function()
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find('"--submit-review"', 1, true) then review_line = l end
+    end
+    return review_line ~= nil and #STATE.batch[gkey].items == 0
+  end, 100)
+  vim.ui.select = real_select
+  if not ok then return fail("gS on gizmos#7 didn't submit one review: " .. vim.inspect(STATE.batch[gkey].items)) end
+  if not (review_line:find("native line", 1, true) and review_line:find("native conversation", 1, true)
+      and review_line:find('\\"event\\":\\"10\\"', 1, true)) then
+    return fail("the review didn't carry the queue and the verdict: " .. review_line)
+  end
+  for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+    if l:find('["--post"', 1, true) and l:find("native line", 1, true) then
+      return fail("a queued comment went out on its own besides the review")
+    end
+  end
   vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
   local d = open_and_wait("demo-gh~doohickeys~7", "gizmo.py")
   if not d then return fail("doohickeys#7 never opened in the reviewer") end
@@ -2062,13 +2102,14 @@ do
     for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
       if l:find('["--vote", "10"]', 1, true) then vote_line = l end
     end
-    return vote_line ~= nil
+    return vote_line ~= nil and provider_idle()
   end, 100)
   vim.ui.select = real_select
   if not ok then return fail("Approve from gizmos#7's tab never reached the provider") end
   if not vote_line:find("AZVICLI_REPO=gizmos ", 1, true) then
     return fail("a vote from gizmos#7's tab went to another PR: " .. vote_line)
   end
+  vim.wait(10000, provider_idle, 100)
   vim.api.nvim_set_current_tabpage(dtab)
   vim.cmd("tabclose")
   vim.api.nvim_set_current_tabpage(gtab)

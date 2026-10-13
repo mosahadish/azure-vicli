@@ -86,7 +86,11 @@ Conversation tab as one thread - and takes comments, replies, edits and
 deletes as on Azure. `s` resolves a conversation or opens it again, and `gv`
 offers GitHub's verdicts: Approve, Request changes (it asks what needs
 changing - GitHub wants a reason) and Dismiss my review (GitHub allows that
-with write access to the repository). GitHub takes a line comment only on a
+with write access to the repository). A batch review (`gB`, then `gS`) goes
+to GitHub as one review - its line comments and thread replies, the PR-level
+comments and Conversation replies as its text, and the verdict you pick (or
+Comment only) - so the author gets one notification, and a review that fails
+leaves the whole queue queued. GitHub takes a line comment only on a
 changed line or the few around one; elsewhere, comment on the file. Merging,
 builds and the agent's tools on a GitHub PR are still to come; trying one
 says so.

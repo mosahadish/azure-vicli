@@ -1755,6 +1755,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
+    "--submit-review",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2549,6 +2550,12 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
     if flag == "--get-pr":
         return actions.get_pr()
+    if flag == "--submit-review":
+        # GitHub's (github_host.py): an Azure batch goes out comment by
+        # comment from review/batch.lua itself.
+        print("--submit-review is for GitHub pull requests; Azure DevOps has no review to submit.",
+              file=sys.stderr)
+        return 1
 
     print("Unknown PR action: {0}".format(flag), file=sys.stderr)  # unreachable via PR_ACTION_FLAGS
     return 1
@@ -3998,6 +4005,7 @@ _GITHUB_ACTIONS = {
     "--edit-comment": lambda a, arg: a.edit_comment(arg(0), arg(1), arg(2)),
     "--delete-comment": lambda a, arg: a.delete_comment(arg(0), arg(1)),
     "--vote": lambda a, arg: a.set_vote(arg(0), arg(1)),
+    "--submit-review": lambda a, arg: a.submit_review(arg(0)),
 }
 
 

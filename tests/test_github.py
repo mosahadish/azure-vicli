@@ -432,6 +432,95 @@ class WriteTests(unittest.TestCase):
         self.assertEqual(str(e), "HTTP 422: Validation Failed: line must be part of the diff")
 
 
+class ReviewTests(unittest.TestCase):
+    def client(self, pending=None, fail_on=None):
+        answers = {
+            "reviews(states: PENDING": {"repository": {"pullRequest": {
+                "id": "PR_n", "headRefOid": "HEADSHA",
+                "reviews": {"nodes": [{"id": pending, "viewerDidAuthor": True}] if pending else []},
+                "reviewThreads": {"nodes": [{"id": "PRRT_77", "comments": {"nodes": [{"databaseId": 77}]}}]}}}},
+            "addPullRequestReview(": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
+            "addPullRequestReviewThread(": {"addPullRequestReviewThread": {"thread": {"id": "t"}}},
+            "addPullRequestReviewThreadReply(": {"addPullRequestReviewThreadReply": {"comment": {"id": "c"}}},
+            "submitPullRequestReview(": {"submitPullRequestReview": {}},
+            "deletePullRequestReview(": {"deletePullRequestReview": {}},
+        }
+        c = RestClient(graphql={})
+        c.mutations = []
+
+        def fetch(method, url, token, data=None):
+            q = data["query"]
+            for word, ans in answers.items():
+                if word in q:
+                    c.mutations.append((word, data.get("variables")))
+                    if fail_on and fail_on in q:
+                        raise gh.GitHubHttpError(422, url, json.dumps({"message": "nope"}))
+                    return {"data": ans}
+            raise AssertionError("unexpected query: " + q[:60])
+        c.fetch = fetch
+        return c
+
+    def payload(self, **kw):
+        p = {"event": "10", "body": "overall", "items": [
+            ["--post", "a.go", "R", "3", "line note", "5"],
+            ["--file-comment", "b.go", "file note"],
+            ["--reply", "77", "agreed"]]}
+        p.update(kw)
+        return json.dumps(p)
+
+    def test_one_review_with_every_comment(self):
+        c = self.client()
+        self.assertEqual(quiet(actions(c).submit_review, self.payload()), (0, "Review submitted (3 comments)."))
+        words = [w for w, _ in c.mutations]
+        self.assertEqual(words, ["reviews(states: PENDING", "addPullRequestReview(", "addPullRequestReviewThread(",
+                                 "addPullRequestReviewThread(", "addPullRequestReviewThreadReply(",
+                                 "submitPullRequestReview("])
+        v = [v for _, v in c.mutations]
+        self.assertEqual(v[1], {"pr": "PR_n", "oid": "HEADSHA"})
+        self.assertEqual(v[2]["input"], {"path": "a.go", "body": "line note", "line": 5, "side": "RIGHT",
+                                         "subjectType": "LINE", "startLine": 3, "startSide": "RIGHT",
+                                         "pullRequestReviewId": "PRR_new"})
+        self.assertEqual(v[3]["input"]["subjectType"], "FILE")
+        self.assertEqual(v[4]["input"], {"pullRequestReviewThreadId": "PRRT_77", "body": "agreed",
+                                         "pullRequestReviewId": "PRR_new"})
+        self.assertEqual(v[5], {"id": "PRR_new", "event": "APPROVE", "body": "overall"})
+
+    def test_verdicts(self):
+        for event, want in (("-5", "REQUEST_CHANGES"), ("comment", "COMMENT")):
+            c = self.client()
+            quiet(actions(c).submit_review, self.payload(event=event, body=""))
+            sub = [v for w, v in c.mutations if w == "submitPullRequestReview("][0]
+            self.assertEqual(sub["event"], want)
+        self.assertEqual(sub["body"], None)
+
+    def test_changes_requested_gets_a_reason(self):
+        c = self.client()
+        quiet(actions(c).submit_review, self.payload(event="-5", body=""))
+        sub = [v for w, v in c.mutations if w == "submitPullRequestReview("][0]
+        self.assertEqual(sub["body"], "Changes requested.")
+
+    def test_a_pending_review_of_mine_is_joined(self):
+        c = self.client(pending="PRR_mine")
+        quiet(actions(c).submit_review, self.payload())
+        self.assertNotIn("addPullRequestReview(", [w for w, _ in c.mutations])
+        self.assertEqual([v for w, v in c.mutations if w == "submitPullRequestReview("][0]["id"], "PRR_mine")
+
+    def test_a_failure_deletes_the_pending_review(self):
+        c = self.client(fail_on="addPullRequestReviewThreadReply(")
+        with self.assertRaises(gh.GitHubHttpError):
+            quiet(actions(c).submit_review, self.payload())
+        words = [w for w, _ in c.mutations]
+        self.assertEqual(words[-1], "deletePullRequestReview(")
+        self.assertNotIn("submitPullRequestReview(", words)
+
+    def test_bad_items_send_nothing(self):
+        c = self.client()
+        self.assertEqual(quiet(actions(c).submit_review, self.payload(items=[["--reply", "12", "x"]]))[0], 1)
+        self.assertEqual(quiet(actions(c).submit_review, self.payload(items=[["--vote", "10"]]))[0], 1)
+        self.assertEqual(quiet(actions(c).submit_review, "not json")[0], 1)
+        self.assertNotIn("addPullRequestReview(", [w for w, _ in c.mutations])
+
+
 class ActionTests(unittest.TestCase):
     def test_merging_is_not_there_yet(self):
         cfg = ac.Config.from_dict({"accounts": [{"host": "github", "pat": "t"}]})

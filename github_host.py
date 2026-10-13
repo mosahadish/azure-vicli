@@ -574,6 +574,27 @@ UNRESOLVE = "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) 
 # Review events by vote (see the module comment); 0 dismisses my review.
 REVIEW_EVENTS = {"10": "APPROVE", "-5": "REQUEST_CHANGES"}
 
+REVIEW_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    id headRefOid
+    reviews(states: PENDING, first: 5) { nodes { id viewerDidAuthor } }
+    reviewThreads(first: 100) { nodes { id comments(first: 1) { nodes { databaseId } } } } } }
+}
+"""
+
+ADD_REVIEW = """mutation($pr: ID!, $oid: GitObjectID!) {
+  addPullRequestReview(input: {pullRequestId: $pr, commitOID: $oid}) { pullRequestReview { id } } }"""
+ADD_THREAD = """mutation($input: AddPullRequestReviewThreadInput!) {
+  addPullRequestReviewThread(input: $input) { thread { id } } }"""
+ADD_REPLY = """mutation($input: AddPullRequestReviewThreadReplyInput!) {
+  addPullRequestReviewThreadReply(input: $input) { comment { id } } }"""
+SUBMIT_REVIEW = """mutation($id: ID!, $event: PullRequestReviewEvent!, $body: String) {
+  submitPullRequestReview(input: {pullRequestReviewId: $id, event: $event, body: $body}) {
+    pullRequestReview { id } } }"""
+DELETE_REVIEW = """mutation($id: ID!) {
+  deletePullRequestReview(input: {pullRequestReviewId: $id}) { pullRequestReview { id } } }"""
+
 # Statuses that leave a conversation open; anything else resolves it.
 OPEN_STATUSES = ("active", "pending")
 
@@ -778,6 +799,82 @@ class Actions(object):
                          {"message": "Dismissed by its author.", "event": "DISMISS"})
         print("Vote set to 0.")
         return 0
+
+    def submit_review(self, payload_json):
+        """--submit-review: gS's whole queue as one GitHub review -
+        payload {event: "10" | "-5" | "comment", body, items: [argv, ...]}
+        (review/batch.lua's review_payload), each item the --post /
+        --file-comment / --reply argv it would have gone out as alone. A
+        pending review gets every comment, then is submitted with the
+        verdict; when any step fails the pending review is deleted, so the
+        queue stays whole on the Lua side and nothing has half-landed."""
+        try:
+            payload = json.loads(payload_json or "")
+        except ValueError:
+            print("--submit-review needs a JSON payload")
+            return 1
+        event = {"10": "APPROVE", "-5": "REQUEST_CHANGES"}.get(str(payload.get("event")), "COMMENT")
+        body = payload.get("body") or ""
+        if event == "REQUEST_CHANGES" and _blank(body):
+            body = "Changes requested."
+        data = self.client.graphql(REVIEW_QUERY, self._vars())
+        pr = ((data.get("repository") or {}).get("pullRequest")) or {}
+        threads = {}
+        for n in ((pr.get("reviewThreads") or {}).get("nodes") or []):
+            first = (((n.get("comments") or {}).get("nodes") or [{}])[0] or {}).get("databaseId")
+            threads[str(first)] = n.get("id")
+        inputs = []
+        for args in payload.get("items") or []:
+            step = self._review_step(args, threads)
+            if isinstance(step, str):
+                print(step)
+                return 1
+            inputs.append(step)
+        # A review of mine already pending (started on github.com, say) is
+        # the one these join - GitHub allows one per person per PR.
+        mine = next((n.get("id") for n in ((pr.get("reviews") or {}).get("nodes") or []) if n.get("viewerDidAuthor")),
+                    None)
+        review = mine or ((self.client.graphql(ADD_REVIEW, {"pr": pr.get("id"), "oid": pr.get("headRefOid")})
+                           .get("addPullRequestReview") or {}).get("pullRequestReview") or {}).get("id")
+        try:
+            for mutation, fields in inputs:
+                fields["pullRequestReviewId"] = review
+                self.client.graphql(mutation, {"input": fields})
+            self.client.graphql(SUBMIT_REVIEW, {"id": review, "event": event, "body": body or None})
+        except Exception:
+            if not mine:
+                try:
+                    self.client.graphql(DELETE_REVIEW, {"id": review})
+                except Exception:  # noqa: BLE001 - the original error is the one to report
+                    pass
+            raise
+        n = len(inputs)
+        print("Review submitted ({0} comment{1}).".format(n, "" if n == 1 else "s"))
+        return 0
+
+    def _review_step(self, args, threads):
+        """(mutation, input fields) for one queued argv, or an error string."""
+        if not args:
+            return "Empty review item."
+        flag = args[0]
+        a = list(args[1:]) + [""] * 5
+        if flag == "--post":
+            path, side, line_s, text, end_s = a[0], a[1], a[2], a[3], a[4]
+            if not path or not _uint(line_s) or side not in ("R", "L"):
+                return "Invalid line comment in the review: {0}".format(json.dumps(args))
+            gh_side = "RIGHT" if side == "R" else "LEFT"
+            fields = {"path": path, "body": text, "line": int(line_s), "side": gh_side, "subjectType": "LINE"}
+            if _uint(end_s) and int(end_s) > int(line_s):
+                fields.update({"startLine": int(line_s), "startSide": gh_side, "line": int(end_s)})
+            return (ADD_THREAD, fields)
+        if flag == "--file-comment":
+            return (ADD_THREAD, {"path": a[0], "body": a[1], "subjectType": "FILE"})
+        if flag == "--reply":
+            node = threads.get(a[0])
+            if not node:
+                return "Thread {0} isn't on this pull request.".format(a[0])
+            return (ADD_REPLY, {"pullRequestReviewThreadId": node, "body": a[1]})
+        return "{0} can't be part of a review.".format(flag)
 
     def get_pr(self):
         data = self.client.graphql(PR_QUERY, self._vars())

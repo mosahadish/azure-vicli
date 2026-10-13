@@ -76,6 +76,9 @@ local GITHUB = {
   },
   complete_work_items = false,
   auto_complete = true,
+  -- gS sends the queue as one review (--submit-review), not comment by
+  -- comment: one notification, and nothing lands half-sent.
+  native_review = true,
   mention = function(login) return "@" .. login end,
   sigil = "#",
   -- "repo#12": a number alone is ambiguous across repositories.
