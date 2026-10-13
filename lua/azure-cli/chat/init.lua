@@ -259,6 +259,9 @@ local role_at = {}  -- conversation line -> its role (core.render's)
 local function is_chat_buf(b) return b ~= nil and (b == log_buf or b == input_buf) end
 M.is_chat_buf = is_chat_buf
 
+-- The agent popup (M.popup): { log, input, key } while it's open.
+local popup
+
 local function render()
   if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
   local st = STATE()
@@ -293,6 +296,9 @@ local function render()
     if w.log and vim.api.nvim_win_is_valid(w.log) and vim.api.nvim_get_current_win() ~= w.log then
       pcall(vim.api.nvim_win_set_cursor, w.log, { #lines, 0 })
     end
+  end
+  if popup and vim.api.nvim_win_is_valid(popup.log) and vim.api.nvim_get_current_win() ~= popup.log then
+    pcall(vim.api.nvim_win_set_cursor, popup.log, { #lines, 0 })
   end
   M.set_winbars()
 end
@@ -432,6 +438,7 @@ local function ensure_bufs()
 
   local function focus_input()
     local w = (STATE().wins[vim.api.nvim_get_current_tabpage()] or {}).input
+    if popup and vim.api.nvim_get_current_win() == popup.log then w = popup.input end
     if w and vim.api.nvim_win_is_valid(w) then
       vim.api.nvim_set_current_win(w)
       vim.cmd("startinsert!")
@@ -630,7 +637,92 @@ function M.show(focus)
   open_here(focus)
 end
 
+-- Closes the agent popup, and the panel shows what its tab calls for again.
+local function close_popup()
+  if not popup then return end
+  local p = popup
+  popup = nil
+  for _, w in ipairs({ p.log, p.input }) do
+    if vim.api.nvim_win_is_valid(w) then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  MAIN().popup_key = nil
+  M.sync_active()
+end
+
+-- A plan's agent's conversation in a popup over the current screen (ga on
+-- the PR dashboard): the chat's own buffers, so everything works the same
+-- there - i to type, <CR> sends to that agent, q (or leaving it) closes.
+function M.popup(key)
+  local main = MAIN()
+  pcall(M.restore_plans)
+  local c = main.convs[key]
+  if not c then return notify("No agent conversation for " .. tostring(key) .. ".") end
+  close_popup()
+  ensure_bufs()
+  main.popup_key = key
+  main.active = key
+  local UI = require("azure-cli.ui")
+  local width, height = UI.big_dims()
+  local ih = math.max(1, config().input_height or 3)
+  height = math.max(6, math.min(height, vim.o.lines - ih - 8))
+  local row = math.max(0, math.floor((vim.o.lines - height - ih - 4) / 2))
+  local col = math.max(0, math.floor((vim.o.columns - width) / 2))
+  local rec = require("azure-cli.chat.plan").load(key)
+  local title = (c.label or key) .. " \u{00B7} " .. agent_label()
+  local what = (rec and rec.title) or c.title
+  if what and what ~= "" then title = title .. " \u{00B7} " .. what end
+  local function open(buf, enter, cfg)
+    cfg.relative, cfg.style, cfg.border, cfg.col, cfg.width = "editor", "minimal", UI.border(), col, width
+    local ok, w = pcall(vim.api.nvim_open_win, buf, enter, cfg)
+    if not ok then
+      cfg.title, cfg.title_pos, cfg.footer, cfg.footer_pos = nil, nil, nil, nil
+      w = vim.api.nvim_open_win(buf, enter, cfg)
+    end
+    UI.wo(w, "wrap", true)
+    UI.wo(w, "linebreak", true)
+    UI.float_hl(w)
+    return w
+  end
+  local log = open(log_buf, true, { row = row, height = height, title = " " .. UI.fit(title, width - 4) .. " ",
+    title_pos = "left" })
+  UI.wo(log, "signcolumn", "yes:1")
+  UI.wo(log, "conceallevel", 2)
+  UI.wo(log, "concealcursor", "")
+  local KEYS = require("azure-cli.keys")
+  local input = open(input_buf, false, { row = row + height + 2, height = ih, footer = " " .. KEYS.name("chat", "focus_input")
+    .. " types \u{00B7} " .. KEYS.name("chat", "send") .. " sends \u{00B7} " .. KEYS.name("chat", "hide") .. " closes ",
+    footer_pos = "right" })
+  popup = { log = log, input = input, key = key }
+  render()
+  pcall(vim.api.nvim_win_set_cursor, log, { vim.api.nvim_buf_line_count(log_buf), 0 })
+  local function gone(ev)
+    if not popup then return true end
+    local w = tonumber(ev.match) or vim.api.nvim_get_current_win()
+    if ev.event == "WinClosed" and (w == popup.log or w == popup.input) then
+      vim.schedule(close_popup)
+      return true
+    end
+    if ev.event == "WinEnter" then
+      local cur = vim.api.nvim_get_current_win()
+      if cur ~= popup.log and cur ~= popup.input then
+        vim.schedule(close_popup)
+        return true
+      end
+    end
+  end
+  vim.api.nvim_create_autocmd({ "WinClosed", "WinEnter" },
+    { group = vim.api.nvim_create_augroup("AzureCliChatPopup", { clear = true }), callback = gone })
+  return log, input
+end
+
+-- Tests: the popup's windows, or nil.
+function M.popup_wins() return popup end
+
 function M.hide()
+  if popup then
+    local cur = vim.api.nvim_get_current_win()
+    if cur == popup.log or cur == popup.input then return close_popup() end
+  end
   STATE().visible = false
   local main = M.main_win()
   close_here()
@@ -681,7 +773,7 @@ function M.sync_active()
   local main = MAIN()
   pcall(M.restore_plans)
   local ok, key = pcall(vim.api.nvim_tabpage_get_var, 0, "azure_cli_plan_key")
-  local want = (ok and key and main.convs[key]) and key or nil
+  local want = main.popup_key or ((ok and key and main.convs[key]) and key or nil)
   if want ~= main.active then
     main.active = want
     if log_buf and vim.api.nvim_buf_is_valid(log_buf) then render() end

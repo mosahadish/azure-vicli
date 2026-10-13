@@ -653,7 +653,7 @@ for an agent; its plan waiting for you; approved; revising; pushed;
 `PR !123 open` once it opened one; finished - `merged` or `PR abandoned` -
 once that PR is closed, which it learns from the
 [watched PRs](#conversations-agents-and-models) check), how long since it
-last did something, and what it has used so far, and the winbar adds it up: its cost when the
+last did something, and what it has used so far, centred in its window, and the winbar adds it up: its cost when the
 agent reports one (Claude Code does, and an ACP agent can, through ACP's
 `usage_update`), else its premium requests (`agent.premium_requests`:
 each message counts as its model's multiplier). An ACP agent's
@@ -683,7 +683,9 @@ agent opened for a work item goes back to that agent instead - the one
 that wrote the original plan and knows the change: it plans the fix as a
 new revision of that plan (on the Agents screen it's the work item's row
 again, waiting for you), and once you approve, it changes its story's
-worktree and pushes to the PR's branch.
+worktree and pushes to the PR's branch. On the PR dashboard, the agent
+column shows each PR's agent and what it's doing, and `ga` there opens
+its conversation in a popup ([dashboard](dashboard.md)).
 
 Every plan opens in a tab of its own, and so does every change - opening
 another doesn't replace the one you were reading, and `r`, `gA` or `ga`

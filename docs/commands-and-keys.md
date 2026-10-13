@@ -95,6 +95,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `agent_chat` | `ga` |
 | `agents` | `A` |
 | `browser` | `o` |
 | `chat` | `gq` |

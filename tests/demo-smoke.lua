@@ -1742,6 +1742,43 @@ do
   if not (p1 and p1.label == "PR !101" and answer(p1):find("planned PR !101 for every active thread", 1, true)) then
     return fail("PR !101's agent: " .. (p1 and answer(p1) or "none"))
   end
+  -- The PR dashboard's agent column shows !101's agent, and ga opens its
+  -- conversation in a popup; q closes it again.
+  CHAT.hide()
+  vim.api.nvim_set_current_win(dw)
+  local cols = vim.o.columns
+  vim.o.columns = 200
+  vim.cmd("only")
+  pcall(vim.api.nvim_exec_autocmds, "VimResized", {})
+  local function dash_row(id)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("#" .. id .. " ", 1, true) then return i, l end
+    end
+  end
+  local shows = vim.wait(8000, function()
+    local _, l = dash_row(101)
+    return l and l:find("plan waits", 1, true) ~= nil
+  end, 100)
+  if not shows then return fail("the dashboard's agent column doesn't show !101's plan waiting", dash) end
+  local hdr = false
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("threads", 1, true) and l:find("agent", 1, true) then hdr = true end
+  end
+  if not hdr then return fail("the dashboard has no agent column header", dash) end
+  vim.api.nvim_win_set_cursor(dw, { (dash_row(101)), 0 })
+  feed("ga")
+  local pw = CHAT.popup_wins()
+  if not (pw and pw.key == "pr-101" and vim.api.nvim_get_current_win() == pw.log) then
+    return fail("ga on #101 didn't open its agent's chat in a popup: " .. vim.inspect(pw))
+  end
+  local ptext = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pw.log), 0, -1, false), "\n")
+  if not ptext:find("planned PR !101", 1, true) then return fail("the popup doesn't show !101's conversation:\n" .. ptext) end
+  feed("q")
+  vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+  if CHAT.popup_wins() or vim.api.nvim_win_is_valid(pw.log) or STATE.chat.popup_key then
+    return fail("q didn't close the agent popup")
+  end
+  vim.o.columns = cols
   -- gP in the reviewer, on a commented line: just that thread.
   require("azure-cli").open_review(101)
   local landed = vim.wait(20000, function()
@@ -1890,7 +1927,9 @@ do
   feed("r")
   ok = vim.wait(15000, function() return row101():find("/5 ", 1, true) ~= nil end, 100)
   if not ok then return fail("the dashboard didn't pick up the two new threads on #101", dash) end
-  if row101():find("\u{25CF}", 1, true) then return fail("my own comments marked #101 unread", dash) end
+  -- The unread dot sits before the id (the agent column has its own dots).
+  local function unread101() local l = row101() return (l:sub(1, (l:find("#101", 1, true) or 1))):find("\u{25CF}", 1, true) ~= nil end
+  if unread101() then return fail("my own comments marked #101 unread", dash) end
   local path = vim.env.AZVICLI_FAKE_WS .. "/state.json"
   local st = vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
   local other
@@ -1908,7 +1947,7 @@ do
   end
   vim.fn.writefile({ vim.json.encode(st) }, path)
   feed("r")
-  ok = vim.wait(15000, function() return row101():find("\u{25CF}", 1, true) ~= nil end, 100)
+  ok = vim.wait(15000, function() return unread101() end, 100)
   if not ok then return fail("someone else's reply didn't mark #101 unread", dash) end
   print("BATCHQ-SMOKE-OK")
 end

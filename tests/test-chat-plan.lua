@@ -298,6 +298,12 @@ do
   check("agents rows: finished - its PR merged", rows[2].state:find("merged (PR !60)", 1, true) ~= nil, rows[2].state)
   check("agents rows: finished - its PR abandoned", rows[3].state:find("abandoned", 1, true) ~= nil, rows[3].state)
   check("agents rows: pushed, no PR yet", rows[4].state:find("pushed", 1, true) ~= nil, rows[4].state)
+  local by = AV.by_pr(rows)
+  check("by_pr: the PR its plan opened, or the one it was started on", by["50"] == rows[1] and by["60"] == rows[2]
+    and by["7"] == rows[3] and vim.tbl_count(by) == 3, vim.tbl_keys(by))
+  by = AV.by_pr({ { key = "old", pr_id = 9, group = 3, at = 5 }, { key = "new", pr_id = 9, group = 3, at = 8 },
+    { key = "you", pr_id = 10, group = 3, at = 9 }, { key = "waits", pr_id = 10, group = 1, at = 1 } })
+  check("by_pr: with several, the one that needs you, then the latest", by["9"].key == "new" and by["10"].key == "waits")
   -- Grouped: what needs you first, the most recent first in each group.
   local day = 86400
   local list = {

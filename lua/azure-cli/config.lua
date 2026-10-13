@@ -22,6 +22,7 @@ local DEFAULT_KEYS = {
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
+    agent_chat = "ga",
   },
   -- Reviewer file list.
   list = {

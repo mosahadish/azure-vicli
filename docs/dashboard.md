@@ -36,7 +36,8 @@ Actionable just shows `Pull requests   ?: help`).
 The table's columns scale with the window instead of the fixed widths an
 older version hard-coded: title and reviewer summary grow to fill a wide
 terminal, id/badges/vote/thread-count stay fixed, and on a narrow one the
-reviewer summary column drops first, then updated-human, then author (repo
+reviewer summary column drops first, then updated-human, then the agent
+column, then author (repo
 and title just shrink towards their minimum instead of disappearing) - a
 `[narrow]` winbar tag appears whenever a column had to be dropped. Resizing
 the terminal re-renders immediately (`lua/azure-cli/ui.lua`'s `UI.layout`
@@ -63,6 +64,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view, `gs` changes its state, `gl` links another and `gL` unlinks the one under the cursor. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
 | `gq` | Show/hide the [chat panel](chat.md); the agent knows which PR is under the cursor |
+| `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
 | `W` | Switch to the work-items dashboard |
 | `q` | Quit |
 
@@ -76,6 +78,13 @@ Each row carries badges to the left of the id:
 | `⇣` | Branches or content being fetched in the background right now |
 | `◆` | Fully prefetched; opens instantly |
 | `@` | An active thread mentions you; the PR also appears under Mentions |
+
+While a listed PR has an [agent](chat.md#several-agents-at-once) - one
+started on it to fix its review comments, or the work item's agent that
+opened it - an **agent** column after threads shows its state the way the
+Agents screen does (`⋯ working`, `● plan waits for you`, `✓ approved`,
+`✓ PR !101 open`, ...; with several, the one that needs you first). It
+follows the agent between polls, and `ga` opens its conversation in a popup.
 
 The build column to the right of the id shows `✓` succeeded, `✗` failed,
 `↻` expired, and `●` running with the queue position when known. `⚠` marks a

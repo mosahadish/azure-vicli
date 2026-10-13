@@ -23,6 +23,7 @@
 --
 --   M.rows(convs, queued, plan_of, now)  the rows (pure)
 --   M.arrange(rows, now, all)            grouped and sorted (pure)
+--   M.by_pr(rows)                        PR id -> its agent's row (pure)
 --   M.open()
 local M = {}
 
@@ -79,7 +80,8 @@ function M.rows(convs, queued, plan_of, now, frame)
       local started = last and last.started or c.created or now
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
-        target = c.target, conv = c, group = group, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
+        target = c.target, conv = c, group = group,
+        pr_id = (rec and type(rec.pr) == "table" and rec.pr.id) or (c.target and c.target.pr_id) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
         requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
         waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
     end
@@ -92,6 +94,23 @@ function M.rows(convs, queued, plan_of, now, frame)
     end
   end
   return rows
+end
+
+-- PR id (a string) -> the row of the agent working on it: one started on
+-- the PR (a review comment's fix) or one whose plan opened it. With
+-- several, the one that needs you first, then the latest. Pure.
+function M.by_pr(rows)
+  local out = {}
+  for _, r in ipairs(rows) do
+    if r.pr_id then
+      local id = tostring(r.pr_id)
+      local had = out[id]
+      if not had or (r.group or 3) < (had.group or 3) or ((r.group or 3) == (had.group or 3) and (r.at or 0) > (had.at or 0)) then
+        out[id] = r
+      end
+    end
+  end
+  return out
 end
 
 -- The screen's groups, in order: what needs you first.
@@ -171,8 +190,9 @@ local function render()
     hls[#hls + 1] = { 2, 0, -1, "AzureCliMuted" }
   end
   -- label 8, state 26, age 4, cost 7 and the gaps take 55 cells; the title gets
-  -- what's left, keeping ~20 for the latest step.
+  -- what's left, keeping 20-40 for the latest step.
   local title_w = math.max(16, math.min(44, width - 55 - 20))
+  local detail_w = math.max(20, math.min(40, width - 55 - title_w - 4))
   local CORE = require("azure-cli.chat.core")
   local total, requests
   local arranged, hidden = M.arrange(rows, os.time(), view.all)
@@ -190,7 +210,7 @@ local function render()
       local cost = UI.fit(r.cost and CORE.money(r.cost) or CORE.requests_label(r.requests), 7)
       local ctx = CORE.context_label(r.context)
       local detail = ctx ~= "" and (ctx .. (r.detail ~= "" and (" \u{00B7} " .. r.detail) or "")) or r.detail
-      local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. detail
+      local line = "  " .. label .. " " .. title .. "  " .. state .. "  " .. UI.fit(r.ago, 4) .. " " .. cost .. "  " .. UI.fit(detail, detail_w)
       lines[#lines + 1] = line
       view.rows[#lines] = r
       local s = #("  " .. label .. " " .. title .. "  ")
@@ -223,6 +243,29 @@ local function render()
     lines[#lines + 1] = text
     hls[#hls + 1] = { #lines - 1, 0, -1, "AzureCliMuted" }
     for _, h in ipairs(hhls) do hls[#hls + 1] = { #lines - 1, h[1], h[2], h[3] } end
+  end
+  -- Centred in the window, both ways: by the rows' fixed columns and the
+  -- other lines, so a step's text changing every second doesn't move
+  -- everything sideways.
+  local content_w = 55 + title_w + detail_w
+  for l, line in ipairs(lines) do
+    if not view.rows[l] then content_w = math.max(content_w, vim.fn.strdisplaywidth(line)) end
+  end
+  local pad_h = math.max(0, math.floor((width - math.min(content_w, width)) / 2))
+  local height = vim.api.nvim_win_is_valid(view.win) and vim.api.nvim_win_get_height(view.win) or #lines
+  local pad_v = math.max(0, math.floor((height - #lines) / 2))
+  if pad_h > 0 or pad_v > 0 then
+    local prefix = string.rep(" ", pad_h)
+    local centred, rows_at = {}, {}
+    for _ = 1, pad_v do centred[#centred + 1] = "" end
+    for _, line in ipairs(lines) do centred[#centred + 1] = line ~= "" and (prefix .. line) or "" end
+    for l, r in pairs(view.rows) do rows_at[l + pad_v] = r end
+    for _, h in ipairs(hls) do
+      h[1] = h[1] + pad_v
+      h[2] = h[2] + pad_h
+      if h[3] ~= -1 then h[3] = h[3] + pad_h end
+    end
+    lines, view.rows = centred, rows_at
   end
   vim.bo[view.buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.buf, 0, -1, false, lines)
