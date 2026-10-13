@@ -246,7 +246,15 @@ class AccountConfig:
     """
 
     def __init__(self, project=None, org_url=None, pat=None, hide_ancient=None, clones_dir=None,
-                 work_items=None, pat_file=None):
+                 work_items=None, pat_file=None, host=None, owner=None, api_url=None):
+        # host: "azure" (the default) or "github" - see github_host.py. A
+        # GitHub account has no org_url/project_name; owner: (optional)
+        # limits it to one user's or organization's repositories, api_url:
+        # (optional) points it at a GitHub Enterprise Server.
+        self.host = (host or "azure").strip().lower() if isinstance(host, str) else "azure"
+        self.owner = owner.strip() if isinstance(owner, str) and owner.strip() else None
+        self.api_url = (api_url.strip().rstrip("/") if isinstance(api_url, str) and api_url.strip()
+                        else "https://api.github.com")
         self.project = project
         self.org_url = org_url
         self.pat = pat
@@ -258,6 +266,15 @@ class AccountConfig:
         self.hide_ancient = bool(hide_ancient) if hide_ancient is not None else None
         self.clones_dir = clones_dir
         self.work_items = work_items if isinstance(work_items, dict) else None
+
+    def is_github(self):
+        return self.host == "github"
+
+    def label(self):
+        """How messages name the account."""
+        if self.is_github():
+            return "GitHub" + (" ({0})".format(self.owner) if self.owner else "")
+        return self.project or self.org_url or "?"
 
     def has_pat_source(self):
         """True when pat: is set or pat_file: names a file - i.e. the
@@ -348,6 +365,37 @@ class AccountConfig:
 # the standalone launcher. AccountConfig.pat_file_location_problem()'s
 # "inside the plugin folder" check compares against it.
 PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+class _Core(object):
+    """This module's globals as attributes, for github_host.py (which reuses
+    to_record, count_threads and the rest). A view rather than the module
+    object, since tests load this file under other names."""
+
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name)
+
+
+_github_mod = []
+_github_lock = threading.Lock()
+
+
+def github():
+    """github_host.py (GitHub as the second code host), loaded from beside
+    this file on first use."""
+    with _github_lock:
+        if not _github_mod:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("azvicli_github_host",
+                                                          os.path.join(PLUGIN_ROOT, "github_host.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.bind(_Core())
+            _github_mod.append(mod)
+        return _github_mod[0]
 
 
 class Config:
@@ -447,6 +495,20 @@ class Config:
             out.append("no accounts: entries - add one with project_name, org_url and pat")
             return out
         for i, a in enumerate(self.accounts, 1):
+            if a.host not in ("azure", "github"):
+                out.append("account {0}: host must be azure or github (got '{1}')".format(i, a.host))
+                continue
+            if a.is_github():
+                label = "account {0} ({1})".format(i, a.label())
+                pat_problem = a.pat_file_problem()
+                if pat_problem:
+                    out.append("{0}: {1}".format(label, pat_problem))
+                if not re.match(r"^https?://", a.api_url, re.I):
+                    out.append("{0}: api_url must start with https:// (got '{1}')".format(label, a.api_url))
+                if a.work_items:
+                    out.append("{0}: work_items: isn't supported on a GitHub account yet - "
+                               "keep it on an Azure DevOps account".format(label))
+                continue
             label = "account {0}{1}".format(i, " ({0})".format(a.project) if a.project else "")
             missing = [name for name, value in (("project_name", a.project), ("org_url", a.org_url),
                                                 ("pat", "set" if a.has_pat_source() else None))
@@ -524,9 +586,27 @@ class Config:
                     hide_ancient=raw.get("hide_ancient"),
                     clones_dir=raw.get("clones_dir"),
                     work_items=raw.get("work_items"),
+                    host=raw.get("host"),
+                    owner=raw.get("owner"),
+                    api_url=raw.get("api_url"),
                 )
             )
         return cfg
+
+    def github_accounts(self):
+        return [a for a in self.accounts if a.is_github()]
+
+    def github_account_for(self, api_url, owner=None):
+        """The GitHub account a PR action's AZVICLI_ORG (its api_url) and
+        AZVICLI_PROJECT (the repo's owner) belong to: one limited to that
+        owner if there is one, else the first on that server. None when
+        AZVICLI_ORG isn't a GitHub account's at all - an Azure PR."""
+        want = (api_url or "").rstrip("/").lower()
+        on_server = [a for a in self.github_accounts() if a.api_url.lower() == want]
+        for a in on_server:
+            if owner and a.owner and a.owner.lower() == owner.lower():
+                return a
+        return on_server[0] if on_server else None
 
     def accounts_by_org(self):
         """Groups accounts by organization URL (case-insensitive, trailing
@@ -538,6 +618,8 @@ class Config:
         order = []
         groups = {}
         for a in self.accounts:
+            if a.is_github():
+                continue
             raw = a.org_url or ""
             key = raw.rstrip("/").lower()
             if key not in groups:
@@ -2419,6 +2501,9 @@ def cmd_pr_action(flag, rest, env=None):
     config = get_cached_config()
     if config_problems(config):
         return 1
+    gh_account = config.github_account_for(env.get("AZVICLI_ORG"), env.get("AZVICLI_PROJECT"))
+    if gh_account is not None:
+        return _github_pr_action(flag, rest, gh_account, env)
     actions = PrActions(config, env)
     if not actions.ensure_pat():
         return 1
@@ -3881,8 +3966,11 @@ def cmd_prefetch(env=None):
 
     if not source or not target:
         return 0
+    # A GitHub fork PR's source is "pull/<n>/head" (github_host.py's
+    # FORK_SOURCE): its head lives in the base repository under refs/pull/.
+    fork = re.match(r"^pull/\d+/head$", source)
     rc = _git_fetch(repo_path, [
-        "+refs/heads/{0}:refs/remotes/origin/{0}".format(source),
+        ("+refs/{0}:refs/remotes/origin/{0}" if fork else "+refs/heads/{0}:refs/remotes/origin/{0}").format(source),
         "+refs/heads/{0}:refs/remotes/origin/{0}".format(target),
     ])
     if rc == 0:
@@ -3896,11 +3984,41 @@ def cmd_prefetch(env=None):
 # ---------------------------------------------------------------------------
 
 
+# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md: reads first,
+# writes in the phases after).
+_GITHUB_READS = ("--threads", "--iterations", "--get-pr")
+
+
+def _github_pr_action(flag, rest, account, env):
+    gh = github()
+    if flag not in _GITHUB_READS:
+        print("{0} isn't available for GitHub pull requests yet.".format(flag), file=sys.stderr)
+        return 1
+    if not _is_uint(env.get("AZVICLI_PR") or ""):
+        print("AZVICLI_PR must be a PR number", file=sys.stderr)
+        return 1
+    actions = gh.Actions(account, env)
+    if not actions.ensure_client():
+        return 1
+    try:
+        if flag == "--threads":
+            return actions.threads()
+        if flag == "--iterations":
+            return actions.iterations()
+        return actions.get_pr()
+    except Exception as ex:  # noqa: BLE001 - one line on stderr, like the Azure actions
+        print("GitHub {0} failed: {1}".format(flag.lstrip("-"), ex), file=sys.stderr)
+        return 1
+
+
 def cmd_list(config, env=None):
     try:
         source = AzureDevOpsPullRequestSource(config, env)
         for record in source.fetch_grouped_pull_requests():
             sys.stdout.write(json.dumps(record) + "\n")
+        for account in config.github_accounts():
+            for record in github().list_records(account, env):
+                sys.stdout.write(json.dumps(record) + "\n")
         sys.stdout.flush()
         return 0
     except Exception as ex:  # noqa: BLE001 - mirrors the exe's catch-all
@@ -4078,6 +4196,22 @@ def _doctor_config_checks(config):
             checks.append({"check": name, "ok": True,
                            "detail": "outside the plugin folder and any git working tree"})
 
+    for a in config.github_accounts():
+        name = "sign in to {0} ({1})".format(a.api_url, a.label())
+        try:
+            gh = github()
+            token = gh.account_token(a)
+            if not token:
+                checks.append({"check": name, "ok": False,
+                               "detail": "no token - set pat_file, or run `gh auth login`"
+                                         + ("" if a.api_url == gh.DEFAULT_API else " --hostname " + gh.web_host(a.api_url))})
+                continue
+            login, display = gh.whoami(gh.Client(a.api_url, token))
+            checks.append({"check": name, "ok": bool(login),
+                           "detail": "signed in as {0}".format(display or login) if login else "no user came back"})
+        except Exception as ex:  # noqa: BLE001
+            checks.append({"check": name, "ok": False, "detail": "{0}".format(ex)})
+
     source = AzureDevOpsPullRequestSource(config)
     for org, accounts in config.accounts_by_org():
         projects = ", ".join(a.project or "?" for a in accounts)
@@ -4150,6 +4284,16 @@ def cmd_whoami(config, org, project):
         print("azure-cli --whoami requires --org <organization-url>.", file=sys.stderr)
         return 1
     try:
+        gh_account = config.github_account_for(org, project)
+        if gh_account is not None:
+            gh = github()
+            token = gh.account_token(gh_account)
+            if not token:
+                print("azure-cli --whoami: no GitHub token (pat_file, or `gh auth login`)", file=sys.stderr)
+                return 1
+            login, name = gh.whoami(gh.Client(gh_account.api_url, token))
+            print(json.dumps({"id": login, "displayName": name}))
+            return 0
         source = AzureDevOpsPullRequestSource(config)
         result = source.whoami(org, project)
         if result is None:

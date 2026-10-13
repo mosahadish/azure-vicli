@@ -1951,5 +1951,83 @@ do
   if not ok then return fail("someone else's reply didn't mark #101 unread", dash) end
   print("BATCHQ-SMOKE-OK")
 end
+
+-- A GitHub account (github_host.py): the fake lists PR #7 from two
+-- repositories. Each opens in its own reviewer, with its own threads -
+-- per-PR state is keyed owner~repo~number, not by the number.
+do
+  local HOSTS = require("azure-cli.hosts")
+  local CACHE = require("azure-cli.cache")
+  vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+  feed("r")
+  ok = vim.wait(15000, function()
+    local t = text(dash)
+    if not t:find("Gizmo: spin faster", 1, true) then return false end
+    for _, p in ipairs(require("azure-cli.state").PR_LIST_CACHE.prs) do
+      if p.title == "Doohickey: stop the wobble" then return true end
+    end
+    return false
+  end, 100)
+  if not ok then return fail("the dashboard never listed the two GitHub PR #7s", dash) end
+  -- The chat keys agents "pr-<number>", which two GitHub #7s share: no
+  -- agent is shown against a GitHub row until it keys by PR key.
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("Gizmo: spin faster", 1, true) and l:find("plan waits", 1, true) then
+      return fail("a GitHub row shows an agent keyed by its bare number: " .. l)
+    end
+  end
+  local recs = {}
+  for _, p in ipairs(require("azure-cli.state").PR_LIST_CACHE.prs) do
+    if p.host == "github" then recs[p.repo] = p end
+  end
+  if not (recs.gizmos and recs.doohickeys) then return fail("the GitHub records aren't in the list cache") end
+  if #HOSTS.caps(recs.gizmos).votes ~= 3 or HOSTS.ref(recs.gizmos) ~= "gizmos#7" then
+    return fail("a GitHub PR doesn't get GitHub's votes/ref: " .. HOSTS.ref(recs.gizmos))
+  end
+  local function open_and_wait(key, file)
+    require("azure-cli").open_review(key)
+    local b
+    local opened = vim.wait(20000, function()
+      for _, x in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_loaded(x) and vim.bo[x].filetype == "azurecli-files"
+            and vim.b[x].azure_cli_pr_key == key and text(x):find(file, 1, true) then
+          b = x
+          return true
+        end
+      end
+      return false
+    end, 100)
+    return opened and b or nil
+  end
+  local g = open_and_wait("demo-gh~gizmos~7", "gizmo.py")
+  if not g then return fail("gizmos#7 never opened in the reviewer") end
+  local gtab = vim.api.nvim_get_current_tabpage()
+  if vim.b[g].azure_cli_pr_ref ~= "gizmos#7" then return fail("the reviewer names it " .. tostring(vim.b[g].azure_cli_pr_ref)) end
+  ok = vim.wait(15000, function()
+    local th = CACHE.threads("demo-gh~gizmos~7")
+    return th ~= nil and th.json:find("Gizmo thread", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("gizmos#7's threads never loaded under its key") end
+  vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+  local d = open_and_wait("demo-gh~doohickeys~7", "gizmo.py")
+  if not d then return fail("doohickeys#7 never opened in the reviewer") end
+  if vim.api.nvim_get_current_tabpage() == gtab then return fail("doohickeys#7 reused gizmos#7's tab") end
+  ok = vim.wait(15000, function()
+    local th = CACHE.threads("demo-gh~doohickeys~7")
+    return th ~= nil and th.json:find("Doohickey thread", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("doohickeys#7's threads never loaded under its key") end
+  if CACHE.threads("demo-gh~gizmos~7").json:find("Doohickey", 1, true) then
+    return fail("doohickeys#7's threads landed in gizmos#7's cache")
+  end
+  local log = io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a")
+  if not log:find("AZVICLI_REPO=doohickeys", 1, true) then
+    return fail("no provider call named the doohickeys repository")
+  end
+  vim.cmd("tabclose")
+  vim.api.nvim_set_current_tabpage(gtab)
+  vim.cmd("tabclose")
+  print("GITHUB-SMOKE-OK")
+end
 print("DEMO-SMOKE-OK")
 vim.cmd("qa!")

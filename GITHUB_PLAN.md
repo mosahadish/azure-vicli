@@ -267,6 +267,11 @@ is simpler.
      set description.
    - Agent tools built from caps (enums, descriptions, tools that are
      absent).
+   - The chat keys conversations and plans by PR key (`pr-<key>`), not
+     `pr-<number>`. Until then the dashboard's agent column and `ga` match
+     Azure PRs only, since two GitHub #7s would share one agent.
+   - Since-my-last-review prefers `myLastReviewSha` (already in GitHub's
+     `--iterations`).
 5. **Docs.**
    - README, configuration.md (a GitHub account), reviewer.md and
      dashboard.md (what differs per host), the configure skill.

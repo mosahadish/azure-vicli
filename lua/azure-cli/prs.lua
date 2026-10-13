@@ -115,7 +115,7 @@ end
 function M.drop_completed(done, list, now)
   local listed, kept = {}, {}
   for _, p in ipairs(list) do
-    local id = tostring(p.id)
+    local id = tostring(HOSTS.key(p))
     local at = done[id]
     if at then listed[id] = true end
     if not (at and now - at < M.COMPLETED_GRACE) then kept[#kept + 1] = p end

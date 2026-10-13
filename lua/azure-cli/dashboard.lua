@@ -160,6 +160,13 @@ local AGENT_COLUMN = { key = "agent", min = 12, ideal = 26, weight = 1, priority
 -- PR id -> its agent's row (chat/agents_view.lua's M.by_pr), as of the last
 -- render.
 local agent_of = {}
+-- The agent chat keys its conversations "pr-<id>" (chat/agents.lua), which
+-- is only unique on Azure - a GitHub number repeats across repositories -
+-- so only an Azure PR is matched to one until the chat learns PR keys.
+local function agent_for(map, pr)
+  if HOSTS.host(pr) ~= "azure" then return nil end
+  return map[tostring(pr.id)]
+end
 local function agents_by_pr()
   local ok, map = pcall(function()
     local CHAT = require("azure-cli.chat")
@@ -253,7 +260,7 @@ end
 
 -- Records pr's current thread/mention counts as "seen" (called when the PR is opened).
 local function mark_pr_seen(pr)
-  seen.prs[tostring(pr.id)] = pr_snapshot(pr)
+  seen.prs[tostring(HOSTS.key(pr))] = pr_snapshot(pr)
   save_seen()
 end
 
@@ -273,7 +280,7 @@ end
 -- the row looked untouched and the only hint was reading the threads
 -- column closely enough to notice it now said 1/1.
 local function pr_is_unread(pr)
-  local rec = seen.prs[tostring(pr.id)]
+  local rec = seen.prs[tostring(HOSTS.key(pr))]
   if not rec then return false end
   local threads_changed = others_commented(pr, rec, pr.state == "Created")
   if pr.state ~= "Created" and not threads_changed then
@@ -293,9 +300,9 @@ end
 local function seed_unseen(fresh_prs)
   local dirty = false
   for _, pr in ipairs(fresh_prs) do
-    local rec = seen.prs[tostring(pr.id)]
+    local rec = seen.prs[tostring(HOSTS.key(pr))]
     if not rec then
-      seen.prs[tostring(pr.id)] = pr_snapshot(pr)
+      seen.prs[tostring(HOSTS.key(pr))] = pr_snapshot(pr)
       dirty = true
     else
       -- A record saved before the provider sent the others-comment counts:
@@ -407,6 +414,7 @@ end
 local function pr_env(pr)
   local e = {
     AZVICLI_PR = tostring(pr.id),
+    AZVICLI_PR_KEY = tostring(HOSTS.key(pr)),
     AZVICLI_REPO = pr.repo or "",
     AZVICLI_PROJECT = pr.project or "",
     AZVICLI_ORG = pr.org or "",
@@ -621,7 +629,7 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(fit(thr, 7), tgrp)
   if widths.agent then
     seg(" ")
-    local a = agent_of[tostring(pr.id)]
+    local a = agent_for(agent_of, pr)
     seg(fit(a and a.state or "", widths.agent - 1), a and a.hl)
   end
   if widths.reviewer then
@@ -714,7 +722,7 @@ local function render()
     if ok then
       local prev_pr = row_pr[cur[1]]
       if prev_pr then
-        prev_pr_id = prev_pr.id
+        prev_pr_id = HOSTS.key(prev_pr)
         prev_key = row_pr_key[cur[1]]
       else
         prev_key = row_header_key[cur[1]]
@@ -746,7 +754,7 @@ local function render()
   agent_of = agents_by_pr()
   local columns = SCALING_COLUMNS
   for _, pr in ipairs(prs) do
-    if agent_of[tostring(pr.id)] then
+    if agent_for(agent_of, pr) then
       columns = vim.list_extend(vim.list_slice(SCALING_COLUMNS), { AGENT_COLUMN })
       break
     end
@@ -841,7 +849,7 @@ local function render()
     local target
     if prev_pr_id then
       for ln, pr in pairs(row_pr) do
-        if pr.id == prev_pr_id then target = ln; break end
+        if HOSTS.key(pr) == prev_pr_id then target = ln; break end
       end
     end
     if not target and prev_key then
@@ -1166,8 +1174,8 @@ local clone_cbs = STATE.warm.clone_cbs
 -- content prefetch behind the badge is limited to WARM_CONCURRENCY at a
 -- time. That fetch shows once, in the winbar (see set_winbar).
 pr_sync_state = function(pr)
-  local id = tostring(pr.id or "")
-  local key = CACHE.key(pr.id, pr.updatedIso)
+  local id = tostring(HOSTS.key(pr) or "")
+  local key = CACHE.key(HOSTS.key(pr), pr.updatedIso)
   if warming[id] or cloning[id] or CACHE.is_syncing(key) then
     return "syncing"
   end
@@ -1193,7 +1201,7 @@ end
 
 local function ensure_warm(pr, cb, allow_clone)
   if not pr then return end
-  local id = tostring(pr.id or "")
+  local id = tostring(HOSTS.key(pr) or "")
   if id == "" then if cb then cb(true) end return end
 
   local function continue_warm()
@@ -1301,7 +1309,7 @@ local function prefetch_content(pr, cb)
     return
   end
   CACHE.prefetch({
-    id = pr.id, updatedIso = pr.updatedIso,
+    id = HOSTS.key(pr), updatedIso = pr.updatedIso,
     source = pr.source, target = pr.target, repo = path,
     totalThreads = pr.totalThreads,
     cmd = CONFIG.provider_argv(), env = pr_env(pr),
@@ -1352,7 +1360,7 @@ local function warm_all(list)
   local clone_state = {}
   local function clone_needs_fetch(path)
     for _, pr in ipairs(queue) do
-      if clone_for(pr) == path and warmed[tostring(pr.id)] ~= pr.updatedIso then return true end
+      if clone_for(pr) == path and warmed[tostring(HOSTS.key(pr))] ~= pr.updatedIso then return true end
     end
     return false
   end
@@ -1411,7 +1419,7 @@ local function warm_all(list)
       if active == 0 then STATE.warm.running = false end
       return
     end
-    if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
+    if CACHE.is_complete(CACHE.key(HOSTS.key(pr), pr.updatedIso)) then
       worker()
       return
     end
@@ -1438,11 +1446,11 @@ end
 -- notification for every pre-existing comment or mention.
 local function notify_new_pr_comments(prev_prs, fresh_prs)
   local prev_by_id = {}
-  for _, p in ipairs(prev_prs) do prev_by_id[p.id] = p end
+  for _, p in ipairs(prev_prs) do prev_by_id[HOSTS.key(p)] = p end
 
   local mine_events, thread_events, mention_events, resolved_events = {}, {}, {}, {}
   for _, pr in ipairs(fresh_prs) do
-    local old = prev_by_id[pr.id]
+    local old = prev_by_id[HOSTS.key(pr)]
     if old then
       local is_mine = pr.state == "Created"
       if is_mine then
@@ -1470,7 +1478,7 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
     notify("New comment on your PR #" .. pr.id .. ": " .. (pr.title or ""))
     NOTIFY.toast("PR #" .. pr.id, "New comment on your PR: " .. (pr.title or ""))
     -- ...and a suggestion in the chat to triage them.
-    local old = prev_by_id[pr.id]
+    local old = prev_by_id[HOSTS.key(pr)]
     pcall(function()
       local n = (pr.othersComments or -1) >= 0 and old and (old.othersComments or -1) >= 0
         and pr.othersComments - old.othersComments or (pr.totalThreads or 0) - ((old and old.totalThreads) or 0)
@@ -1632,6 +1640,7 @@ end
 -- Set the AZVICLI_* process env the reviewer (and its provider calls) read.
 local function set_pr_env(pr)
   vim.env.AZVICLI_PR = tostring(pr.id)
+  vim.env.AZVICLI_PR_KEY = tostring(HOSTS.key(pr))
   vim.env.AZVICLI_REPO = pr.repo or ""
   vim.env.AZVICLI_PROJECT = pr.project or ""
   vim.env.AZVICLI_ORG = pr.org or ""
@@ -1656,7 +1665,7 @@ local function open_pr_record(pr)
   end
   -- Already open in a reviewer tab: go there rather than opening a twin.
   if UI.goto_tab(function(b)
-    return vim.bo[b].filetype == "azurecli-files" and vim.b[b].azure_cli_pr == tostring(pr.id)
+    return vim.bo[b].filetype == "azurecli-files" and (vim.b[b].azure_cli_pr_key or vim.b[b].azure_cli_pr) == tostring(HOSTS.key(pr))
   end) then
     return
   end
@@ -1811,7 +1820,7 @@ local function complete_pr()
       end
       if not at then return nil end
       table.remove(prs, at)
-      local unmark = PRS.mark_completed(STATE.PR_COMPLETED, p.id, os.time())
+      local unmark = PRS.mark_completed(STATE.PR_COMPLETED, HOSTS.key(p), os.time())
       return function()
         unmark()
         table.insert(prs, math.min(at, #prs + 1), p)
@@ -1921,7 +1930,7 @@ KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("a
 KEYS.bind(buf, "dashboard", "agent_chat", function()
   local pr = current_pr()
   if not pr then return notify("Put the cursor on a pull request.") end
-  local a = agents_by_pr()[tostring(pr.id)]
+  local a = agent_for(agents_by_pr(), pr)
   if not a then
     return notify("No agent on PR !" .. tostring(pr.id) .. " (the agent column shows the ones that have one).")
   end

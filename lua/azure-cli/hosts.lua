@@ -49,7 +49,38 @@ local AZURE = {
   sigil = "!",
 }
 
-M.HOSTS = { azure = AZURE }
+-- GitHub (github_host.py): votes keep Azure's numbers as the currency
+-- between provider and screens - an approval is 10, changes requested -5
+-- (a review GitHub waits on the author for), 0 none - so everything that
+-- counts or sorts by vote works unchanged; only the choices differ.
+local GITHUB = {
+  host = "github",
+  votes = {
+    { key = "10", name = "approve", label = "Approve", signed = true, glyph = "\u{2713}" },
+    { key = "-5", name = "request_changes", label = "Request changes", glyph = "\u{2717}" },
+    { key = "0",  name = "reset", label = "Dismiss my review", reset = true },
+  },
+  -- A conversation is resolved or not; the provider reports them as
+  -- "active" and "fixed".
+  thread_statuses = {
+    { key = "active", label = "Unresolved" },
+    { key = "fixed",  label = "Resolved" },
+  },
+  -- The repository's own allowed set comes in the record's caps.
+  merge_methods = {
+    { key = "squash", label = "Squash and merge" },
+    { key = "merge",  label = "Create a merge commit" },
+    { key = "rebase", label = "Rebase and merge" },
+  },
+  complete_work_items = false,
+  auto_complete = true,
+  mention = function(login) return "@" .. login end,
+  sigil = "#",
+  -- "repo#12": a number alone is ambiguous across repositories.
+  ref = function(pr) return (pr.repo and pr.repo ~= "" and pr.repo or "") .. "#" .. tostring(pr.id) end,
+}
+
+M.HOSTS = { azure = AZURE, github = GITHUB }
 
 local function host_of(pr)
   local h = type(pr) == "table" and pr.host or nil
@@ -77,9 +108,10 @@ function M.key(pr)
   return pr.id
 end
 
--- How a PR is named in text: "!101" on Azure.
+-- How a PR is named in text: "!101" on Azure, "repo#12" on GitHub.
 function M.ref(pr)
   local c = M.caps(pr)
+  if c.ref and type(pr) == "table" then return c.ref(pr) end
   local id = type(pr) == "table" and pr.id or pr
   return (c.sigil or "!") .. tostring(id)
 end

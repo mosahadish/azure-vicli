@@ -50,5 +50,17 @@ check("mentions: named reviewers only", #m == 2)
 check("mentions: azure token is the guid form", m[1].token == "@<g-1>")
 check("mentions: no id, no token", m[2].token == nil)
 
+local gh = { host = "github", id = 12, repo = "cli", key = "o~cli~12",
+  caps = { merge_methods = { { key = "squash", label = "Squash and merge" } } },
+  reviewers = { { name = "Bob", id = "bob" } } }
+check("github: host", H.host(gh) == "github")
+check("github: key", H.key(gh) == "o~cli~12")
+check("github: ref names the repo", H.ref(gh) == "cli#12")
+check("github: three votes", #H.caps(gh).votes == 3 and H.vote(gh, -5).label == "Request changes")
+check("github: request changes is no sign-off", not H.vote(gh, -5).signed)
+check("github: two statuses", #H.caps(gh).thread_statuses == 2)
+check("github: the repo's merge methods", #H.caps(gh).merge_methods == 1)
+check("github: mention by login", H.mentions(gh)[1].token == "@bob")
+
 if fails > 0 then print(fails .. " failed"); os.exit(1) end
 print("all ok")

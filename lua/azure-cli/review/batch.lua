@@ -231,10 +231,10 @@ local function setup(ctx)
   -- the same queue again, the same way the ignore-whitespace toggle and
   -- last-search text already do (see review/init.lua's own STATE use).
   local function state()
-    local s = STATE.batch[ctx.ID]
+    local s = STATE.batch[ctx.KEY]
     if not s then
       s = { on = false, items = {} }
-      STATE.batch[ctx.ID] = s
+      STATE.batch[ctx.KEY] = s
     end
     return s
   end
@@ -314,7 +314,7 @@ local function setup(ctx)
   -- ...and take one back out (the undo of a draft): false once this
   -- reviewer is gone.
   STATE.batch_drop = STATE.batch_drop or {}
-  STATE.batch_drop[ctx.ID] = function(item)
+  STATE.batch_drop[ctx.KEY] = function(item)
     local lw = ctx.list_win()
     if not (lw and vim.api.nvim_win_is_valid(lw)) then return false end
     local s = state()
@@ -328,7 +328,7 @@ local function setup(ctx)
     return false
   end
   STATE.batch_live = STATE.batch_live or {}
-  STATE.batch_live[ctx.ID] = function(item)
+  STATE.batch_live[ctx.KEY] = function(item)
     local lw = ctx.list_win()
     if not (lw and vim.api.nvim_win_is_valid(lw)) then return false end
     local s = state()

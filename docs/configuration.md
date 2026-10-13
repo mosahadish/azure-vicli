@@ -54,6 +54,38 @@ its `project_name`. With no account configured this way and no
 `AZVICLI_WI_TEAM` override either, the work-item screens show a "no
 `work_items:` block" message instead of a PR/work-item mix-up.
 
+### GitHub accounts
+
+An account with `host: github` lists GitHub pull requests on the same
+dashboard, beside the Azure DevOps ones:
+
+```yaml
+accounts:
+  - host: github
+    owner: my-org                # optional: only this user's or organization's repositories
+    clones_dir: ~/src
+    # api_url: https://ghe.example.com/api/v3   # GitHub Enterprise Server (default: github.com)
+    # pat_file: ~/.config/azure-cli/gh-token    # optional: without one, `gh auth token` is used
+```
+
+| Field | Meaning |
+|---|---|
+| `host` | `github` (an account without it is Azure DevOps). |
+| `owner` | Optional. Limit the account to one user's or organization's repositories; without it, every PR you're asked to review, have reviewed or opened, anywhere. |
+| `api_url` | Optional. The REST root of a GitHub Enterprise Server (`https://<host>/api/v3`); default `https://api.github.com`. |
+| `pat` / `pat_file` | Optional. A token with the `repo` scope. Without one, the provider asks the GitHub CLI (`gh auth token`, for the account's host) - so after `gh auth login` nothing else is needed. |
+| `clones_dir`, `hide_ancient` | As for an Azure account. |
+
+`project_name`, `org_url` and `work_items` don't apply (the work-item screens
+stay Azure DevOps'). `:AzureCli doctor` checks the sign-in.
+
+So far a GitHub PR is read-only: the dashboard lists it in the same sections
+(asked to review, waiting, signed off, drafts, created by me), and the
+reviewer shows its files, diffs, commits and conversations - review threads
+on their lines, the Conversation tab as one thread. Commenting, reviewing,
+merging and the agent's tools on a GitHub PR are still to come; trying one
+says so.
+
 ### Accounts in setup() instead of a file (plugin)
 
 A plugin install doesn't need `azure-cli.yml` at all: pass the same

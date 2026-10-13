@@ -99,6 +99,9 @@ function M.open()
 
 local env       = vim.env
 local ID        = env.AZVICLI_PR or "?"
+-- The key every per-PR table uses (lua/azure-cli/hosts.lua): the PR id on
+-- Azure, "owner~repo~number" on GitHub, where numbers repeat across repos.
+local KEY       = tostring(env.AZVICLI_PR_KEY or ID)
 local ORG       = env.AZVICLI_ORG or ""
 local PROJECT   = env.AZVICLI_PROJECT or ""
 local SOURCE    = env.AZVICLI_SOURCE or ""
@@ -150,11 +153,11 @@ local function leave(force)
   -- Items gS is already sending don't count when this is a tab: the shared
   -- daemon (rpc.lua) finishes them after the tab closes. Standalone, quitting
   -- exits Neovim and stops the daemon with them, so they still ask.
-  local b = STATE.batch and STATE.batch[ID]
+  local b = STATE.batch and STATE.batch[KEY]
   local queued = (b and b.items and not (b.submitting and EMBED)) and #b.items or 0
   local drafts = 0
   for k in pairs(STATE.editor_drafts or {}) do
-    if k:sub(1, #ID + 1) == ID .. "\0" then drafts = drafts + 1 end
+    if k:sub(1, #KEY + 1) == KEY .. "\0" then drafts = drafts + 1 end
   end
   if queued == 0 and drafts == 0 then
     go()
@@ -208,7 +211,7 @@ local function resolve_my_identity(on_done)
   -- as; the dashboard hands the record over in STATE.PR_CURRENT. Using it here
   -- saves a --whoami spawn (a .NET start-up plus an ADO round-trip) per org.
   local rec = STATE.PR_CURRENT
-  if rec and tostring(rec.id) == tostring(ID) and rec.myId and rec.myId ~= "" then
+  if rec and tostring(require("azure-cli.hosts").key(rec)) == KEY and rec.myId and rec.myId ~= "" then
     STATE.whoami[cache_key] = { id = rec.myId, displayName = rec.myName or "" }
     my_id = rec.myId
     if on_done then on_done() end
@@ -470,7 +473,10 @@ local function parse_threads(json, by_key, file_by_path, general)
     end
 
     if #comments > 0 then
-      local entry = { id = thread.id, status = thread.status, comments = comments }
+      -- `conversation`: a GitHub PR's Conversation tab, one flat thread
+      -- nobody resolves (github_host.py) - shown, never counted unresolved.
+      local entry = { id = thread.id, status = thread.status, comments = comments,
+        conversation = thread.conversation or nil }
       local ctx = thread.threadContext
       local side, lineno, end_lineno
       if ctx and ctx.rightFileStart then
@@ -610,15 +616,16 @@ local HELP_NOTE_SENDING =
 -- dashboard refreshes it on its poll, whereas PR_CURRENT is frozen at open time.
 local function current_pr_record()
   local cache = STATE.PR_LIST_CACHE
+  local HOSTS = require("azure-cli.hosts")
   if cache and cache.prs then
     for _, p in ipairs(cache.prs) do
-      if tostring(p.id) == tostring(ID) then
+      if tostring(HOSTS.key(p)) == KEY then
         return p
       end
     end
   end
   local cur = STATE.PR_CURRENT
-  if cur and tostring(cur.id) == tostring(ID) then
+  if cur and tostring(HOSTS.key(cur)) == KEY then
     return cur
   end
   return cur
@@ -713,7 +720,7 @@ local pending_seq = 0
 
 local function my_display_name()
   local rec = STATE.PR_CURRENT
-  if rec and tostring(rec.id) == tostring(ID) and rec.myName and rec.myName ~= "" then
+  if rec and tostring(require("azure-cli.hosts").key(rec)) == KEY and rec.myName and rec.myName ~= "" then
     return rec.myName
   end
   local w = STATE.whoami and STATE.whoami[ORG .. "|" .. PROJECT]
@@ -968,7 +975,7 @@ end
 -- a stale diff.
 local function diff_cache_key()
   local pr = current_pr_record()
-  return CACHE.key(ID, pr and pr.updatedIso or "")
+  return CACHE.key(KEY, pr and pr.updatedIso or "")
 end
 local cache_key = diff_cache_key()
 -- path -> {lines, map} for the current ignore_ws variant; reassigned by
@@ -1042,7 +1049,7 @@ local function comment_here()
     context_lines = { (vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false))[1] or "" },
     anchor = { win = diff_win, row = lnum },
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "line", where),
+    draft_key = EDITOR.draft_key(KEY, "line", where),
     on_submit = function(text)
       post_new_thread({ "--post", path, m.side, tostring(m.lineno), text }, "line", where,
         path, m.side, m.lineno, text,
@@ -1064,7 +1071,7 @@ local function comment_on_file(path)
     title = EDITOR.format_title("file", { path = path }),
     anchor = "center",
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "file", path),
+    draft_key = EDITOR.draft_key(KEY, "file", path),
     on_submit = function(text)
       post_new_thread({ "--file-comment", path, text }, "file", path, path, nil, nil, text,
         "File comment on " .. path, "file comment (" .. path .. ")")
@@ -1080,7 +1087,7 @@ local function comment_on_pr()
     title = EDITOR.format_title("pr", {}),
     anchor = "center",
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "pr", ""),
+    draft_key = EDITOR.draft_key(KEY, "pr", ""),
     on_submit = function(text)
       post_new_thread({ "--pr-comment", text }, "general", nil, nil, nil, nil, text,
         "PR comment", "PR comment (#" .. ID .. ")")
@@ -1385,7 +1392,7 @@ local function reply_to_thread(target, on_success)
     title = EDITOR.format_title("reply", { author = target.comments[1] and target.comments[1].author }),
     anchor = fwin and { win = fwin, row = #thread_lines + 1 } or "center",
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "reply", tostring(target.id)),
+    draft_key = EDITOR.draft_key(KEY, "reply", tostring(target.id)),
     on_submit = function(text)
       close_thread_float()
       -- Show the reply at once; the write confirms or removes it.
@@ -1727,7 +1734,7 @@ local function complete_pr()
   local unresolved = 0
   local function count(list)
     for _, t in ipairs(list or {}) do
-      if require("azure-cli.hosts").is_open(t.status) then unresolved = unresolved + 1 end
+      if not t.conversation and require("azure-cli.hosts").is_open(t.status) then unresolved = unresolved + 1 end
     end
   end
   for _, list in pairs(threads_by_key) do count(list) end
@@ -1802,7 +1809,7 @@ local function complete_pr()
           local cache = STATE.PR_LIST_CACHE
           if cache and cache.prs then
             for i, p in ipairs(cache.prs) do
-              if tostring(p.id) == tostring(ID) then table.remove(cache.prs, i) break end
+              if tostring(require("azure-cli.hosts").key(p)) == KEY then table.remove(cache.prs, i) break end
             end
           end
           require("azure-cli.prs").mark_completed(STATE.PR_COMPLETED, ID, os.time())
@@ -1967,7 +1974,8 @@ local function build_overview()
     for _, t in ipairs(comments) do
       lines[#lines + 1] = ""
       thread_map[#lines + 1] = { t }
-      lines[#lines + 1] = "┌─ thread [" .. tostring(t.status or "?") .. "]" .. sending_tag(t) .. (thread_is_new(t) and "  🆕" or "")
+      lines[#lines + 1] = (t.conversation and "┌─ conversation" or ("┌─ thread [" .. tostring(t.status or "?") .. "]"))
+        .. sending_tag(t) .. (thread_is_new(t) and "  🆕" or "")
       for _, c in ipairs(t.comments) do
         lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
         comment_map[#lines] = { thread = t, comment = c }
@@ -2466,7 +2474,11 @@ end
 -- comment for the model it builds (row_to_file/file_to_row/ordered_files),
 -- which EXT.filelist (below) holds the live copy of.
 local list_buf = vim.api.nvim_create_buf(false, true)
-vim.b[list_buf].azure_cli_pr = tostring(ID)  -- lets the dashboard find this tab again
+vim.b[list_buf].azure_cli_pr = tostring(ID)
+-- The key lets the dashboard find this tab again; the ref names it in the
+-- tab line ("PR !101", "PR repo#12").
+vim.b[list_buf].azure_cli_pr_key = KEY
+vim.b[list_buf].azure_cli_pr_ref = require("azure-cli.hosts").ref(current_pr_record() or { id = ID })
 local OVERVIEW_ROW = 1
 local current_file_path  -- path (or OVERVIEW_MARK) currently shown in the diff pane, for re-marking after redraws.
 local function list_lines()
@@ -2498,7 +2510,7 @@ EXT.refresh_file_list = function()
     if entry and entry.map then stats[f] = FILELIST.diff_stats(entry.map) end
     local closed, total = file_thread_count(f)
     threads_info[f] = { closed = closed, total = total, new = file_has_new(f),
-      viewed = EXT.viewed_stamp and require("azure-cli.review.viewed").is_viewed(ID, f, EXT.viewed_stamp()) or false }
+      viewed = EXT.viewed_stamp and require("azure-cli.review.viewed").is_viewed(KEY, f, EXT.viewed_stamp()) or false }
   end
   EXT.filelist = FILELIST.build(files, stats, EXT.file_status, threads_info)
   FILELIST.render(list_buf, EXT.filelist)
@@ -3327,7 +3339,7 @@ refresh_threads = function(opts)
       -- Keep the shared cache current so re-opening this PR (or the
       -- dashboard's next prefetch) starts from what was just fetched.
       local pr = current_pr_record()
-      CACHE.set_threads(ID, json, pr and pr.totalThreads or nil)
+      CACHE.set_threads(KEY, json, pr and pr.totalThreads or nil)
       apply_threads_json(json, opts)
       if opts.on_done then opts.on_done() end
     end,
@@ -3465,13 +3477,13 @@ end
 EXT.fetch_new_commits = function()
   local warm = STATE.warm
   local warming = warm and warm.warming
-  if warming and warming[tostring(ID)] then return end  -- dashboard already on it
+  if warming and warming[KEY] then return end  -- dashboard already on it
   if EXT.fetch_inflight then return end
   EXT.fetch_inflight = true
-  if warming then warming[tostring(ID)] = true end
+  if warming then warming[KEY] = true end
   local function done()
     EXT.fetch_inflight = false
-    if warming then warming[tostring(ID)] = nil end
+    if warming then warming[KEY] = nil end
   end
   local ok = pcall(EXT.rpc.run, EXT.provider({}), {
     env = {
@@ -3533,7 +3545,7 @@ EXT.reload_after_push = function()
   -- against the new origin/<source> rather than serving the old lines.
   -- Reassigning this local updates every closure that captured it, the same
   -- way rebuild_view swaps content_cache.
-  if EXT.source_sha then cache_key = CACHE.key(ID, EXT.source_sha) end
+  if EXT.source_sha then cache_key = CACHE.key(KEY, EXT.source_sha) end
 
   local path = current_file_path
   local anchor, want_path = nil, nil
@@ -3607,7 +3619,7 @@ EXT.check_source_sha = function()
 end
 
 do
-  local cached = CACHE.threads(ID)
+  local cached = CACHE.threads(KEY)
   if cached then
     apply_threads_json(cached.json, { announce = true, seed = true })
   end
@@ -3703,13 +3715,13 @@ EXT.viewed_stamp = function()
   return (rec and rec.updatedIso) or ""
 end
 EXT.viewed_count = function()
-  return require("azure-cli.review.viewed").count(ID, files, EXT.viewed_stamp())
+  return require("azure-cli.review.viewed").count(KEY, files, EXT.viewed_stamp())
 end
 EXT.mark_viewed = function(path)
   local VIEWED = require("azure-cli.review.viewed")
   if not path or path == OVERVIEW_MARK then return end
-  if VIEWED.is_viewed(ID, path, EXT.viewed_stamp()) then return end
-  VIEWED.set(ID, path, EXT.viewed_stamp(), true)
+  if VIEWED.is_viewed(KEY, path, EXT.viewed_stamp()) then return end
+  VIEWED.set(KEY, path, EXT.viewed_stamp(), true)
   if refresh_file_rows then refresh_file_rows() end
   if set_list_winbar then set_list_winbar() end
 end
@@ -3718,7 +3730,7 @@ EXT.toggle_viewed = function(path)
     notify("Not on a file.", vim.log.levels.WARN)
     return
   end
-  local on = require("azure-cli.review.viewed").toggle(ID, path, EXT.viewed_stamp())
+  local on = require("azure-cli.review.viewed").toggle(KEY, path, EXT.viewed_stamp())
   notify((on and "Viewed: " or "Not viewed: ") .. path)
   if refresh_file_rows then refresh_file_rows() end
   if set_list_winbar then set_list_winbar() end
@@ -3727,7 +3739,7 @@ EXT.jump_unviewed = function(dir)
   local model = EXT.filelist
   if not (model and #model.ordered_files > 0) then return end
   local from = (current_file_path and current_file_path ~= OVERVIEW_MARK and EXT.file_index(current_file_path)) or 0
-  local idx = require("azure-cli.review.viewed").next_unviewed(ID, model.ordered_files, EXT.viewed_stamp(), from, dir)
+  local idx = require("azure-cli.review.viewed").next_unviewed(KEY, model.ordered_files, EXT.viewed_stamp(), from, dir)
   if not idx then
     notify("Every file is marked viewed.")
     return
@@ -3799,6 +3811,7 @@ EXT.status_options = status_options
   local ctx = {}
 
   ctx.ID, ctx.ORG, ctx.PROJECT, ctx.SOURCE, ctx.TARGET = ID, ORG, PROJECT, SOURCE, TARGET
+  ctx.KEY = KEY
   ctx.REPO_PATH, ctx.EMBED = REPO_PATH, EMBED
   ctx.provider = EXT.provider
   ctx.rpc = EXT.rpc

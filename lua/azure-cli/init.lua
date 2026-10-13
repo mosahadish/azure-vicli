@@ -70,13 +70,19 @@ end
 -- knows; this looks it up in the shared list cache (lua/azure-cli/state.lua)
 -- rather than re-implementing that fetch, so it only works for a PR the
 -- dashboard has already listed this session.
+-- `id` is a PR id, or a PR key (lua/azure-cli/hosts.lua: "owner~repo~12" on
+-- GitHub, where the same number can be in two repositories); the key wins.
 function M.open_review(id)
   id = tostring(id)
   local state = require("azure-cli.state")
+  local HOSTS = require("azure-cli.hosts")
   local cache = state.PR_LIST_CACHE
   local pr
   if cache and cache.prs then
     for _, p in ipairs(cache.prs) do
+      if tostring(HOSTS.key(p)) == id then pr = p; break end
+    end
+    for _, p in ipairs(pr and {} or cache.prs) do
       if tostring(p.id) == id then pr = p; break end
     end
   end

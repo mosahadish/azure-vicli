@@ -52,6 +52,13 @@ MY_ID = "11111111-1111-1111-1111-111111111111"
 MY_NAME = "Demo User"
 ORG = "https://dev.azure.com/demo-org"
 PROJECT = "Demo"
+# The GitHub account (github_host.py): PRs whose AZVICLI_ORG is this API
+# root are GitHub's, keyed "owner~repo~number" - two repos below share a
+# PR number on purpose.
+GH_API = "https://api.github.com"
+GH_OWNER = "demo-gh"
+# The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_READS).
+GH_READS = ("--threads", "--iterations", "--get-pr")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -253,6 +260,46 @@ PR_FIXTURES = [
         "threads": [],
     },
 ]
+
+# GitHub PRs: the same number (7) in two repositories.
+GH_FIXTURES = [
+    {
+        "id": 7, "repo": "gizmos", "host": "github", "source": "feature/spin-faster", "author": "alice",
+        "title": "Gizmo: spin faster", "build": "succeeded",
+        "description": "Doubles the spin rate.",
+        "reviewers": [("me", 0), ("bob", 0)],
+        "commits": [
+            ("Spin twice as fast", {"gizmo.py": "def spin():\n    return 'whirr whirr'\n"}),
+        ],
+        "threads": [
+            {"by": "bob", "status": "active", "path": "gizmo.py", "side": "R", "line": 2,
+             "comments": [("bob", "Gizmo thread: is twice enough?")]},
+        ],
+        "conversation": [("carol", "Gizmo conversation: nice one")],
+    },
+    {
+        "id": 7, "repo": "doohickeys", "host": "github", "source": "fix/doohickey-wobble", "author": "bob",
+        "title": "Doohickey: stop the wobble", "build": "failed",
+        "description": "Clamps the wobble.",
+        "reviewers": [("me", 10)],
+        "commits": [
+            ("Clamp the wobble", {"gizmo.py": "def spin():\n    return 'whirr'\n\n\ndef wobble():\n    return 0\n"}),
+        ],
+        "threads": [
+            {"by": "alice", "status": "fixed", "path": "gizmo.py", "side": "R", "line": 5,
+             "comments": [("alice", "Doohickey thread: resolved already")]},
+        ],
+    },
+]
+
+
+def skey(pr):
+    """A PR's key in state.json's threads/iterations: its id on Azure,
+    owner~repo~number on GitHub (hosts.lua's key)."""
+    if pr.get("host") == "github":
+        return "{0}~{1}~{2}".format(GH_OWNER, pr["repo"], pr["id"])
+    return str(pr["id"])
+
 
 SPRINTS = [
     ("Sprint 41", -14, -1, "past"),
@@ -493,12 +540,15 @@ def cmd_setup(root, fresh=False):
     branches = {}
     branches["widgets"] = build_repo(ws, "widgets", BASE_FILES, by_repo["widgets"], day0)
     branches["gadgets"] = build_repo(ws, "gadgets", GADGET_FILES, by_repo["gadgets"], day0)
+    for pr in GH_FIXTURES:
+        branches[pr["repo"]] = build_repo(ws, pr["repo"], GADGET_FILES, [pr], day0)
+        git(ws.root, "clone", "-q", ws.clone_url(pr["repo"]), os.path.join(ws.clones, pr["repo"]))
     # widgets is cloned already; gadgets deliberately is not (clone-on-open).
     git(ws.root, "clone", "-q", ws.clone_url("widgets"), os.path.join(ws.clones, "widgets"))
 
     state = {"next_id": 5000, "prs": [], "threads": {}, "iterations": {}, "workitems": [], "sprints": [],
              "members": [PEOPLE[k]["displayName"] for k in ("me", "alice", "bob", "carol")]}
-    for pr in PR_FIXTURES:
+    for pr in PR_FIXTURES + GH_FIXTURES:
         shas = branches[pr["repo"]][pr["source"]]
         rec = {
             "id": pr["id"], "title": pr["title"], "repo": pr["repo"], "source": pr["source"], "target": "main",
@@ -511,9 +561,17 @@ def cmd_setup(root, fresh=False):
             "reviewers": [{"name": PEOPLE[k]["displayName"], "id": PEOPLE[k]["id"], "vote": v} for k, v in pr["reviewers"]],
             "updatedIso": shas[-1][1], "completed": False,
         }
+        if pr.get("host"):
+            rec["host"] = pr["host"]
+            rec["buildUrl"] = "https://github.com/{0}/{1}/pull/{2}/checks".format(GH_OWNER, pr["repo"], pr["id"])
         state["prs"].append(rec)
-        state["threads"][str(pr["id"])] = [make_thread(state, pr, t) for t in pr["threads"]]
-        state["iterations"][str(pr["id"])] = [
+        threads = [make_thread(state, pr, t) for t in pr["threads"]]
+        if pr.get("conversation"):
+            conv = make_thread(state, pr, {"status": "active", "comments": pr["conversation"]})
+            conv["id"], conv["conversation"] = 0, True
+            threads.append(conv)
+        state["threads"][skey(rec)] = threads
+        state["iterations"][skey(rec)] = [
             {"id": i + 1, "description": "", "createdDate": when, "updatedDate": when,
              "sourceRefCommit": {"commitId": sha}, "targetRefCommit": {"commitId": ""}}
             for i, (sha, when) in enumerate(shas)
@@ -583,7 +641,9 @@ def classify(pr):
 
 def thread_counts(threads):
     live = [t for t in threads if not t.get("isDeleted") and t["comments"]]
-    active = [t for t in live if t["status"] in ("active", "pending")]
+    # A GitHub PR's Conversation thread is nobody's to resolve (github_host.py).
+    active = [t for t in live if t["status"] in ("active", "pending") and not t.get("conversation")]
+    live = [t for t in live if not t.get("conversation")]
     my_active = [t for t in active if t["comments"][0]["author"]["id"] == MY_ID]
     mention_all = [t for t in live if any("@<" + MY_ID + ">" in (c.get("content") or "") for c in t["comments"])]
     mention_active = [t for t in mention_all if t["status"] in ("active", "pending")]
@@ -606,7 +666,7 @@ def others_comments(threads, only_mine):
 def to_record(ws, pr, threads):
     active, total, my_active, mention, mention_total = thread_counts(threads)
     signed = sum(1 for r in pr["reviewers"] if int(r["vote"]) in (10, 5))
-    return {
+    rec = {
         "id": pr["id"], "title": pr["title"], "repo": pr["repo"], "project": PROJECT, "org": ORG,
         "source": pr["source"], "target": pr["target"], "author": PEOPLE[pr["author"]]["displayName"],
         "updatedIso": pr["updatedIso"], "updatedHuman": humanize(pr["updatedIso"]),
@@ -624,6 +684,13 @@ def to_record(ws, pr, threads):
         "cloneUrl": ws.clone_url(pr["repo"]), "clonesDir": ws.clones,
         "myId": MY_ID, "myName": MY_NAME, "reviewers": pr["reviewers"],
     }
+    if pr.get("host") == "github":
+        rec.update({"host": "github", "key": skey(pr), "org": GH_API, "project": GH_OWNER,
+                    "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, pr["repo"], pr["id"]),
+                    "caps": {"merge_methods": [{"key": "squash", "label": "Squash and merge"},
+                                               {"key": "merge", "label": "Create a merge commit"}],
+                             "auto_complete": False}})
+    return rec
 
 
 class Fake:
@@ -637,15 +704,25 @@ class Fake:
     def pr_id(self):
         return self.env.get("AZVICLI_PR") or ""
 
+    def is_github(self):
+        return (self.env.get("AZVICLI_ORG") or "").rstrip("/") == GH_API
+
+    def skey(self):
+        """This call's PR key (see skey()): GitHub's from owner/repo/number."""
+        if self.is_github():
+            return "{0}~{1}~{2}".format(self.env.get("AZVICLI_PROJECT") or "", self.env.get("AZVICLI_REPO") or "",
+                                        self.pr_id())
+        return self.pr_id()
+
     def pr(self):
-        pid = self.pr_id()
+        want = self.skey()
         for p in self.state["prs"]:
-            if str(p["id"]) == pid:
+            if skey(p) == want:
                 return p
         return None
 
     def threads(self):
-        return self.state["threads"].setdefault(self.pr_id(), [])
+        return self.state["threads"].setdefault(self.skey(), [])
 
     def find_thread(self, tid):
         for t in self.threads():
@@ -673,17 +750,17 @@ class Fake:
         for pr in self.state["prs"]:
             if pr.get("completed"):
                 continue
-            print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(str(pr["id"]), [])), ensure_ascii=False))
+            print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(skey(pr), [])), ensure_ascii=False))
         return 0
 
     def cmd_get_pr(self):
         # Any PR by id, completed ones included (unlike --list).
         pid = self.env.get("AZVICLI_PR") or ""
-        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid), None)
+        pr = self.pr()
         if pr is None:
             print("ERROR: HTTP 404 GET: pull request {0} not found".format(pid), file=sys.stderr)
             return 1
-        rec = to_record(self.ws, pr, self.state["threads"].get(pid, []))
+        rec = to_record(self.ws, pr, self.state["threads"].get(skey(pr), []))
         # As the real --get-pr: `state` is the PR's status, not a dashboard section.
         rec["state"] = "completed" if pr.get("completed") else "active"
         print(json.dumps(rec, ensure_ascii=False))
@@ -723,7 +800,7 @@ class Fake:
     def cmd_iterations(self):
         if not self.need_pr():
             return 1
-        its = self.state["iterations"].get(self.pr_id(), [])
+        its = self.state["iterations"].get(self.skey(), [])
         print(json.dumps({"value": its, "count": len(its)}))
         return 0
 
@@ -1289,6 +1366,13 @@ class Fake:
         return 1
 
 
+# The flags azure-cli.py routes to a PR (cmd_pr_action's PR_ACTION_FLAGS).
+PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
+                   "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
+                   "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
+                   "--get-pr")
+
+
 def dispatch(ws, argv, env):
     """Runs one provider invocation (argv = what azure-cli.py would have seen
     after its own path) and returns its exit code; output goes to the
@@ -1336,6 +1420,10 @@ def dispatch(ws, argv, env):
         "--get-pr": lambda: f.cmd_get_pr(),
     }
     handler = table.get(flag)
+    if handler is not None and f.is_github() and flag.startswith("--") and flag not in GH_READS \
+            and flag in PR_ACTION_FLAGS:
+        print("{0} isn't available for GitHub pull requests yet.".format(flag), file=sys.stderr)
+        return 1
     if handler is None:
         print("fake-provider: unsupported invocation {0}".format(json.dumps(argv)), file=sys.stderr)
         return 1

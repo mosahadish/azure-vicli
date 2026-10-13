@@ -438,6 +438,7 @@ end
 local ACCOUNT_FIELDS = {
   project_name = "string", org_url = "string", pat_file = "string",
   hide_ancient = "boolean", clones_dir = "string", work_items = "table",
+  host = "string", owner = "string", api_url = "string",
 }
 local WORK_ITEM_FIELDS = {
   team = "string", assignee = "string", types = "list", states = "list", sprint_scope = "string",
@@ -483,6 +484,21 @@ local function validate_accounts(accounts)
         .. "so the token goes in a file of its own: pat_file = \"~/.config/azure-cli/pat\"")
     end
     check_fields(a, ACCOUNT_FIELDS, where)
+    local host = a.host or "azure"
+    if host ~= "azure" and host ~= "github" then
+      error("azure-cli.setup: " .. where .. ".host must be \"azure\" or \"github\" (got " .. host .. ")")
+    end
+    if host == "github" then
+      -- owner/api_url are optional, and so is pat_file: without one the
+      -- provider asks `gh auth token`.
+      if a.api_url ~= nil and not a.api_url:match("^[Hh][Tt][Tt][Pp][Ss]?://") then
+        error("azure-cli.setup: " .. where .. ".api_url must start with https:// (got " .. a.api_url .. ")")
+      end
+      if a.work_items ~= nil then
+        error("azure-cli.setup: " .. where .. ".work_items isn't supported on a GitHub account yet")
+      end
+      goto continue
+    end
     for _, req in ipairs({ "project_name", "org_url" }) do
       if type(a[req]) ~= "string" or a[req] == "" then
         error("azure-cli.setup: " .. where .. " needs a non-empty `" .. req .. "`")
@@ -504,6 +520,7 @@ local function validate_accounts(accounts)
         error("azure-cli.setup: " .. where .. ".work_items.sprint_scope must be \"parent\" or \"all\"")
       end
     end
+    ::continue::
   end
   return accounts
 end

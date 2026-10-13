@@ -191,7 +191,9 @@ function M.buf_title(buf)
   local t = vim.b[buf].azure_cli_title
   if t and t ~= "" then return t end
   local ft = vim.bo[buf].filetype
-  if ft == "azurecli-files" and vim.b[buf].azure_cli_pr then return "PR !" .. tostring(vim.b[buf].azure_cli_pr) end
+  if ft == "azurecli-files" and vim.b[buf].azure_cli_pr then
+    return "PR " .. (vim.b[buf].azure_cli_pr_ref or ("!" .. tostring(vim.b[buf].azure_cli_pr)))
+  end
   if vim.b[buf].azure_cli_chat then return "Chat" end
   return FT_TITLE[ft]
 end

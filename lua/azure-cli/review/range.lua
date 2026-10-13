@@ -126,7 +126,7 @@ local function setup(ctx)
       context_lines = context_lines,
       anchor = { win = ctx.diff_win(), row = top_line },
       mentions = mentions,
-      draft_key = EDITOR.draft_key(ctx.ID, "line", where),
+      draft_key = EDITOR.draft_key(ctx.KEY, "line", where),
       on_submit = function(text)
         local args = M.post_args(path, side, start, stop, text)
         local end_lineno = (stop > start) and stop or nil
