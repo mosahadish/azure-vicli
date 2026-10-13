@@ -265,7 +265,6 @@ function M.ask(o)
   end
   require("azure-cli.editor").open({
     title = "Ask " .. CHAT.agent_label() .. " \u{00B7} " .. o.label,
-    initial = "Why did you choose this?",
     anchor = { win = o.win, row = o.row },
     context_lines = (o.quote or o.anchor or "") ~= "" and vim.split(o.quote or o.anchor, "\n", { plain = true }) or nil,
     on_submit = function(question)

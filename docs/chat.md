@@ -444,8 +444,8 @@ command), and so does the Agents screen (approve, while a plan waits). `?`
 always has all of them.
 
 **Ask why.** Put the cursor on any line of the plan - or select a few -
-and press `ga`: a small editor opens under the line with "Why did you
-choose this?" already written (change it, or just send it with `<C-s>`).
+and press `ga`: an empty editor opens under the line - type your question
+and send it with `<C-s>`.
 The question goes to the agent through the chat, with the line and its
 section, and the answer appears under that line, like a review thread
 (also in the chat). `<Tab>` unfolds a long answer, `K` shows it in a

@@ -1218,6 +1218,7 @@ do
   local row = vim.api.nvim_win_get_cursor(v.plan_win)[1]
   n = #st.entries
   feed("ga")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
   feed("<C-s>")
   local rec
   local okq = vim.wait(40000, function()
@@ -1385,6 +1386,7 @@ do
   vim.api.nvim_set_current_win(dwin)
   vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
   feed("ga")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
   feed("<C-s>")
   local dbuf = vim.api.nvim_win_get_buf(dwin)
   local okd = vim.wait(40000, function() return drawn(dbuf, "BECAUSE-PLANNED_CHANGE = True") ~= nil end, 100)
