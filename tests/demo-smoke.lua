@@ -1518,6 +1518,7 @@ do
   vim.api.nvim_win_set_cursor(lw, { step_row, 0 })
   n = #st.entries
   feed("ga")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you do this?" })
   feed("<C-s>")
   e = answered(n)
   if not (e and e.text:find("BECAUSE-", 1, true) and e.text:find("show_fix", 1, true)) then
