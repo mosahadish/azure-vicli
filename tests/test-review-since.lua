@@ -5,7 +5,8 @@
 -- (picking my latest comment - including a system/vote one - out of a
 -- synthetic thread list), M.pick_base (picking the iteration to diff from
 -- out of a synthetic iterations list, including "no comments"/"all
--- iterations newer than my last review"), and the variant/range string
+-- iterations newer than my last review"), M.choose_base (GitHub's
+-- myLastReviewSha first, the timestamp rule otherwise), and the variant/range string
 -- composition (M.variant/M.diff_variant/M.range).
 --
 -- Usage: luajit test-review-since.lua <review/since.lua path>
@@ -136,6 +137,49 @@ do
   local base, new_count = M.pick_base({}, "2024-01-01T00:00:00Z")
   check("pick_base: no iterations at all -> no base", base == nil)
   check("pick_base: no iterations at all -> zero count", new_count == 0)
+end
+
+-- --- M.choose_base ------------------------------------------------------------
+
+do
+  -- The review point alone would pick sha2; myLastReviewSha says sha1.
+  local sha, new_count = M.choose_base(ITERATIONS, "2024-01-03T00:00:00Z", "sha1")
+  check("choose_base: myLastReviewSha among the iterations is the base", sha == "sha1")
+  check("choose_base: counts the iterations after myLastReviewSha's", new_count == 2)
+end
+
+do
+  local sha, new_count = M.choose_base(ITERATIONS, "2024-01-03T00:00:00Z", "sha3")
+  check("choose_base: myLastReviewSha on the latest iteration is the base", sha == "sha3")
+  check("choose_base: myLastReviewSha on the latest iteration -> no new iterations", new_count == 0)
+end
+
+do
+  -- Force-pushed away: fall back to the timestamp rule.
+  local sha, new_count = M.choose_base(ITERATIONS, "2024-01-03T00:00:00Z", "gone")
+  check("choose_base: myLastReviewSha not among the iterations -> timestamp rule's base", sha == "sha2")
+  check("choose_base: myLastReviewSha not among the iterations -> timestamp rule's count", new_count == 1)
+  local sha2, count2 = M.choose_base(ITERATIONS, nil, "gone")
+  check("choose_base: unknown sha and no review point -> no base", sha2 == nil)
+  check("choose_base: unknown sha and no review point -> every iteration new", count2 == #ITERATIONS)
+end
+
+do
+  -- A GitHub review with no comment: no review point, only the sha.
+  local sha, new_count = M.choose_base(ITERATIONS, nil, "sha2")
+  check("choose_base: sha with no review point is still the base", sha == "sha2")
+  check("choose_base: sha with no review point -> counts the iterations after it", new_count == 1)
+end
+
+do
+  -- No sha (Azure): the same answer as pick_base.
+  local base, base_count = M.pick_base(ITERATIONS, "2024-01-03T00:00:00Z")
+  local sha, new_count = M.choose_base(ITERATIONS, "2024-01-03T00:00:00Z", nil)
+  check("choose_base: no sha -> pick_base's base", sha == base.sourceRefCommit.commitId)
+  check("choose_base: no sha -> pick_base's count", new_count == base_count)
+  local sha2, count2 = M.choose_base(ITERATIONS, "2023-12-01T00:00:00Z", nil)
+  check("choose_base: no sha, every iteration newer -> no base", sha2 == nil)
+  check("choose_base: no sha, every iteration newer -> every one counted", count2 == #ITERATIONS)
 end
 
 do
