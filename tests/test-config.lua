@@ -435,6 +435,18 @@ do
   rejects("work_items without team", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = {} } }, "`team`")
   rejects("a bad sprint_scope", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", sprint_scope = "some" } } }, "sprint_scope")
   rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", types = { 1 } } } }, "list of strings")
+
+  -- issues: on a GitHub account (github_issues.py)
+  config.setup({ accounts = { { host = "github", owner = "o", issues = { project = 3, scope = "all" } } } })
+  check("issues: a project number is exported as one",
+    (vim.env.AZVICLI_ACCOUNTS_JSON or ""):find('"project":3', 1, true) ~= nil, vim.env.AZVICLI_ACCOUNTS_JSON)
+  local ok_title = pcall(config.setup, { accounts = { { host = "github", issues = { project = "Roadmap", repo = "r" } } } })
+  check("issues: a project title is accepted", ok_title)
+  config.setup({})
+  rejects("issues without project", { { host = "github", issues = {} } }, "needs a `project`")
+  rejects("a bad issues.scope", { { host = "github", issues = { project = 1, scope = "team" } } }, "issues.scope")
+  rejects("an unknown issues field", { { host = "github", issues = { project = 1, team = "T" } } }, "unknown field `team`")
+  rejects("issues on an Azure account", { { project_name = "p", org_url = "https://x", pat_file = "f", issues = { project = 1 } } }, "is for a GitHub account")
 end
 
 -- --- chat: placement defaults, agents, prompts, permissions -------------------

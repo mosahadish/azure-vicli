@@ -282,7 +282,10 @@ is simpler.
      sees it.
    - Config on the GitHub account: `issues: { project: <number or title> }`
      (a Projects v2 project). Needs the token's `project` scope
-     (`gh auth refresh -s project`).
+     (`gh auth refresh -s project`). Optional `repo:` (where new issues
+     go; defaults to the project's one linked repository, and `create`
+     refuses when there are several) and `scope: mine | all` (whose items
+     a sprint shows; mine, as on Azure, by default).
    - Built on the work-items screens, with GitHub's words:
 
      | Work-items screen | GitHub |
@@ -296,6 +299,27 @@ is simpler.
 
    - A project for azure-vicli itself (Status + Iteration fields, issues for
      the remaining phases) to build and dogfood against.
+   - In three stages, each landing on its own:
+     1. **Provider** (`github_issues.py`). `--wi-list`/`--wi-detail`/
+        `--wi-state`/`--wi-edit` answer from the project when the call
+        carries `AZVICLI_WI_HOST=github` (`AZVICLI_WI_ACCOUNT=<owner>` picks
+        among GitHub accounts); without it nothing changes for Azure.
+        - Same output shapes; records add `repo` and `key` (`owner~repo~n`).
+        - Sprints: Iteration field (path = iteration id), else open
+          milestones (`milestone/<n>`), else one whole-project tab (`*`).
+        - States: the Status options plus `Closed` (completed / not
+          planned). A closed issue reads `Closed`, an open one without a
+          Status `No Status`. Status "Done" doesn't close the issue: that's
+          the project's own workflow.
+        - Ids: the issue number; every `<id>` also takes `owner/repo#n`,
+          and a number two of the project's issues share is refused.
+        - `link-pr`/`unlink-pr`/`create-branch`/`delete-branch`: stage 3.
+     2. **The `I` tab**: the work-items screens with the env above, GitHub's
+        words, `key`-based ids and a Markdown body; the fake provider gains
+        a GitHub project.
+     3. **The agent's board tools on GitHub**: `get_work_item`,
+        `list_work_items`, `start_story` (and branches linked to issues),
+        `#n` in chat, `Closes #n` from `create_pull_request`.
 
 Rough size: Phase 0 touches about 15 Lua files with mostly mechanical
 changes. Phases 1–4 are mostly new Python (about 1,000–1,500 lines with

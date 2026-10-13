@@ -440,11 +440,14 @@ end
 local ACCOUNT_FIELDS = {
   project_name = "string", org_url = "string", pat_file = "string",
   hide_ancient = "boolean", clones_dir = "string", work_items = "table",
-  host = "string", owner = "string", api_url = "string",
+  host = "string", owner = "string", api_url = "string", issues = "table",
 }
 local WORK_ITEM_FIELDS = {
   team = "string", assignee = "string", types = "list", states = "list", sprint_scope = "string",
 }
+-- A GitHub account's issues: block (github_issues.py): project is a
+-- Projects v2 number or title.
+local ISSUES_FIELDS = { project = "scalar", repo = "string", scope = "string" }
 
 local function check_fields(tbl, allowed, where)
   for k, v in pairs(tbl) do
@@ -462,6 +465,10 @@ local function check_fields(tbl, allowed, where)
             error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a list of strings")
           end
         end
+      end
+    elseif want == "scalar" then
+      if type(v) ~= "string" and type(v) ~= "number" then
+        error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a number or a string")
       end
     elseif type(v) ~= want then
       error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a " .. want)
@@ -499,7 +506,21 @@ local function validate_accounts(accounts)
       if a.work_items ~= nil then
         error("azure-cli.setup: " .. where .. ".work_items isn't supported on a GitHub account yet")
       end
+      if a.issues ~= nil then
+        check_fields(a.issues, ISSUES_FIELDS, where .. ".issues")
+        if a.issues.project == nil or tostring(a.issues.project) == "" then
+          error("azure-cli.setup: " .. where .. ".issues needs a `project` (a Projects v2 number or title)")
+        end
+        local scope = a.issues.scope
+        if scope ~= nil and scope ~= "mine" and scope ~= "all" then
+          error("azure-cli.setup: " .. where .. ".issues.scope must be \"mine\" or \"all\"")
+        end
+      end
       goto continue
+    end
+    if a.issues ~= nil then
+      error("azure-cli.setup: " .. where .. ".issues is for a GitHub account (host = \"github\"); "
+        .. "an Azure DevOps account uses work_items")
     end
     for _, req in ipairs({ "project_name", "org_url" }) do
       if type(a[req]) ~= "string" or a[req] == "" then

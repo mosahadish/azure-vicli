@@ -94,9 +94,18 @@ def _parse_scalar(raw):
     inline flow list ("[a, b, c]") - the one sequence shape this subset
     parser understands, added for an account's work_items: types: (see
     AccountConfig.work_items below), which also accepts a plain
-    comma-separated scalar instead.
+    comma-separated scalar instead. Also an inline flow mapping
+    ("{ project: 3, repo: r }"), one level deep, for a GitHub account's
+    issues: block (see github_issues.py) - the block form parses too.
     """
     s = raw.strip()
+    if len(s) >= 2 and s[0] == "{" and s[-1] == "}":
+        out = {}
+        for item in s[1:-1].split(","):
+            kv = _split_kv(item) if item.strip() else None
+            if kv:
+                out[kv[0]] = kv[1]
+        return out
     if len(s) >= 2 and s[0] == "[" and s[-1] == "]":
         inner = s[1:-1].strip()
         if inner == "":
@@ -246,7 +255,7 @@ class AccountConfig:
     """
 
     def __init__(self, project=None, org_url=None, pat=None, hide_ancient=None, clones_dir=None,
-                 work_items=None, pat_file=None, host=None, owner=None, api_url=None):
+                 work_items=None, pat_file=None, host=None, owner=None, api_url=None, issues=None):
         # host: "azure" (the default) or "github" - see github_host.py. A
         # GitHub account has no org_url/project_name; owner: (optional)
         # limits it to one user's or organization's repositories, api_url:
@@ -267,6 +276,10 @@ class AccountConfig:
         # `~` expands, as in pat_file: - the Lua side runs git in it as given.
         self.clones_dir = os.path.expanduser(clones_dir) if isinstance(clones_dir, str) and clones_dir else clones_dir
         self.work_items = work_items if isinstance(work_items, dict) else None
+        # issues: { project, repo, scope } on a GitHub account: its Projects
+        # v2 project as the Issues tab's board (github_issues.py). None
+        # when absent; problems() refuses it on an Azure account.
+        self.issues = issues if isinstance(issues, dict) else None
 
     def is_github(self):
         return self.host == "github"
@@ -399,6 +412,25 @@ def github():
         return _github_mod[0]
 
 
+_issues_mod = []
+
+
+def github_issues():
+    """github_issues.py (GitHub Issues + Projects v2 as the work-items
+    backend), loaded from beside this file on first use."""
+    gh = github()
+    with _github_lock:
+        if not _issues_mod:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("azvicli_github_issues",
+                                                          os.path.join(PLUGIN_ROOT, "github_issues.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.bind(_Core(), gh)
+            _issues_mod.append(mod)
+        return _issues_mod[0]
+
+
 class Config:
     """Machine-wide + per-account settings - mirrors src/Config/Config.cs."""
 
@@ -509,8 +541,17 @@ class Config:
                 if a.work_items:
                     out.append("{0}: work_items: isn't supported on a GitHub account yet - "
                                "keep it on an Azure DevOps account".format(label))
+                if a.issues is not None:
+                    if not str(a.issues.get("project") if a.issues.get("project") is not None else "").strip():
+                        out.append("{0}: issues: needs project: (a Projects v2 number or title)".format(label))
+                    scope = str(a.issues.get("scope") or "mine").strip().lower()
+                    if scope not in ("mine", "all"):
+                        out.append("{0}: issues: scope: must be mine or all (got '{1}')".format(label, scope))
                 continue
             label = "account {0}{1}".format(i, " ({0})".format(a.project) if a.project else "")
+            if a.issues is not None:
+                out.append("{0}: issues: is for a GitHub account (host: github) - an Azure DevOps account "
+                           "uses work_items:".format(label))
             missing = [name for name, value in (("project_name", a.project), ("org_url", a.org_url),
                                                 ("pat", "set" if a.has_pat_source() else None))
                        if not isinstance(value, str) or not value.strip()]
@@ -590,6 +631,7 @@ class Config:
                     host=raw.get("host"),
                     owner=raw.get("owner"),
                     api_url=raw.get("api_url"),
+                    issues=raw.get("issues"),
                 )
             )
         return cfg
@@ -2602,18 +2644,30 @@ def _wi_select_account(config, env):
     AZVICLI_WI_ACCOUNT names another account by its project_name (matched
     whether or not that account has a work_items: block of its own, so
     AZVICLI_WI_TEAM etc. can still supply the rest as pure env overrides).
-    Returns None when nothing matches either way.
+    Returns None when nothing matches either way. GitHub accounts are never
+    picked here: their issues go through _wi_select_github_account.
     """
     want = env.get("AZVICLI_WI_ACCOUNT")
+    azure = [a for a in config.accounts if not a.is_github()]
     if want:
-        for a in config.accounts:
+        for a in azure:
             if (a.project or "") == want:
                 return a
         return None
-    for a in config.accounts:
+    for a in azure:
         if a.work_items:
             return a
     return None
+
+
+def _wi_select_github_account(config, env):
+    """With AZVICLI_WI_HOST=github: the first GitHub account with an
+    issues: block, or the one whose owner: AZVICLI_WI_ACCOUNT names."""
+    with_issues = [a for a in config.github_accounts() if a.issues]
+    want = (env.get("AZVICLI_WI_ACCOUNT") or "").lower()
+    if want:
+        return next((a for a in with_issues if (a.owner or "").lower() == want), None)
+    return with_issues[0] if with_issues else None
 
 
 def _wi_types_to_str(v):
@@ -3876,6 +3930,18 @@ def cmd_wi_action(flag, rest, env=None):
     config = get_cached_config()
     if config_problems(config):
         return 1
+    if env.get("AZVICLI_WI_HOST") == "github":
+        # The Issues tab: a GitHub account's project (github_issues.py).
+        account = _wi_select_github_account(config, env)
+        if account is None:
+            print("No GitHub account has an issues: block in azure-cli.yml; add issues: { project: <number "
+                  "or title> } under one to enable Issues", file=sys.stderr)
+            return 1
+        try:
+            return github_issues().IssueActions(account, env).run(flag, rest)
+        except Exception as ex:  # noqa: BLE001 - never leak a raw traceback for a UI-triggered action
+            _fail_action(flag, ex, env)
+            return 1
     actions = WorkItemActions(config, env)
     if not actions.ensure_configured():
         return 1
@@ -4227,11 +4293,20 @@ def _doctor_config_checks(config):
                                "detail": "no token - set pat_file, or run `gh auth login`"
                                          + ("" if a.api_url == gh.DEFAULT_API else " --hostname " + gh.web_host(a.api_url))})
                 continue
-            login, display = gh.whoami(gh.Client(a.api_url, token))
+            client = gh.Client(a.api_url, token)
+            login, display = gh.whoami(client)
             checks.append({"check": name, "ok": bool(login),
                            "detail": "signed in as {0}".format(display or login) if login else "no user came back"})
         except Exception as ex:  # noqa: BLE001
             checks.append({"check": name, "ok": False, "detail": "{0}".format(ex)})
+            continue
+        if a.issues:
+            name = "GitHub issues ({0})".format(a.label())
+            try:
+                ok, detail = github_issues().check_project(a, client)
+                checks.append({"check": name, "ok": ok, "detail": detail})
+            except Exception as ex:  # noqa: BLE001
+                checks.append({"check": name, "ok": False, "detail": github_issues()._scope_hint(ex)})
 
     source = AzureDevOpsPullRequestSource(config)
     for org, accounts in config.accounts_by_org():
