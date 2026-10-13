@@ -10,7 +10,8 @@
 -- Comments arriving close together are taken together: a PR's new ones
 -- are acted on at the first poll that finds no newer ones. Only other
 -- people's comments count (not yours, nor the agent's - it posts as you).
--- A PR that's completed or abandoned stops being watched. Kept in
+-- A PR that's completed or abandoned stops being watched, and the plans
+-- behind it are finished (plan.pr_closed). Kept in
 -- stdpath("data")/azure-cli-chat/watched.json: per PR, where it is and the
 -- comments already seen.
 --
@@ -139,6 +140,8 @@ poll_one = function(rec, done)
     if pr.state == "completed" or pr.state == "abandoned" then
       list[tostring(rec.id)] = nil
       save()
+      -- Its agents are finished (the Agents screen).
+      pcall(require("azure-cli.chat.plan").pr_closed, rec.id, pr.state)
       return done()
     end
     TOOLS().fetched[tostring(rec.id)] = TOOLS().pr_record(rec.id) or pr

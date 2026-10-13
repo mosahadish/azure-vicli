@@ -190,10 +190,42 @@ end
 
 -- The command the plan's Test plan section gives: its first ``` block
 -- (sh, bash, shell, cmd, pwsh, powershell or no language), lines joined
--- with " && ", or nil. Pure.
+-- with " && ". Without one, its inline `code` that starts with a test
+-- runner or build tool (`dotnet test`, `npm test`, `pytest -q`, ...),
+-- joined the same way. Else nil. Pure.
 local SHELL_LANGS = { [""] = true, sh = true, bash = true, shell = true, cmd = true, pwsh = true, powershell = true,
   console = true }
-function M.test_command(lines)
+local RUNNERS = { dotnet = true, npm = true, pnpm = true, yarn = true, npx = true, cargo = true, go = true, mvn = true,
+  gradle = true, ["./gradlew"] = true, gradlew = true, pytest = true, python = true, python3 = true, py = true,
+  make = true, ctest = true, tox = true, nox = true, jest = true, vitest = true, rspec = true, bundle = true,
+  ["./run-tests"] = true, ["./build.sh"] = true, ["./test.sh"] = true }
+-- Test runners that are a whole command on their own (`pytest`): only
+-- these may be given more arguments when the plan's line is one word -
+-- a bare `python` or `npx` would let anything through.
+local ONE_WORD = { pytest = true, jest = true, vitest = true, rspec = true, ctest = true, tox = true, nox = true,
+  make = true, ["./run-tests"] = true, ["./build.sh"] = true, ["./test.sh"] = true }
+local function inline_command(lines)
+  local inside, fenced, out, seen = false, false, {}, {}
+  for _, l in ipairs(lines) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("test", 1, true) ~= nil
+    elseif inside and not fenced then
+      for code in l:gmatch("`([^`]+)`") do
+        code = vim.trim(code)
+        local first = code:match("^(%S+)") or ""
+        if RUNNERS[first] and (code:find(" ", 1, true) or ONE_WORD[first]) and not code:find("[|&;<>$(){}]")
+            and not seen[code] then
+          seen[code] = true
+          out[#out + 1] = code
+        end
+      end
+    end
+  end
+  return #out > 0 and table.concat(out, " && ") or nil
+end
+local function fenced_command(lines)
   local inside, block, lang = false, nil, nil
   for _, l in ipairs(lines) do
     local fence = l:match("^%s*```%s*([%w]*)%s*$")
@@ -218,21 +250,74 @@ function M.test_command(lines)
   end
   return nil
 end
+function M.test_command(lines)
+  return fenced_command(lines) or inline_command(lines)
+end
 
--- Whether shell command `cmd` is the plan's test command (`test_cmd`,
--- test_command's " && "-joined lines) or one of its lines - give or take
--- whitespace and a leading "cd <dir> &&". Pure.
+-- The steps that go with a test runner: building and restoring the same
+-- way runs the same code the tests do. tool -> the subcommands allowed
+-- (with any arguments) when the plan's test command uses that tool.
+local COMPANIONS = {
+  dotnet = { "build", "restore", "test" }, npm = { "ci", "install", "test", "run build", "run test" },
+  pnpm = { "install", "test", "run build", "run test" }, yarn = { "install", "test", "build", "run build", "run test" },
+  cargo = { "build", "check", "test" }, go = { "build", "vet", "test" }, mvn = { "compile", "test", "verify" },
+  gradle = { "build", "test" }, ["./gradlew"] = { "build", "test" }, ["gradlew"] = { "build", "test" },
+}
+
+-- Whether shell command `cmd` runs the plan's tests (`test_cmd`,
+-- test_command's " && "-joined lines). Each step of `cmd` (split on &&
+-- and ;) has to be one of its lines - or one with more arguments, or the
+-- same tool's build/restore (COMPANIONS) - optionally piped into commands
+-- that only look (`| tail -50`, `| Select-Object -Last 50`) and with
+-- 2>&1; a leading cd / Set-Location / pushd into a directory is dropped.
+-- Nothing else - no redirect into a file, no $(...), no other program.
+-- Pure.
 function M.is_test_command(cmd, test_cmd)
   if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
   if type(cmd) ~= "string" or not test_cmd then return false end
   local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
-  cmd = norm(cmd):gsub("^cd [^&;]+ ?&& ?", "")
-  if cmd == "" then return false end
-  if cmd == norm(test_cmd) then return true end
+  local lines = {}
   for part in (test_cmd .. " && "):gmatch("(.-) && ") do
-    if norm(part) == cmd then return true end
+    if norm(part) ~= "" then lines[#lines + 1] = norm(part) end
   end
-  return false
+  local function extra_ok(rest)
+    return rest == "" or (rest:sub(1, 1) == " " and not rest:find("[|&;<>`$(){}]"))
+  end
+  local function runs_tests(step)
+    for _, l in ipairs(lines) do
+      if step == l then return true end
+      if (l:find(" ", 1, true) or ONE_WORD[l]) and step:sub(1, #l) == l and extra_ok(step:sub(#l + 1)) then
+        return true
+      end
+      local tool = l:match("^(%S+)")
+      for _, sub in ipairs(COMPANIONS[tool] or {}) do
+        local head = tool .. " " .. sub
+        if step:sub(1, #head) == head and extra_ok(step:sub(#head + 1)) then return true end
+      end
+    end
+    return false
+  end
+  cmd = norm(cmd):gsub(" 2>&1", "")
+  if cmd == "" or cmd:find("||", 1, true) then return false end
+  local steps = {}
+  for step in (cmd:gsub(" ?&& ?", ";") .. ";"):gmatch("(.-);") do
+    step = norm(step)
+    if step ~= "" then steps[#steps + 1] = step end
+  end
+  if #steps == 0 then return false end
+  local CORE = require("azure-cli.chat.core")
+  for i, step in ipairs(steps) do
+    local lower = step:lower()
+    local dir_change = i < #steps and (lower:match("^cd ") or lower:match("^set%-location ") or lower:match("^sl ")
+      or lower:match("^pushd ")) and not step:find("[|&<>`$(){}]")
+    if not dir_change then
+      local first, piped = step:match("^([^|]-) ?| ?(.+)$")
+      if not first then first = step end
+      if not runs_tests(norm(first)) then return false end
+      if piped and not CORE.look_only_command(piped) then return false end
+    end
+  end
+  return true
 end
 
 -- The template's "## " headings `markdown` doesn't have. Pure.
@@ -293,6 +378,9 @@ local STATUS = {
 }
 -- The status line in the section list: text, highlight group. Pure.
 function M.status_label(rec)
+  -- Its PR merged or abandoned (plan.pr_closed): finished, whatever it was.
+  if rec.pr_state == "completed" then return "\u{2713} Finished: PR merged", "AzureCliStatusDone" end
+  if rec.pr_state == "abandoned" then return "\u{2717} Finished: PR abandoned", "AzureCliMuted" end
   local s = STATUS[rec.status] or STATUS.draft
   return s[1], s[2]
 end
@@ -344,6 +432,17 @@ function M.approval_message(rec, lines)
   local text = "I approve the plan for " .. label .. " (revision " .. #rec.revisions .. "). Go ahead and make the "
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
+  if rec.allow_push then
+    local id = rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id))
+    text = text .. "\n\nYou may push without waiting for me: after show_fix, "
+      .. (M.test_command(lines) and ("run the plan's tests with run_tests (only run_tests counts - not your own "
+        .. "shell), fix the change until they pass, then ") or "")
+      .. "call commit_and_push_fix (" .. id .. ") - it won't ask."
+      .. (rec.target.work_item_id and (" Then open its pull request with create_pull_request (source your story "
+        .. "branch, target the branch you started from, work_item_ids [" .. rec.target.work_item_id .. "], no "
+        .. "description - the plan's is used - and not a draft); it won't ask either.") or "")
+      .. " If the tests keep failing, stop and tell me what's wrong instead of pushing."
+  end
   local answers = M.answers_block(rec, lines)
   if #answers > 0 then
     text = text .. "\n\nMy answers to your open questions:\n" .. table.concat(answers, "\n")

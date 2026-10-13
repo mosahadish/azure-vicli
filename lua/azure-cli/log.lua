@@ -142,7 +142,7 @@ function M.failure_lines(title, raw)
   local lines = { title, "  " .. M.summary(raw, width), "" }
   local hints = {
     "  config file   " .. cfg.config_path(),
-    "  gO            open the config file       r   retry",
+    "  gO            open a config file         r   retry",
     "  :AzureCli doctor   check the setup       :AzureCli log   full error text",
   }
   vim.list_extend(lines, hints)

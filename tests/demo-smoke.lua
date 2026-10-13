@@ -1218,6 +1218,7 @@ do
   local row = vim.api.nvim_win_get_cursor(v.plan_win)[1]
   n = #st.entries
   feed("ga")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
   feed("<C-s>")
   local rec
   local okq = vim.wait(40000, function()
@@ -1323,7 +1324,7 @@ do
   -- gA: approved; the agent starts the story now and shows the change.
   vim.api.nvim_set_current_win(v.plan_win)
   n = #st.entries
-  pick = "let it push once the tests pass"
+  pick = "let it push and open the PR once the tests pass"
   feed("gA")
   pick = "Allow"  -- the agent's run_tests asks next
   local strip_running = CHAT.strip()
@@ -1339,7 +1340,7 @@ do
       or not e.text:find("show_fix:", 1, true) then
     return fail("approving didn't let the story start: " .. e.text)
   end
-  if st.entries[n + 1].text ~= "Approved the plan for #3002 (it may push once the tests pass)." then
+  if st.entries[n + 1].text ~= "Approved the plan for #3002 (it may push and open the PR once the tests pass)." then
     return fail("the approval isn't in the chat as such: " .. st.entries[n + 1].text)
   end
   if not e.text:find('"passed":true', 1, true) then return fail("run_tests (asked, allowed) didn't pass: " .. e.text) end
@@ -1385,6 +1386,7 @@ do
   vim.api.nvim_set_current_win(dwin)
   vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
   feed("ga")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
   feed("<C-s>")
   local dbuf = vim.api.nvim_win_get_buf(dwin)
   local okd = vim.wait(40000, function() return drawn(dbuf, "BECAUSE-PLANNED_CHANGE = True") ~= nil end, 100)
@@ -1516,6 +1518,7 @@ do
   vim.api.nvim_win_set_cursor(lw, { step_row, 0 })
   n = #st.entries
   feed("ga")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you do this?" })
   feed("<C-s>")
   e = answered(n)
   if not (e and e.text:find("BECAUSE-", 1, true) and e.text:find("show_fix", 1, true)) then
@@ -1739,6 +1742,43 @@ do
   if not (p1 and p1.label == "PR !101" and answer(p1):find("planned PR !101 for every active thread", 1, true)) then
     return fail("PR !101's agent: " .. (p1 and answer(p1) or "none"))
   end
+  -- The PR dashboard's agent column shows !101's agent, and ga opens its
+  -- conversation in a popup; q closes it again.
+  CHAT.hide()
+  vim.api.nvim_set_current_win(dw)
+  local cols = vim.o.columns
+  vim.o.columns = 200
+  vim.cmd("only")
+  pcall(vim.api.nvim_exec_autocmds, "VimResized", {})
+  local function dash_row(id)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("#" .. id .. " ", 1, true) then return i, l end
+    end
+  end
+  local shows = vim.wait(8000, function()
+    local _, l = dash_row(101)
+    return l and l:find("plan waits", 1, true) ~= nil
+  end, 100)
+  if not shows then return fail("the dashboard's agent column doesn't show !101's plan waiting", dash) end
+  local hdr = false
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("threads", 1, true) and l:find("agent", 1, true) then hdr = true end
+  end
+  if not hdr then return fail("the dashboard has no agent column header", dash) end
+  vim.api.nvim_win_set_cursor(dw, { (dash_row(101)), 0 })
+  feed("ga")
+  local pw = CHAT.popup_wins()
+  if not (pw and pw.key == "pr-101" and vim.api.nvim_get_current_win() == pw.log) then
+    return fail("ga on #101 didn't open its agent's chat in a popup: " .. vim.inspect(pw))
+  end
+  local ptext = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pw.log), 0, -1, false), "\n")
+  if not ptext:find("planned PR !101", 1, true) then return fail("the popup doesn't show !101's conversation:\n" .. ptext) end
+  feed("q")
+  vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+  if CHAT.popup_wins() or vim.api.nvim_win_is_valid(pw.log) or STATE.chat.popup_key then
+    return fail("q didn't close the agent popup")
+  end
+  vim.o.columns = cols
   -- gP in the reviewer, on a commented line: just that thread.
   require("azure-cli").open_review(101)
   local landed = vim.wait(20000, function()
@@ -1781,6 +1821,46 @@ do
   if not (opener and opener()) then return fail("the reviewer for PR #101 isn't open for the batch check") end
   local s = STATE.batch["101"]
   for i = #s.items, 1, -1 do STATE.batch_drop["101"](s.items[i]) end
+  -- A queued reply dropped after a background refresh is gone from the
+  -- diff at once (the refresh re-carries it into a new copy of its thread).
+  local function drawn_anywhere(text)
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(b) then
+        for _, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+          if l:find(text, 1, true) then return true end
+        end
+        for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, -1, 0, -1, { details = true })) do
+          for _, vl in ipairs(m[4].virt_lines or {}) do
+            for _, chunk in ipairs(vl) do if (chunk[1] or ""):find(text, 1, true) then return true end end
+          end
+          for _, chunk in ipairs(m[4].virt_text or {}) do if (chunk[1] or ""):find(text, 1, true) then return true end end
+        end
+      end
+    end
+  end
+  local fst = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  local tid
+  for _, t in ipairs(fst.threads["101"]) do
+    if t.comments[1].content:find("distinct error", 1, true) then tid = t.id end
+  end
+  if not tid then return fail("no auth.py:12 thread on PR #101 for the queued-reply check") end
+  if not STATE.batch_live["101"]({ kind = "reply", thread_id = tid, text = "batch smoke reply", label = "Reply",
+      args = { "--reply", tostring(tid), "batch smoke reply" } }) then
+    return fail("couldn't queue a reply on PR #101")
+  end
+  local refreshed = false
+  -- A poll already in flight skips this one, so ask until one runs.
+  if not vim.wait(15000, function()
+    if not refreshed then STATE.review_refresh_threads({ on_done = function() refreshed = true end }) end
+    return refreshed
+  end, 200) then return fail("the thread refresh never finished") end
+  if not drawn_anywhere("3 comments") then return fail("the queued reply doesn't show in the PR after a refresh") end
+  STATE.batch_drop["101"](s.items[#s.items])
+  vim.wait(200)
+  if #s.items ~= 0 then return fail("dropping the queued reply left it queued: " .. vim.inspect(s.items)) end
+  if drawn_anywhere("3 comments") or drawn_anywhere("batch smoke reply") then
+    return fail("a queued reply dropped after a thread refresh still shows in the PR")
+  end
   local function queue(path, line, text)
     STATE.batch_live["101"]({ kind = "thread", text = text, bucket = "line", where = path .. "\tR\t" .. line,
       path = path, side = "R", lineno = line, label = "Comment", args = { "--post", path, "R", tostring(line), text } })
@@ -1847,7 +1927,9 @@ do
   feed("r")
   ok = vim.wait(15000, function() return row101():find("/5 ", 1, true) ~= nil end, 100)
   if not ok then return fail("the dashboard didn't pick up the two new threads on #101", dash) end
-  if row101():find("\u{25CF}", 1, true) then return fail("my own comments marked #101 unread", dash) end
+  -- The unread dot sits before the id (the agent column has its own dots).
+  local function unread101() local l = row101() return (l:sub(1, (l:find("#101", 1, true) or 1))):find("\u{25CF}", 1, true) ~= nil end
+  if unread101() then return fail("my own comments marked #101 unread", dash) end
   local path = vim.env.AZVICLI_FAKE_WS .. "/state.json"
   local st = vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
   local other
@@ -1865,7 +1947,7 @@ do
   end
   vim.fn.writefile({ vim.json.encode(st) }, path)
   feed("r")
-  ok = vim.wait(15000, function() return row101():find("\u{25CF}", 1, true) ~= nil end, 100)
+  ok = vim.wait(15000, function() return unread101() end, 100)
   if not ok then return fail("someone else's reply didn't mark #101 unread", dash) end
   print("BATCHQ-SMOKE-OK")
 end

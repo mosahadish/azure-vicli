@@ -13,7 +13,9 @@
 --                             items; `extra` = what the user added, passed on
 --   M.start_for_prs(prs, threads_of, extra)  queues PRs: each agent plans
 --                             fixes for the given thread ids (default: every
---                             active one)
+--                             active one); a PR an agent opened for a work
+--                             item (plan.owner_of_pr) goes back to that
+--                             agent, as a new revision of its plan
 --     (both return what they did, as a sentence, and the labels started)
 --   M.start_for(text, snap)   the main chat's /plan: the work items and PRs
 --                             `text` names, else the one in view `snap`
@@ -95,7 +97,35 @@ function M.pr_prompt(pr, threads)
     .. "with submit_plan (pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
 end
 
+-- The same, for the agent whose plan for work item `wi` opened the PR:
+-- it plans the fix as a new revision of that plan and pushes to its own
+-- branch. Pure.
+function M.pr_followup_prompt(pr, threads, wi)
+  local which = (threads and #threads > 0)
+    and ("the review comment" .. (#threads == 1 and "" or "s") .. " in thread" .. (#threads == 1 and " " or "s ")
+      .. table.concat(vim.tbl_map(tostring, threads), ", "))
+    or "its open review comments (every active thread)"
+  return "/plan Reviewers commented on PR !" .. tostring(pr.id) .. (pr.title and (" \"" .. pr.title .. "\"") or "")
+    .. ", which you opened for #" .. tostring(wi) .. ". Plan how to fix " .. which .. ": read them with "
+    .. "get_pr_threads (pr_id " .. tostring(pr.id) .. ") and look at the code they're on, then write the plan for "
+    .. "this round with submit_plan (work_item_id " .. tostring(wi) .. ") - a new revision of your plan. Once it's "
+    .. "approved, make the change in your story's worktree (start_story for #" .. tostring(wi) .. " reuses it) and "
+    .. "push it with commit_and_push_fix (work_item_id " .. tostring(wi) .. "): the PR picks it up."
+end
+
 local function job_for_pr(pr, threads, extra)
+  -- A PR one of the agents opened goes back to that agent, with its plan
+  -- and its conversation.
+  local owner = require("azure-cli.chat.plan").owner_of_pr(pr.id, pr.source)
+  local wi = owner and owner.target and owner.target.work_item_id
+  if wi then
+    return { key = owner.key, label = "#" .. tostring(wi), title = owner.title or pr.title, target = owner.target,
+      prompt = with_extra(M.pr_followup_prompt(pr, threads, wi), extra),
+      display = "/plan PR !" .. tostring(pr.id) .. "'s comments" .. ((threads and #threads > 0) and (" (thread "
+        .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
+      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. " got review comments)",
+        pr = pr } }
+  end
   return { key = "pr-" .. tostring(pr.id), label = "PR !" .. tostring(pr.id), title = pr.title,
     target = { pr_id = pr.id }, prompt = with_extra(M.pr_prompt(pr, threads), extra),
     display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "

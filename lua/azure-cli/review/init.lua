@@ -2117,7 +2117,7 @@ HELP.overview_help = {
   { "ignore_ws", "toggle ignoring whitespace in diffs" },
   "Session",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
-  { "config", "open the config file" },
+  { "config", "open a config file" },
   { "quit", "close the reviewer" },
   { "help", "this help" },
 }
@@ -2149,7 +2149,7 @@ local function setup_overview_keymaps(buf)
   KEYS.bind(buf, "overview", "active_filter", toggle_active_filter, { desc = "toggle active (unresolved) comments only" })
   KEYS.bind(buf, "overview", "filters", manage_ignore_texts, { desc = "manage text filters that hide matching threads" })
   KEYS.bind(buf, "overview", "ignore_ws", toggle_ignore_ws, { desc = "toggle ignoring whitespace in diffs" })
-  KEYS.bind(buf, "overview", "config", open_config_file, { desc = "open the config file" })
+  KEYS.bind(buf, "overview", "config", open_config_file, { desc = "open a config file" })
   KEYS.bind(buf, "overview", "resize_less", function() resize_list(-5) end, { desc = "shrink the file list" })
   KEYS.bind(buf, "overview", "resize_more", function() resize_list(5) end, { desc = "grow the file list" })
   KEYS.bind(buf, "overview", "back", function()
@@ -2223,7 +2223,7 @@ HELP.diff_help = {
   { "ignore_ws", "toggle ignoring whitespace in diffs" },
   "Session",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
-  { "config", "open the config file" },
+  { "config", "open a config file" },
   { "quit", "close the reviewer" },
   { "help", "this help" },
 }
@@ -2263,7 +2263,7 @@ local function setup_diff_keymaps(buf)
   KEYS.bind(buf, "diff", "active_filter", toggle_active_filter, { desc = "toggle active (unresolved) comments only" })
   KEYS.bind(buf, "diff", "filters", manage_ignore_texts, { desc = "manage text filters that hide matching threads" })
   KEYS.bind(buf, "diff", "ignore_ws", toggle_ignore_ws, { desc = "toggle ignoring whitespace in diffs" })
-  KEYS.bind(buf, "diff", "config", open_config_file, { desc = "open the config file" })
+  KEYS.bind(buf, "diff", "config", open_config_file, { desc = "open a config file" })
   KEYS.bind(buf, "diff", "goto_definition", function() EXT.nav.goto_definition() end, { desc = "go to definition" })
   KEYS.bind(buf, "diff", "find_references", function() EXT.nav.find_references() end, { desc = "find references" })
   KEYS.bind(buf, "diff", "open_file", function() EXT.nav.open_file() end, { desc = "open the current file at the PR's revision" })
@@ -2921,7 +2921,7 @@ HELP.list_help = {
   { "ignore_ws", "toggle ignoring whitespace in diffs" },
   "Session",
   { "resize_less", "shrink the list" }, { "resize_more", "grow the list" },
-  { "config", "open the config file" },
+  { "config", "open a config file" },
   { "back", "back to the PR list" },
   { "quit", "close the reviewer" },
   { "help", "this help" },
@@ -2972,7 +2972,7 @@ KEYS.bind(list_buf, "list", "search", function() EXT.nav.search_files() end, { d
 KEYS.bind(list_buf, "list", "active_filter", toggle_active_filter, { desc = "toggle active (unresolved) comments only" })
 KEYS.bind(list_buf, "list", "filters", manage_ignore_texts, { desc = "manage text filters that hide matching threads" })
 KEYS.bind(list_buf, "list", "ignore_ws", toggle_ignore_ws, { desc = "toggle ignoring whitespace in diffs" })
-KEYS.bind(list_buf, "list", "config", open_config_file, { desc = "open the config file" })
+KEYS.bind(list_buf, "list", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(list_buf, "list", "vote", cast_vote, { desc = "vote" })
 KEYS.bind(list_buf, "list", "complete", complete_pr, { desc = "complete" })
 KEYS.bind(list_buf, "list", "next_file_with_comments", function() jump_file_with_comments(1) end, { desc = "next file with comments" })
@@ -3669,8 +3669,12 @@ local base_refresh_threads = refresh_threads
 refresh_threads = function(opts)
   if refresh_threads_inflight then return end
   refresh_threads_inflight = true
+  local done = opts and opts.on_done
   local ok, err = pcall(base_refresh_threads, vim.tbl_extend("force", opts or {}, {
-    on_done = function() refresh_threads_inflight = false end,
+    on_done = function()
+      refresh_threads_inflight = false
+      if done then done() end
+    end,
   }))
   if not ok then
     refresh_threads_inflight = false
@@ -3690,6 +3694,9 @@ STATE.review_threads_timer = vim.fn.timer_start(
     STATE.review_threads_timer = nil
   end
 end, { ["repeat"] = -1 })
+-- The same refetch the poll above runs, for tests/demo-smoke.lua (opts as
+-- for refresh_threads: on_done runs once it lands).
+STATE.review_refresh_threads = function(opts) refresh_threads(opts) end
 
 -- The file list keeps its absolute width across a terminal resize
 -- otherwise, with the diff pane absorbing all of the change.
@@ -3713,6 +3720,7 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- EXT, which the IIFE already closes over for a dozen other fields, costs
 -- it no additional upvalues at all.
 STATE.review_cleanup = function()
+  STATE.review_refresh_threads = nil
   for _, name in ipairs({ "review_threads_timer", "review_badge_timer" }) do
     if STATE[name] then pcall(vim.fn.timer_stop, STATE[name]); STATE[name] = nil end
   end

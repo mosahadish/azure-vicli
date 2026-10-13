@@ -32,11 +32,63 @@ function M.config_path()
   return require("azure-cli.config").config_path()
 end
 
+-- gO: a menu of the two config files - the accounts (azure-cli.yml) and
+-- the options (the standalone launcher's azure-cli.lua next to it; in
+-- plugin mode, your own setup() call) - each item saying where it lives.
+-- M.config_choices() is the menu's items ({ label, open }), for tests.
+function M.config_choices()
+  local config = require("azure-cli.config")
+  local standalone = require("azure-cli").is_standalone()
+  local accounts = config.accounts_from_setup() and "setup({accounts=...}) in your Neovim config"
+    or vim.fn.fnamemodify(M.config_path(), ":~")
+  local opts_path = config.options_path()
+  local options = standalone
+    and (vim.fn.fnamemodify(opts_path, ":~") .. (vim.fn.filereadable(opts_path) == 1 and "" or "  (new, every option at its default)"))
+    or "setup({...}) in your Neovim config  (shows every option, to copy)"
+  return {
+    { label = "Accounts - " .. accounts, open = M.open_accounts_file },
+    { label = "Options  - " .. options, open = M.open_options_file },
+  }
+end
+
+function M.open_config_file()
+  require("azure-cli.prompt").select({ prompt = "Open which config file?", items = M.config_choices(), silent = true },
+    function(item) if item then item.open() end end)
+end
+
+-- The options (gO, :AzureCli options): the standalone launcher's
+-- azure-cli.lua (written with every option at its default if it's
+-- missing). In plugin mode no file is read - your setup() call is - so it
+-- shows the same list in a scratch buffer to copy from, writing nothing.
+function M.open_options_file()
+  if not require("azure-cli").is_standalone() then
+    local lines = {
+      "-- Every azure-vicli option at its default, to copy from - this buffer isn't saved anywhere.",
+      "-- In your own Neovim, options are what you pass to require(\"azure-cli\").setup({...})",
+      "-- (or lazy.nvim's opts) in your config, " .. vim.fn.fnamemodify(vim.fn.stdpath("config"), ":~") .. ".",
+      "-- Copy only what you change; azure-cli.lua is only read by the standalone launcher.",
+      "",
+    }
+    vim.list_extend(lines, vim.split(require("azure-cli.config").render_options(), "\n", { plain = true, trimempty = true }))
+    vim.cmd("tabnew")
+    local buf = vim.api.nvim_get_current_buf()
+    vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    pcall(vim.api.nvim_buf_set_name, buf, "azure-cli options (for setup())")
+    vim.bo[buf].filetype = "lua"
+    vim.bo[buf].modified = false
+    return
+  end
+  local path, created = require("azure-cli.config").write_options()
+  if created then M.notify("azure-cli: wrote " .. path .. " with every option at its default.") end
+  vim.cmd("tabnew " .. vim.fn.fnameescape(path))
+end
+
 -- Open azure-cli.yml (accounts/PAT/clones_dir config) in a new tab for quick
 -- editing, so you don't have to go dig it up manually to add an account or
 -- tweak hide_ancient/clones_dir. Explains itself instead when the accounts
 -- come from setup({accounts=...}) and the file isn't what's being read.
-function M.open_config_file()
+function M.open_accounts_file()
   local notice = require("azure-cli.config").setup_accounts_notice()
   if notice then
     M.notify(notice)

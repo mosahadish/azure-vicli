@@ -142,6 +142,22 @@ do
   TOOLS.by_name.vote.run = orig
   check("ask: declined is reported, not run", not ran and answer[2] == true
     and answer[1]:find('declined: vote "Approve" on PR #1', 1, true) and logged[1]:find("declined", 1, true))
+  -- chat.permissions' groups: a tool's own name, then its group, then "all".
+  local P = TOOLS.permission
+  local vote, list_prs = TOOLS.by_name.vote, { name = "x", risk = "read" }
+  check("permissions: all = allow", P(vote, { all = "allow" }) == "allow")
+  check("permissions: the group over all", P(vote, { all = "deny", ["azure-vicli-tools"] = "allow" }) == "allow")
+  check("permissions: the tool's name over its group", P(vote, { ["azure-vicli-tools"] = "allow", vote = "ask" }) == "ask")
+  check("permissions: a group's ask leaves reads alone", P(list_prs, { all = "ask" }) == "allow"
+    and P({ name = "y", risk = "write" }, { all = "ask" }) == "ask")
+  check("permissions: the agent's groups don't touch azure-vicli's", P(vote, { ["agent-commands"] = "allow" }) == "ask")
+  require("azure-cli").setup({ chat = { permissions = { ["agent-edits"] = "allow", all = "deny" } } })
+  check("permissions: agent-edits for a file change, all for the rest",
+    TOOLS.agent_permission("edit") == "allow" and TOOLS.agent_permission("execute") == "deny")
+  require("azure-cli").setup({ chat = { permissions = { ["agent-commands"] = "allow" } } })
+  check("permissions: agent-commands for a command, nothing said for an edit",
+    TOOLS.agent_permission("execute") == "allow" and TOOLS.agent_permission("edit") == nil)
+  require("azure-cli").setup({})
   TOOLS.call("nope", {}, {}, function(text, err) answer = { text, err } end)
   check("call: unknown tool", answer[2] == true and answer[1]:find("unknown tool", 1, true))
 end
@@ -468,7 +484,7 @@ do
       r[1] == "agent" and r[3] == "agent_log" and r[4] == "agent_log" and r[5] == "agent_log" and r[7] == "agent"
         and r[8] == "tool_err" and r[9] == "tool_err" and r[11] == "agent", vim.inspect(r))
   end
-  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log
+  check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log and TOOLS.by_name.get_test_results
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
     and TOOLS.undoers.set_field and TOOLS.undoers.thread_status)
@@ -556,13 +572,56 @@ do
   check("watch: plan - an agent for just the new threads", #started == 1 and vim.deep_equal(started[1].threads, { 1, 3 })
     and notes[2] and notes[2]:find("2 new comments", 1, true) ~= nil and notes[2]:find("planning", 1, true) ~= nil,
     vim.inspect({ started, notes }))
+  -- Its plans: the PR's own, and a story's that opened it (link_pr).
+  local PL = require("azure-cli.chat.plan")
+  PL.save({ key = "pr-500", target = { pr_id = 500 }, status = "approved", revisions = {}, threads = {} })
+  PL.save({ key = "wi-77", target = { work_item_id = 77 }, status = "done", revisions = {}, threads = {} })
+  PL.save({ key = "wi-78", target = { work_item_id = 78 }, status = "done", revisions = {}, threads = {} })
+  PL.link_pr({ 77 }, "feature/none", { id = 500, org = "o", project = "p" })
+  check("link_pr: the story's plan knows its PR", PL.load("wi-77").pr.id == 500 and PL.load("wi-78").pr == nil)
   status = "completed"
   W.poll()
   check("watch: a completed PR isn't watched any more", not W.watched(500))
+  check("watch: its plans are finished", PL.load("pr-500").pr_state == "completed"
+    and PL.load("wi-77").pr_state == "completed" and PL.load("wi-77").closed_at and PL.load("wi-78").pr_state == nil)
+  check("finished: the plan's status says so", (PL.status_label(PL.load("wi-77"))):find("PR merged", 1, true) ~= nil)
+  for _, k in ipairs({ "pr-500", "wi-77", "wi-78" }) do pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".json") end
   W._reset()
   CH.current_agent, CH.note, CH.alert, T.provider, AG.start_for_prs = orig.agent, orig.note, orig.alert, orig.provider,
     orig.start
   require("azure-cli.config").setup({})
+end
+
+-- --- a PR an agent opened: its comments go back to that agent ------------------------
+do
+  local PL = require("azure-cli.chat.plan")
+  local AG = require("azure-cli.chat.agents")
+  local CH = require("azure-cli.chat")
+  PL.save({ key = "wi-91", target = { work_item_id = 91 }, title = "Lockout", status = "done", revisions = {}, threads = {},
+    pr = { id = 610 } })
+  check("owner_of_pr: the plan that opened it", (PL.owner_of_pr(610) or {}).key == "wi-91" and PL.owner_of_pr(611) == nil)
+  local TF = require("azure-cli.chat.tools_fix")
+  local orig_find = TF.find_story
+  TF.find_story = function(id) if tostring(id) == "92" then return "/w/r-wi92", "feature/92-old" end end
+  PL.save({ key = "wi-92", target = { work_item_id = 92 }, status = "done", revisions = {}, threads = {} })
+  check("owner_of_pr: an older PR, by its story's branch", (PL.owner_of_pr(700, "feature/92-old") or {}).key == "wi-92"
+    and PL.owner_of_pr(700, "feature/other") == nil)
+  TF.find_story = orig_find
+  pcall(vim.fn.delete, PL.root() .. "/wi-92.json")
+  local orig = { send = CH.send, agent = CH.current_agent }
+  local sent = {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.send = function(text, o) sent[#sent + 1] = { text = text, key = o.conv.plan_key or o.conv.key, display = o.display } return {} end
+  AG.start_for_prs({ { id = 610, title = "T" }, { id = 611, title = "U" } }, { [610] = { 4 } })
+  local by = {}
+  for _, s in ipairs(sent) do by[s.key or "?"] = s end
+  check("start_for_prs: an agent's own PR goes to its conversation, as a new revision of its plan", by["wi-91"] ~= nil
+    and by["wi-91"].text:find("work_item_id 91", 1, true) ~= nil and by["wi-91"].text:find("thread 4", 1, true) ~= nil
+    and by["wi-91"].text:find("^/plan ") ~= nil, vim.inspect(sent))
+  check("start_for_prs: anyone else's PR gets an agent of its own", by["pr-611"] ~= nil, vim.inspect(sent))
+  CH.send, CH.current_agent = orig.send, orig.agent
+  AG.reset()
+  pcall(vim.fn.delete, PL.root() .. "/wi-91.json")
 end
 
 -- --- chat/notes.lua: annotate_code's notes, kept across restarts ----------------------

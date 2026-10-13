@@ -131,6 +131,7 @@ class DeleteBranchTests(unittest.TestCase):
 class ChatPrActionTests(unittest.TestCase):
     PR = "https://dev.azure.com/org/proj/_apis/git/repositories/myrepo/pullRequests/42"
     BUILD = "https://dev.azure.com/org/proj/_apis/build/builds/77"
+    TEST = "https://dev.azure.com/org/proj/_apis/test"
 
     def run_action(self, method, *args, responses=None, raise_for=None):
         actions = tpa.make_actions()
@@ -164,6 +165,27 @@ class ChatPrActionTests(unittest.TestCase):
             self.BUILD + "/timeline": {"records": [{"name": "T", "type": "Task", "result": "failed", "log": {"id": 3}}]},
             self.BUILD + "/logs/3": json.dumps({"count": 2, "value": ["a", "b"]}).encode()})
         self.assertEqual(json.loads(out)["failed"][0]["log"], "a\nb")
+
+    def test_test_results_lists_the_failed_tests_of_each_run(self):
+        runs = self.TEST + "/runs?buildUri=vstfs%3A%2F%2F%2FBuild%2FBuild%2F77"
+        rc, out, _, fetch = self.run_action("test_results", "77", responses={
+            runs: {"value": [{"id": 5, "name": "unit", "totalTests": 3, "passedTests": 1},
+                             {"id": 6, "name": "lint", "totalTests": 2, "passedTests": 2}]},
+            self.TEST + "/Runs/5/results?outcomes=Failed&$top=200": {"value": [
+                {"automatedTestName": "A.B.fails", "outcome": "Failed", "errorMessage": "boom",
+                 "stackTrace": "\n".join("at f{0}".format(i) for i in range(50))},
+                {"testCaseTitle": "passes", "outcome": "Passed"},  # a server that ignores `outcomes`
+                {"testCaseTitle": "times out", "outcome": "Timeout"}]}})
+        self.assertEqual(rc, 0)
+        res = json.loads(out)
+        self.assertEqual(res["runs"], [{"id": 5, "name": "unit", "total": 3, "failed": 2},
+                                       {"id": 6, "name": "lint", "total": 2, "failed": 0}])
+        self.assertEqual([f["test"] for f in res["failed"]], ["A.B.fails", "times out"])
+        self.assertEqual((res["failed"][0]["error"], len(res["failed"][0]["stack"].splitlines())), ("boom", 30))
+        self.assertEqual(len(fetch.calls), 2)  # the run with no failures isn't read
+
+    def test_test_results_needs_a_number(self):
+        self.assertEqual(self.run_action("test_results", "x")[0], 1)
 
     def test_build_log_needs_a_number(self):
         self.assertEqual(self.run_action("build_log", "x")[0], 1)

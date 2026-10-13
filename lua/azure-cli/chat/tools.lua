@@ -560,16 +560,34 @@ vim.list_extend(M.list, require("azure-cli.chat.plan").tools(M))
 M.by_name = {}
 for _, t in ipairs(M.list) do M.by_name[t.name] = t end
 
+local function perms() return (require("azure-cli.config").get().chat or {}).permissions end
+
 -- How a tool may run: setup({ chat = { permissions = { name = "allow" |
--- "ask" | "deny" } } }), else its own default - reads and the low-risk
--- writes allow, the rest ask.
+-- "ask" | "deny" } } }) - by the tool's name, else its group
+-- ("azure-vicli-tools"), else "all" - otherwise its own default: reads and
+-- the low-risk writes allow, the rest ask. A group's "ask" leaves reads
+-- alone. (The agent's own prompts: "agent-commands" / "agent-edits",
+-- chat/run.lua.)
+local function valid(p) return p == "allow" or p == "ask" or p == "deny" end
 function M.permission(tool, perms)
   local p = perms and perms[tool.name]
-  if p == "allow" or p == "ask" or p == "deny" then return p end
+  if valid(p) then return p end
+  local g = perms and (perms["azure-vicli-tools"] or perms.all)
+  if g == "allow" or g == "deny" then return g end
+  if g == "ask" and tool.risk ~= "read" then return "ask" end
   return tool.risk == "ask" and "ask" or "allow"
 end
 
-local function perms() return (require("azure-cli.config").get().chat or {}).permissions end
+-- What chat.permissions says about the agent's own prompt of `kind`
+-- (ACP's toolCall.kind): "agent-edits" for a file change, else
+-- "agent-commands", else "all"; nil when it says nothing.
+function M.agent_permission(kind)
+  local p = perms() or {}
+  local v = p[require("azure-cli.chat.core").FILE_CHANGE_KINDS[kind] and "agent-edits" or "agent-commands"]
+  if not valid(v) then v = p.all end
+  return valid(v) and v or nil
+end
+
 
 -- tools/list's answer: every tool not denied.
 function M.describe()
@@ -618,8 +636,9 @@ function M.call(name, args, env, cb)
   end
   if perm == "ask" then
     local what = tool.confirm and tool.confirm(args) or name
+    local because  -- why a question the plan would have skipped is asked after all
     local function ask(details)
-      env.confirm("The agent wants to " .. what .. ".", function(yes)
+      env.confirm("The agent wants to " .. what .. "." .. (because and (" Asking because " .. because .. ".") or ""), function(yes)
         if yes then
           go()
         else
@@ -630,8 +649,10 @@ function M.call(name, args, env, cb)
     end
     local function asking() if tool.details then tool.details(args, ask) else ask(nil) end end
     -- A tool can skip the question when you've already said yes some other
-    -- way (commit_and_push_fix under a plan you approved with pushing
-    -- allowed) - never when chat.permissions says "ask" for it outright.
+    -- way (commit_and_push_fix and create_pull_request under a plan you
+    -- approved with pushing allowed) - never when chat.permissions says
+    -- "ask" for it outright. preapproved's cb(ok, why): what allowed it, or
+    -- why it asks after all (nil: nothing to explain).
     local explicit = (perms() or {})[name] == "ask"
     if tool.preapproved and not explicit then
       return tool.preapproved(args, function(ok, why)
@@ -639,6 +660,7 @@ function M.call(name, args, env, cb)
           env.log("\u{2713} " .. name .. ": allowed by " .. tostring(why or "you"))
           go()
         else
+          because = why
           asking()
         end
       end)

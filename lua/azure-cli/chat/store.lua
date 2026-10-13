@@ -8,6 +8,7 @@
 --   current                  the id of the conversation in the panel
 --   notes/<pr>.json          the agent's notes on a PR's lines (chat/notes.lua)
 --   watched.json             the chat's PRs, watched for new comments (chat/watch.lua)
+--   allowed_skills.json      skills you allowed from /skills or a permission popup (chat/skills.lua)
 --   audit.json               every change the agent made through a tool
 --                            (newest last, 200 kept), with what undoing it
 --                            needs - gH lists them, u undoes one

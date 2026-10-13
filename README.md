@@ -28,8 +28,8 @@ and can work on several work items at once.
 <td width="50%"><a href="docs/chat.md#plans-and-asking-why"><img src="docs/images/chat-ask-why.png" alt="The agent's change, file by file, with a question answered under one of its lines"></a><br><sub><b>Ask why</b> - the same <code>ga</code> on any line of the agent's change; the answer sits under the line.</sub></td>
 </tr>
 <tr>
-<td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: one row per plan's agent and what it's doing"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen shows what each is doing.</sub></td>
-<td width="50%"></td>
+<td width="50%"><a href="docs/chat.md#several-agents-at-once"><img src="docs/images/chat-agents.png" alt="The Agents screen: its agents grouped by what needs you first"></a><br><sub><b>Agents</b> - <code>gP</code> on the board starts an agent per work item; this screen groups them by what needs you, and marks them finished once their PR is merged.</sub></td>
+<td width="50%"><a href="docs/chat.md#github-copilot-cli"><img src="docs/images/chat-skills.png" alt="The /skills popup over the chat: each skill with its description and folder, a check mark on the allowed ones"></a><br><sub><b>Skills</b> - <code>/skills</code> lists the agent's skills; <code>Space</code> allows one (its prompts stop asking), <code>Enter</code> starts a message with it.</sub></td>
 </tr>
 </table>
 
@@ -156,6 +156,29 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
    it.
 3. Press `?` on any screen for its keys.
 
+Or let an agent do it: open GitHub Copilot (or another agent that reads
+`.github/skills`) in this folder - before azure-vicli has ever run is fine -
+and ask it to "configure azure-vicli". It follows
+[the configure-azure-vicli skill](.github/skills/configure-azure-vicli/SKILL.md):
+where the files go, the fields, and checking them with `--doctor`.
+
+### Keeping your settings in git
+
+Your settings live outside this folder on purpose - in `%APPDATA%` /
+`~/.config` (or your Neovim config) - so `git pull`, a plugin manager's
+update or a fresh clone never touches them. To version them, keep them in
+your dotfiles repo instead:
+
+- **Plugin:** your `setup({...})` call already lives in your Neovim config,
+  so it's in your dotfiles with it. Give accounts a `pat_file` (outside the
+  repo) rather than a `pat`, and nothing secret is committed.
+- **Standalone:** point `AZVICLI_CONFIG` at the `azure-cli.yml` in your
+  dotfiles (e.g. `~/dotfiles/azure-vicli/azure-cli.yml`); the launcher reads
+  `azure-cli.lua` from the same folder. Again, use `pat_file` for the
+  token.
+
+`:AzureCli status` prints which files are in use, and `gO` opens either one.
+
 ## What's in the box
 
 - **[Pull request dashboard](docs/dashboard.md)** - the PRs waiting on
@@ -176,7 +199,11 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
   in its own conversation, and the main chat starts them, checks on them
   and passes your instructions on. It keeps watching the PRs it opened
   and tells you when reviewers comment - or starts planning the fix.
-  Replies are drafted for you to send, and votes ask first.
+  Replies are drafted for you to send, and votes ask first. Once you
+  approve a plan, its own tests and plain searches run without asking;
+  anything else asks, showing the exact command - unless you allowed the
+  skill doing it, or set `chat.permissions` (`all = "allow"` for an
+  autopilot where nothing asks). `/skills` opens a popup of the agent's skills to allow them or start a message with one.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

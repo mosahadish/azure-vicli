@@ -135,6 +135,74 @@ check("searching through the shell doesn't ask, in any conversation", e9b ~= nil
   and e9b.text:find("exec[grep -rn Config src]=yes", 1, true) ~= nil, e9b and e9b.text)
 check("a command that changes something still asks", #asked == 1 and asked[1]:find("rm", 1, true) ~= nil,
   vim.inspect(asked))
+-- A skill: its prompts ask with a third button; picking it allows the
+-- skill from then on, and its later prompts don't ask.
+local SK = require("azure-cli.chat.skills")
+local orig_avail = SK.available
+SK.available = function() return { "deploy-check" } end
+local buttons
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(3) end
+asked = {}
+local s1 = send_and_wait("use the deploy-check skill EXEC=kubectl_apply")
+check("a skill's prompt offers to allow the skill", buttons and buttons[3] == "Allow all of skill deploy-check"
+  and asked[1]:find("(skill deploy-check)", 1, true) ~= nil, vim.inspect({ buttons, asked }))
+check("allowing it allows this one", s1 and s1.text:find("exec[kubectl apply]=yes", 1, true) ~= nil, s1 and s1.text)
+asked = {}
+local s2 = send_and_wait("/deploy-check again EXEC=kubectl_rollout EXEC=rm_-rf_tmp")
+check("then the skill's prompts don't ask", #asked == 0 and s2 and s2.text:find("exec[kubectl rollout]=yes", 1, true)
+  ~= nil and s2.text:find("exec[rm -rf tmp]=yes", 1, true) ~= nil, vim.inspect({ asked, s2 and s2.text }))
+check("and the chat says the skill allowed them", table.concat(s2 and s2.tools or {}, "\n")
+  :find("$ kubectl rollout  (allowed: skill deploy-check)", 1, true) ~= nil, vim.inspect(s2 and s2.tools))
+asked = {}
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(2) end
+send_and_wait("no skill here EXEC=kubectl_apply")
+check("without the skill it asks as before, with two buttons", #asked == 1 and #buttons == 2, vim.inspect(buttons))
+SK.available = orig_avail
+-- chat.permissions' "agent-commands": the agent's commands don't ask.
+require("azure-cli.config").get().chat.permissions = { ["agent-commands"] = "allow" }
+asked = {}
+local s3 = send_and_wait("EXEC=kubectl_apply EXEC=rm_-rf_tmp")
+check("agent-commands = allow: nothing asks", #asked == 0 and s3 and s3.text:find("exec[rm -rf tmp]=yes", 1, true) ~= nil
+  and table.concat(s3.tools or {}, "\n"):find("(allowed: chat.permissions)", 1, true) ~= nil,
+  vim.inspect({ asked, s3 and s3.text, s3 and s3.tools }))
+require("azure-cli.config").get().chat.permissions = { all = "deny" }
+local s4 = send_and_wait("EXEC=kubectl_apply")
+check("all = deny: refused without asking", #asked == 0 and s4 and s4.text:find("exec[kubectl apply]=no", 1, true) ~= nil,
+  vim.inspect({ asked, s4 and s4.text }))
+require("azure-cli.config").get().chat.permissions = nil
+local orig_report, orig_popup = SK.report, SK.popup
+local on_use
+SK.popup = function(_, cb) on_use = cb return 1 end
+local n_before = #STATE.chat.entries
+CHAT.send("/skills", { view_win = win })
+check("/skills opens the popup, without asking the agent or adding to the chat",
+  on_use ~= nil and #STATE.chat.entries == n_before and not STATE.chat.running)
+on_use("deploy-check")
+check("/skills: using one starts the message with it",
+  table.concat(vim.api.nvim_buf_get_lines(CHAT._.input_buf(), 0, -1, false), "\n") == "/deploy-check ")
+vim.cmd("stopinsert")
+vim.api.nvim_buf_set_lines(CHAT._.input_buf(), 0, -1, false, { "" })
+SK.popup = function() return nil end
+SK.report = function() return "No skills found." end
+CHAT.send("/skills", { view_win = win })
+local last = STATE.chat.entries[#STATE.chat.entries]
+check("/skills with none found says so in the chat", #STATE.chat.entries == n_before + 2
+  and last.role == "note" and last.text == "No skills found." and not STATE.chat.running, vim.inspect(last))
+SK.report, SK.popup = orig_report, orig_popup
+pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/allowed_skills.json")
+SK._reset()
+asked = {}
+-- The popup shows the command itself, and the chat logs each one with
+-- what became of it.
+local shown
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; shown = o.details; cb(2) end
+local e9c = send_and_wait("EXEC=git_status EXEC=rm_-rf_out")
+check("the popup shows the command", shown and table.concat(shown, "\n"):find("rm -rf out", 1, true) ~= nil,
+  vim.inspect(shown))
+local log = table.concat(e9c and e9c.tools or {}, "\n")
+check("the chat logs each command and its outcome", log:find("$ git status  (allowed: only looks)", 1, true) ~= nil
+  and log:find("$ rm -rf out  (you denied it)", 1, true) ~= nil, log)
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
 vim.fn.mkdir(wt, "p")
 vim.fn.writefile({ "gitdir: x" }, wt .. "/.git")
 vim.fn.writefile({ "feature/3001" }, wt .. ".branch")

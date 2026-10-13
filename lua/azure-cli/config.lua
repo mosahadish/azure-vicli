@@ -22,6 +22,7 @@ local DEFAULT_KEYS = {
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
+    agent_chat = "ga",
   },
   -- Reviewer file list.
   list = {
@@ -107,6 +108,7 @@ local DEFAULT_KEYS = {
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W",
+    show_finished = "gF",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -242,7 +244,7 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
-  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number",
+  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
 }
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
@@ -268,6 +270,9 @@ local function validate_chat(chat)
   if type(chat) ~= "table" then error("azure-cli.setup: `chat` must be a table") end
   local out = vim.deepcopy(DEFAULTS_CHAT)
   for k, v in pairs(chat) do
+    if k == "allowed_skills" then
+      error("azure-cli.setup: chat.allowed_skills is gone - allow a skill from /skills in the chat (<Space>); remove it")
+    end
     if not CHAT_FIELDS[k] then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in chat") end
     if CHAT_FIELDS[k] ~= "any" and type(v) ~= CHAT_FIELDS[k] then
       error("azure-cli.setup: chat." .. k .. " must be a " .. CHAT_FIELDS[k])
@@ -280,6 +285,9 @@ local function validate_chat(chat)
   if out.size <= 0 then error("azure-cli.setup: chat.size must be positive (a fraction of the screen, or cells)") end
   if out.toasts ~= nil and out.toasts ~= false and out.toasts ~= "unfocused" and out.toasts ~= "always" then
     error("azure-cli.setup: chat.toasts must be \"unfocused\", \"always\" or false")
+  end
+  for _, s in ipairs(out.skill_dirs or {}) do
+    if type(s) ~= "string" or s == "" then error("azure-cli.setup: chat.skill_dirs must be a list of folders") end
   end
   if out.test_cmd ~= nil then
     local ok = type(out.test_cmd) == "string"
@@ -696,6 +704,7 @@ local function sorted_keys(t)
   table.sort(ks)
   return ks
 end
+M._CHAT_FIELDS = CHAT_FIELDS  -- tests: render_options() mentions every one
 function M.render_options()
   local out = {}
   local function w(line) out[#out + 1] = line end
@@ -738,9 +747,44 @@ function M.render_options()
   w("  collapsed_sections = " .. lua_literal(DEFAULTS.collapsed_sections) .. ",")
   w("  -- Row numbers inside the dashboards: \"relative\" (5j/5k jumps to a row), \"absolute\" or false.")
   w("  row_numbers = " .. lua_literal(DEFAULTS.row_numbers) .. ",")
-  w("  -- The chat panel (gq): where it sits, and the agent it talks to (none by default - see docs/chat.md).")
-  w("  chat = { position = " .. lua_literal(DEFAULTS.chat.position) .. ", size = " .. lua_literal(DEFAULTS.chat.size)
-    .. ", input_height = " .. lua_literal(DEFAULTS.chat.input_height) .. " },")
+  w("  -- The shared look: popup borders, colours, the g-key hints, and how yes/no questions ask.")
+  w("  ui = {")
+  for _, k in ipairs(sorted_keys(DEFAULTS.ui)) do
+    w("    " .. k .. " = " .. lua_literal(DEFAULTS.ui[k]) .. ",")
+  end
+  w("  },")
+  w("")
+  w("  -- The chat panel (gq) and its agents - docs/chat.md. No agent by default;")
+  w("  -- the commented lines are examples, not defaults.")
+  w("  chat = {")
+  w("    position = " .. lua_literal(DEFAULTS.chat.position) .. ",  -- \"right\", \"left\", \"bottom\" or \"top\"")
+  w("    size = " .. lua_literal(DEFAULTS.chat.size) .. ",          -- a fraction of the screen, or columns/lines")
+  w("    input_height = " .. lua_literal(DEFAULTS.chat.input_height) .. ",")
+  w("    -- agent = {                    -- GitHub Copilot; Claude Code and every field: docs/chat.md")
+  w("    --   label = \"Copilot\", acp = true,")
+  w("    --   models = { \"claude-sonnet-5\", \"gpt-5.5\" },  -- the names `copilot --help` lists")
+  w("    --   cmd = { \"copilot\", \"--acp\", \"--add-dir\", \"{fix_root}\", \"--allow-tool\", \"azure-vicli\" },")
+  w("    --   premium_requests = { default = 1 },")
+  w("    --   planner_model = \"gpt-5.5\", implementer_model = \"claude-sonnet-5\",")
+  w("    -- },")
+  w("    -- agents = { copilot = { ... }, claude = { ... } }, default_agent = \"copilot\",  -- instead of agent; gM switches")
+  w("    -- permissions = {              -- \"allow\" / \"ask\" / \"deny\": a tool's name, else its group, else all")
+  w("    --   all = \"allow\",             -- an autopilot: nothing asks")
+  w("    --   [\"azure-vicli-tools\"] = \"ask\", [\"agent-commands\"] = \"allow\", [\"agent-edits\"] = \"ask\",")
+  w("    --   vote = \"ask\",")
+  w("    -- },")
+  w("    -- skill_dirs = { \".github/skills\", \".claude/skills\", \".agents/skills\", \".copilot/skills\" },  -- the default")
+  w("    -- prompts = { security = \"Look for injection and secrets in this PR.\", standup = false },")
+  w("    -- plan_first = true,           -- plan before changing code")
+  w("    -- plan_template = \"...\",       -- the plan's sections")
+  w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
+  w("    -- max_agents = 3,              -- agents working at once")
+  w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")
+  w("    -- suggest_on_new_comments = true,")
+  w("    -- watch_seconds = 120,         -- how often the agent's PRs are checked")
+  w("    -- daily_summary = false,       -- /standup the first time the dashboard opens each day")
+  w("    -- toasts = \"unfocused\",        -- or \"always\" / false")
+  w("  },")
   w("  -- python = \"/path/to/python\",       -- interpreter for azure-cli.py (default: python3, else python)")
   w("  -- config = \"~/other/azure-cli.yml\",  -- a different config file")
   w("}")

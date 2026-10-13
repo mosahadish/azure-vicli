@@ -135,7 +135,7 @@ M.DEFAULT_PROMPTS = {
   plan = "Make a plan for this - the work item, or the review comment, in view - with submit_plan, following its "
     .. "template. Read what you need first (get_work_item, get_pr_threads, the code), but don't change any code; "
     .. "stop once the plan is submitted.",
-  build = "Why did this pull request's build fail? Read the build log and point at the cause.",
+  build = "Why did this pull request's build fail? Read the build log and the failed tests, and point at the cause.",
   standup = "Write my standup: what moved since yesterday on my pull requests and work items, "
     .. "what's waiting on me, and anything blocked or failing.",
 }
@@ -160,7 +160,8 @@ local LOOK_ONLY = {
   basename = {}, dirname = {}, realpath = {},
   ["get-content"] = {}, gc = {}, ["get-childitem"] = {}, gci = {}, ["select-string"] = {}, sls = {},
   ["get-item"] = {}, ["test-path"] = {}, ["resolve-path"] = {}, ["get-location"] = {},
-  ["select-object"] = {}, select = {}, ["sort-object"] = {}, ["measure-object"] = {}, measure = {},
+  ["where-object"] = {}, ["out-null"] = {}, ["select-object"] = {}, select = {}, ["sort-object"] = {},
+  ["measure-object"] = {}, measure = {},
   ["format-table"] = {}, ft = {}, ["format-list"] = {}, fl = {}, ["out-string"] = {},
 }
 -- git's: what each would write with, besides --output / --ext-diff.
@@ -225,7 +226,11 @@ function M.look_only_command(cmd)
     end
   end
   if bad then return false end
-  local s = table.concat(bare):gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
+  -- Throwing errors away, or merging them, writes nothing: 2>/dev/null,
+  -- 2>$null, *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file).
+  local s = (table.concat(bare) .. " "):gsub("[12*]?>%s*/dev/null(%s)", "%1"):gsub("[12*]?>%s*%$null(%s)", "%1")
+    :gsub("2>&1(%s)", "%1")
+  s = s:gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
   if s:find("[<>&(){}`$]") then return false end
   for part in (s .. "\n"):gmatch("(.-)\n") do
     if part:match("%S") and not look_only_part(part) then return false end
@@ -549,7 +554,7 @@ function M.render(entries, now, agent_label)
       .. "this comment?\", \"create a branch from develop for this work item\".\nType below; "
       .. require("azure-cli.keys").name("chat", "send") .. " sends. "
       .. "/triage, /review, /build, /standup run saved prompts (" .. require("azure-cli.keys").name("chat", "prompts")
-      .. " lists them).", "intro")
+      .. " lists them); /skills lists the agent's skills.", "intro")
     return lines, roles, name_end, entry_at
   end
   for i, e in ipairs(entries) do

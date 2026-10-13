@@ -112,7 +112,9 @@ launcher sets them in its own palette.
 **Saved prompts.** `/triage`, `/review`, `/explain`, `/build`, `/plan` and `/standup`
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
-They run against what's on screen like any message. Add your own, replace
+They run against what's on screen like any message. (`/skills` isn't a
+prompt: it opens a popup of the agent's skills, without asking the agent -
+see [Permissions](#github-copilot-cli).) Add your own, replace
 or remove the built-in ones with `chat.prompts`:
 
 ```lua
@@ -166,10 +168,12 @@ azure-vicli runs - the PR dashboard doesn't have to be open. Only other
 people's comments count, and ones arriving close together are taken
 together: once a poll finds no newer ones, `chat.on_new_comments` says what
 happens - `"suggest"` (default) puts a note in the chat (and a desktop
-notification), `"plan"` starts an agent that plans the fix of just those
-threads, as `gP` does; its plan waits for you on the Agents screen, and
+notification), `"plan"` has an agent plan the fix of just those
+threads, as `gP` does - the agent that opened the PR, when it was one of
+them; its plan waits for you on the Agents screen, and
 nothing changes until you approve it. A PR stops being watched once it's
-completed or abandoned. Comments that arrived while azure-vicli was closed
+completed or abandoned, and the agents behind it show as finished on the
+Agents screen. Comments that arrived while azure-vicli was closed
 are picked up at the first check after it starts. The list is kept in
 `stdpath("data")/azure-cli-chat/watched.json`.
 
@@ -230,12 +234,38 @@ picks goes through `session/set_config_option`.
   agent that doesn't advertise `http` gets the stdio server.
 - **Permissions.** A tool call Copilot wants permission for (editing a file,
   running a command) pops up the same yes/no prompt as azure-vicli's own
-  tools, with its diff when it has one; "Allow"/"Deny" picks Copilot's
-  `allow_once`/`reject_once`. Reading and searching files never ask -
+  tools, with its diff when it has one - or the exact command it would
+  run, since Copilot's title is only its own description of it;
+  "Allow"/"Deny" picks Copilot's `allow_once`/`reject_once`. Every shell
+  command shows in the chat under its step, with what became of it
+  (`↳ $ git status  (allowed: only looks)`, `(you denied it)`), and so in
+  the run log (`gH`). Reading and searching files never ask -
   they're always allowed, and so is searching or listing through the
   shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `git log` / `diff` /
   `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
-  `Get-Content`, `Select-String`, and pipes of them. A command that could
+  `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
+  of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
+  `2>&1`). **Skills you allow** don't ask either: while an answer uses one
+  of the agent's skills (a `SKILL.md` in the repository's `.github/skills`,
+  `.claude/skills`, `.agents/skills` or `.copilot/skills`, or yours in your
+  home folder) - your message names it (`/triage-pr-comments`, "use the
+  triage-pr-comments skill") or the agent reports loading it - its
+  prompts get a third button, **Allow all of skill …** (`a`), and once you
+  pick it every command and file edit the skill makes is accepted, now and
+  next time; each still shows in the chat as `(allowed: skill …)`.
+  `/skills` in the chat opens a popup of the skills found (each one's
+  description, folder, and ✓ when allowed) without asking the agent:
+  `<Space>` allows the skill under the cursor up front, or makes its
+  prompts ask again, and `<CR>` starts your message with it
+  (`/name `) in the input box. With none found, the chat says where it
+  looked.
+  `chat.skill_dirs` changes where they're looked for: the default is
+  `{ ".github/skills", ".claude/skills", ".agents/skills", ".copilot/skills" }`;
+  a relative folder is looked for in the repository and in your home
+  folder, `~/…` or an absolute path as it is. To stop the prompts
+  altogether, see `chat.permissions`' groups ([below](#what-the-agent-can-do)).
+  azure-vicli's own questions - posting, voting, pushing - still ask. A
+  command that could
   write or run something else - a redirect, `$(...)`, a script block,
   `find -exec`, `rg --pre`, any other program - still asks. While a
   `/plan` message runs, editing, deleting or moving a file is refused
@@ -247,7 +277,11 @@ picks goes through `session/set_config_option`.
   against the plan counts it as planned. Building and testing the way an approved
   plan's Test plan says doesn't ask either: `run_tests` with that
   command, or the agent running it (or one of its lines) in its own
-  shell. Any other command asks. `--allow-tool azure-vicli` saves Copilot
+  shell - with more arguments too (`dotnet test --no-build --filter …`),
+  after a `cd` / `Set-Location` into a directory, with the same tool's
+  build and restore steps (`dotnet build`, `npm ci`, `cargo check`, …),
+  and piped into a command that only looks (`2>&1 | Select-Object -Last
+  50`). A redirect into a file, `$(...)` or any other program asks. `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this
@@ -318,7 +352,7 @@ to one conversation with one agent and model.
 
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
-(default false), `suggest_on_new_comments` (default true), `on_new_comments`
+(default false), `skill_dirs` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
 (`"suggest"` or `"plan"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
 (default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).
@@ -332,7 +366,10 @@ triage-pr-comments skill on this PR".
 
 You can hand this section to the agent itself (Copilot, Claude Code, ...)
 and it can do the setup for you: open the agent in this repository and tell
-it **"follow the agent setup steps in docs/chat.md"**.
+it **"follow the agent setup steps in docs/chat.md"**. For the rest of the
+config (accounts, keys, permissions, skills) there's a skill an agent picks
+up on its own - ask it to "configure azure-vicli" (see
+[Configuration](configuration.md)).
 
 **Agent setup steps.** You are configuring yourself as azure-vicli's chat
 agent. Do every step, check every flag against the installed CLI instead of
@@ -410,8 +447,8 @@ command), and so does the Agents screen (approve, while a plan waits). `?`
 always has all of them.
 
 **Ask why.** Put the cursor on any line of the plan - or select a few -
-and press `ga`: a small editor opens under the line with "Why did you
-choose this?" already written (change it, or just send it with `<C-s>`).
+and press `ga`: an empty editor opens under the line - type your question
+and send it with `<C-s>`.
 The question goes to the agent through the chat, with the line and its
 section, and the answer appears under that line, like a review thread
 (also in the chat). `<Tab>` unfolds a long answer, `K` shows it in a
@@ -429,7 +466,10 @@ note of your own. `dd` forgets one. The agent fixes them in the worktree
 and shows the change again.
 
 **Running the plan's tests.** The plan's Test plan section gives the
-command that checks the change, in a ` ```sh ` block. `gb` in the change
+command that checks the change, in a ` ```sh ` block - or, when the
+agent wrote none, the inline code there that starts with a test runner or
+build tool (`` `dotnet test` ``, `` `npm test` ``; `submit_plan` tells the
+agent when it found no command at all). `gb` in the change
 viewer runs it in the change's worktree - after asking, since the agent
 wrote it - and the file list's winbar shows the result (`✓ tests passed`,
 `✗ tests failed (exit 1)`, or `..., before the last change` once the
@@ -444,13 +484,22 @@ widgets = ".venv/bin/python -m pytest -q", api = "dotnet test" }`. It runs
 in the worktree like the plan's, but without the question (it's yours),
 for `gb` and for the agent's `run_tests` alike.
 
-**Letting an approved plan push.** `gA` offers two ways to approve: just
-approve, or approve *and let it push once the tests pass*. With the
-second, `commit_and_push_fix` doesn't ask you - the chat says it was
-allowed by the plan - as long as the plan is still approved (a new
-revision takes it back), and, when the plan has a test command, the tests
-passed on exactly the change being pushed. Anything else, it asks as
-usual; `chat.permissions = { commit_and_push_fix = "ask" }` always asks.
+**Letting an approved plan push and open its PR.** `gA` offers two ways
+to approve: just approve, or approve *and let it push and open the PR
+once the tests pass*. With the second, the agent is told so and carries
+on by itself: it makes the change and shows it, runs the plan's tests
+with `run_tests` (tests it runs in its own shell don't count), fixes the
+change until they pass, pushes, and - for a work item - opens its pull
+request, a normal one, linking the work item with the plan as its
+description. Neither the push nor the PR asks you - the chat says they
+were allowed by the plan - as long as the plan is still approved (a new
+revision takes it back), the tests passed on exactly the change being
+pushed (when the plan has a test command), and the PR is that plan's one
+PR, from its story's branch into the branch it started from. Anything
+else asks as usual, and the question says why it asks after all ("Asking
+because the tests ran on an earlier version of the change").
+`chat.permissions = { commit_and_push_fix = "ask" }` (or
+`create_pull_request`) always asks.
 
 **Hunk by hunk.** `gy` on a change marks it accepted (a `✓` beside it,
 and `✓ 2/5 accepted` in the winbar - press it again to take that back);
@@ -464,7 +513,7 @@ their line when the text around them changes.
 
 | Key (plan window) | Action |
 |---|---|
-| `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push once the tests pass) |
+| `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push and open the PR once the tests pass) |
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
 | `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
 | `gr` | Answer the open question under the cursor (its Open questions section) - sent along when you approve |
@@ -593,13 +642,18 @@ first, so an answer never goes to a question you didn't read. The status
 strip counts what's going on: `⠹ 2 agents working · ⌛ 1 queued · ⚠ a
 question waits for you · ● 2 plans wait for you`.
 
-![The Agents screen: one row per plan's agent - working, its plan waiting for you, approved](images/chat-agents.png)
+![The Agents screen: its agents grouped - needs you, working, in progress, finished](images/chat-agents.png)
 
 **The Agents screen** (`A` on either dashboard, `A` in the chat's conversation,
-`:AzureCli agents`) lists every plan's agent - what it's doing (working,
-with its latest step; waiting for an agent; its plan waiting for you;
-approved; revising; pushed), how long since it last did something, and
-what it has used so far, and the winbar adds it up: its cost when the
+`:AzureCli agents`) lists every plan's agent, grouped by what needs you
+first - Needs you, Working, In progress, Finished - with the most recent
+first in each group (finished ones over 7 days old are hidden until `gF`).
+For each it shows what it's doing (working, with its latest step; waiting
+for an agent; its plan waiting for you; approved; revising; pushed;
+`PR !123 open` once it opened one; finished - `merged` or `PR abandoned` -
+once that PR is closed, which it learns from the
+[watched PRs](#conversations-agents-and-models) check), how long since it
+last did something, and what it has used so far, centred in its window, and the winbar adds it up: its cost when the
 agent reports one (Claude Code does, and an ACP agent can, through ACP's
 `usage_update`), else its premium requests (`agent.premium_requests`:
 each message counts as its model's multiplier). An ACP agent's
@@ -615,6 +669,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gH` | Its run log |
 | `gq` | Its plan's tab, with that agent's conversation in the chat |
 | `<C-c>` | Stop what it's doing |
+| `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `r` / `q` / `?` | Redraw / close / keys |
 
 **For review comments, too.** `gP` in the reviewer, on a comment
@@ -623,7 +678,14 @@ else in the reviewer: of every active one); on the PR dashboard, `gP` on
 a row - or on selected rows - starts one agent per PR, each planning the
 fix of its open comments. They run side by side like the work items'
 (one agent per PR, since a PR's fix happens in one worktree), and the
-plan gate applies the same way: no change until you approve.
+plan gate applies the same way: no change until you approve. A PR an
+agent opened for a work item goes back to that agent instead - the one
+that wrote the original plan and knows the change: it plans the fix as a
+new revision of that plan (on the Agents screen it's the work item's row
+again, waiting for you), and once you approve, it changes its story's
+worktree and pushes to the PR's branch. On the PR dashboard, the agent
+column shows each PR's agent and what it's doing, and `ga` there opens
+its conversation in a popup ([dashboard](dashboard.md)).
 
 Every plan opens in a tab of its own, and so does every change - opening
 another doesn't replace the one you were reading, and `r`, `gA` or `ga`
@@ -647,6 +709,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `find_implementations`, `find_definition` | Across a whole repository (the fix/story worktree, a PR's source branch, or a local clone): the types implementing an interface or deriving from a class, and the ones deriving from those; where a type or member is declared. Text-based (`git grep` and declaration patterns for C#, Java, TypeScript, Kotlin, Python, ...), no build needed | - |
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
+| `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
 | `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
@@ -684,6 +747,25 @@ question), `"ask"`, or `"deny"` (the agent doesn't even see it):
 ```lua
 permissions = { create_branch = "ask", commit_and_push_fix = "deny", set_thread_status = "allow" },
 ```
+
+It also takes groups, so you don't have to name every tool:
+
+| Key | Covers |
+|---|---|
+| `"azure-vicli-tools"` | azure-vicli's own tools (posting, voting, pushing, opening PRs, ...) |
+| `"agent-commands"` | the agent's own prompts other than file edits: shell commands, fetching, ... |
+| `"agent-edits"` | the agent's own file edits |
+| `"all"` | everything above that its own group doesn't set |
+
+A tool's own name wins over its group, and a group wins over `"all"`. So
+`permissions = { all = "allow" }` is an autopilot where nothing asks, and
+`{ all = "allow", vote = "ask", ["agent-edits"] = "ask" }` is the same but
+still asks before a vote or a file edit. A group's `"ask"` leaves reads
+alone; for the agent's prompts, `"ask"` is the usual behaviour (searches,
+the plan's tests, planned edits and allowed skills still don't ask).
+`"allow"` / `"deny"` there show in the chat as `(allowed: chat.permissions)`
+/ `(refused: chat.permissions)`. Plans still wait for your approval, and
+planning still changes no files.
 
 **Undo.** Every change the agent makes is logged; `gH` lists them (newest
 first) and `u` on one undoes it where that's possible: unlinking, deleting a

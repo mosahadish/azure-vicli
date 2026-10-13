@@ -1547,7 +1547,7 @@ local WORKITEMS_HELP = {
   { "new", "new work item: type, title, and parent (if the cursor is on one)" },
   { "refresh", "refresh" },
   { "pr_list", "switch to the pull-request dashboard" },
-  { "config", "open the config file" },
+  { "config", "open a config file" },
   { "quit", "quit" },
   { "help", "this help" },
 }
@@ -1593,7 +1593,7 @@ KEYS.bind(buf, "workitems", "goto_sprint_n", goto_sprint_count, { desc = "jump t
 KEYS.bind(buf, "workitems", "click", on_click, { desc = "click a tab in the tab bar to jump to that sprint" })
 KEYS.bind(buf, "workitems", "pr_list", open_pr_list, { desc = "switch to the pull-request dashboard" })
 KEYS.bind(buf, "workitems", "copy_link", yank_link, { desc = "copy the item's link" })
-KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open the config file" })
+KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
 -- gq: the chat panel, told about the work item under the cursor.
 require("azure-cli.chat").bind_toggle(buf, "workitems")

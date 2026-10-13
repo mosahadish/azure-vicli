@@ -79,7 +79,7 @@ ask_why = function()
   local kind = (role == "tool_read" or role == "tool_write" or role == "tool_err" or role == "agent_log") and "step" or "line"
   if st.running then return notify("The agent is still answering - ask once it's done.", vim.log.levels.WARN) end
   require("azure-cli.editor").open({
-    title = "Ask " .. agent_label() .. " why", initial = kind == "step" and "Why did you do this?" or "Why?",
+    title = "Ask " .. agent_label() .. " why",
     anchor = { win = vim.api.nvim_get_current_win(), row = row }, context_lines = { quote },
     on_submit = function(q)
       send(CORE.why_message(quote, kind, asked, q), { display = q .. "  (about: " .. (#quote > 60 and (quote:sub(1, 57) .. "...")

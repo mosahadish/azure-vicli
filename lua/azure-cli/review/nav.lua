@@ -650,7 +650,7 @@ local NAV_HELP = {
   { "back", "walk back one jump" },
   { "back_to_diff", "back to the diff" },
   "Session",
-  { "config", "open the config file" },
+  { "config", "open a config file" },
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "help", "this help" },
 }
@@ -669,7 +669,7 @@ setup_nav_keymaps = function(buf)
   KEYS.bind(buf, "nav", "search", function() nav_search_files() end, { desc = "search text across the PR's changed ctx.files()" })
   KEYS.bind(buf, "nav", "back", nav_back, { desc = "walk back one jump" })
   KEYS.bind(buf, "nav", "back_to_diff", nav_back_to_diff, { desc = "back to the diff" })
-  KEYS.bind(buf, "nav", "config", open_config_file, { desc = "open the config file" })
+  KEYS.bind(buf, "nav", "config", open_config_file, { desc = "open a config file" })
   KEYS.bind(buf, "nav", "resize_less", function() resize_list(-5) end, { desc = "shrink the file list" })
   KEYS.bind(buf, "nav", "resize_more", function() resize_list(5) end, { desc = "grow the file list" })
   KEYS.bind(buf, "nav", "help", show_nav_help, { desc = "this help" })

@@ -15,9 +15,9 @@ Installed as a plugin, everything goes through one user command:
 | `:AzureCli agents` | Every plan's agent - what each is doing ([Chat](chat.md#several-agents-at-once)) |
 | `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
 | `:AzureCli toasts` | Toggle [desktop notifications](dashboard.md#desktop-notifications) for the rest of this session - the same switch the dashboard's own `gN` key flips. |
-| `:AzureCli status` | Show the [provider daemon's](development.md#architecture) status, plus the resolved python interpreter and config file path (see [setup() options](configuration.md#setup-options)). |
+| `:AzureCli status` | Show the [provider daemon's](development.md#architecture) status, plus the resolved python interpreter, config file path and where the options come from (`azure-cli.lua`, or your `setup()`; see [setup() options](configuration.md#setup-options)). |
 | `:AzureCli log` | Open this session's error log (`lua/azure-cli/log.lua`) in a scratch split - every provider failure's full text, oldest first; `q` closes it. See [Troubleshooting](troubleshooting.md#troubleshooting). |
-| `:AzureCli options` | Create `azure-cli.lua` next to `azure-cli.yml` with every `setup()` option at its default (generated from the code, so it can't drift), or open it if it already exists. The standalone launcher loads that file; plugin users can copy its contents into their own `setup()` call. |
+| `:AzureCli options` | Every `setup()` option at its default, generated from the code so it can't drift. In the standalone launcher: creates `azure-cli.lua` next to `azure-cli.yml` with them (the file it loads), or opens it if it already exists. In your own Neovim, where that file isn't read: shows the same list in a scratch buffer to copy into your `setup()` call, writing nothing. `gO`'s "Options" does the same. |
 | `:AzureCli help` | List these. |
 
 Tab-completion works on the subcommand. The standalone launcher (`azure-cli`/
@@ -95,6 +95,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `agent_chat` | `ga` |
 | `agents` | `A` |
 | `browser` | `o` |
 | `chat` | `gq` |
@@ -400,5 +401,6 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `run_log` | `gH` |
+| `show_finished` | `gF` |
 | `workitems` | `W` |
 <!-- END GENERATED KEYS TABLE -->

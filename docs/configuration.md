@@ -2,6 +2,10 @@
 
 _Part of the [azure-vicli](../README.md) docs._
 
+An agent can do this for you: open it in the azure-vicli folder and ask it
+to "configure azure-vicli" - [the configure-azure-vicli skill](../.github/skills/configure-azure-vicli/SKILL.md)
+walks it through these files, before azure-vicli has ever run.
+
 ## Configuration
 
 The config file is `%APPDATA%\azure-cli.yml` on Windows and
@@ -9,7 +13,10 @@ The config file is `%APPDATA%\azure-cli.yml` on Windows and
 You don't create it by hand: the first `./azure-cli` or `:AzureCli` with no
 file there writes the template below (with `TODO` placeholders) and opens it;
 saving it opens the dashboard. `azure-cli --init-config` does the same from
-a terminal, and `gO` in any dashboard opens it later.
+a terminal. Later, `gO` on any screen asks which file to open: the
+accounts (`azure-cli.yml`) or the options (`azure-cli.lua` next to it - see
+[setup() options](#setup-options) - or, in your own Neovim, a pointer to
+your `setup()` call). `:AzureCli status` prints where both are.
 
 ```yaml
 accounts:
@@ -90,8 +97,10 @@ failing silently or only surfacing later.
 **Standalone launcher users** have no `init.lua` to call `setup()` from.
 Put an `azure-cli.lua` next to your `azure-cli.yml` (same directory) that
 returns the same table, and the launcher passes it to `setup()`.
-`:AzureCli options` writes one with every option at its default so you can
-edit from a complete list:
+`:AzureCli options` (or `gO` -> Options) writes one with every option at
+its default so you can edit from a complete list. In your own Neovim the
+same command shows that list in a scratch buffer to copy from instead -
+the plugin never reads `azure-cli.lua`:
 
 ```lua
 -- %APPDATA%\azure-cli.lua  (or ~/.config/azure-cli.lua)

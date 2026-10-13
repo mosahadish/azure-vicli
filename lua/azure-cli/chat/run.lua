@@ -261,6 +261,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       -- Our own azure-vicli tools are logged by the bridge already, with
       -- their arguments.
       local title = tostring(u.title or u.name or "tool")
+      entry.skill = entry.skill or require("azure-cli.chat.skills").in_tool_call(u, entry.skill_names)
       if not title:find("azure%-vicli") then
         table.insert(entry.tools, "\u{00B7} " .. title)
         render_soon()
@@ -283,9 +284,11 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
 
   -- The agent asking permission before a tool call: shown with the same
   -- yes/no popup azure-vicli's own tools use, the tool call's diff (if
-  -- any) as the details. "Allow" picks the first allow_* option offered,
-  -- "Deny" the first reject_*; azure-vicli can't tell "once" from
-  -- "always" apart in that popup, so it always answers "once". Reading
+  -- any, else the command it would run) as the details; each shell
+  -- command is logged in the chat with its outcome. "Allow" picks the
+  -- first allow_* option offered, "Deny" the first reject_*; azure-vicli
+  -- can't tell "once" from "always" apart in that popup, so it always
+  -- answers "once". Reading
   -- and searching never ask (CORE.READ_ONLY_KINDS); changing files
   -- (CORE.FILE_CHANGE_KINDS) is refused without asking while a /plan
   -- message runs, and allowed without asking when every file is in an
@@ -307,6 +310,24 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       if pick then conn.respond(id, { outcome = { outcome = "selected", optionId = pick } })
       else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
     end
+    local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
+    local cmd = raw.command or raw.cmd
+    if type(cmd) == "table" then cmd = table.concat(vim.tbl_map(tostring, cmd), " ") end
+    cmd = type(cmd) == "string" and vim.trim(cmd) or nil
+    -- What a shell command was and what became of it, under the tool call
+    -- in the chat (and so in the run log, gH).
+    local function log_cmd(outcome, always)
+      local one = cmd and cmd ~= "" and cmd:gsub("%s*\n%s*", " ; ") or nil
+      if not one and always then
+        local paths = CORE.tool_paths(tool)
+        one = (tool.title or tool.kind or "tool") .. (#paths > 0 and (" " .. table.concat(paths, ", ")) or "")
+      end
+      if not one then return end
+      table.insert(entry.tools, "  \u{21B3} " .. (cmd and cmd ~= "" and "$ " or "") .. (#one > 160 and (one:sub(1, 157) .. "...") or one)
+        .. "  (" .. outcome .. ")")
+      render_soon()
+    end
+    local function allow_quietly(why) log_cmd("allowed: " .. why); return answer(true) end
     if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
     if CORE.FILE_CHANGE_KINDS[tool.kind] then
       if entry.planning then
@@ -315,29 +336,61 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
         return answer(false)
       end
     end
+    -- chat.permissions' "agent-commands" / "agent-edits" / "all": allowed
+    -- or refused without asking.
+    local said = require("azure-cli.chat.tools").agent_permission(tool.kind)
+    if said == "allow" then log_cmd("allowed: chat.permissions", true); return answer(true) end
+    if said == "deny" then log_cmd("refused: chat.permissions", true); return answer(false) end
+    -- The popup shows what it would run (or the agent's whole input, when
+    -- it isn't a command or a diff): the title is the agent's own words.
     local details = {}
-    local diff = type(tool.rawInput) == "table" and tool.rawInput.diff
-    if type(diff) == "string" then for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end end
+    local diff = raw.diff
+    if type(diff) == "string" then
+      for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end
+    elseif cmd and cmd ~= "" then
+      table.insert(details, "Command:")
+      for l in (cmd .. "\n"):gmatch("(.-)\n") do table.insert(details, "  " .. l) end
+    elseif next(raw) and not CORE.FILE_CHANGE_KINDS[tool.kind] then
+      local ok, json = pcall(vim.json.encode, raw)
+      if ok then
+        table.insert(details, "Input:")
+        for i = 1, math.min(20, math.ceil(#json / 100)) do table.insert(details, "  " .. json:sub(i * 100 - 99, i * 100)) end
+      end
+    end
     local PLAN = require("azure-cli.chat.plan")
     local verdict, rec, rels = nil, nil, nil
     if CORE.FILE_CHANGE_KINDS[tool.kind] then verdict, rec, rels = PLAN.edit_check(CORE.tool_paths(tool)) end
     if verdict == "planned" then return answer(true) end
     -- Building and testing the way the approved plan's Test plan says.
-    local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
     if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
-      return answer(true)
+      return allow_quietly("the plan's tests")
     end
     -- Searching and listing through the shell (grep, git log, ...).
-    if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return answer(true) end
+    if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
+    -- A skill you've allowed: whatever it does through the agent's tools.
+    local SKILLS = require("azure-cli.chat.skills")
+    if entry.skill and SKILLS.allowed(entry.skill) then
+      log_cmd("allowed: skill " .. entry.skill, true)
+      return answer(true)
+    end
+    -- Otherwise a third button allows that skill from now on.
+    local extra = entry.skill and ("Allow all of skill " .. entry.skill) or nil
+    local function remember(always) if always and entry.skill then SKILLS.allow(entry.skill) end end
     if verdict == "unplanned" then
       local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
         .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
-      return confirm_for(st.plan_key and st or nil)(question, function(yes)
+      return confirm_for(st.plan_key and st or nil)(question, function(yes, always)
         if yes then PLAN.allow_files(rec, rels) end
+        remember(always)
         answer(yes)
-      end, details)
+      end, details, extra)
     end
-    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act"), answer, details)
+    confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
+      .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
+      remember(always)
+      log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
+      answer(yes)
+    end, details, extra)
   end
 
   local function send_prompt(pj)
@@ -475,6 +528,30 @@ send = function(text, opts)
     notify("The agent is still answering - wait, or stop it (<C-c>).", vim.log.levels.WARN)
     return
   end
+  -- /skills: the agent's skills where it would run (chat/skills.lua), in a
+  -- popup that allows them and starts a message with one - nothing goes to
+  -- the agent. With none found, the chat says where it looked.
+  if text:match("^%s*/skills%s*$") then
+    if from_input and I().input_buf() and vim.api.nvim_buf_is_valid(I().input_buf()) then
+      vim.api.nvim_buf_set_lines(I().input_buf(), 0, -1, false, { "" })
+    end
+    local snap = opts.snap or require("azure-cli.chat.view").snapshot(opts.view_win or CHAT().main_win())
+    local SKILLS = require("azure-cli.chat.skills")
+    if SKILLS.popup(agent_cwd(snap), function(name)
+      CHAT().show(true)
+      local ib = I().input_buf()
+      if ib and vim.api.nvim_buf_is_valid(ib) then
+        vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "/" .. name .. " " })
+        if vim.api.nvim_get_current_buf() == ib then pcall(vim.api.nvim_win_set_cursor, 0, { 1, #name + 2 }) end
+      end
+    end) then
+      return
+    end
+    table.insert(st.entries, { role = "you", text = text, where = where_label(snap), view = snap })
+    table.insert(st.entries, { role = "note", text = SKILLS.report(agent_cwd(snap)) })
+    render()
+    return
+  end
   local agent_name, agent = CHAT().current_agent()
   if not agent then
     table.insert(st.entries, { role = "note", text = "No chat agent is configured - add setup({ chat = { agent = { ... } } }); docs/chat.md has examples." })
@@ -537,6 +614,11 @@ send = function(text, opts)
     label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil,
     requests = CORE.request_multiplier(agent, model), model = model }
   table.insert(st.entries, entry)
+  -- The agent's skills where it runs, and the one this message asks for
+  -- (chat/skills.lua: an allowed one's permission prompts don't ask).
+  local SKILLS = require("azure-cli.chat.skills")
+  entry.skill_names = SKILLS.available(agent_cwd(snap))
+  entry.skill = SKILLS.named_in(shown_text .. "\n" .. expanded, entry.skill_names)
   if st.agent_id then
     -- A plan's own agent: its tool calls come with its id (the relay's
     -- AZVICLI_CHAT_AGENT / X-Azvicli-Agent) and land in this conversation.

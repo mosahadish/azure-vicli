@@ -14,7 +14,9 @@
 -- plan for their PR / work item is approved (setup({ chat = { plan_first =
 -- true | false | "stories" } }), default true). Pushing the change
 -- (commit_and_push_fix) marks the plan done, so the next change needs a
--- plan of its own.
+-- plan of its own. Opening a PR for it links the PR (link_pr); when that
+-- PR is merged or abandoned the plan is finished (pr_closed, from
+-- chat/watch.lua).
 --
 -- Kept under stdpath("data")/azure-cli-chat/plans/: <key>.md (the plan's
 -- text, the file gf edits) and <key>.json (its title, status, revisions
@@ -177,7 +179,8 @@ function M.edit_check(paths)
 end
 
 -- Whether the agent may run shell command `cmd` without asking: plan
--- `key` is approved and `cmd` is its Test plan command, or a line of it.
+-- `key` is approved and `cmd` runs its Test plan command (is_test_command:
+-- a line of it, with more arguments, its tool's build step, ...).
 function M.test_command_allowed(key, cmd)
   local rec = M.load(key)
   return rec ~= nil and rec.status == "approved" and M.is_test_command(cmd, M.test_command(current_lines(rec)))
@@ -309,10 +312,10 @@ function M.ask_approval(keys, cb)
     if rec and M.test_command(current_lines(rec)) then has_cmd = true end
   end
   local what = #keys == 1 and ("the plan for " .. M.target_label(M.load(keys[1]).target)) or (#keys .. " plans")
-  local plain, with_push = "Approve", has_cmd and "Approve, and let it push once the tests pass"
-    or "Approve, and let it push without asking"
+  local plain, with_push = "Approve", has_cmd and "Approve, and let it push and open the PR once the tests pass"
+    or "Approve, and let it push and open the PR without asking"
   require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
-      "The agent goes ahead with it. Letting it push skips the question before its push"
+      "The agent goes ahead with it. Letting it push skips the questions before its push and its pull request"
         .. (has_cmd and ", once the plan's tests pass on its change." or "."),
     }, buttons = { plain, with_push, "Cancel" }, keys = { a = 1, p = 2 }, cancel = 3,
     hint = "a approve \u{00B7} p approve and let it push \u{00B7} Esc cancel \u{00B7} Tab moves" }, function(i)
@@ -342,7 +345,7 @@ function M.approve(key, allow_push)
   local entry = CHAT.send(M.approval_message(rec, current_lines(rec)), {
     conv = conv, view_win = VIEW().plan_win(key),
     display = "Approved the plan for " .. M.target_label(rec.target)
-      .. (rec.allow_push and " (it may push once the tests pass)." or "."),
+      .. (rec.allow_push and " (it may push and open the PR once the tests pass)." or "."),
   })
   if entry then
     for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
@@ -365,13 +368,33 @@ end
 -- in worktree `dir`: cb(ok, why).
 function M.push_allowed(target, dir, cb)
   local rec = M.load(M.key(target))
-  if not (rec and rec.allow_push) then return cb(false, "not allowed") end
+  if not (rec and rec.allow_push) then return cb(false) end  -- nothing to explain: you didn't allow it
   local TR = require("azure-cli.chat.tests_run")
   local has_cmd = M.test_command(current_lines(rec)) ~= nil
   require("azure-cli.chat.tools_fix").diff(dir, function(ok, diff)
     if not ok then return cb(false, diff) end
     cb(M.push_check(rec, has_cmd, TR.load(dir), TR.fingerprint(diff)))
   end, require("azure-cli.chat.tools").git)
+end
+
+-- Whether create_pull_request `a` may skip its question: the work item's
+-- plan was approved with pushing allowed, its change is pushed, it has no
+-- PR yet, and `a` is that PR - from its story's branch into the branch it
+-- started from, linking the work item. cb(ok, why) - why only when the
+-- plan allowed it but this isn't quite it.
+function M.pr_allowed(a, cb)
+  local rec = M.for_pull_request(a.work_item_ids, a.source)
+  if not (rec and rec.allow_push and rec.target and rec.target.work_item_id) then return cb(false) end
+  local wi = rec.target.work_item_id
+  local _, branch, base = require("azure-cli.chat.tools_fix").find_story(wi)
+  local linked = false
+  for _, id in ipairs(a.work_item_ids or {}) do if tostring(id) == tostring(wi) then linked = true end end
+  if type(rec.pr) == "table" then return cb(false, "the plan for #" .. wi .. " already opened PR !" .. tostring(rec.pr.id)) end
+  if rec.status ~= "done" then return cb(false, "the plan's change isn't pushed yet") end
+  if branch and a.source ~= branch then return cb(false, "it isn't from the story's branch (" .. branch .. ")") end
+  if base and a.target ~= base then return cb(false, "it targets " .. tostring(a.target) .. ", not " .. base .. ", which the story started from") end
+  if not linked then return cb(false, "it doesn't link #" .. wi) end
+  cb(true, "the approved plan (pushing and its PR allowed)")
 end
 
 -- commit_and_push_fix pushed the change: its plan is done.
@@ -382,6 +405,57 @@ function M.mark_done(target)
     rec.done_at = os.time()
     VIEW().changed(rec)
   end
+end
+
+-- create_pull_request opened PR `pr` ({ id, org, project }): the plans of
+-- `work_item_ids`, and the story's whose branch is `source`, know their PR
+-- (the Agents screen shows it, and when it's closed - M.pr_closed).
+function M.link_pr(work_item_ids, source, pr)
+  local recs, seen = {}, {}
+  for _, id in ipairs(work_item_ids or {}) do
+    local rec = M.load("wi-" .. tostring(id))
+    if rec then recs[#recs + 1] = rec; seen[rec.key] = true end
+  end
+  local by_branch = M.for_pull_request(nil, source)
+  if by_branch and not seen[by_branch.key] then recs[#recs + 1] = by_branch end
+  for _, rec in ipairs(recs) do
+    rec.pr = { id = pr.id, org = pr.org, project = pr.project }
+    rec.pr_state, rec.closed_at = nil, nil
+    M.add_event(rec, "pr", "Opened PR !" .. tostring(pr.id))
+    VIEW().changed(rec)
+  end
+end
+
+-- The work item's plan that opened PR `id` (link_pr) while that PR is
+-- still open: its agent is the one to fix what reviewers say. A PR opened
+-- before plans recorded theirs is found by its `source` branch being the
+-- story's. Or nil.
+function M.owner_of_pr(id, source)
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/wi-*.json", false, true)) do
+    local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
+    if rec and type(rec.pr) == "table" and tostring(rec.pr.id) == tostring(id) and not rec.pr_state then return rec end
+  end
+  local rec = source and source ~= "" and M.for_pull_request(nil, source) or nil
+  if rec and rec.pr == nil and not rec.pr_state then return rec end
+  return nil
+end
+
+-- PR `id` was completed or abandoned (`state`; chat/watch.lua saw it): the
+-- plans behind it - the PR's own, and the stories it was opened for - are
+-- finished. Returns how many it marked.
+function M.pr_closed(id, state)
+  local n = 0
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/*.json", false, true)) do
+    local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
+    if rec and rec.key and not rec.pr_state
+        and (rec.key == "pr-" .. tostring(id) or (type(rec.pr) == "table" and tostring(rec.pr.id) == tostring(id))) then
+      rec.pr_state, rec.closed_at = state, os.time()
+      M.add_event(rec, "closed", "PR !" .. tostring(id) .. (state == "completed" and " was merged" or " was abandoned"))
+      VIEW().changed(rec)
+      n = n + 1
+    end
+  end
+  return n
 end
 
 -- ---------------------------------------------------------------------------
@@ -435,6 +509,13 @@ function M.tools(T)
         done({
           shown = true, revision = #rec.revisions, file = M.path(key),
           missing_sections = M.missing(args.markdown, M.template()),
+          -- How the tests run: without one the user can't run them (gb)
+          -- and every test run of yours asks.
+          test_command = M.test_command(current_lines(rec)) or vim.NIL,
+          test_command_note = not M.test_command(current_lines(rec))
+            and "Your Test plan has no command to run the tests. Add it in a ```sh block under ## Test plan (one "
+              .. "command per line) with submit_plan again, so the user can run it and, once the plan is approved, "
+              .. "you can run it (with more arguments, after its build step) without asking." or nil,
           next = "Stop here and wait for the user: they read the plan, may ask about lines of it, then approve it "
             .. "(you'll get a message) or ask for changes. Don't call start_fix / start_story before it's approved.",
           shown = not (env and env.background and env.background()),

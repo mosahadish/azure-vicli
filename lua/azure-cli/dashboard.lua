@@ -150,6 +150,24 @@ local SCALING_COLUMNS = {
 -- author and reviewer summary) + the "  " gap before updated-human (=2).
 -- Recompute this if add_pr_row's fixed segments ever change.
 local ROW_FIXED_WIDTH = 25 + 1 + 1 + 17 + 2
+-- The agent column, only while a listed PR has an agent (a review
+-- comment's fix, or the work item's agent that opened it): its state as
+-- the Agents screen shows it. Its width includes the gap in front of it.
+-- Dropped after the reviewer summary and the updated time, before the
+-- author, when the window is narrow.
+local AGENT_COLUMN = { key = "agent", min = 12, ideal = 26, weight = 1, priority = 2.5 }
+-- PR id -> its agent's row (chat/agents_view.lua's M.by_pr), as of the last
+-- render.
+local agent_of = {}
+local function agents_by_pr()
+  local ok, map = pcall(function()
+    local CHAT = require("azure-cli.chat")
+    pcall(CHAT.restore_plans)
+    local AV = require("azure-cli.chat.agents_view")
+    return AV.by_pr(AV.rows(CHAT.conversations(), {}, require("azure-cli.chat.plan").load, os.time(), "\u{22EF}"))
+  end)
+  return ok and map or {}
+end
 local function pr_matches(pr, q)
   if tostring(pr.id or ""):find(q, 1, true) then return true end
   local hay = ((pr.title or "") .. " " .. (pr.repo or "") .. " " .. (pr.author or "")):lower()
@@ -173,6 +191,7 @@ local DASHBOARD_ACTIONS = {
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
   { "vote", "vote" }, { "complete", "complete / auto-complete" },
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
+  { "agent_chat", "its agent's chat, in a popup" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "agents", "every plan's agent (the Agents screen)" },
@@ -599,6 +618,11 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
     tgrp = (closed >= total) and "AzureCliThreadDone" or "AzureCliThread"
   end
   seg(fit(thr, 7), tgrp)
+  if widths.agent then
+    seg(" ")
+    local a = agent_of[tostring(pr.id)]
+    seg(fit(a and a.state or "", widths.agent - 1), a and a.hl)
+  end
   if widths.reviewer then
     seg(" ")
     local summary = pr.reviewerSummary or ""
@@ -644,6 +668,7 @@ local function add_header_row(lines, spans, widths)
     " ", fit("repo", widths.repo) }
   if widths.author then parts[#parts + 1] = " " .. fit("author", widths.author) end
   parts[#parts + 1] = " " .. fit("votes", 7) .. " " .. fit("threads", 7)
+  if widths.agent then parts[#parts + 1] = " " .. fit("agent", widths.agent - 1) end
   if widths.reviewer then parts[#parts + 1] = " " .. fit("reviewers", widths.reviewer) end
   if widths.updated then parts[#parts + 1] = "  " .. fit("updated", widths.updated) end
   local text = table.concat(parts)
@@ -717,7 +742,15 @@ local function render()
   -- (see SCALING_COLUMNS/ROW_FIXED_WIDTH above and lua/azure-cli/ui.lua's
   -- UI.layout) and hand the result to every row this render builds.
   local win_width = (win and vim.api.nvim_win_is_valid(win) and UI.text_width(win)) or vim.o.columns
-  local layout = UI.layout(SCALING_COLUMNS, math.max(0, win_width - 8 - ROW_FIXED_WIDTH))
+  agent_of = agents_by_pr()
+  local columns = SCALING_COLUMNS
+  for _, pr in ipairs(prs) do
+    if agent_of[tostring(pr.id)] then
+      columns = vim.list_extend(vim.list_slice(SCALING_COLUMNS), { AGENT_COLUMN })
+      break
+    end
+  end
+  local layout = UI.layout(columns, math.max(0, win_width - 8 - ROW_FIXED_WIDTH))
   layout_narrow = layout.narrow
   local widths = layout.widths
 
@@ -961,7 +994,7 @@ local DASHBOARD_HELP_DESCS = {
   first_pr = "jump to the first PR",
   last_pr = "jump to the last PR",
   toasts = "toggle desktop notifications for this session",
-  config = "open the config file",
+  config = "open a config file",
   refresh = "refresh",
   workitems = "switch to the work-items dashboard",
   quit = "quit",
@@ -1862,7 +1895,7 @@ KEYS.bind(buf, "dashboard", "toasts", function()
   local on = NOTIFY.toggle()
   notify("Desktop notifications " .. (on and "enabled" or "disabled") .. " for this session.")
 end, { desc = "toggle desktop notifications for this session" })
-KEYS.bind(buf, "dashboard", "config", open_config_file, { desc = "open the config file" })
+KEYS.bind(buf, "dashboard", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(buf, "dashboard", "refresh", function() load(false, true) end, { desc = "refresh" })
 -- gg/G land on the first/last PR row rather than the box's blank padding
 -- (the table is centred vertically, so plain gg/G would otherwise stop on
@@ -1890,6 +1923,17 @@ KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
 KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
+-- ga: the agent working on the PR under the cursor, its conversation in a
+-- popup (chat/init.lua's M.popup).
+KEYS.bind(buf, "dashboard", "agent_chat", function()
+  local pr = current_pr()
+  if not pr then return notify("Put the cursor on a pull request.") end
+  local a = agents_by_pr()[tostring(pr.id)]
+  if not a then
+    return notify("No agent on PR !" .. tostring(pr.id) .. " (the agent column shows the ones that have one).")
+  end
+  require("azure-cli.chat").popup(a.key)
+end, { desc = "its agent's chat, in a popup" })
 require("azure-cli.chat.view").register("azurecli-dashboard", function(w)
   local pr = row_pr[vim.api.nvim_win_get_cursor(w)[1]]
   local snap = { screen = "PR dashboard" }
@@ -1964,6 +2008,22 @@ STATE.PR_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1
   if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
     load(true, true)
   end
+end, { ["repeat"] = -1 })
+
+-- The agent column follows its agents between polls: redrawn when one of
+-- them changes state.
+if STATE.PR_AGENT_TIMER then pcall(vim.fn.timer_stop, STATE.PR_AGENT_TIMER) end
+STATE.PR_AGENT_TIMER = vim.fn.timer_start(2000, function()
+  if not (vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0) then return end
+  local now = agents_by_pr()
+  local changed = false
+  for id, r in pairs(now) do
+    if not agent_of[id] or agent_of[id].state ~= r.state then changed = true break end
+  end
+  for id in pairs(agent_of) do
+    if not now[id] then changed = true break end
+  end
+  if changed then schedule_render() end
 end, { ["repeat"] = -1 })
 
 -- Warm the work-items list in the background at startup so the first swap to
