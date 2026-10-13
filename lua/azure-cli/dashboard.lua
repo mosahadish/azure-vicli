@@ -44,6 +44,7 @@ local KEYS = require("azure-cli.keys")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 local PRS = require("azure-cli.prs")
+local HOSTS = require("azure-cli.hosts")
 local PR_WORKITEMS = require("azure-cli.pr_workitems")
 -- Shared housekeeping helpers (flash, config file, browser/clipboard, the
 -- JSON state files, a failed job's one-line summary) - see shell.lua for
@@ -927,8 +928,7 @@ local function show_description()
   if type(pr.reviewers) == "table" and #pr.reviewers > 0 then
     local parts = {}
     for _, r in ipairs(pr.reviewers) do
-      local v = tonumber(r.vote) or 0
-      local g = v == 10 and "\u{2713}" or v == 5 and "\u{2713}~" or v == -5 and "~" or v == -10 and "\u{2717}" or "\u{00B7}"
+      local g = HOSTS.vote_glyph(pr, r.vote, true)
       parts[#parts + 1] = g .. " " .. (r.name or "?") .. ((r.name == pr.myName) and " (me)" or "")
     end
     lines[#lines + 1] = "  Reviewers: " .. table.concat(parts, "   ")
@@ -1742,38 +1742,30 @@ local function run_action(args, describe, apply)
   })
 end
 
-local VOTE_OPTIONS = {
-  { key = "10",  label = "Approve" },
-  { key = "5",   label = "Approve with suggestions" },
-  { key = "-5",  label = "Wait for author" },
-  { key = "-10", label = "Reject" },
-  { key = "0",   label = "Reset (no vote)" },
-}
 
 -- Record my vote on the row's record and recompute the derived vote ratio
 -- and reviewer summary the way the data provider does, so the row updates
 -- before the server has answered. Returns an undo function.
 local set_my_vote = PRS.apply_my_vote
 
--- My current vote on `pr` (a reviewer entry whose name is mine), as the
--- VOTE_OPTIONS key string, or nil when I haven't voted / am not a reviewer.
+-- My current vote on `pr` (a reviewer entry whose name is mine), as its
+-- vote option's key, or nil when I haven't voted / am not a reviewer.
 local my_vote_key = PRS.my_vote_key
 
 local function vote_pr()
   local pr = current_pr()
   if not pr then return end
   local cur = my_vote_key(pr)
-  PROMPT.select({ prompt = "Vote on PR #" .. pr.id .. "  " .. (pr.title or ""), items = VOTE_OPTIONS,
+  PROMPT.select({ prompt = "Vote on PR #" .. pr.id .. "  " .. (pr.title or ""), items = HOSTS.caps(pr).votes,
     current = function(o) return cur ~= nil and tostring(o.key) == cur end }, function(opt)
     if not opt then return end
     run_action({ "--vote", opt.key }, "Voting on", function(p)
-      return set_my_vote(p, tonumber(opt.key) or 0)
+      return set_my_vote(p, opt.key)
     end)
   end)
 end
 
 local MERGE = require("azure-cli.merge")
-local MERGE_TYPES = MERGE.MERGE_TYPES
 
 -- Complete (merge) the PR under the cursor, or set/cancel auto-complete on
 -- it: the same dialog the reviewer's gm opens (lua/azure-cli/merge.lua) -
@@ -1802,6 +1794,7 @@ local function complete_pr()
     auto_on = pr.autoComplete and true or false,
     auto_by = pr.autoCompleteSetBy,
     on_auto_off = function() set_auto({ "--auto-complete", "off" }, "Cancelling auto-complete on", false) end,
+    methods = HOSTS.caps(pr).merge_methods,
   }, function(mt, delete_branch, work_items, auto)
     if auto then
       set_auto({ "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) },

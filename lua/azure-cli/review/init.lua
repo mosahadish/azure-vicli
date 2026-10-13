@@ -1031,19 +1031,11 @@ local function comment_here()
     return
   end
   local where = path .. "\t" .. m.side .. "\t" .. m.lineno
-  -- Reviewer entries as { name, id } for the floating editor's "@" mention
-  -- completion (see editor.lua's own header comment) - built fresh here
-  -- rather than off a shared top-level local (this file is at LuaJIT's
-  -- 200-local ceiling for M.open's own chunk - see the comment at EXT's
-  -- declaration further up), same small snippet repeated at every comment/
-  -- reply call site below.
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  -- Reviewer entries for the floating editor's "@" mention completion, with
+  -- the form a mention takes on this PR's host (lua/azure-cli/hosts.lua) -
+  -- built fresh at every comment/reply call site rather than off a shared
+  -- top-level local (this file is near LuaJIT's 200-local ceiling).
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("line", { path = path, lineno = m.lineno }),
@@ -1066,13 +1058,7 @@ local function comment_on_file(path)
     notify("No file selected.", vim.log.levels.WARN)
     return
   end
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("file", { path = path }),
@@ -1088,13 +1074,7 @@ end
 
 -- Post a PR-level (general) comment, not tied to any file or line.
 local function comment_on_pr()
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("pr", {}),
@@ -1225,7 +1205,7 @@ local function decorate_comments(buf, path, map)
         -- the status rides along and a fully-resolved line is dimmed.
         local all_resolved = true
         for _, t in ipairs(threads) do
-          if t.status == "active" or t.status == "pending" or t.status == nil then all_resolved = false end
+          if require("azure-cli.hosts").is_open(t.status) then all_resolved = false end
         end
         local status = all_resolved and "resolved" or (#threads == 1 and tostring(threads[1].status or "active") or "active")
         local label = string.format("  ▌ %s%d comment%s — %s [%s]", any_new and "🆕 " or "", count,
@@ -1399,13 +1379,7 @@ local function reply_to_thread(target, on_success)
     end
   end
 
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("reply", { author = target.comments[1] and target.comments[1].author }),
@@ -1447,16 +1421,12 @@ local function reply_here()
   end, "Reply to which thread?")
 end
 
--- ADO comment-thread statuses the reviewer can set, in menu order. The keyword
--- is what review-pr.sh --status expects; the label is what the menu shows.
-local STATUS_OPTIONS = {
-  { key = "active",   label = "Active" },
-  { key = "fixed",    label = "Resolved (fixed)" },
-  { key = "wontfix",  label = "Won't fix" },
-  { key = "closed",   label = "Closed" },
-  { key = "bydesign", label = "By design" },
-  { key = "pending",  label = "Pending" },
-}
+-- The comment-thread statuses the reviewer can set on this PR's host, in
+-- menu order (lua/azure-cli/hosts.lua). The key is what --status expects;
+-- the label is what the menu shows.
+local function status_options()
+  return require("azure-cli.hosts").caps(current_pr_record()).thread_statuses
+end
 
 -- PATCH a thread's status via the --status subcommand. On success updates the
 -- thread's status locally and calls on_success.
@@ -1575,17 +1545,17 @@ local function set_thread_status(target, on_success, host)
     end
 
     local lines = { "Set thread " .. target.id .. " status:", "" }
-    for i, o in ipairs(STATUS_OPTIONS) do
+    for i, o in ipairs(status_options()) do
       lines[#lines + 1] = string.format("  %d. %s%s", i, o.label,
         (target.status == o.key) and "  (current)" or "")
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "(1-" .. #STATUS_OPTIONS .. ": choose   q/Esc: cancel)"
+    lines[#lines + 1] = "(1-" .. #status_options() .. ": choose   q/Esc: cancel)"
     vim.bo[host.buf].modifiable = true
     pcall(vim.api.nvim_buf_set_lines, host.buf, 0, -1, false, lines)
     vim.bo[host.buf].modifiable = false
 
-    for i, status in ipairs(STATUS_OPTIONS) do
+    for i, status in ipairs(status_options()) do
       local key = tostring(i)
       numkeys[#numkeys + 1] = key
       vim.keymap.set("n", key, function() finish(status) end, kopts)
@@ -1595,7 +1565,7 @@ local function set_thread_status(target, on_success, host)
     return
   end
 
-  require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = STATUS_OPTIONS,
+  require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = status_options(),
     current = function(o) return target.status == o.key end }, function(o)
     if o then apply_status(target, o, on_success) end
   end)
@@ -1700,24 +1670,14 @@ local function set_status_here()
   end)
 end
 
--- PR-level votes the reviewer can cast, in menu order. The key is the numeric
--- vote review-pr.sh --vote expects (ADO: 10 approve, 5 approve w/ suggestions,
--- -5 wait for author, -10 reject, 0 reset).
-local VOTE_OPTIONS = {
-  { key = "10",  label = "Approve" },
-  { key = "5",   label = "Approve with suggestions" },
-  { key = "-5",  label = "Wait for author" },
-  { key = "-10", label = "Reject" },
-  { key = "0",   label = "Reset (no vote)" },
-}
-
--- Prompt for a vote and cast it on the PR via the --vote subcommand.
+-- Prompt for a vote and cast it on the PR via the --vote subcommand. The
+-- choices are the PR's host's (lua/azure-cli/hosts.lua).
 local function cast_vote()
   local rec = current_pr_record()
   local PRS = require("azure-cli.prs")
   local cur = rec and PRS.my_vote_key(rec) or nil
   require("azure-cli.prompt").select({ prompt = "Your vote on PR #" .. ID .. ((rec and rec.title) and ("  " .. rec.title) or ""),
-    items = VOTE_OPTIONS,
+    items = require("azure-cli.hosts").caps(rec).votes,
     current = function(o) return cur ~= nil and tostring(o.key) == cur end },
     function(vote)
   if not vote then return end
@@ -1736,7 +1696,7 @@ local function cast_vote()
         -- Reflect it now: the Overview's Votes line and the winbar badges
         -- read the shared cached record, which only the dashboard's next
         -- poll would otherwise update.
-        if rec then PRS.apply_my_vote(rec, tonumber(vote.key) or 0) end
+        if rec then PRS.apply_my_vote(rec, vote.key) end
         if EXT.render_overview then pcall(EXT.render_overview) end
         if set_list_winbar then pcall(set_list_winbar) end
       else
@@ -1749,7 +1709,7 @@ local function cast_vote()
     end,
   })
   end
-  if vote.key == "-10" then
+  if vote.confirm then
     require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?" },
       function(yes) if yes then go() end end)
   else
@@ -1767,7 +1727,7 @@ local function complete_pr()
   local unresolved = 0
   local function count(list)
     for _, t in ipairs(list or {}) do
-      if t.status == "active" or t.status == "pending" then unresolved = unresolved + 1 end
+      if require("azure-cli.hosts").is_open(t.status) then unresolved = unresolved + 1 end
     end
   end
   for _, list in pairs(threads_by_key) do count(list) end
@@ -1811,6 +1771,7 @@ local function complete_pr()
     conflict = merge_conflict_label() ~= nil,
     unresolved = unresolved,
     vote_ratio = rec and rec.voteRatio or nil,
+    methods = require("azure-cli.hosts").caps(rec).merge_methods,
     auto_on = rec and rec.autoComplete and true or false,
     auto_by = rec and rec.autoCompleteSetBy or "",
     on_auto_off = function() set_auto(false, { "--auto-complete", "off" }) end,
@@ -2448,7 +2409,7 @@ end
 
 -- Count comment threads anchored to a file: line-anchored threads (keyed
 -- "path\tside\tline") plus file-level ones. Returns (closed, total), where
--- "closed" is every thread whose status isn't "active" (fixed/won't-fix/closed).
+-- "closed" is every settled thread (hosts.is_open: not active or pending).
 -- Respects the gA active-only filter, same as the diff view and PR comments:
 -- when active_only is on, non-active threads are dropped before counting, so
 -- e.g. "1 active, 1 closed" (0/2) becomes "0/1" instead of "0/2".
@@ -2457,7 +2418,7 @@ local function file_thread_count(path)
   local function tally(list)
     for _, t in ipairs(filtered(list) or {}) do
       total = total + 1
-      if t.status ~= "active" then closed = closed + 1 end
+      if not require("azure-cli.hosts").is_open(t.status) then closed = closed + 1 end
     end
   end
   local prefix = path .. "\t"
@@ -2841,7 +2802,7 @@ manage_ignore_texts = function(on_change)
     local matches = threads_matching_text(f.text)
     require("azure-cli.prompt").select({
       prompt = "Set status for " .. #matches .. " comment(s) matching '" .. f.text .. "'",
-      items = STATUS_OPTIONS,
+      items = status_options(),
     }, function(o)
       if not o then return end
       apply_status_to_matches(matches, o, "'" .. f.text .. "'", function()
@@ -3708,7 +3669,7 @@ vim.api.nvim_create_autocmd("VimResized", {
 })
 
 -- review/followup.lua ("follow up on my comments", gu) needs open_file,
--- ensure_diff_content, reply_to_thread, apply_status and STATUS_OPTIONS on
+-- ensure_diff_content, reply_to_thread, apply_status and status_options on
 -- ctx, none of which any earlier module needed - assigned onto EXT here
 -- (never a new top-level local - see EXT's own comment), at the main
 -- chunk's top level rather than inside the closing `do...end` IIFE below,
@@ -3799,7 +3760,7 @@ EXT.open_file = open_file
 EXT.ensure_diff_content = ensure_diff_content
 EXT.reply_to_thread = reply_to_thread
 EXT.apply_status = apply_status
-EXT.STATUS_OPTIONS = STATUS_OPTIONS
+EXT.status_options = status_options
 
 -- Reviewer-feature wiring: build `ctx` (the surface every review/*.lua
 -- module gets) and load the modules themselves. This has to be the very last
@@ -3880,14 +3841,13 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- reapply_pending - run after every thread refetch - keeps carrying a
   -- queued item's synthetic entry the same way it already does for an
   -- in-flight optimistic write), remove_entry for pulling a dropped queued
-  -- item's synthetic thread/comment back out, and VOTE_OPTIONS so the
-  -- submit-with-a-vote prompt offers the same choices cast_vote does.
+  -- item's synthetic thread/comment back out. (The submit-with-a-vote
+  -- prompt reads its choices from ctx.current_pr_record's host.)
   ctx.confirm_pending_thread = confirm_pending_thread
   ctx.drop_pending_thread = drop_pending_thread
   ctx.pending_threads = function() return pending_threads end
   ctx.pending_replies = function() return pending_replies end
   ctx.remove_entry = remove_entry
-  ctx.VOTE_OPTIONS = VOTE_OPTIONS
 
   -- Extra fields review/commits.lua needed that weren't already
   -- above: decorate_diff/ft_for_path/CACHE.parse_diff to build and colour a
@@ -3942,14 +3902,14 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- IIFE, for why. open_file/ensure_diff_content let it open a thread's
   -- file and land the cursor on its line the same way the diff pane's own
   -- ]c/]C cross-file stepping does; reply_to_thread/apply_status/
-  -- STATUS_OPTIONS let its picker's R/s keys reuse the exact same
+  -- status_options let its picker's R/s keys reuse the exact same
   -- optimistic-write flow every other reply/status change in this file
   -- goes through, instead of reimplementing it.
   ctx.open_file = EXT.open_file
   ctx.ensure_diff_content = EXT.ensure_diff_content
   ctx.reply_to_thread = EXT.reply_to_thread
   ctx.apply_status = EXT.apply_status
-  ctx.STATUS_OPTIONS = EXT.STATUS_OPTIONS
+  ctx.status_options = EXT.status_options
 
   -- Registers { key = key, fn = fn, desc = desc } for surface `kind`
   -- ("list" | "diff" | "overview" | "nav") into EXT.keys[kind]/EXT.help[kind].

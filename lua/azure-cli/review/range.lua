@@ -119,13 +119,7 @@ local function setup(ctx)
     local top_line = math.min(a, b)
     local context_lines = vim.api.nvim_buf_get_lines(buf, top_line - 1, math.max(a, b), false)
 
-    local mentions = {}
-    do
-      local pr = ctx.current_pr_record()
-      for _, r in ipairs((pr and pr.reviewers) or {}) do
-        if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-      end
-    end
+    local mentions = require("azure-cli.hosts").mentions(ctx.current_pr_record())
     local EDITOR = require("azure-cli.editor")
     EDITOR.open({
       title = EDITOR.format_title("range", { path = path, lineno = start, end_lineno = stop }),

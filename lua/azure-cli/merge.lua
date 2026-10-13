@@ -9,13 +9,12 @@
 -- under plain luajit.
 local M = {}
 
--- Merge strategies offered when completing a PR (label + ADO strategy key).
-M.MERGE_TYPES = {
-  { key = "squash",        label = "Squash commit" },
-  { key = "noFastForward", label = "Merge (no fast forward)" },
-  { key = "rebase",        label = "Rebase and fast-forward" },
-  { key = "rebaseMerge",   label = "Semi-linear merge" },
-}
+-- Merge strategies offered when completing a PR (label + the key --complete
+-- takes): Azure DevOps' four, unless the dialog's spec.methods (the PR's
+-- host's, lua/azure-cli/hosts.lua) says otherwise.
+M.MERGE_TYPES = require("azure-cli.hosts").HOSTS.azure.merge_methods
+
+local function methods(st) return st.methods or M.MERGE_TYPES end
 
 -- Which dialog row holds what, so <Space> on a row knows what to toggle.
 M.ROW = { merge = 4, work_items = 5, delete_branch = 6, auto = 7 }
@@ -26,7 +25,7 @@ function M.toggle(st, row)
   if row == M.ROW.work_items then st.work_items = not st.work_items
   elseif row == M.ROW.delete_branch then st.delete_branch = not st.delete_branch
   elseif row == M.ROW.auto then st.auto = not st.auto
-  elseif row == M.ROW.merge then st.merge = st.merge % #M.MERGE_TYPES + 1
+  elseif row == M.ROW.merge then st.merge = st.merge % #methods(st) + 1
   else return false end
   return true
 end
@@ -64,8 +63,8 @@ function M.warnings(spec, auto)
 end
 
 -- The dialog's lines for `spec` and the current toggle state `st`
--- ({ merge = index into MERGE_TYPES, work_items = bool, delete_branch = bool,
--- auto = bool }).
+-- ({ merge = index into st.methods (default MERGE_TYPES), work_items = bool,
+-- delete_branch = bool, auto = bool }).
 function M.lines(spec, st)
   local rule = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
     .. "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
@@ -79,7 +78,7 @@ function M.lines(spec, st)
     "Complete PR #" .. tostring(spec.id) .. title,
     "  " .. source .. " \u{2192} " .. target,
     rule,
-    "Merge type: " .. M.MERGE_TYPES[st.merge].label,
+    "Merge type: " .. methods(st)[st.merge].label,
     (st.work_items and "[x]" or "[ ]") .. " Complete associated work items",
     (st.delete_branch and "[x]" or "[ ]") .. " Delete source branch"
       .. (source ~= "" and (" (" .. source .. ")") or ""),
@@ -103,7 +102,8 @@ function M.lines(spec, st)
 end
 
 -- Open the dialog for `spec` = { id, title, source, target, build_label,
--- conflict, unresolved, vote_ratio, auto_on, auto_by, on_auto_off } (only
+-- conflict, unresolved, vote_ratio, auto_on, auto_by, on_auto_off,
+-- methods } (only
 -- `id` is required; `unresolved` is a number, or nil when unknown;
 -- `auto_on`/`auto_by` say auto-complete is already set, and by whom). The
 -- cursor starts on the first checkbox; <Space> toggles the checkbox under
@@ -114,7 +114,8 @@ end
 -- after the window has closed; cancelling runs nothing. When `auto_on`,
 -- `x` closes the dialog and runs `spec.on_auto_off()` to cancel it.
 function M.dialog(spec, on_confirm)
-  local st = { merge = 1, work_items = true, delete_branch = true, auto = spec.auto_on and true or false }
+  local st = { merge = 1, work_items = true, delete_branch = true, auto = spec.auto_on and true or false,
+    methods = spec.methods }
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   local win
@@ -124,7 +125,8 @@ function M.dialog(spec, on_confirm)
   -- (the build warning comes and goes with it).
   local width = 20
   for _, auto in ipairs({ false, true }) do
-    local probe = { merge = st.merge, work_items = st.work_items, delete_branch = st.delete_branch, auto = auto }
+    local probe = { merge = st.merge, work_items = st.work_items, delete_branch = st.delete_branch, auto = auto,
+      methods = st.methods }
     for _, l in ipairs(M.lines(spec, probe)) do width = math.max(width, vim.fn.strdisplaywidth(l)) end
   end
 
@@ -156,7 +158,7 @@ function M.dialog(spec, on_confirm)
 
   local kopts = { buffer = buf, silent = true, nowait = true }
   vim.keymap.set("n", "m", function()
-    st.merge = st.merge % #M.MERGE_TYPES + 1
+    st.merge = st.merge % #methods(st) + 1
     draw()
   end, kopts)
   vim.keymap.set("n", "<Space>", function()
@@ -165,7 +167,7 @@ function M.dialog(spec, on_confirm)
   vim.keymap.set("n", "q", "<Cmd>close<CR>", kopts)
   vim.keymap.set("n", "<Esc>", "<Cmd>close<CR>", kopts)
   vim.keymap.set("n", "<CR>", function()
-    local mt = M.MERGE_TYPES[st.merge]
+    local mt = methods(st)[st.merge]
     if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
     on_confirm(mt, st.delete_branch, st.work_items, st.auto)
   end, kopts)

@@ -112,7 +112,9 @@ end
 -- reviewer_info_list, which now carries each reviewer's `id` alongside
 -- their `name` for exactly this. Translates every "@Display Name"
 -- occurrence in `text` to "@<their GUID>", once, for each entry in
--- `mentions` ({ { name = ..., id = ... }, ... }) that actually has an id -
+-- `mentions` ({ { name = ..., id = ..., token = ... }, ... }) that
+-- actually has an id - into its `token` when it has one (the PR's host
+-- decides the form: lua/azure-cli/hosts.lua's M.mentions), else "@<id>" -
 -- longest names first, so "Doe, Jane" isn't shadowed by a shorter "Doe"
 -- also on the reviewer list matching first. A name with no known id is left
 -- as plain "@Name" text; it just won't notify anyone.
@@ -131,7 +133,7 @@ function M.translate_mentions(text, mentions)
     local start = text:find(needle, 1, true)
     while start do
       out[#out + 1] = text:sub(i, start - 1)
-      out[#out + 1] = "@<" .. m.id .. ">"
+      out[#out + 1] = m.token or ("@<" .. m.id .. ">")
       i = start + #needle
       start = text:find(needle, i, true)
     end

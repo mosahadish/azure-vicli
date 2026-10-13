@@ -515,7 +515,9 @@ local function setup(ctx)
       return
     end
     local items = {}
-    for _, o in ipairs(ctx.VOTE_OPTIONS) do items[#items + 1] = o end
+    for _, o in ipairs(require("azure-cli.hosts").caps(ctx.current_pr_record and ctx.current_pr_record()).votes) do
+      items[#items + 1] = o
+    end
     items[#items + 1] = { label = "No vote", none = true }
     require("azure-cli.prompt").select({ prompt = "Submit " .. #s.items .. " queued comment(s) - vote",
       items = items }, function(choice)

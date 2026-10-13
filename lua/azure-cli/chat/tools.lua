@@ -251,10 +251,13 @@ end
 -- ---------------------------------------------------------------------------
 -- The tools.
 
-local VOTES = {
-  approve = { "10", "Approve" }, approve_with_suggestions = { "5", "Approve with suggestions" },
-  wait = { "-5", "Wait for author" }, reject = { "-10", "Reject" }, reset = { "0", "Reset vote" },
-}
+-- The vote option named `name` ("approve", "wait", ...) on `pr`'s host.
+local function vote_named(pr, name)
+  for _, o in ipairs(require("azure-cli.hosts").caps(pr).votes) do
+    if o.name == name then return o end
+  end
+  return nil
+end
 
 M.list = {
   {
@@ -492,21 +495,22 @@ M.list = {
       required = { "pr_id", "vote" } },
     risk = "ask",
     confirm = function(args)
-      return "vote \"" .. ((VOTES[args.vote] or {})[2] or tostring(args.vote)) .. "\" on PR #" .. tostring(args.pr_id)
+      local o = vote_named(pr_record(args.pr_id), args.vote)
+      return "vote \"" .. (o and o.label or tostring(args.vote)) .. "\" on PR #" .. tostring(args.pr_id)
     end,
     run = function(args, _, done)
       local pr = need_pr(args, done)
       if not pr then return end
-      local v = VOTES[args.vote]
+      local v = vote_named(pr, args.vote)
       if not v then return done(nil, "unknown vote " .. tostring(args.vote)) end
-      local before = 0
+      local before = "0"
       for _, r in ipairs(type(pr.reviewers) == "table" and pr.reviewers or {}) do
-        if r.name == pr.myName or (pr.myId and r.id == pr.myId) then before = tonumber(r.vote) or 0 end
+        if r.name == pr.myName or (pr.myId and r.id == pr.myId) then before = tostring(r.vote or "0") end
       end
-      provider({ "--vote", v[1] }, pr_env(pr), function(ok, _, err)
+      provider({ "--vote", v.key }, pr_env(pr), function(ok, _, err)
         if not ok then return done(nil, "voting failed: " .. err) end
         if STATE().PR_DASHBOARD_RENDER then pcall(STATE().PR_DASHBOARD_RENDER) end
-        done("Voted " .. v[2] .. " on PR #" .. pr.id .. ".", nil, { op = "vote", pr_id = pr.id, vote = tostring(before) })
+        done("Voted " .. v.label .. " on PR #" .. pr.id .. ".", nil, { op = "vote", pr_id = pr.id, vote = before })
       end)
     end,
   },
