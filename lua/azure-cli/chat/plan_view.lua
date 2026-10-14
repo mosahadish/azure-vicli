@@ -60,7 +60,8 @@ local PLAN_HELP = {
   { "answer", "answer the open question under the cursor - sent along when you approve" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_thread", "the question and answer in a popup" },
-  { "delete_thread", "forget the question or change under this line" },
+  { "delete_thread", "drop the queued change under this line (asks first), or forget the question - a sent change stays" },
+  { "edit_request", "edit the queued change under this line" },
   "Decide",
   { "approve", "approve it - the agent goes ahead" },
   { "revise", function()
@@ -187,7 +188,7 @@ end
 local function draw_threads()
   if not (view and valid_buf(view.plan_buf)) then return end
   THREADS().draw(view.plan_buf, view.plan_win, view.rec.threads, function(th) return th.line end,
-    { send = KEYS().name("plan", "revise") })
+    { send = KEYS().name("plan", "revise"), drop = key_of("plan", "delete_thread"), edit = key_of("plan", "edit_request") })
   draw_links()
 end
 
@@ -278,6 +279,9 @@ local function render_list()
   end
   hints[#hints + 1] = { "plan", "ask", "ask about a line" }
   if not decided then hints[#hints + 1] = { "plan", "request", "ask a change on a line" } end
+  if select(2, THREADS().counts(rec.threads)) > 0 then
+    hints[#hints + 1] = { "plan", "delete_thread", "drop a queued change" }
+  end
   if open_q > 0 then hints[#hints + 1] = { "plan", "answer", "answer an open question" } end
   if decided then
     hints[#hints + 1] = { "plan", "goto_code", "the code a step became" }
@@ -432,13 +436,61 @@ unanswered = function()
   return PLAN().unanswered(lines, view.rec.threads)
 end
 
--- dd: forget the question or change request under the cursor.
+local function already_sent()
+  notify("That change was sent to the agent already - it stays as history.")
+end
+
+-- Back to plan view `v`'s plan window once a popup it opened is answered,
+-- so the keys that follow go to the plan, not the chat's input.
+local function refocus(v)
+  if alive(v) and vim.api.nvim_get_current_tabpage() == v.tab then
+    pcall(vim.api.nvim_set_current_win, v.plan_win)
+  end
+end
+
+-- dd: drop the change queued under the cursor (after asking), or forget
+-- the question there. A change already sent stays, as history.
 local function delete_here()
   local row = vim.api.nvim_win_get_cursor(0)[1]
-  local _, i = THREADS().at_line(view.rec.threads, row)
-  if not i then return notify("Nothing under this line.") end
-  table.remove(view.rec.threads, i)
-  changed(view.rec)
+  local th, i, what = THREADS().pick_at_line(view.rec.threads, row)
+  if not th then return notify("Nothing under this line.") end
+  if what == "sent" then return already_sent() end
+  if what == "thread" then
+    table.remove(view.rec.threads, i)
+    return changed(view.rec)
+  end
+  local v, rec = view, view.rec
+  require("azure-cli.prompt").confirm({ title = "Drop this queued change?",
+    prompt = "It won't be sent to the agent.", details = th.question }, function(yes)
+    refocus(v)
+    if not yes then return end
+    for j, t in ipairs(rec.threads) do
+      if t == th then table.remove(rec.threads, j) break end
+    end
+    changed(rec)
+    local _, r = THREADS().counts(rec.threads)
+    notify("Dropped" .. (r > 0 and (" - " .. r .. " change" .. (r == 1 and "" or "s") .. " still queued.") or "."))
+  end)
+end
+
+-- cc: edit the change queued under the cursor.
+local function edit_here()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local th, _, what = THREADS().pick_at_line(view.rec.threads, row)
+  if what == "sent" then return already_sent() end
+  if what ~= "queued" then
+    return notify("No queued change on this line (" .. (key_of("plan", "request") or "gc") .. " queues one).")
+  end
+  local rec = view.rec
+  local lines = vim.api.nvim_buf_get_lines(view.plan_buf, row - 1, row, false)
+  require("azure-cli.editor").open({
+    title = "Change \u{00B7} plan:" .. row .. " (queued for " .. KEYS().name("plan", "revise") .. ")",
+    initial = th.question or "", anchor = { win = view.plan_win, row = row }, context_lines = lines,
+    on_submit = function(text)
+      th.question, th.at = text, os.time()
+      changed(rec)
+    end,
+  })
 end
 
 local function open_file()
@@ -602,7 +654,8 @@ local function setup_plan(buf)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
     request(a, b)
   end, { desc = "queue a change on these lines", mode = "x" })
-  bind(buf, "delete_thread", delete_here, { desc = "forget the question / change under this line" })
+  bind(buf, "delete_thread", delete_here, { desc = "drop the queued change (asks first) / forget the question here" })
+  bind(buf, "edit_request", edit_here, { desc = "edit the queued change under this line" })
   bind(buf, "answer", answer_here, { desc = "answer this open question" })
   bind(buf, "since", function()
     view.since_off = not view.since_off

@@ -584,7 +584,8 @@ their line when the text around them changes.
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
 | `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
 | `gr` | Answer the open question under the cursor (its Open questions section) - sent along when you approve |
-| `dd` | Forget the question or change under this line |
+| `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
+| `cc` | Edit the change queued under this line |
 | `gi` | Mark what this revision changed against the one before (on by default; toggles) |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
@@ -614,8 +615,10 @@ isn't in the plan.
 queues what should change there; it shows under the line (`✎ use a
 decorator here`), like a review comment waiting in the batch queue. `gR`
 then sends them all in one message - with a note of your own - and the
-agent answers with a new revision. Sent ones stay under their lines,
-marked as sent, until you clear them with `dd`.
+agent answers with a new revision. Until then a queued change can be
+taken back: `dd` on its line drops it (after asking) and `cc` edits it,
+and the `[✎N queued]` in the winbar follows. Sent ones stay under their
+lines, marked as sent, as history - `dd` and `cc` leave them alone.
 
 **Answering its questions.** The agent puts what it needs you to decide
 under Open questions. `gr` on one of them opens an editor for your answer,

@@ -2072,6 +2072,7 @@ section("PLAN", function()
   -- the agent's next revision comes back.
   vim.api.nvim_set_current_win(v.plan_win)
   vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
+  local nthreads = #PLAN.load("wi-3002").threads
   feed("gc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper" })
   feed("<C-s>")
@@ -2082,6 +2083,45 @@ section("PLAN", function()
   end
   if drawn(v.plan_buf, "\u{270E} Make it a thin wrapper") ~= 8 or not vim.wo[v.plan_win].winbar:find("1 queued", 1, true) then
     return fail("the queued change isn't drawn under line 8 / counted")
+  end
+  if not drawn(v.plan_buf, "dd drops, cc edits") then return fail("the queued change doesn't say how to drop / edit it") end
+  -- A second one on line 9, queued by mistake: dd asks first - Cancel
+  -- keeps it, Yes drops it - and the winbar's count follows.
+  vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
+  feed("gc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Typo'd change" })
+  feed("<C-s>")
+  if not vim.wo[v.plan_win].winbar:find("\u{270E}2 queued", 1, true) then return fail("two queued changes aren't counted") end
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
+  pick = "Cancel"
+  feed("dd")
+  rec = PLAN.load("wi-3002")
+  if #rec.threads ~= nthreads + 2 or not vim.wo[v.plan_win].winbar:find("\u{270E}2 queued", 1, true) then
+    return fail("dd + Cancel dropped the change anyway: " .. vim.inspect(rec.threads))
+  end
+  if vim.api.nvim_get_current_win() ~= v.plan_win then return fail("Cancel didn't leave the focus on the plan") end
+  pick = "Yes"
+  feed("dd")
+  pick = "Allow"
+  rec = PLAN.load("wi-3002")
+  if #rec.threads ~= nthreads + 1 or rec.threads[#rec.threads].question ~= "Make it a thin wrapper" then
+    return fail("dd + Yes didn't drop just the line-9 change: " .. vim.inspect(rec.threads))
+  end
+  if not vim.wo[v.plan_win].winbar:find("\u{270E}1 queued", 1, true) or drawn(v.plan_buf, "Typo'd change") then
+    return fail("the dropped change still shows / is still counted: " .. vim.wo[v.plan_win].winbar)
+  end
+  if vim.api.nvim_get_current_win() ~= v.plan_win then return fail("Yes didn't leave the focus on the plan") end
+  -- cc edits the one left, in place.
+  local id8 = rec.threads[#rec.threads].id
+  vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
+  feed("cc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper, please" })
+  feed("<C-s>")
+  rec = PLAN.load("wi-3002")
+  req = rec.threads[#rec.threads]
+  if not (req.id == id8 and req.line == 8 and req.status == "queued" and req.question == "Make it a thin wrapper, please") then
+    return fail("cc didn't edit the queued change in place: " .. vim.inspect(req))
   end
   n = #st.entries
   feed("gR")
@@ -2096,6 +2136,21 @@ section("PLAN", function()
       or not drawn(v.plan_buf, "sent with your change request") then
     return fail("the plan pane doesn't show the new revision with the sent change")
   end
+  -- A sent change is history: dd and cc leave it alone.
+  local sent_line = rec.threads[#rec.threads].line
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { sent_line, 0 })
+  pick = "Yes"
+  feed("dd")
+  feed("cc")
+  pick = "Allow"
+  if vim.api.nvim_get_current_win() ~= v.plan_win then return fail("cc on a sent change opened an editor") end
+  rec = PLAN.load("wi-3002")
+  if #rec.threads ~= nthreads + 1 or rec.threads[#rec.threads].status ~= "sent"
+      or rec.threads[#rec.threads].question ~= "Make it a thin wrapper, please" then
+    return fail("dd / cc touched a sent change: " .. vim.inspect(rec.threads[#rec.threads]))
+  end
+  if vim.wo[v.plan_win].winbar:find("queued", 1, true) then return fail("the winbar still counts a queued change") end
   -- What revision 3 changed against yours: line 8 marked, your Open
   -- questions shown as taken out; gi turns the marks off.
   local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]

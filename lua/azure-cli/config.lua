@@ -122,6 +122,7 @@ local DEFAULT_KEYS = {
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
     refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
+    edit_request = "cc",
   },
 }
 

@@ -506,6 +506,25 @@ do
   check("count_label", TH.count_label({ {}, {} }) == "2 questions" and TH.count_label(1) == "1 question"
     and TH.count_label({}) == "")
   check("at_line", TH.at_line({ { line = 3 }, { line = 4, id = "b" } }, 4).id == "b" and TH.at_line({}, 1) == nil)
+  -- dd / cc on a line: a queued change before a question there, then the
+  -- question, then a change already sent.
+  local mixed = { { line = 4, id = "sent", kind = "request", status = "sent" }, { line = 4, id = "q", question = "?" },
+    { line = 4, id = "queued", kind = "request", status = "queued" }, { line = 7, id = "old", kind = "request", status = "sent" } }
+  local th, i, what = TH.pick_at_line(mixed, 4)
+  check("pick_at_line: a queued change first", th.id == "queued" and i == 3 and what == "queued", vim.inspect({ i, what }))
+  th, i, what = TH.pick_at_line({ mixed[1], mixed[2] }, 4)
+  check("pick_at_line: then a question", th.id == "q" and i == 2 and what == "thread")
+  th, i, what = TH.pick_at_line(mixed, 7)
+  check("pick_at_line: a sent change last", th.id == "old" and i == 4 and what == "sent")
+  check("pick_at_line: nothing on the line", TH.pick_at_line(mixed, 5) == nil and TH.pick_at_line(nil, 1) == nil)
+  local keys = { send = "gR", drop = "dd", edit = "cc" }
+  local meta = TH.virt_lines({ kind = "request", question = "x", status = "queued" }, keys)[2][2][1]
+  check("virt_lines: a queued request names the keys that drop and edit it",
+    meta:find("gR sends it", 1, true) and meta:find("dd drops, cc edits", 1, true), meta)
+  check("virt_lines: without them, they aren't mentioned", not via[2][2][1]:find("drops", 1, true), via[2][2][1])
+  meta = TH.virt_lines({ kind = "request", question = "x", status = "sent" }, keys)[2][2][1]
+  check("virt_lines: a sent request offers no drop or edit", not meta:find("drops", 1, true)
+    and not meta:find("edits", 1, true), meta)
 end
 
 -- --- the change viewer's file list -------------------------------------------------------------
