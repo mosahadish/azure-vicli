@@ -26,13 +26,19 @@ return function(T)
   end
 
   -- The sprint in `list` named or pathed `s`: its path and name, or `s`
-  -- itself as the path when none matches.
+  -- itself as the path when none matches. "none" is a GitHub board's No
+  -- iteration (or No milestone) tab, path "-".
   local function find_sprint(list, s)
+    for _, sp in ipairs(list) do
+      if s:lower() == "none" and sp.path == "-" then return sp.path, sp.name end
+    end
     for _, sp in ipairs(list) do
       if sp.path == s or (sp.name and sp.name:lower() == s:lower()) then return sp.path, sp.name end
     end
     return s
   end
+  -- For list_work_items (chat/tools.lua).
+  T.sprints, T.find_sprint = sprints, find_sprint
 
   return {
     {
@@ -82,8 +88,8 @@ return function(T)
       description = "Creates a top-level work item (a Task by default; type e.g. \"Bug\", \"User Story\"), with no "
         .. "parent, assigned to the user. On GitHub (board = \"github\"): a new issue in the project's default "
         .. "repository (type is the issue type, when the repository has them). body is its description; "
-        .. "iteration (optional) a sprint's name or path, else none. For one under a parent, use create_child_task. "
-        .. "Asks first.",
+        .. "iteration (optional) a sprint's name or path; on GitHub it defaults to the current iteration, "
+        .. "and \"none\" files the issue in no iteration. For one under a parent, use create_child_task. Asks first.",
       schema = { type = "object", properties = T.with_board({ title = { type = "string" },
         body = { type = "string" }, type = { type = "string" }, iteration = { type = "string" } }),
         required = { "title" } },
@@ -91,8 +97,9 @@ return function(T)
       -- Without board, the one it lands on comes from the screen (run's env).
       confirm = function(a)
         local on = a.board == "github" and " on GitHub" or a.board == "azure" and " on Azure DevOps" or ""
+        local given = a.iteration and a.iteration ~= ""
         return "create " .. (a.type and (a.type .. " ") or "") .. "\"" .. tostring(a.title) .. "\"" .. on
-          .. ((a.iteration and a.iteration ~= "") and (" in " .. a.iteration) or "")
+          .. (given and (" in " .. a.iteration) or (a.board == "github" and " in the current iteration" or ""))
       end,
       details = function(a, cb) cb(vim.split(a.body or "", "\n", { plain = true })) end,
       run = function(args, env, done)
@@ -116,8 +123,16 @@ return function(T)
             end)
           end)
         end
-        if not args.iteration or args.iteration == "" then return create(nil) end
-        sprints(B, function(list) create((find_sprint(list, args.iteration))) end)
+        local given = args.iteration and args.iteration ~= ""
+        if not given and B.host ~= "github" then return create(nil) end
+        sprints(B, function(list)
+          if given then return create((find_sprint(list, args.iteration))) end
+          -- GitHub: the current iteration, so the issue shows on the Issues tab.
+          for _, sp in ipairs(list) do
+            if sp.current then return create(sp.path) end
+          end
+          create(nil)
+        end)
       end,
     },
     {

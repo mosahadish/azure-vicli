@@ -373,6 +373,9 @@ GH_ISSUES = [
      "assignees": ["bob"], "labels": [], "parent": 12, "prs": [], "body": "", "comments": []},
     {"number": 14, "repo": "gizmos", "title": "Gizmo docs", "status": "Todo", "iteration": "it3",
      "assignees": ["demo-user"], "labels": ["docs"], "parent": None, "prs": [], "body": "", "comments": []},
+    # In no iteration: only the Issues tab's last tab shows it.
+    {"number": 15, "repo": "gizmos", "title": "Orphaned issue", "status": "Todo", "iteration": None,
+     "assignees": ["demo-user"], "labels": [], "parent": None, "prs": [], "body": "", "comments": []},
 ]
 
 
@@ -1567,7 +1570,9 @@ class Fake:
         its = self.state.get("gh_iterations") or []
         cur = next((i for i, s in enumerate(its) if s["timeframe"] == "current"), 0)
         return [{"name": s["title"], "label": s["title"], "path": s["id"], "start": s["start"], "finish": s["finish"],
-                 "timeframe": s["timeframe"], "current": i == cur} for i, s in enumerate(its)], cur
+                 "timeframe": s["timeframe"], "current": i == cur} for i, s in enumerate(its)] + [
+            {"name": "No iteration", "label": "No iteration", "path": "-", "start": "", "finish": "",
+             "timeframe": "", "current": False}], cur
 
     def gh_touch(self, n):
         n["updated"] = now_iso()
@@ -1645,7 +1650,11 @@ class Fake:
         for n in self.state["issues"]:
             if time.time() < n.get("listed_from", 0):
                 continue
-            if (n["state"] != "CLOSED") if path == "*" else n.get("iteration") == path:
+            if path in ("*", "-"):
+                listed = n["state"] != "CLOSED" and (path == "*" or not n.get("iteration"))
+            else:
+                listed = n.get("iteration") == path
+            if listed:
                 print(json.dumps(self.gh_record(n), ensure_ascii=False))
         return 0
 
@@ -1725,7 +1734,7 @@ class Fake:
             parent = self.gh_issue(a[2]) if a[2] else None
             number = max([n["number"] for n in self.state["issues"] if n["repo"] == "gizmos"] or [0]) + 1
             n = {"number": number, "repo": "gizmos", "title": a[1], "status": GH_STATUS[0],
-                 "iteration": a[3] if a[3] and a[3] != "*" else None, "assignees": ["demo-user"], "labels": [],
+                 "iteration": a[3] if a[3] not in ("", "*", "-") else None, "assignees": ["demo-user"], "labels": [],
                  "parent": parent["number"] if parent else None, "prs": [], "body": "", "comments": [],
                  "state": "OPEN", "updated": now_iso(), "listed_from": time.time() + 120}
             self.state["issues"].append(n)
@@ -1753,7 +1762,7 @@ class Fake:
             elif a[1] == "priority":
                 n["priority"] = value = int(value)
             else:
-                n["iteration"] = value if value and value != "*" else None
+                n["iteration"] = value if value not in ("", "*", "-") else None
             self.gh_touch(n)
             print(json.dumps({"id": n["number"], "field": a[1], "value": value}, ensure_ascii=False))
             return 0

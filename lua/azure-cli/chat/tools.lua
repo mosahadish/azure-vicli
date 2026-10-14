@@ -430,8 +430,9 @@ M.list = {
     description = "The work items in the user's current sprint view: id, type, title, state, assignee, iteration "
       .. "(its path), linked PRs. board = \"github\" lists the GitHub project's issues in its current iteration "
       .. "instead (each with its repo, its iteration's name, and iteration_id - what move_to_sprint takes); the "
-      .. "board the user is looking at by default.",
-    schema = { type = "object", properties = { board = M.board_props.board } },
+      .. "board the user is looking at by default. sprint (optional): another sprint's name or path instead of the "
+      .. "current one; on GitHub \"none\" lists the open issues in no iteration.",
+    schema = { type = "object", properties = { board = M.board_props.board, sprint = { type = "string" } } },
     risk = "read",
     run = function(args, env, done)
       local B = M.board_for(args, env)
@@ -450,17 +451,23 @@ M.list = {
         end
         return out
       end
+      local function list(argv)
+        provider(argv, B.env, function(ok, out, err)
+          if not ok then return done(nil, "could not list " .. B.words.items .. ": " .. err) end
+          local items = {}
+          for _, l in ipairs(vim.split(out, "\n", { plain = true })) do
+            local okd, rec = pcall(vim.json.decode, l)
+            if okd and type(rec) == "table" and not rec._meta then items[#items + 1] = rec end
+          end
+          done(shape(items))
+        end)
+      end
+      if args.sprint and args.sprint ~= "" then
+        return M.sprints(B, function(sprints) list({ "--wi-list", "items", (M.find_sprint(sprints, args.sprint)) }) end)
+      end
       local cache = B.state.WI_LIST_CACHE
       if cache and cache.items then return done(shape(cache.items)) end
-      provider({ "--wi-list" }, B.env, function(ok, out, err)
-        if not ok then return done(nil, "could not list " .. B.words.items .. ": " .. err) end
-        local items = {}
-        for _, l in ipairs(vim.split(out, "\n", { plain = true })) do
-          local okd, rec = pcall(vim.json.decode, l)
-          if okd and type(rec) == "table" and not rec._meta then items[#items + 1] = rec end
-        end
-        done(shape(items))
-      end)
+      list({ "--wi-list" })
     end,
   },
   {

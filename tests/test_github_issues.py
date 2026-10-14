@@ -160,7 +160,7 @@ class SprintTests(Base):
         self.assertEqual(code, 0)
         s = lines(out)[0]
         self.assertTrue(s["_sprints"])
-        self.assertEqual([x["path"] for x in s["sprints"]], ["it0", "it1", "it2", "it3"])
+        self.assertEqual([x["path"] for x in s["sprints"]], ["it0", "it1", "it2", "it3", "-"])
         self.assertEqual(s["currentIndex"], 3)
         cur = s["sprints"][2]
         self.assertEqual((cur["current"], cur["timeframe"]), (True, "current"))
@@ -169,6 +169,7 @@ class SprintTests(Base):
         self.assertEqual(s["states"], ["Todo", "In Progress", "Done", "Closed"])
         self.assertEqual(s["types"], ["Task", "Bug"])
         self.assertEqual(s["quarter"], "Board")
+        self.assertEqual((s["sprints"][4]["label"], s["sprints"][4]["current"]), ("No iteration", False))
 
     def test_only_the_last_few_finished_iterations_are_tabs(self):
         many = dict(ITERATION, configuration={"iterations": [], "completedIterations": [
@@ -176,7 +177,7 @@ class SprintTests(Base):
             for i in range(6)]})
         c = Fake({"projectV2(number": {"repositoryOwner": {"projectV2": project(fields=(STATUS, many))}}})
         s = lines(run(c, "--wi-list", "sprints")[1])[0]
-        self.assertEqual([x["path"] for x in s["sprints"]], ["c3", "c4", "c5"])
+        self.assertEqual([x["path"] for x in s["sprints"]], ["c3", "c4", "c5", "-"])
         self.assertEqual(s["currentIndex"], 3)  # between iterations: the last one
 
     def test_milestones_without_an_iteration_field(self):
@@ -185,7 +186,8 @@ class SprintTests(Base):
                      {"number": 4, "title": "v1", "due_on": "2026-11-01T00:00:00Z", "created_at": "x"},
                      {"number": 6, "title": "v2", "due_on": None, "created_at": "y"}]})
         s = lines(run(c, "--wi-list", "sprints")[1])[0]
-        self.assertEqual([x["path"] for x in s["sprints"]], ["milestone/4", "milestone/6"])
+        self.assertEqual([x["path"] for x in s["sprints"]], ["milestone/4", "milestone/6", "-"])
+        self.assertEqual(s["sprints"][2]["label"], "No milestone")
         self.assertTrue(s["sprints"][0]["current"])
         self.assertEqual(s["types"], ["Issue"])
 
@@ -268,6 +270,22 @@ class ListTests(Base):
         recs = lines(run(c, "--wi-list", "items", "milestone/4")[1])
         self.assertEqual([r["id"] for r in recs], [1])
         self.assertEqual((recs[0]["iteration"], recs[0]["iterationPath"]), ("milestone/4", "v1"))
+
+    def test_no_iteration_is_the_open_issues_without_one(self):
+        c = self.board(item(issue(1), values("Todo", "it2")),
+                       item(issue(2), values("Todo")),
+                       item(issue(3, state="CLOSED"), values("Done")),
+                       item(issue(4, assignees=("bob",)), values(None)))
+        recs = lines(run(c, "--wi-list", "items", "-", scope="all")[1])
+        self.assertEqual([(r["id"], r["iteration"]) for r in recs], [(2, ""), (4, "")])
+
+    def test_no_milestone_is_the_open_issues_without_one(self):
+        c = Fake({"projectV2(number": {"repositoryOwner": {"projectV2": project(fields=(STATUS,))}},
+                  "items(first": items_answer(item(issue(1, milestone={"number": 4, "title": "v1"}), values("Todo")),
+                                              item(issue(2), values("Todo")),
+                                              item(issue(3, state="CLOSED"), values("Todo")))})
+        recs = lines(run(c, "--wi-list", "items", "-")[1])
+        self.assertEqual([r["id"] for r in recs], [2])
 
     def test_items_are_paged(self):
         pages = [{"node": {"items": {"pageInfo": {"hasNextPage": True, "endCursor": "c1"},
@@ -449,6 +467,14 @@ class EditTests(Base):
         self.assertNotIn("warning", json.loads(out))
         self.assertEqual(c.gql("updateProjectV2ItemFieldValue"), [])
 
+    def test_create_in_no_iteration_sets_none(self):
+        c = Fake({"addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}},
+                  "updateProjectV2ItemFieldValue": {}, "clearProjectV2ItemFieldValue": {}},
+                 rest={("POST", "/repos/o/r/issues"): {"number": 44, "id": 1, "node_id": "I_44", "title": "T"}})
+        self.assertEqual(run(c, "--wi-edit", "create", "Issue", "T", "", "-")[0], 0)
+        self.assertEqual([v["field"] for v in c.gql("updateProjectV2ItemFieldValue")], ["F_S"])
+        self.assertEqual(c.gql("clearProjectV2ItemFieldValue"), [])
+
     def test_create_without_issue_types_sends_none(self):
         c = Fake({"addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}},
                   "updateProjectV2ItemFieldValue": {}},
@@ -487,17 +513,21 @@ class EditTests(Base):
         self.assertEqual(out("priority", "2")["value"], 2)
         self.assertEqual(out("iteration", "it3")["field"], "iteration")
         out("iteration", "")
+        out("iteration", "-")
         self.assertEqual([d for _, _, d in c.rest_calls("PATCH")],
                          [{"title": "T2"}, {"assignees": ["me"]}, {"labels": ["bug", "ui"]}, {"body": "body"}])
         self.assertEqual([v["value"] for v in c.gql("updateProjectV2ItemFieldValue")],
                          [{"singleSelectOptionId": "P_1"}, {"iterationId": "it3"}])
-        self.assertEqual(c.gql("clearProjectV2ItemFieldValue"), [{"project": "PRJ", "item": "ITEM_4", "field": "F_I"}])
+        self.assertEqual(c.gql("clearProjectV2ItemFieldValue"),
+                         [{"project": "PRJ", "item": "ITEM_4", "field": "F_I"}] * 2)
 
     def test_iteration_is_a_milestone_without_an_iteration_field(self):
         c = Fake({"projectV2(number": {"repositoryOwner": {"projectV2": project(fields=(STATUS,))}},
                   "issue(number": {"repository": {"issue": in_project(issue(4), values("Todo"))}}})
         run(c, "--wi-edit", "set", "o/r#4", "iteration", "milestone/6")
         self.assertEqual(c.rest_calls("PATCH"), [("PATCH", "/repos/o/r/issues/4", {"milestone": 6})])
+        run(c, "--wi-edit", "set", "o/r#4", "iteration", "-")
+        self.assertEqual(c.rest_calls("PATCH")[-1], ("PATCH", "/repos/o/r/issues/4", {"milestone": None}))
 
     def test_unknown_field(self):
         code, _, err = run(Fake(), "--wi-edit", "set", "o/r#4", "areaPath", "x")

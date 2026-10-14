@@ -17,7 +17,10 @@ work item:
 
 - sprints are the project's Iteration field (path = the iteration's id),
   else the default repository's open milestones (path = "milestone/<n>"),
-  else one "whole project" tab (path = "*");
+  else one "whole project" tab (path = "*"). After the iterations comes a
+  "No iteration" tab ("No milestone" with milestones; path = "-"): the open
+  issues with none, so no issue is out of the tab's reach. Setting an
+  issue's iteration to "-" clears it;
 - a state is the project's Status option; a closed issue is "Closed" and
   an open one with no Status "No Status". `--wi-state set <id> Closed
   [completed|not planned]` closes the issue, any Status option sets the
@@ -191,6 +194,8 @@ NO_STATUS = "No Status"
 CLOSE_REASONS = {"completed": "COMPLETED", "not planned": "NOT_PLANNED"}
 ALL = "*"
 MILESTONE = "milestone/"
+# The last tab's path: open issues in no iteration (or no milestone).
+NO_ITERATION = "-"
 # How many finished iterations the tab bar keeps, before the active ones.
 COMPLETED_TABS = 3
 MAX_PAGES = 20
@@ -296,6 +301,12 @@ def _milestone_sprint(m, is_current):
     return {"name": title, "label": title, "path": MILESTONE + str(m.get("number")),
             "start": m.get("created_at") or "", "finish": m.get("due_on") or "",
             "timeframe": "current" if is_current else "future", "current": is_current}
+
+
+def _no_sprint(label):
+    """The tab after the sprints, so no open issue is out of reach."""
+    return {"name": label, "label": label, "path": NO_ITERATION, "start": "", "finish": "",
+            "timeframe": "", "current": False}
 
 
 # ---------------------------------------------------------------------------
@@ -639,14 +650,15 @@ class IssueActions(object):
                 cur = next((i for i, it in enumerate(its)
                             if _iteration_span(it)[0] and _iteration_span(it)[0] > self.today), len(its) - 1)
             if its:
-                return [_sprint(it, self.today, i == cur) for i, it in enumerate(its)], cur
+                return [_sprint(it, self.today, i == cur) for i, it in enumerate(its)] + \
+                    [_no_sprint("No iteration")], cur
         repo = self.default_repo()
         if repo and not p.iteration:
             ms = self.client.rest("GET", self._rest_repo(repo[0], repo[1],
                                                          "/milestones?state=open&sort=due_on&direction=asc")) or []
             ms = [m for m in ms if isinstance(m, dict)]
             if ms:
-                return [_milestone_sprint(m, i == 0) for i, m in enumerate(ms)], 0
+                return [_milestone_sprint(m, i == 0) for i, m in enumerate(ms)] + [_no_sprint("No milestone")], 0
         return [{"name": p.title, "label": p.title, "path": ALL, "start": "", "finish": "",
                  "timeframe": "current", "current": True}], 0
 
@@ -723,6 +735,14 @@ class IssueActions(object):
     def _in_sprint(self, board, issue, values, path):
         if path == ALL:
             return issue.get("state") != "CLOSED"
+        if path == NO_ITERATION:
+            # Open ones only: closed issues never given one would pile up here.
+            if issue.get("state") == "CLOSED":
+                return False
+            if self.project().iteration:
+                return not board.iteration(values).get("iterationId")
+            repo = self.default_repo()
+            return not issue.get("milestone") and (repo is None or _repo_of(issue) == repo)
         if path.startswith(MILESTONE):
             repo = self.default_repo()
             return (str((issue.get("milestone") or {}).get("number")) == path[len(MILESTONE):]
@@ -1051,7 +1071,7 @@ class IssueActions(object):
                 self.client.graphql(UPDATE_FIELD, {"project": self.project().id, "item": item,
                                                    "field": status.get("id"),
                                                    "value": {"singleSelectOptionId": first["id"]}})
-            if iteration:
+            if iteration and iteration != NO_ITERATION:
                 self._set_iteration(owner, repo, number, item, iteration)
             if parent:
                 po, pr, pn = self.resolve(parent)
@@ -1063,7 +1083,7 @@ class IssueActions(object):
         return 0
 
     def _set_iteration(self, owner, repo, number, item, value):
-        """value: an iteration id, milestone/<n>, or "" to clear."""
+        """value: an iteration id, milestone/<n>, or "" (or "-") to clear."""
         if value.startswith(MILESTONE) or (not self.project().iteration and value != ALL):
             milestone = int(value[len(MILESTONE):]) if value.startswith(MILESTONE) and \
                 value[len(MILESTONE):].isdigit() else None
@@ -1073,7 +1093,7 @@ class IssueActions(object):
         field = self.project().iteration
         if not field:
             return
-        if not value or value == ALL:
+        if not value or value in (ALL, NO_ITERATION):
             self.client.graphql(CLEAR_FIELD, {"project": self.project().id, "item": item, "field": field.get("id")})
         else:
             self.client.graphql(UPDATE_FIELD, {"project": self.project().id, "item": item, "field": field.get("id"),

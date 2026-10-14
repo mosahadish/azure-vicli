@@ -921,6 +921,22 @@ section({ "ISSUES", "BOARDS" }, { reopen = both_boards }, function()
   print("== issues, tree view ==")
   print(text(iss))
 
+  -- The last tab, after Iteration 3: the open issues in no iteration (#15).
+  if text(iss):find("#15 ", 1, true) then return fail("#15 (no iteration) shows on Iteration 2's tab", iss) end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iss))
+  feed("<Tab>")
+  feed("<Tab>")
+  ok = vim.wait(15000, function()
+    local t2 = text(iss)
+    return t2:find("No iteration", 1, true) ~= nil and t2:find("#15 ", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the Issues tab's No iteration tab never listed #15", iss) end
+  if text(iss):find("#12 ", 1, true) then return fail("the No iteration tab lists Iteration 2's #12", iss) end
+  feed("<S-Tab>")
+  feed("<S-Tab>")
+  ok = vim.wait(15000, function() return text(iss):find("#3001 ", 1, true) ~= nil end, 100)
+  if not ok then return fail("<S-Tab> never went back to Iteration 2", iss) end
+
   -- <CR>: the issue's Markdown body, "Comments" and its repository.
   at_row(iss, 3001)
   feed("<CR>")
@@ -1755,7 +1771,8 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     if not need(e, why, "view board: github, item 12", "list_work_items: [", "\"board\":\"github\"",
         "\"iteration\":\"Iteration 2\"", "\"iteration_id\":\"it2\"", "\"iteration\":\"Demo\\\\Sprint 42\"",
         "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
-        "create_child_task: Created issue #", "create_work_item: Created issue #", "start_story: {",
+        "create_child_task: Created issue #", "create_work_item: Created issue #", "\"title\":\"Orphaned issue\"",
+        "start_story: {",
         "create_pull_request: Opened PR !",
         "link_pr_to_work_item: Linked PR #7 to issue #13 (\"Closes #13\" in its description).") then return end
     local s = fake_state()
@@ -1771,6 +1788,13 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     for _, i in ipairs(s.issues) do if i.title == "Wobble at high speed" then top = i end end
     if not (top and top.parent == vim.NIL and top.body == "Seen on the test rig.") then
       return fail("create_work_item didn't make a top-level issue with its body: " .. vim.inspect(top))
+    end
+    -- No iteration given: the current one; one named wins.
+    if top.iteration ~= "it2" then return fail("create_work_item's issue isn't in the current iteration: " .. vim.inspect(top)) end
+    local docs
+    for _, i in ipairs(s.issues) do if i.title == "Document the wobble" then docs = i end end
+    if not (docs and docs.iteration == "it3") then
+      return fail("create_work_item didn't put \"Document the wobble\" in Iteration 3: " .. vim.inspect(docs))
     end
     local linked_branch = false
     for _, b in ipairs(i12.branches or {}) do if b.name == "feature/12-wobble" and b.repo == "gizmos" then linked_branch = true end end
