@@ -93,9 +93,21 @@ def web_host(api_url):
     return "github.com" if netloc in ("api.github.com", "") else netloc
 
 
+def _graphql_read(url, data):
+    """A GraphQL POST that only reads - no mutation or subscription anywhere
+    in it - which azure-cli.py's connection pool may retry once on a stale
+    connection, like a GET. Anything unsure counts as a write."""
+    if not url.endswith("/graphql") or not isinstance(data, dict):
+        return False
+    query = data.get("query")
+    return isinstance(query, str) and not re.search(r"\b(mutation|subscription)\b", query)
+
+
 def http(method, url, token, data=None):
     body = None if data is None else json.dumps(data).encode("utf-8")
     req = urllib.request.Request(url, data=body, method=method)
+    if _graphql_read(url, data):
+        req.azvicli_read_only = True
     req.add_header("Accept", "application/vnd.github+json")
     req.add_header("X-GitHub-Api-Version", "2022-11-28")
     req.add_header("User-Agent", "azure-vicli")
@@ -114,14 +126,14 @@ def http(method, url, token, data=None):
     except urllib.error.HTTPError as e:
         err_body = e.read()
         if perf:
-            core.perf_record(method, url, e.code, len(err_body or b""), t0)
+            core.perf_record(method, url, e.code, len(err_body or b""), t0, conn=core._last_conn())
         raise GitHubHttpError(e.code, url, err_body.decode("utf-8", "replace"))
     except (urllib.error.URLError, ValueError):
         if perf:
-            core.perf_record(method, url, 0, 0, t0)
+            core.perf_record(method, url, 0, 0, t0, conn=core._last_conn())
         raise
     if perf:
-        core.perf_record(method, url, status, len(raw or b""), t0)
+        core.perf_record(method, url, status, len(raw or b""), t0, conn=core._last_conn())
     if not raw:
         return {}
     return json.loads(raw.decode("utf-8"))

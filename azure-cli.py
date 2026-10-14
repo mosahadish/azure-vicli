@@ -29,10 +29,12 @@ on the Lua side needs to change to consume it.
 import argparse
 import base64
 import hashlib
+import http.client
 import io
 import json
 import os
 import re
+import select
 import socket
 import subprocess
 import sys
@@ -1227,6 +1229,222 @@ class AdoTransportError(Exception):
     org_url, since that's nearly always the field to look at."""
 
 
+# ---------------------------------------------------------------------------
+# Keep-alive connection pool
+# ---------------------------------------------------------------------------
+#
+# urlopen's stock handlers send "Connection: close", so every request paid
+# for its own TCP+TLS handshake. main() installs an opener (install_http_pool)
+# whose HTTP/HTTPS handlers take an idle connection to the same host from a
+# shared pool instead, and put it back once the response has been read to
+# the end. Everything else stays urllib's own: ProxyHandler (HTTPS_PROXY,
+# NO_PROXY, system proxies, user:pass@ proxy auth, a CONNECT tunnel for
+# https), redirects, HTTPError for 4xx/5xx. So http_request and
+# github_host.http still just call urllib.request.urlopen, and tests that
+# mock urlopen never reach the pool.
+#
+# One locked pool rather than a connection per thread: --list fans out on
+# short-lived executor threads, whose own connections would die unreused. A
+# connection is out of the pool, owned by one thread, from its request until
+# its response ends.
+#
+# A pooled connection the server has dropped since is caught before use
+# (idle past POOL_IDLE_MAX, or readable - EOF). One that still fails before
+# its status line is retried once on a fresh connection, for a read only:
+# GET/HEAD, or a request marked azvicli_read_only (github_host's GraphQL
+# queries). A write never is - it may already have applied.
+#
+# AZVICLI_NO_POOL=1 keeps urllib's stock opener.
+
+POOL_IDLE_MAX = 60.0
+POOL_MAX_IDLE_PER_HOST = 8
+
+_pool_lock = threading.Lock()
+_pool_idle = {}
+_http_local = threading.local()
+_STALE_ERRORS = (http.client.RemoteDisconnected, http.client.BadStatusLine, ConnectionResetError,
+                 ConnectionAbortedError, BrokenPipeError)
+
+
+def _last_conn():
+    """"new" or "reused": how this thread's last request through the pool
+    got its connection, for perf_record - "new" when it didn't go through
+    the pool (AZVICLI_NO_POOL, a mocked urlopen)."""
+    return vars(_http_local).pop("conn", "new")
+
+
+def _conn_alive(conn):
+    """False when the idle socket is gone or readable: between responses a
+    readable keep-alive socket means the server closed it (or sent
+    something we'd misread as the next response)."""
+    sock = conn.sock
+    if sock is None:
+        return False
+    try:
+        readable, _w, _x = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return False
+    return not readable
+
+
+def _pool_get(key):
+    now = time.monotonic()
+    while True:
+        with _pool_lock:
+            idle = _pool_idle.get(key)
+            if not idle:
+                return None
+            conn, since = idle.pop()
+        if now - since <= POOL_IDLE_MAX and _conn_alive(conn):
+            return conn
+        conn.close()
+
+
+def _pool_put(key, conn):
+    with _pool_lock:
+        idle = _pool_idle.setdefault(key, [])
+        if len(idle) < POOL_MAX_IDLE_PER_HOST:
+            idle.append((conn, time.monotonic()))
+            return
+    conn.close()
+
+
+def _pool_close_all():
+    with _pool_lock:
+        idle = [conn for conns in _pool_idle.values() for conn, _since in conns]
+        _pool_idle.clear()
+    for conn in idle:
+        conn.close()
+
+
+class _PooledResponse(http.client.HTTPResponse):
+    """An HTTPResponse that hands its connection back (azvicli_release(True))
+    once its body has been read to the end, and has it closed instead
+    (azvicli_release(False)) when it's closed before then or a read fails."""
+
+    azvicli_release = None
+
+    def read(self, amt=None):
+        try:
+            data = http.client.HTTPResponse.read(self, amt)
+        except BaseException:
+            self._azvicli_end(False)
+            raise
+        if self.fp is None:
+            self._azvicli_end(True)
+        return data
+
+    def readinto(self, b):
+        try:
+            n = http.client.HTTPResponse.readinto(self, b)
+        except BaseException:
+            self._azvicli_end(False)
+            raise
+        if self.fp is None:
+            self._azvicli_end(True)
+        return n
+
+    def close(self):
+        at_eof = self.fp is None
+        http.client.HTTPResponse.close(self)
+        self._azvicli_end(at_eof)
+
+    def _azvicli_end(self, clean):
+        release, self.azvicli_release = self.azvicli_release, None
+        if release is not None:
+            release(clean)
+
+
+class _KeepAliveMixin(object):
+    def _keepalive_open(self, http_class, req, **conn_args):
+        """urllib's AbstractHTTPHandler.do_open, minus its "Connection:
+        close", with the connection taken from and given back to the pool."""
+        host = req.host
+        if not host:
+            raise urllib.error.URLError("no host given")
+        headers = dict(req.unredirected_hdrs)
+        headers.update({k: v for k, v in req.headers.items() if k not in headers})
+        headers = {name.title(): val for name, val in headers.items()}
+        tunnel_headers = {}
+        if req._tunnel_host and "Proxy-Authorization" in headers:
+            tunnel_headers["Proxy-Authorization"] = headers.pop("Proxy-Authorization")
+        # The proxy's credentials are part of the key: a connection is only
+        # reused for the same route, never a proxied one for a direct request.
+        key = (http_class.__name__, host, req._tunnel_host,
+               tunnel_headers.get("Proxy-Authorization") or headers.get("Proxy-Authorization"))
+        method = req.get_method()
+        read_only = method in ("GET", "HEAD") or getattr(req, "azvicli_read_only", False)
+
+        conn = _pool_get(key)
+        reused = conn is not None
+        while True:
+            if conn is None:
+                conn = http_class(host, timeout=req.timeout, **conn_args)
+                conn.set_debuglevel(self._debuglevel)
+                conn.response_class = _PooledResponse
+                if req._tunnel_host:
+                    conn.set_tunnel(req._tunnel_host, headers=tunnel_headers)
+            else:
+                conn.timeout = req.timeout
+                conn.sock.settimeout(req.timeout)
+            _http_local.conn = "reused" if reused else "new"
+            try:
+                try:
+                    conn.request(method, req.selector, req.data, headers,
+                                 encode_chunked=req.has_header("Transfer-encoding"))
+                except _STALE_ERRORS:
+                    raise
+                except OSError as err:
+                    # Connect failed, a send timed out - as urllib's own do_open.
+                    raise urllib.error.URLError(err)
+                resp = conn.getresponse()
+            except _STALE_ERRORS as err:
+                conn.close()
+                if reused and read_only:
+                    conn, reused = None, False
+                    continue
+                raise urllib.error.URLError(err)
+            except BaseException:
+                conn.close()
+                raise
+            break
+
+        resp.url = req.get_full_url()
+        resp.msg = resp.reason
+        if conn.sock is not None:
+            # Not will_close: the connection outlives this response.
+            resp.azvicli_release = lambda clean: _pool_put(key, conn) if clean else conn.close()
+        return resp
+
+
+class KeepAliveHTTPHandler(_KeepAliveMixin, urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self._keepalive_open(http.client.HTTPConnection, req)
+
+
+class KeepAliveHTTPSHandler(_KeepAliveMixin, urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        # No context of our own: like urllib's HTTPSHandler, http.client's
+        # default one - verification on, system CAs plus SSL_CERT_FILE/DIR.
+        return self._keepalive_open(http.client.HTTPSConnection, req, context=self._context)
+
+
+def pooled_opener():
+    """urllib's default opener (ProxyHandler and all, proxies read from the
+    environment now) with the keep-alive handlers in place of its HTTP ones."""
+    return urllib.request.build_opener(KeepAliveHTTPHandler(), KeepAliveHTTPSHandler())
+
+
+def install_http_pool(env=None):
+    """Makes urlopen use the pool for this process, unless AZVICLI_NO_POOL
+    is set (to anything but ""/"0"). True when it did."""
+    env = os.environ if env is None else env
+    if (env.get("AZVICLI_NO_POOL") or "0") != "0":
+        return False
+    urllib.request.install_opener(pooled_opener())
+    return True
+
+
 def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _retried=False, raw=False,
                   content_type="application/json"):
     """Performs one REST call against Azure DevOps, appending api-version
@@ -1279,24 +1497,24 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
     except urllib.error.HTTPError as e:
         err_body = e.read()
         if perf:
-            perf_record(method, full_url, e.code, len(err_body or b""), t0)
+            perf_record(method, full_url, e.code, len(err_body or b""), t0, conn=_last_conn())
         if e.code == 400 and not _retried and api_version not in (None, "6.0"):
             return http_request(url, method=method, data=data, pat=pat, api_version="6.0", _retried=True, raw=raw,
                                  content_type=content_type)
         raise AdoHttpError(e.code, full_url, err_body) from e
     except urllib.error.URLError as e:
         if perf:
-            perf_record(method, full_url, 0, 0, t0)
+            perf_record(method, full_url, 0, 0, t0, conn=_last_conn())
         host = urllib.parse.urlsplit(full_url).netloc or full_url
         raise AdoTransportError("could not reach {0}: {1} - check org_url in azure-cli.yml and your network/proxy"
                                 .format(host, getattr(e, "reason", e))) from e
     except ValueError as e:
         if perf:
-            perf_record(method, full_url, 0, 0, t0)
+            perf_record(method, full_url, 0, 0, t0, conn=_last_conn())
         # "unknown url type" - an org_url with no scheme.
         raise AdoTransportError("{0} - org_url must be a full URL starting with https://".format(e)) from e
     if perf:
-        perf_record(method, full_url, status, len(raw_bytes or b""), t0)
+        perf_record(method, full_url, status, len(raw_bytes or b""), t0, conn=_last_conn())
 
     # dev.azure.com answers a rejected PAT with "203 Non-Authoritative
     # Information" and an HTML sign-in page, not a 401; without this it
@@ -5688,6 +5906,7 @@ def main(argv=None):
     code for every headless flag.
     """
     argv = sys.argv[1:] if argv is None else argv
+    install_http_pool()
 
     if argv[:1] == ["--serve"]:
         return serve()
