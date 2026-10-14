@@ -1751,9 +1751,16 @@ end
 -- Complete (merge) the PR: the shared dialog (lua/azure-cli/merge.lua -
 -- the dashboard's gm opens the same one) with this reviewer's live thread
 -- counts, then --complete with what was picked - or --auto-complete, when
--- its auto-complete box was checked (or x cancelled it).
-local function complete_pr()
+-- its auto-complete box was checked (or x cancelled it). On GitHub, `m`
+-- is the mergeability --get-pr reads first (false: that failed).
+local function complete_pr(m)
   local rec = current_pr_record()
+  if m == nil and rec and require("azure-cli.hosts").host(rec) == "github" then
+    notify("Checking whether " .. require("azure-cli.hosts").ref(rec) .. " can be merged…")
+    return require("azure-cli.merge").fetch_state(EXT.provider({ "--get-pr" }), nil, function(state)
+      complete_pr(state or false)
+    end)
+  end
   local unresolved = 0
   local function count(list)
     for _, t in ipairs(list or {}) do
@@ -1792,7 +1799,8 @@ local function complete_pr()
     })
   end
 
-  require("azure-cli.merge").dialog({
+  local MERGE = require("azure-cli.merge")
+  MERGE.dialog(MERGE.host_spec({
     id = ID,
     title = rec and rec.title or "",
     source = SOURCE,
@@ -1801,11 +1809,10 @@ local function complete_pr()
     conflict = merge_conflict_label() ~= nil,
     unresolved = unresolved,
     vote_ratio = rec and rec.voteRatio or nil,
-    methods = require("azure-cli.hosts").caps(rec).merge_methods,
     auto_on = rec and rec.autoComplete and true or false,
     auto_by = rec and rec.autoCompleteSetBy or "",
     on_auto_off = function() set_auto(false, { "--auto-complete", "off" }) end,
-  }, function(mt, delete_branch, work_items, auto)
+  }, rec, m or nil), function(mt, delete_branch, work_items, auto)
     if auto then
       set_auto(true, { "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) })
       return

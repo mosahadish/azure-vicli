@@ -4084,8 +4084,9 @@ def cmd_prefetch(env=None):
 # ---------------------------------------------------------------------------
 
 
-# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md: merging, CI and
-# the rest come in a later phase), with how each maps onto github_host.Actions.
+# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md phase 4: CI, the
+# reviewer and the description come later), with how each maps onto
+# github_host.Actions.
 _GITHUB_ACTIONS = {
     "--threads": lambda a, arg: a.threads(),
     "--iterations": lambda a, arg: a.iterations(),
@@ -4102,6 +4103,10 @@ _GITHUB_ACTIONS = {
     # From phase 4, for the Issues board's links (phase 6 stage 3).
     "--work-items": lambda a, arg: a.work_items(),
     "--create-pr": lambda a, arg: a.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false")),
+    # Phase 4: merging. GitHub has no work items to complete, so --complete's
+    # third argument is ignored.
+    "--complete": lambda a, arg: a.complete(arg(0), arg(1, "true")),
+    "--auto-complete": lambda a, arg: a.auto_merge(arg(0), arg(1)),
 }
 
 

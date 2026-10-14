@@ -525,16 +525,253 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("addPullRequestReview(", [w for w, _ in c.mutations])
 
 
-class ActionTests(unittest.TestCase):
-    def test_merging_is_not_there_yet(self):
-        cfg = ac.Config.from_dict({"accounts": [{"host": "github", "pat": "t"}]})
-        env = {"AZVICLI_ORG": "https://api.github.com", "AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r",
-               "AZVICLI_PR": "5"}
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            code = ac._github_pr_action("--complete", ["squash"], cfg.accounts[0], env)
+def merge_pr(**kw):
+    """MERGE_STATE_QUERY's pullRequest: open, clean, into a branch that
+    isn't the default (like feature/30 -> github-host)."""
+    pr = {"id": "PR_5", "number": 5, "state": "OPEN", "isDraft": False, "headRefName": "feature/x",
+          "headRefOid": "HEADSHA", "baseRefName": "github-host", "isCrossRepository": False,
+          "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": None, "autoMergeRequest": None,
+          "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}]}}
+    pr.update(kw)
+    return pr
+
+
+def merge_repo(pr=None, **kw):
+    repo = {"deleteBranchOnMerge": False, "autoMergeAllowed": True, "mergeCommitAllowed": True,
+            "squashMergeAllowed": True, "rebaseMergeAllowed": False, "defaultBranchRef": {"name": "master"},
+            "pullRequest": pr or merge_pr()}
+    repo.update(kw)
+    return {"repository": repo}
+
+
+def checks(*nodes):
+    return {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"nodes": list(nodes)}}}}]}
+
+
+def run(name, conclusion="SUCCESS", required=True, status="COMPLETED"):
+    return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion,
+            "isRequired": required}
+
+
+def loud(fn, *args):
+    """(exit code, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = fn(*args)
+    return code, out.getvalue().strip(), err.getvalue().strip()
+
+
+class MergeabilityTests(unittest.TestCase):
+    def state(self, **kw):
+        return gh.mergeability(merge_repo()["repository"], merge_pr(**kw))
+
+    def test_clean_has_no_blockers(self):
+        s = self.state()
+        self.assertEqual((s["status"], s["blockers"], s["warnings"], s["conflict"]), ("CLEAN", [], [], False))
+        self.assertEqual((s["base"], s["defaultBranch"]), ("github-host", "master"))
+
+    def test_each_status_says_why(self):
+        self.assertEqual(self.state(mergeStateStatus="DIRTY", mergeable="CONFLICTING")["blockers"],
+                         ["merge conflict with github-host"])
+        self.assertTrue(self.state(mergeStateStatus="DIRTY")["conflict"])
+        self.assertEqual(self.state(mergeStateStatus="DRAFT", isDraft=True)["blockers"], ["it's a draft"])
+        self.assertIn("brought up to date", self.state(mergeStateStatus="BEHIND")["blockers"][0])
+        self.assertIn("hasn't worked out", self.state(mergeStateStatus="UNKNOWN")["blockers"][0])
+        self.assertEqual(self.state(state="MERGED")["blockers"], ["it's already merged"])
+
+    def test_blocked_names_required_checks_and_reviews(self):
+        s = self.state(mergeStateStatus="BLOCKED", reviewDecision="REVIEW_REQUIRED", commits=checks(
+            run("ci / test", "FAILURE"), run("lint", status="IN_PROGRESS", conclusion=None),
+            run("docs", "FAILURE", required=False), run("build"),
+            {"__typename": "StatusContext", "context": "legacy", "state": "PENDING", "isRequired": False}))
+        self.assertEqual(s["blockers"], ["required check `ci / test` failed", "required check `lint` hasn't finished",
+                                         "needs an approving review"])
+        self.assertEqual(s["warnings"], ["check `docs` failed (not required)"])
+        self.assertEqual([(c["name"], c["state"]) for c in s["checks"]],
+                         [("ci / test", "failed"), ("lint", "pending"), ("docs", "failed"), ("build", "ok"),
+                          ("legacy", "pending")])
+
+    def test_blocked_without_a_known_reason(self):
+        s = self.state(mergeStateStatus="BLOCKED")
+        self.assertIn("github-host's branch protection", s["blockers"][0])
+        self.assertEqual(self.state(mergeStateStatus="BLOCKED", reviewDecision="CHANGES_REQUESTED")["blockers"],
+                         ["changes requested"])
+
+    def test_without_isRequired_failing_checks_still_explain_a_block(self):
+        s = self.state(mergeStateStatus="BLOCKED", commits=checks(run("ci", "FAILURE", required=None)))
+        self.assertEqual(s["blockers"], ["check `ci` failed"])
+
+    def test_unstable_merges_with_a_warning(self):
+        s = self.state(mergeStateStatus="UNSTABLE", commits=checks(run("flaky", "FAILURE", required=False)))
+        self.assertEqual((s["blockers"], s["warnings"]), ([], ["check `flaky` failed (not required)"]))
+
+
+class MergeTests(unittest.TestCase):
+    def client(self, state=None, rest=None, fail=None):
+        """GraphQL answers MERGE_STATE_QUERY with `state` (a list: one per
+        call, the last repeating), the auto-merge mutations with {}; REST
+        records calls and raises `fail[(method, path prefix)]`."""
+        states = list(state or [merge_repo()])
+        c = RestClient(rest or {})
+        c.gql = []
+        inner = c.fetch
+
+        def fetch(method, url, token, data=None):
+            path = url[len("https://api.github.com"):]
+            if path == "/graphql":
+                q = data["query"]
+                c.gql.append((q, data.get("variables")))
+                if "mergeStateStatus" in q:
+                    return {"data": states.pop(0) if len(states) > 1 else states[0]}
+                if "AutoMerge(" in q:
+                    if fail and "graphql" in fail:
+                        return {"errors": [{"message": fail["graphql"]}]}
+                    return {"data": {}}
+                raise AssertionError("unexpected query: " + q[:60])
+            for (m, prefix), err in (fail or {}).items():
+                if m == method and path.startswith(prefix):
+                    c.calls.append((method, path, data))
+                    raise err
+            return inner(method, url, token, data)
+        c.fetch = fetch
+        return c
+
+    def actions(self, c):
+        a = actions(c)
+        a.sleep = lambda s: None
+        return a
+
+    def test_merges_into_a_base_that_is_not_the_default_and_deletes_the_head(self):
+        c = self.client()
+        code, out, _ = loud(self.actions(c).complete, "squash", "true")
+        self.assertEqual((code, out), (0, "PR #5 merged (squash); branch feature/x deleted."))
+        self.assertEqual(c.writes(), [("PUT", "/repos/o/r/pulls/5/merge", {"merge_method": "squash", "sha": "HEADSHA"}),
+                                      ("DELETE", "/repos/o/r/git/refs/heads/feature/x", None)])
+
+    def test_keeping_the_branch(self):
+        c = self.client()
+        self.assertEqual(loud(self.actions(c).complete, "merge", "false")[:2], (0, "PR #5 merged (merge)."))
+        self.assertEqual([m for m, _, _ in c.writes()], ["PUT"])
+
+    def test_a_disallowed_method_is_refused_without_a_call(self):
+        c = self.client()
+        code, _, err = loud(self.actions(c).complete, "rebase", "true")
         self.assertEqual(code, 1)
-        self.assertIn("isn't available for GitHub", err.getvalue())
+        self.assertIn("rebase isn't allowed on o/r: squash, merge", err)
+        self.assertEqual(c.writes(), [])
+
+    def test_blocked_says_why_and_merges_nothing(self):
+        c = self.client([merge_repo(merge_pr(mergeStateStatus="BLOCKED", commits=checks(run("ci / test", "FAILURE"))))])
+        code, _, err = loud(self.actions(c).complete, "squash", "true")
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "Can't merge PR #5: required check `ci / test` failed.")
+        self.assertEqual(c.writes(), [])
+
+    def test_unknown_is_asked_again(self):
+        c = self.client([merge_repo(merge_pr(mergeStateStatus="UNKNOWN")), merge_repo()])
+        self.assertEqual(loud(self.actions(c).complete, "squash", "false")[0], 0)
+        self.assertEqual(len([q for q, _ in c.gql if "mergeStateStatus" in q]), 2)
+
+    def test_a_fork_branch_stays(self):
+        c = self.client([merge_repo(merge_pr(isCrossRepository=True))])
+        self.assertEqual(loud(self.actions(c).complete, "squash", "true")[1],
+                         "PR #5 merged (squash); its branch is in a fork, so it stays.")
+        self.assertEqual([m for m, _, _ in c.writes()], ["PUT"])
+
+    def test_a_branch_already_gone_is_deleted(self):
+        gone = gh.GitHubHttpError(422, "u", json.dumps({"message": "Reference does not exist"}))
+        c = self.client(fail={("DELETE", "/repos/o/r/git/refs"): gone})
+        self.assertEqual(loud(self.actions(c).complete, "squash", "true")[:2],
+                         (0, "PR #5 merged (squash); branch feature/x deleted."))
+
+    def test_a_failed_delete_keeps_the_merge(self):
+        denied = gh.GitHubHttpError(403, "u", json.dumps({"message": "Forbidden"}))
+        c = self.client(fail={("DELETE", "/repos/o/r/git/refs"): denied})
+        code, out, _ = loud(self.actions(c).complete, "squash", "true")
+        self.assertEqual(code, 0)
+        self.assertIn("merged (squash), but its branch feature/x couldn't be deleted", out)
+
+    def test_merge_refusals_are_one_line(self):
+        for status, want in ((409, "branch moved since it was checked"), (405, "GitHub won't merge PR #5: nope")):
+            c = self.client(fail={("PUT", "/repos/o/r/pulls/5/merge"):
+                                  gh.GitHubHttpError(status, "u", json.dumps({"message": "nope"}))})
+            code, _, err = loud(self.actions(c).complete, "squash", "true")
+            self.assertEqual(code, 1)
+            self.assertIn(want, err)
+            self.assertNotIn("DELETE", [m for m, _, _ in c.calls])
+
+    def test_auto_merge_on_and_off(self):
+        c = self.client()
+        code, out, _ = loud(self.actions(c).auto_merge, "on", "squash")
+        self.assertEqual(code, 0)
+        self.assertIn("Auto-merge enabled for PR #5 (squash)", out)
+        self.assertIn("which is off", out)
+        q, v = c.gql[-1]
+        self.assertIn("enablePullRequestAutoMerge", q)
+        self.assertEqual(v, {"id": "PR_5", "method": "SQUASH", "oid": "HEADSHA"})
+        c = self.client([merge_repo(merge_pr(autoMergeRequest={"mergeMethod": "SQUASH"}))])
+        self.assertEqual(loud(self.actions(c).auto_merge, "off")[:2], (0, "Auto-merge disabled for PR #5."))
+        self.assertIn("disablePullRequestAutoMerge", c.gql[-1][0])
+        self.assertEqual(c.gql[-1][1], {"id": "PR_5"})
+
+    def test_auto_merge_defaults_to_an_allowed_method(self):
+        c = self.client([merge_repo(squashMergeAllowed=False)])
+        self.assertEqual(loud(self.actions(c).auto_merge, "on", "")[0], 0)
+        self.assertEqual(c.gql[-1][1]["method"], "MERGE")
+
+    def test_auto_merge_refusals(self):
+        c = self.client(fail={"graphql": "Pull request Pull request is in clean status"})
+        code, _, err = loud(self.actions(c).auto_merge, "on", "squash")
+        self.assertEqual(code, 1)
+        self.assertIn("can be merged now", err)
+        c = self.client([merge_repo(autoMergeAllowed=False)])
+        self.assertIn("isn't allowed on o/r", loud(self.actions(c).auto_merge, "on", "squash")[2])
+        c = self.client([merge_repo(merge_pr(mergeStateStatus="DIRTY", mergeable="CONFLICTING"))])
+        self.assertIn("merge conflict", loud(self.actions(c).auto_merge, "on", "squash")[2])
+        self.assertFalse([q for q, _ in c.gql if "AutoMerge(" in q])
+
+    def test_without_isRequired_the_query_is_asked_again(self):
+        c = self.client()
+        inner = c.fetch
+        asked = []
+
+        def fetch(method, url, token, data=None):
+            if url.endswith("/graphql") and "isRequired" in data["query"]:
+                asked.append(1)
+                return {"errors": [{"message": "Field 'isRequired' doesn't accept argument 'pullRequestNumber'"}]}
+            return inner(method, url, token, data)
+        c.fetch = fetch
+        self.assertEqual(loud(self.actions(c).complete, "squash", "false")[0], 0)
+        self.assertEqual(asked, [1])
+
+    def test_dispatch(self):
+        called = []
+
+        class Fake(object):
+            def complete(self, *a):
+                called.append(("complete",) + a)
+                return 0
+
+            def auto_merge(self, *a):
+                called.append(("auto",) + a)
+                return 0
+        ac._GITHUB_ACTIONS["--complete"](Fake(), lambda i, d="": ["rebase", "false", "true"][i] if i < 3 else d)
+        ac._GITHUB_ACTIONS["--auto-complete"](Fake(), lambda i, d="": ["on", "merge"][i] if i < 2 else d)
+        self.assertEqual(called, [("complete", "rebase", "false"), ("auto", "on", "merge")])
+
+
+class ActionTests(unittest.TestCase):
+    def test_get_pr_carries_mergeability(self):
+        blocked = merge_repo(merge_pr(mergeStateStatus="BLOCKED", commits=checks(run("ci / test", "FAILURE"))))
+        client = FakeClient({"mergeStateStatus": blocked,
+                             "viewer": {"viewer": user("me"), "repository": {"pullRequest": pr_node(5)}}})
+        a = gh.Actions(account(), {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"}, client)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(a.get_pr(), 0)
+        rec = json.loads(out.getvalue())
+        self.assertEqual(rec["mergeability"]["blockers"], ["required check `ci / test` failed"])
+        self.assertEqual(rec["mergeability"]["base"], "github-host")
 
     def test_threads_print_an_ado_list(self):
         client = FakeClient({"reviewThreads": {"repository": {"pullRequest": {

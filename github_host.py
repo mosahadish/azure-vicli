@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -172,7 +173,7 @@ fragment PR on PullRequest {
   headRefName baseRefName headRefOid isCrossRepository
   headRef { name }
   repository { name url owner { login }
-    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed }
+    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed deleteBranchOnMerge }
   author { %(a)s }
   mergeable
   autoMergeRequest { enabledBy { %(a)s } }
@@ -479,7 +480,8 @@ def build_record(client, node, account, state, viewer, threads):
         "cloneUrl": (repo.get("url") or "") + ".git",
         "queuePosition": -1,
         "caps": {"merge_methods": merge_methods(repo),
-                 "auto_complete": bool(repo.get("autoMergeAllowed"))},
+                 "auto_complete": bool(repo.get("autoMergeAllowed")),
+                 "delete_branch_on_merge": bool(repo.get("deleteBranchOnMerge"))},
     })
     return rec
 
@@ -599,6 +601,117 @@ DELETE_REVIEW = """mutation($id: ID!) {
 OPEN_STATUSES = ("active", "pending")
 
 
+# ---------------------------------------------------------------------------
+# Merging: what stands in the way, read fresh just before gm and --complete
+# ---------------------------------------------------------------------------
+#
+# The list's search can't ask each check whether it's required (isRequired
+# wants the PR's number), and mergeStateStatus goes stale within minutes,
+# so --get-pr, --complete and --auto-complete each read it here.
+
+MERGE_STATE_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    deleteBranchOnMerge autoMergeAllowed mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
+    defaultBranchRef { name }
+    pullRequest(number: $number) {
+      id number state isDraft headRefName headRefOid baseRefName isCrossRepository
+      mergeable mergeStateStatus reviewDecision
+      autoMergeRequest { mergeMethod }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes {
+        __typename
+        ... on CheckRun { name status conclusion %(req)s }
+        ... on StatusContext { context state %(req)s } } } } } } } } }
+}
+"""
+
+# Some Enterprise Server versions don't know isRequired(pullRequestNumber:):
+# without it the checks are shown, just not which of them are required.
+_REQUIRED = "isRequired(pullRequestNumber: $number)"
+
+CHECK_OK = ("SUCCESS", "NEUTRAL", "SKIPPED")
+CHECK_FAILED = ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE")
+
+MERGE_METHOD_ENUM = {"squash": "SQUASH", "merge": "MERGE", "rebase": "REBASE"}
+
+ENABLE_AUTO_MERGE = """mutation($id: ID!, $method: PullRequestMergeMethod!, $oid: GitObjectID) {
+  enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method, expectedHeadOid: $oid}) {
+    pullRequest { id } } }"""
+DISABLE_AUTO_MERGE = """mutation($id: ID!) {
+  disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { id } } }"""
+
+
+def _check(node):
+    """One rollup context as {name, state: ok|failed|pending, required}
+    (required None when GitHub wasn't asked)."""
+    node = node or {}
+    if node.get("__typename") == "StatusContext":
+        name, s = node.get("context") or "", node.get("state") or ""
+        state = "ok" if s == "SUCCESS" else "failed" if s in ("FAILURE", "ERROR") else "pending"
+    else:
+        name = node.get("name") or ""
+        if node.get("status") != "COMPLETED":
+            state = "pending"
+        else:
+            c = node.get("conclusion") or ""
+            state = "ok" if c in CHECK_OK else "failed" if c in CHECK_FAILED else "pending"
+    return {"name": name, "state": state, "required": node.get("isRequired")}
+
+
+def mergeability(repo, pr):
+    """What the merge dialog and --complete go by, from MERGE_STATE_QUERY's
+    repository and pullRequest: {status, blockers, warnings, checks,
+    conflict, deleteBranchOnMerge, autoMergeAllowed, autoMerge, base,
+    defaultBranch}. Blockers are reasons GitHub would refuse the merge, in
+    words; warnings don't stop it (a failing check nobody requires)."""
+    repo, pr = repo or {}, pr or {}
+    status = pr.get("mergeStateStatus") or "UNKNOWN"
+    base = pr.get("baseRefName") or ""
+    rollup = ((((pr.get("commits") or {}).get("nodes") or [{}])[0] or {}).get("commit") or {}).get(
+        "statusCheckRollup") or {}
+    checks = [_check(n) for n in ((rollup.get("contexts") or {}).get("nodes") or []) if n]
+    blockers, warnings = [], []
+    conflict = status == "DIRTY" or pr.get("mergeable") == "CONFLICTING"
+    if pr.get("state") and pr.get("state") != "OPEN":
+        blockers.append("it's already {0}".format("merged" if pr.get("state") == "MERGED" else "closed"))
+    if conflict:
+        blockers.append("merge conflict with {0}".format(base))
+    if status == "DRAFT" or pr.get("isDraft"):
+        blockers.append("it's a draft")
+    if status == "BEHIND":
+        blockers.append("{0} has moved on; the branch must be brought up to date first".format(base))
+    if status == "UNKNOWN" and not blockers:
+        blockers.append("GitHub hasn't worked out mergeability yet, try again in a moment")
+    if status == "BLOCKED":
+        known = any(c["required"] is not None for c in checks)
+        why = []
+        for c in checks:
+            if c["state"] == "ok" or (known and not c["required"]):
+                continue
+            word = "required check" if c["required"] else "check"
+            why.append("{0} `{1}` {2}".format(word, c["name"], "failed" if c["state"] == "failed" else
+                                              "hasn't finished"))
+        decision = pr.get("reviewDecision")
+        if decision == "REVIEW_REQUIRED":
+            why.append("needs an approving review")
+        elif decision == "CHANGES_REQUESTED":
+            why.append("changes requested")
+        blockers.extend(why or ["blocked by {0}'s branch protection (e.g. unresolved conversations, signed "
+                                "commits)".format(base)])
+    for c in checks:
+        if c["state"] == "failed" and c["required"] is False:
+            warnings.append("check `{0}` failed (not required)".format(c["name"]))
+    if status == "UNSTABLE" and not warnings:
+        warnings.append("some checks failed (not required)")
+    return {
+        "status": status, "blockers": blockers, "warnings": warnings, "checks": checks, "conflict": conflict,
+        "deleteBranchOnMerge": bool(repo.get("deleteBranchOnMerge")),
+        "autoMergeAllowed": bool(repo.get("autoMergeAllowed")),
+        "autoMerge": bool(pr.get("autoMergeRequest")),
+        "base": base, "defaultBranch": ((repo.get("defaultBranchRef") or {}).get("name")) or "",
+    }
+
+
 def _blank(text):
     return text is None or not str(text).strip()
 
@@ -681,6 +794,7 @@ class Actions(object):
         self.repo = env.get("AZVICLI_REPO") or ""
         self.pr = env.get("AZVICLI_PR") or ""
         self.client = client
+        self.sleep = time.sleep  # merge_state's wait for GitHub to finish computing (tests swap it)
 
     def ensure_client(self):
         if self.client is None:
@@ -1005,5 +1119,132 @@ class Actions(object):
         node = ((data.get("repository") or {}).get("pullRequest")) or {}
         rec = build_record(self.client, node, self.account, STATUS.get(node.get("state"), "active"),
                            data.get("viewer") or {}, None)
+        # What gm shows and goes by; without it gm falls back to the record.
+        state = _safe(lambda: self.merge_state(retry=False))
+        if state is not None:
+            rec["mergeability"] = mergeability(*state)
         print(json.dumps(rec, ensure_ascii=False))
+        return 0
+
+    # -- merging ---------------------------------------------------------
+
+    def merge_state(self, retry=True):
+        """(repository, pullRequest) from MERGE_STATE_QUERY. While GitHub
+        is still computing (UNKNOWN) it's asked once more, `retry`ing."""
+        def ask():
+            try:
+                data = self.client.graphql(MERGE_STATE_QUERY % {"req": _REQUIRED}, self._vars())
+            except RuntimeError as e:
+                if "isRequired" not in str(e):
+                    raise
+                data = self.client.graphql(MERGE_STATE_QUERY % {"req": ""}, self._vars())
+            repo = data.get("repository") or {}
+            return repo, repo.get("pullRequest") or {}
+        repo, pr = ask()
+        if retry and (pr.get("mergeStateStatus") or "UNKNOWN") == "UNKNOWN":
+            self.sleep(2)
+            repo, pr = ask()
+        return repo, pr
+
+    def _allowed(self, repo, method):
+        """None when the repo allows `method`, else the refusal."""
+        keys = [m["key"] for m in merge_methods(repo)]
+        if method in keys:
+            return None
+        return "{0} isn't allowed on {1}/{2}: {3}".format(method or "(none)", self.owner, self.repo,
+                                                          ", ".join(keys) or "no merge method")
+
+    def complete(self, method, delete_branch="true"):
+        """--complete <squash|merge|rebase> [delete]: merges the PR as it was
+        seen (sha = its head, so a push in between isn't merged unseen) into
+        whatever its base is, then deletes the head branch if asked and it's
+        in this repository. Refuses, saying why, when GitHub would."""
+        import sys
+        repo, pr = self.merge_state()
+        refusal = self._allowed(repo, method)
+        if refusal:
+            print(refusal + ".", file=sys.stderr)
+            return 1
+        state = mergeability(repo, pr)
+        if state["blockers"]:
+            print("Can't merge PR #{0}: {1}.".format(self.pr, "; ".join(state["blockers"])), file=sys.stderr)
+            return 1
+        try:
+            self.client.rest("PUT", self._repo("/pulls/{0}/merge".format(self.pr)),
+                             {"merge_method": method, "sha": pr.get("headRefOid")})
+        except GitHubHttpError as e:
+            if e.status == 409:
+                print("PR #{0}'s branch moved since it was checked; reopen gm to see the new head.".format(self.pr),
+                      file=sys.stderr)
+                return 1
+            if e.status == 405:
+                print("GitHub won't merge PR #{0}: {1}".format(self.pr, _error_text(e.body)), file=sys.stderr)
+                return 1
+            raise
+        done = "PR #{0} merged ({1})".format(self.pr, method)
+        head = pr.get("headRefName") or ""
+        if str(delete_branch).lower() != "true" or not head:
+            print(done + ".")
+            return 0
+        if pr.get("isCrossRepository"):
+            print(done + "; its branch is in a fork, so it stays.")
+            return 0
+        try:
+            self.client.rest("DELETE", self._repo("/git/refs/heads/" + urllib.parse.quote(head, safe="/")))
+        except GitHubHttpError as e:
+            # The repo's own "delete head branches" got there first.
+            if not (e.status == 422 and "does not exist" in str(e)):
+                print("{0}, but its branch {1} couldn't be deleted: {2}".format(done, head, e))
+                return 0
+        except Exception as e:  # noqa: BLE001 - the merge stands; say what didn't happen
+            print("{0}, but its branch {1} couldn't be deleted: {2}".format(done, head, e))
+            return 0
+        print("{0}; branch {1} deleted.".format(done, head))
+        return 0
+
+    def auto_merge(self, mode, method=""):
+        """--auto-complete on <method> | off. GitHub has no per-PR branch
+        deletion for auto-merge: the repository's "Automatically delete head
+        branches" decides, and the answer says which way it's set."""
+        import sys
+        repo, pr = self.merge_state(retry=False)
+        if (mode or "").lower() == "off":
+            if not pr.get("autoMergeRequest"):
+                print("Auto-merge wasn't on for PR #{0}.".format(self.pr))
+                return 0
+            self.client.graphql(DISABLE_AUTO_MERGE, {"id": pr.get("id")})
+            print("Auto-merge disabled for PR #{0}.".format(self.pr))
+            return 0
+        if (mode or "").lower() != "on":
+            print("--auto-complete takes on or off.", file=sys.stderr)
+            return 1
+        if not repo.get("autoMergeAllowed"):
+            print("Auto-merge isn't allowed on {0}/{1} (its settings).".format(self.owner, self.repo), file=sys.stderr)
+            return 1
+        keys = [m["key"] for m in merge_methods(repo)]
+        method = method or ("squash" if "squash" in keys else (keys or [""])[0])
+        refusal = self._allowed(repo, method)
+        if refusal:
+            print(refusal + ".", file=sys.stderr)
+            return 1
+        if mergeability(repo, pr)["conflict"]:
+            print("Can't set auto-merge on PR #{0}: merge conflict with {1}.".format(self.pr, pr.get("baseRefName")),
+                  file=sys.stderr)
+            return 1
+        try:
+            self.client.graphql(ENABLE_AUTO_MERGE, {"id": pr.get("id"), "method": MERGE_METHOD_ENUM[method],
+                                                    "oid": pr.get("headRefOid")})
+        except RuntimeError as e:
+            text = str(e)
+            if "clean status" in text:
+                print("PR #{0} can be merged now, there's nothing to wait for: merge it instead.".format(self.pr),
+                      file=sys.stderr)
+                return 1
+            if "protected branch rules" in text or "branch protection" in text:
+                print("Auto-merge needs {0} to require checks or reviews (branch protection); merge it instead."
+                      .format(pr.get("baseRefName")), file=sys.stderr)
+                return 1
+            raise
+        print("Auto-merge enabled for PR #{0} ({1}); the branch is deleted on merge only by the repository's own "
+              "setting, which is {2}.".format(self.pr, method, "on" if repo.get("deleteBranchOnMerge") else "off"))
         return 0

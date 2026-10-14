@@ -2509,6 +2509,120 @@ do
   vim.cmd("tabclose")
   vim.api.nvim_set_current_tabpage(gtab)
   vim.cmd("tabclose")
+
+  -- gm on GitHub: the dialog reads the PR's mergeability fresh (--get-pr),
+  -- speaks GitHub's words and offers only the repo's methods. doohickeys#7
+  -- is blocked by a required check: <CR> says so and merges nothing, while
+  -- auto-merge, which waits it out, can be set and cancelled.
+  local function calls(pat, repo)
+    local n = 0
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find(pat, 1, true) and (not repo or l:find("AZVICLI_REPO=" .. repo .. " ", 1, true)) then n = n + 1 end
+    end
+    return n
+  end
+  local function gm_on(title)
+    vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+    -- doohickeys#7 is signed off (I approved it), a section that starts
+    -- collapsed: <Space> on its header opens it.
+    local hrow, hl = header_row(dash, "\u{2500}\u{2500} Signed off")
+    if hrow and hl:find("(collapsed)", 1, true) then
+      vim.api.nvim_win_set_cursor(0, { hrow, 0 })
+      feed("<Space>")
+    end
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find(title, 1, true) then
+        vim.api.nvim_win_set_cursor(0, { i, 0 })
+        feed("gm")
+        local up = vim.wait(10000, function()
+          local f = float_text()
+          return f ~= nil and f:find("Merge PR ", 1, true) ~= nil
+        end, 50)
+        return up and float_text() or nil
+      end
+    end
+  end
+  local dlg = gm_on("Doohickey: stop the wobble")
+  if not dlg then return fail("gm on doohickeys#7 never opened the merge dialog", dash) end
+  if not (dlg:find("Merge PR doohickeys#7", 1, true) and dlg:find("\u{2717} ci / test  (required)", 1, true)
+      and dlg:find("\u{26D4} Can't merge: required check `ci / test` failed", 1, true)
+      and dlg:find("Auto-merge when requirements pass", 1, true)) then
+    return fail("the GitHub merge dialog doesn't show the blocked check:\n" .. dlg)
+  end
+  if dlg:find("work items", 1, true) then return fail("the GitHub merge dialog offers to complete work items:\n" .. dlg) end
+  feed("m")
+  if not float_text():find("Merge type: Create a merge commit", 1, true) then return fail("m didn't cycle to merge") end
+  feed("m")
+  if not float_text():find("Merge type: Squash and merge", 1, true) then
+    return fail("m offered a method the repo doesn't allow:\n" .. float_text())
+  end
+  feed("<CR>")
+  vim.wait(300)
+  if not (float_text() or ""):find("Merge PR doohickeys#7", 1, true) then
+    return fail("<CR> on a blocked PR closed the dialog")
+  end
+  if calls('"--complete"', "doohickeys") > 0 then return fail("<CR> on a blocked PR sent --complete") end
+  -- The auto-merge row (6: no work-items row on GitHub), then <CR>.
+  vim.api.nvim_win_set_cursor(0, { 6, 0 })
+  feed("<Space>")
+  if not float_text():find("[-] Delete source branch: the repo's setting decides (off)", 1, true) then
+    return fail("auto-merge doesn't say the repo's setting deletes the branch:\n" .. float_text())
+  end
+  feed("<CR>")
+  ok = vim.wait(10000, function()
+    return calls('["--auto-complete", "on", "squash"', "doohickeys") == 1 and provider_idle()
+  end, 100)
+  if not ok then return fail("auto-merge on doohickeys#7 never reached the provider") end
+  dlg = gm_on("Doohickey: stop the wobble")
+  if not (dlg and dlg:find("(on", 1, true) and dlg:find("x: cancel auto-merge", 1, true)) then
+    return fail("gm doesn't show auto-merge as on:\n" .. tostring(dlg))
+  end
+  feed("x")
+  ok = vim.wait(10000, function() return calls('["--auto-complete", "off"]', "doohickeys") == 1 and provider_idle() end, 100)
+  if not ok then return fail("x never cancelled auto-merge on doohickeys#7") end
+
+  -- gizmos#7 is mergeable: <CR> merges it with the branch deleted, and its
+  -- row leaves the dashboard.
+  ok = vim.wait(10000, function()
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("Gizmo: spin faster", 1, true) then return true end
+    end
+  end, 100)
+  dlg = ok and gm_on("Gizmo: spin faster")
+  if not (dlg and dlg:find("Merge PR gizmos#7", 1, true) and not dlg:find("Can't merge", 1, true)
+      and not dlg:find("Auto-merge", 1, true)) then
+    return fail("gm on gizmos#7 (clean, no auto-merge allowed) shows:\n" .. tostring(dlg))
+  end
+  feed("<CR>")
+  ok = vim.wait(10000, function()
+    if not (calls('["--complete", "squash", "true"', "gizmos") == 1 and provider_idle()
+        and not text(dash):find("Gizmo: spin faster", 1, true)) then
+      return false
+    end
+    for _, p in ipairs(STATE.PR_LIST_CACHE.prs) do
+      if p.host == "github" and p.repo == "gizmos" and tostring(p.id) == "7" then return false end
+    end
+    return true
+  end, 100)
+  if not ok then return fail("gm on gizmos#7 didn't merge it and drop its row", dash) end
+
+  -- The agent's complete_pull_request: doohickeys#7 (now the only #7) is
+  -- refused with GitHub's reason, and a method its repo lacks is refused
+  -- before any call.
+  local TOOLS = require("azure-cli.chat.tools")
+  local said
+  local env = { main_win = function() end, log = function() end, confirm = function(_, cb) cb(true) end }
+  TOOLS.call("complete_pull_request", { pr_id = 7, strategy = "rebase" }, env, function(t, e) said = { t, e } end)
+  ok = vim.wait(5000, function() return said ~= nil end, 50)
+  if not (ok and said[2] and said[1]:find("rebase isn't a merge strategy doohickeys#7 allows: squash, merge", 1, true)) then
+    return fail("complete_pull_request took a method the repo lacks: " .. vim.inspect(said))
+  end
+  said = nil
+  TOOLS.call("complete_pull_request", { pr_id = 7 }, env, function(t, e) said = { t, e } end)
+  ok = vim.wait(10000, function() return said ~= nil and provider_idle() end, 100)
+  if not (ok and said[2] and said[1]:find("Can't merge PR #7: required check `ci / test` failed", 1, true)) then
+    return fail("complete_pull_request on a blocked GitHub PR answered " .. vim.inspect(said))
+  end
   print("GITHUB-SMOKE-OK")
 end
 print("DEMO-SMOKE-OK")

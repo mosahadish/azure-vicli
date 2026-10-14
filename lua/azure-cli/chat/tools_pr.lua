@@ -199,10 +199,13 @@ return function(T)
     },
     {
       name = "complete_pull_request",
-      description = "Completes (merges) a pull request: merge strategy squash (default), noFastForward, rebase or "
-        .. "rebaseMerge; deletes the source branch and completes linked work items unless told not to. Asks first.",
+      description = "Completes (merges) a pull request with a strategy its host allows - Azure DevOps: squash "
+        .. "(default), noFastForward, rebase or rebaseMerge; GitHub: squash, merge or rebase, as the repository "
+        .. "allows (squash by default when allowed). Deletes the source branch unless told not to, and on Azure "
+        .. "completes linked work items unless told not to. When GitHub would refuse (a required check failed, a "
+        .. "review is needed, a conflict), it says why instead. Asks first.",
       schema = { type = "object", properties = { pr_id = { type = "integer" },
-        strategy = { type = "string", enum = { "squash", "noFastForward", "rebase", "rebaseMerge" } },
+        strategy = { type = "string", enum = { "squash", "noFastForward", "rebase", "rebaseMerge", "merge" } },
         delete_source_branch = { type = "boolean" }, complete_work_items = { type = "boolean" } },
         required = { "pr_id" } },
       risk = "ask",
@@ -210,11 +213,22 @@ return function(T)
       run = function(args, _, done)
         local pr = T.need_pr(args, done)
         if not pr then return end
-        T.provider({ "--complete", args.strategy or "squash", args.delete_source_branch == false and "false" or "true",
+        local HOSTS = require("azure-cli.hosts")
+        -- Only a strategy the PR's host (and, on GitHub, its repository)
+        -- allows; never mapped from another host's name.
+        local keys = {}
+        for _, mt in ipairs(HOSTS.caps(pr).merge_methods or {}) do keys[#keys + 1] = mt.key end
+        local strategy = args.strategy
+        if not strategy then strategy = vim.tbl_contains(keys, "squash") and "squash" or keys[1] end
+        if not vim.tbl_contains(keys, strategy) then
+          return done(nil, tostring(strategy) .. " isn't a merge strategy " .. HOSTS.ref(pr) .. " allows: "
+            .. table.concat(keys, ", "))
+        end
+        T.provider({ "--complete", strategy, args.delete_source_branch == false and "false" or "true",
           args.complete_work_items == false and "false" or "true" }, T.pr_env(pr), function(ok, out, err)
           if not ok then return done(nil, (err ~= "" and err or out)) end
           if STATE().PR_DASHBOARD_RENDER then pcall(STATE().PR_DASHBOARD_RENDER) end
-          done("Completed PR !" .. pr.id .. ".")
+          done("Completed PR " .. HOSTS.ref(pr) .. " (" .. strategy .. ")." .. (out ~= "" and (" " .. out) or ""))
         end)
       end,
     },
