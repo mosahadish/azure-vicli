@@ -169,8 +169,8 @@ M.WRITES = {
     complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
   workitems = { assign = true, edit_title = true, link_pr = true, unlink_pr = true, move_sprint = true, new = true,
     priority = true, state = true },
-  workitem_view = { assign = true, comment = true, edit_title = true, link_pr = true, unlink_pr = true,
-    move_sprint = true, priority = true, state = true },
+  workitem_view = { assign = true, comment = true, edit_title = true, description = true, link_pr = true,
+    unlink_pr = true, move_sprint = true, priority = true, state = true },
 }
 local WRITE_MARK = "\u{2191}"
 

@@ -36,6 +36,9 @@
 --   opts.on_cancel(draft)  called on q/<Esc><Esc>/an empty submit, with the
 --                       trimmed text that was kept as a draft (nil if
 --                       there was nothing worth keeping).
+--   opts.allow_empty     an empty submit is a submit: on_submit("") instead
+--                       of a cancel - for text that may be cleared (an
+--                       issue's description). q/<Esc><Esc> still cancel.
 --   opts.mentions          optional list of { name = <display name>,
 --                       id = <GUID> } reviewer entries (azure-cli.py's
 --                       --list now carries an `id` alongside each
@@ -166,6 +169,8 @@ function M.format_title(kind, info)
     return "Edit comment"
   elseif kind == "workitem" then
     return "Comment \u{00B7} #" .. tostring(info.id)
+  elseif kind == "description" then
+    return "Description \u{00B7} " .. (info.id and ("#" .. tostring(info.id)) or "new")
   end
   return "Comment"
 end
@@ -348,7 +353,7 @@ function M.open(opts)
 
   local function do_submit()
     local text = current_text()
-    if text == "" then
+    if text == "" and not opts.allow_empty then
       do_cancel()
       return
     end

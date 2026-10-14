@@ -13,6 +13,7 @@
 --   ga     assign this work item
 --   gp     set this work item's priority
 --   ge     edit this work item's title
+--   gE     write or edit its description (GitHub issues only)
 --   gi     move this work item to another sprint
 --   gc     add a discussion comment
 --   gl     link a pull request
@@ -479,6 +480,30 @@ local function edit_title()
   end)
 end
 
+-- Write or edit this item's description in the comment editor, prefilled
+-- with the current one. An empty save clears it; q, or saving it unchanged,
+-- writes nothing. Only where B.caps.description: Azure's comes back as
+-- flattened HTML, so writing that text back would lose its formatting.
+local function edit_description()
+  if ID == "" then return end
+  local old = vim.trim(current_item.description or "")
+  local EDITOR = require("azure-cli.editor")
+  EDITOR.open({
+    title = EDITOR.format_title("description", { id = shown() }),
+    anchor = "center",
+    initial = old,
+    allow_empty = true,
+    draft_key = EDITOR.draft_key(ID, "description", ""),
+    on_submit = function(text)
+      if text == old then
+        notify("Description unchanged.")
+        return
+      end
+      apply_field("description", text, "Updating the description of")
+    end,
+  })
+end
+
 -- Move this work item to another sprint of the quarter, offered from the
 -- dashboard's cached sprint list (workitems/dashboard.lua always populates it before a
 -- detail tab can be opened). Re-renders this view on success rather than
@@ -635,6 +660,7 @@ local WORKITEM_VIEW_HELP = {
   { "assign", "assign this " .. ITEM },
   { "priority", "set this " .. ITEM .. "'s priority" },
   { "edit_title", "edit this " .. ITEM .. "'s title" },
+  { "description", "write or edit this " .. ITEM .. "'s description" },
   { "move_sprint", "move this " .. ITEM .. " to another " .. SPRINT },
   { "comment", B.host == "github" and "add a comment" or "add a discussion comment" },
   { "link_pr", "link a pull request" },
@@ -648,9 +674,12 @@ local WORKITEM_VIEW_HELP = {
   { "help", "this help" },
 }
 local function show_help()
-  -- gl/gL only where the board can link PRs (B.caps.links): not bound, not listed.
+  -- gl/gL only where the board can link PRs (B.caps.links), gE where it can
+  -- edit descriptions (B.caps.description): not bound, not listed.
   local help = vim.tbl_filter(function(a)
-    return type(a) == "string" or B.caps.links or (a[1] ~= "link_pr" and a[1] ~= "unlink_pr")
+    if type(a) == "string" then return true end
+    if a[1] == "description" then return B.caps.description end
+    return B.caps.links or (a[1] ~= "link_pr" and a[1] ~= "unlink_pr")
   end, WORKITEM_VIEW_HELP)
   local title = B.host == "github" and "Issue detail keys" or "Work-item detail keys"
   UI.open_float(KEYS.help_lines("workitem_view", title, help,
@@ -673,6 +702,10 @@ KEYS.bind(buf, "workitem_view", "state", set_state, { desc = "change the state o
 KEYS.bind(buf, "workitem_view", "assign", assign_item, { desc = "assign this " .. ITEM })
 KEYS.bind(buf, "workitem_view", "priority", set_priority, { desc = "set this " .. ITEM .. "'s priority" })
 KEYS.bind(buf, "workitem_view", "edit_title", edit_title, { desc = "edit this " .. ITEM .. "'s title" })
+if B.caps.description then
+  KEYS.bind(buf, "workitem_view", "description", edit_description,
+    { desc = "write or edit this " .. ITEM .. "'s description" })
+end
 KEYS.bind(buf, "workitem_view", "move_sprint", move_sprint_item, { desc = "move this " .. ITEM .. " to another " .. SPRINT })
 KEYS.bind(buf, "workitem_view", "comment", add_comment,
   { desc = B.host == "github" and "add a comment" or "add a discussion comment" })

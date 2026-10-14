@@ -94,7 +94,7 @@ local DEFAULT_KEYS = {
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
-    edit_title = "ge", move_sprint = "gi", comment = "gc", link_pr = "gl",
+    edit_title = "ge", description = "gE", move_sprint = "gi", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?", palette = "g.", chat = "gq",
   },

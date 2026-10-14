@@ -1331,7 +1331,28 @@ local function new_item()
     notify(B.sprint_word(sp):gsub("^%l", string.upper) .. " not loaded yet.", vim.log.levels.WARN)
     return
   end
-  local function create(wtype, title, parent_id)
+  -- body: an issue's description, written once it exists (create takes
+  -- none - the chat's create_work_item does the same), before it's listed.
+  local function write_body(rec, body, done)
+    if (body or "") == "" then return done() end
+    local key = rec.key or tostring(rec.id)
+    local err = {}
+    B.run({ "--wi-edit", "set", key, "description", body }, {
+      detach = true,
+      stdout_buffered = true,
+      stderr_buffered = true,
+      on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+      on_exit = function(_, code)
+        if code ~= 0 then
+          local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+          notify("Created #" .. tostring(rec.id) .. ", but its description wasn't saved: " .. msg,
+            vim.log.levels.WARN)
+        end
+        done()
+      end,
+    })
+  end
+  local function create(wtype, title, parent_id, body)
   notify("Creating " .. wtype .. " \u{2026}")
   local out, err = {}, {}
   B.run({ "--wi-edit", "create", wtype, title, parent_id, sp.path }, {
@@ -1351,7 +1372,7 @@ local function new_item()
           notify(rec.warning, vim.log.levels.WARN)
         end
         if B.host == "github" and ok and type(rec) == "table" and rec.id then
-          add_created(sp.path, rec.key or tostring(rec.id))
+          write_body(rec, body, function() add_created(sp.path, rec.key or tostring(rec.id)) end)
         elseif sprints[active_index] and sprints[active_index].path == sp.path then
           load(false, true)
         end
@@ -1362,12 +1383,25 @@ local function new_item()
     end,
   })
   end
+  -- Where the board can (B.caps.description): the body in the comment
+  -- editor; an empty one, or q, creates the issue without a body.
+  local function with_body(wtype, title, parent_id)
+    if not B.caps.description then return create(wtype, title, parent_id) end
+    local EDITOR = require("azure-cli.editor")
+    EDITOR.open({
+      title = EDITOR.format_title("description", {}),
+      anchor = "center",
+      allow_empty = true,
+      on_submit = function(body) create(wtype, title, parent_id, body) end,
+      on_cancel = function() create(wtype, title, parent_id) end,
+    })
+  end
   local function with_type(wtype)
     if not wtype then return end
     PROMPT.input({ prompt = "Title:" }, function(title)
       if not title then return end
       if not under then
-        create(wtype, title, "")
+        with_body(wtype, title, "")
         return
       end
       PROMPT.select({ prompt = "Parent", items = {
@@ -1375,7 +1409,7 @@ local function new_item()
         { label = "child of #" .. under.id .. " " .. (under.title or ""), id = ref(under) },
       } }, function(p)
         if not p then return end
-        create(wtype, title, p.id)
+        with_body(wtype, title, p.id)
       end)
     end)
   end

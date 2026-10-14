@@ -232,10 +232,18 @@ What's different on GitHub:
   type prompt is skipped when the repository has no issue types. If GitHub
   makes the issue but a later step fails (adding it to the project, its
   iteration or its parent), it says which, and the issue stays created.
+  After the title (and parent) it opens the comment editor for the issue's
+  description: `<C-s>` saves it, and an empty one or `q` creates the issue
+  without one.
 - **`T`** shows sub-issues under their parent.
 - **The detail view** shows the body as written, in Markdown, under
   "Description"; the repository as "Repository"; and comments under
-  "Comments". `gc` adds a comment.
+  "Comments". `gc` adds a comment. `gE` writes or edits the description in
+  the same editor, prefilled with the current one: `<C-s>` saves it and
+  the view refreshes, an emptied editor clears it, and `q` (or saving it
+  unchanged) writes nothing. Work items on `W` don't have `gE` yet: Azure
+  DevOps descriptions are HTML, and the detail view shows them flattened
+  to text, so writing that back would lose their formatting.
 - **`ga`, `gp`, `ge`, `gi`** set the assignees (GitHub logins), the
   project's Priority field (when it has one), the title and the iteration.
 - **Linked pull requests** are the ones GitHub lists as closing the issue,

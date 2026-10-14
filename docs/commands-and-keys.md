@@ -319,6 +319,7 @@ paste the output here after changing a default.
 | `chat` | `gq` |
 | `comment` | `gc` |
 | `copy_link` | `gy` |
+| `description` | `gE` |
 | `edit_title` | `ge` |
 | `help` | `?` |
 | `link_pr` | `gl` |

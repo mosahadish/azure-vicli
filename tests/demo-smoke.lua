@@ -538,6 +538,10 @@ if not (vt:find("  !101    active     Throttle failed logins", 1, true)
 end
 print("== detail view, Pull Requests ==")
 print(vt:match("Pull Requests.-\n\n") or vt)
+-- gE isn't bound on an Azure item: its description is HTML (see board.lua's CAPS).
+for _, m in ipairs(vim.api.nvim_buf_get_keymap(view, "n")) do
+  if m.lhs == "gE" then return fail("gE shouldn't be bound on an Azure work item's detail view", view) end
+end
 -- gR from the detail view opens !101 in the reviewer (it's in the PR list).
 local before = vim.api.nvim_get_current_tabpage()
 feed("gR")
@@ -722,6 +726,69 @@ do
     return text(iview):find("demo%-user  %d+ %a%a%a %d%d%d%d %d%d:%d%d\n  Spins at 4000 rpm here%.") ~= nil
   end, 100)
   if not ok then return fail("the new comment didn't come back with its author and date", iview) end
+
+  -- gE: the description in the comment editor, prefilled. Every --wi-edit
+  -- set description the provider is asked for is recorded, so q and an
+  -- unchanged save can be seen to write nothing.
+  local RPC = require("azure-cli.rpc")
+  local real_run, desc_writes = RPC.run, {}
+  RPC.run = function(argv, o)
+    for i, a in ipairs(argv) do
+      if a == "set" and argv[i + 2] == "description" then desc_writes[#desc_writes + 1] = argv[i + 3] end
+    end
+    return real_run(argv, o)
+  end
+  local body0 = gh_detail("demo-gh~gizmos~3001").description or ""
+  local function gE(lines, how)
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
+    feed("gE")
+    local f = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_config(f).relative == "" then return nil end
+    local shown_body = text(vim.api.nvim_get_current_buf())
+    if lines then vim.api.nvim_buf_set_lines(0, 0, -1, false, lines) end
+    vim.cmd("stopinsert")
+    feed(how)
+    return shown_body
+  end
+  local function check_gE()
+    -- q: nothing written, the body stays.
+    if not body0:find("spin faster", 1, true) then return fail("#3001's body should start out as the fake's: " .. body0) end
+    local shown_body = gE({ "Not this." }, "q")
+    if shown_body ~= vim.trim(body0) then
+      return fail("gE didn't open the editor prefilled with the body: " .. tostring(shown_body), iview)
+    end
+    -- Saved unchanged: still nothing written.
+    gE(nil, "ZZ")
+    vim.wait(500, function() return #desc_writes > 0 end, 50)
+    if #desc_writes > 0 or gh_detail("demo-gh~gizmos~3001").description ~= body0 then
+      return fail("q / an unchanged save shouldn't write the description: " .. vim.inspect(desc_writes))
+    end
+    -- Edited: the new body, on the server and in the view.
+    gE({ "Spin at **5000** rpm.", "", "- quietly" }, "ZZ")
+    ok = vim.wait(15000, function()
+      return gh_detail("demo-gh~gizmos~3001").description == "Spin at **5000** rpm.\n\n- quietly"
+    end, 200)
+    if not ok then return fail("gE never saved the new body: " .. vim.inspect(desc_writes)) end
+    ok = vim.wait(10000, function()
+      local t = text(iview)
+      return t:find("Spin at **5000** rpm.", 1, true) ~= nil and t:find("**spin faster** when asked", 1, true) == nil
+    end, 100)
+    if not ok then return fail("the issue view didn't refresh to the new body", iview) end
+    -- Emptied: the body is cleared, not kept.
+    gE({ "" }, "ZZ")
+    ok = vim.wait(15000, function() return gh_detail("demo-gh~gizmos~3001").description == "" end, 200)
+    if not ok then return fail("an empty gE save didn't clear the body: " .. vim.inspect(desc_writes)) end
+    ok = vim.wait(10000, function() return not text(iview):find("Spin at **5000** rpm.", 1, true) end, 100)
+    if not ok then return fail("the issue view still shows the cleared body", iview) end
+    if #desc_writes ~= 2 then return fail("gE should have written twice: " .. vim.inspect(desc_writes)) end
+    return true
+  end
+  local gE_ok = check_gE()
+  RPC.run = real_run
+  if not gE_ok then return end
+  print("== issue view after gE ==")
+  print(text(iview))
+
   -- ?: GitHub's words, and what the ↑ keys change.
   vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
   feed("?")
@@ -732,6 +799,9 @@ do
   if not (ihelp:find("change this issue's state", 1, true) and ihelp:find("changes GitHub", 1, true))
       or ihelp:find("Azure DevOps", 1, true) then
     return fail("the issue view's ? should speak of issues and GitHub:\n" .. ihelp)
+  end
+  if not ihelp:find("gE[^\n]*write or edit this issue's description") then
+    return fail("the issue view's ? should list gE:\n" .. ihelp)
   end
 
   -- gs -> Done: a Status, the issue stays open.
@@ -782,6 +852,15 @@ do
   feed("n")
   vim.ui.input = real_input
   if not choose_popup("child of #12") then return end
+  -- Then its body, in the description editor.
+  ok = vim.wait(10000, function()
+    local c = vim.api.nvim_win_get_config(0)
+    return c.relative ~= "" and type(c.title) == "table" and vim.inspect(c.title):find("Description", 1, true) ~= nil
+  end, 50)
+  if not ok then return fail("n never asked for the new issue's description") end
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Wobbles past 4000 rpm." })
+  vim.cmd("stopinsert")
+  feed("ZZ")
   ok = vim.wait(15000, function()
     return text(iss):find("\u{2514} #3002 +%[Todo%] +Wobble at 4000 rpm") ~= nil
       or (row_text(iss, 3002):find("Wobble at 4000 rpm", 1, true) ~= nil)
@@ -812,6 +891,7 @@ do
   end
   local made = gh_detail("demo-gh~gizmos~3002")
   if made.iterationPath ~= "Iteration 2" then return fail("the new issue isn't in Iteration 2: " .. vim.inspect(made)) end
+  if made.description ~= "Wobbles past 4000 rpm." then return fail("n didn't save the new issue's body: " .. vim.inspect(made)) end
   print("ISSUES-SMOKE-OK")
 
   -- Back on W: #3001 is still the Azure item, in the list and its cache.
