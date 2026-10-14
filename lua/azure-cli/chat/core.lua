@@ -160,6 +160,7 @@ local LOOK_ONLY = {
   ls = {}, dir = {}, tree = {}, cat = {}, type = {}, head = {}, tail = {}, wc = {}, sort = { "-o", "--output" },
   uniq = {}, cut = {}, echo = {}, printf = { "-v" }, pwd = {}, cd = {}, file = { "-C", "--compile" }, stat = {},
   which = {}, where = {}, basename = {}, dirname = {}, realpath = {},
+  diff = { "-o", "--output" }, cmp = { "-o", "--output" }, comm = { "-o", "--output" },
   ["get-content"] = {}, gc = {}, ["get-childitem"] = {}, gci = {}, ["select-string"] = {}, sls = {},
   ["get-item"] = {}, ["test-path"] = {}, ["resolve-path"] = {}, ["get-location"] = {},
   ["where-object"] = {}, ["out-null"] = {}, ["select-object"] = {}, select = {}, ["sort-object"] = {},
@@ -172,8 +173,16 @@ local GIT_LOOK_ONLY = {
   ["ls-files"] = {}, ["ls-tree"] = {}, ["rev-parse"] = {}, describe = {}, shortlog = {}, ["cat-file"] = {},
   ["merge-base"] = {}, ["show-ref"] = {},
 }
--- gh run's that only read, each with the flags that open a browser.
-local GH_RUN_LOOK_ONLY = { list = { "--web" }, view = { "-w", "--web" }, watch = { "--web" } }
+-- git worktree list's flags; any other worktree subcommand, or word, asks.
+local WORKTREE_LIST = { ["--porcelain"] = true, ["-v"] = true, ["--verbose"] = true, ["-z"] = true }
+-- gh's that only read, each with the flags that open a browser (gh run
+-- list's -w is --workflow).
+local WEB = { "-w", "--web" }
+local GH_LOOK_ONLY = {
+  run = { list = { "--web" }, view = WEB, watch = { "--web" } },
+  pr = { view = WEB, checks = WEB, diff = WEB, list = WEB, status = WEB },
+  issue = { view = WEB, list = WEB, status = WEB },
+}
 
 -- Whether `git fetch` with `words` from `from` on only fetches: -q,
 -- --quiet or --prune, then a remote's name and branches. That writes
@@ -301,12 +310,16 @@ local function look_only_part(words, unknown)
     local i = 2
     while words[i] == "--no-pager" or words[i] == "-C" or words[i] == "-P" do i = i + (words[i] == "-C" and 2 or 1) end
     if words[i] == "fetch" then return fetch_reads(words, i + 1) end
+    if words[i] == "worktree" then
+      for m = i + 2, #words do if not WORKTREE_LIST[words[m]] then return false end end
+      return words[i + 1] == "list"
+    end
     local flags = GIT_LOOK_ONLY[words[i] or ""]
     return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
   end
   if name == "gh" then
-    -- gh run list / view / watch; any other gh command asks.
-    local flags = words[2] == "run" and GH_RUN_LOOK_ONLY[words[3] or ""]
+    -- GH_LOOK_ONLY's; any other gh command asks.
+    local flags = (GH_LOOK_ONLY[words[2] or ""] or {})[words[3] or ""]
     return flags and not free and not bad_flag(words, 4, flags) or false
   end
   if name == "sed" then

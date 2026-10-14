@@ -749,6 +749,28 @@ do
     "gh run download 1", "gh run view 1 --web", "gh run view 1 -w", "gh run list --web", "gh pr merge 1",
     "gh api -X POST x", "gh run", "gh", "while read l; do gh run view $l; done < f" }, false)
   check("look_only_command: printf -v, git fetch that runs things, gh run that acts still ask (#74)", wrong == nil, wrong)
+  -- #75: plain diff / cmp / comm, gh pr / issue reads, git worktree list.
+  wrong = again({ "diff a b", "diff -u a b", "diff -ru d1 d2", "sed -n 95,414p x.md | diff - /tmp/k.md", "diff a b 2>&1",
+    "cmp a b", "cmp -s a b", "comm -12 a b", "comm --output-delimiter=, a b",
+    "gh pr view 12", "gh pr view 12 --json state -q .state", "gh pr view 12 -c -R o/r", "gh pr checks 12",
+    "gh pr checks 12 --watch", "gh pr diff 12", "gh pr diff 12 --name-only", "gh pr list",
+    "gh pr list -s all -L 5 --json number", "gh pr list -H x -R o/r", "gh pr status", "gh pr status -c",
+    "gh issue view 75", "gh issue view 75 --comments", "gh issue list", "gh issue list -l bug -s open", "gh issue status",
+    "git worktree list", "git worktree list --porcelain", "git worktree list -v", "git worktree list --porcelain -z",
+    "git -C ../r worktree list", "git worktree list | grep x" }, true)
+  check("look_only_command: diff, cmp, comm, gh pr/issue reads, git worktree list (#75)", wrong == nil, wrong)
+  wrong = again({ "diff a b > out", "diff --output=x a b", "diff -o x a b", "cmp a b > f", "comm a b > f",
+    "while read l; do diff $l x; done < f",
+    "gh pr view 12 --web", "gh pr view 12 -w", "gh pr checks 12 --web", "gh pr diff 12 -w", "gh pr list --web",
+    "gh pr list -w", "gh issue list --web", "gh issue view 75 --web", "gh issue view 75 -wc",
+    "gh pr create", "gh pr edit 1", "gh pr merge 1", "gh pr close 1", "gh pr comment 1 -b x", "gh pr review 1",
+    "gh pr checkout 1", "gh pr ready 1", "gh issue create", "gh issue edit 1", "gh issue close 1",
+    "gh issue comment 1 -b x", "gh pr", "gh issue", "gh pr view 1 > f",
+    "git worktree add ../x", "git worktree add -b y ../x", "git worktree remove ../x", "git worktree prune",
+    "git worktree move a b", "git worktree lock a", "git worktree repair", "git worktree",
+    "git worktree list --expire now", "git worktree list x", "git -c core.x=y worktree list", "git worktree list > f" }, false)
+  check("look_only_command: diff that writes, gh pr/issue that acts or opens a browser, git worktree add/remove/prune still ask (#75)",
+    wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

@@ -392,6 +392,23 @@ do
     if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
   end
   check("git fetch --upload-pack, gh run rerun and printf -v still ask (#74)", #loud == 0, vim.inspect({ loud, asked }))
+  -- #75: plain diff, gh pr / issue reads and git worktree list, through the popup's path.
+  asked, quiet, loud = { asked[1] }, {}, {}
+  for _, c in ipairs({ "diff -u a b", "sed -n 1,9p x.md | diff - /tmp/k.md", "cmp -s a b", "comm -12 a b",
+    "gh pr view 12 --json state", "gh pr checks 12", "gh pr diff 12 --name-only", "gh pr list -s all", "gh pr status",
+    "gh issue view 75 --comments", "gh issue list -l bug", "gh issue status", "git worktree list --porcelain" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "allow" and #asked == 1) then quiet[#quiet + 1] = c end
+  end
+  check("diff, cmp, comm, gh pr/issue reads and git worktree list don't ask (#75)", #quiet == 0, vim.inspect({ quiet, asked }))
+  for k, c in ipairs({ "diff a b > out", "diff --output=x a b", "gh pr view 12 --web", "gh pr list -w", "gh issue view 75 -wc",
+    "gh pr merge 1", "gh pr checkout 1", "gh issue close 1", "git worktree add ../x", "git worktree remove ../x",
+    "git worktree prune", "git worktree list x" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
+  end
+  check("diff that writes, gh --web, gh pr/issue that acts and git worktree add/remove/prune still ask (#75)", #loud == 0,
+    vim.inspect({ loud, asked }))
   asked = { asked[1] }
   UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(1) end
   a = ask("Write", { file_path = "notes.txt", content = "hi" })
