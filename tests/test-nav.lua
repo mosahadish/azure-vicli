@@ -8,6 +8,7 @@
 -- Run with cwd inside the repo (run.sh runs it from the real azure-vicli
 -- checkout, where AccountConfig exists in azure-cli.py).
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 vim = { pesc = function(s) return (s:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")) end,
         trim = function(s) return s:match("^%s*(.-)%s*$") end }
 

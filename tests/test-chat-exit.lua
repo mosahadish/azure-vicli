@@ -6,6 +6,7 @@
 --   timeout 30 nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-chat-exit.lua"
 -- prints CHAT-EXIT-STARTED once an agent works, then quits; the caller
 -- checks it didn't take the whole timeout.
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local root = vim.fn.getcwd()
 local py = vim.fn.executable("python3") == 1 and "python3" or "python"
 require("azure-cli").setup({ chat = { max_agents = 1, agent = { label = "Fake", timeout_seconds = 60,

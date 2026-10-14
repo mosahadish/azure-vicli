@@ -12,6 +12,7 @@
 -- count change, the failure path (bad range) still completes without
 -- caching anything, and eviction once over MAX_PRS keys.
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local queue = {}
 vim = {
   env = {},  -- cache.lua's run() routes non-git cmds through rpc.lua,

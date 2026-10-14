@@ -6,6 +6,10 @@
 # a build step first.
 #
 # What it checks, in order:
+#   0. Every tests/*.lua loads tests/sandbox.lua first (its own XDG dirs
+#      and a clean environment however it's started); step 4 and the
+#      smokes also start some straight from a polluted environment and
+#      check nothing reached the sentinel "real" dirs.
 #   1. luajit -bl syntax check on every Lua UI file, plus (when nvim is on
 #      PATH) loading every file with a real Neovim, which is stricter.
 #   2. A global-name scan on every Lua UI file: any name luajit resolves as
@@ -43,6 +47,9 @@ cd "$REPO_ROOT"
 # AZVICLI_* exports - the prefetch dir, the PR the dashboard last opened -
 # which the tests would otherwise read as their own.
 for v in $(env | sed -n 's/^\(AZVICLI_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+# Nor the parent Neovim's runtime: an nvim started from a :terminal or an
+# agent would otherwise use that one's VIMRUNTIME, whatever nvim PATH finds.
+unset VIM VIMRUNTIME NVIM MYVIMRC
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -106,6 +113,21 @@ for f in "${SH_FILES[@]}"; do
   tr -d '\r' < "$REPO_ROOT/$f" > "$TMP/sh/$f"
 done
 
+# 0. Every Lua test loads tests/sandbox.lua before anything else, so it gets
+# its own XDG dirs however it is started - not only from here. Not
+# gen-keys-table.lua: a generator, not a test.
+echo "== 0. sandbox guard =="
+for f in tests/*.lua; do
+  case "$f" in tests/sandbox.lua|tests/gen-keys-table.lua) continue ;; esac
+  first="$(tr -d '\r' < "$f" | awk '!/^[[:space:]]*(--|$)/{print; exit}')"
+  if [[ "$first" == 'dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")('* ]]; then
+    pass "sandbox: $f"
+  else
+    fail "sandbox: $f" "its first statement must load tests/sandbox.lua (see that file), not: $first"
+  fi
+done
+
+echo
 echo "== 1. luajit -bl syntax check =="
 for f in "${LUA_FILES[@]}"; do
   bc="$TMP/lua/$f.bc"
@@ -322,6 +344,31 @@ run_lua_test test-pr-workitems.lua "$REPO_ROOT" "$PR_WORKITEMS_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
+
+# A test started straight from a polluted environment - XDG dirs at a
+# sentinel "real" directory, the parent nvim's runtime vars, the chat's
+# AZVICLI_CHAT_* - must not write a byte there (tests/sandbox.lua).
+REAL="$TMP/real"
+mkdir -p "$REAL/data" "$REAL/state" "$REAL/cache" "$REAL/config" "$TMP/bogus-runtime"
+sentinel() {
+  local name="$1"
+  shift
+  local out rc left
+  out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX \
+    XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" \
+    VIM="$TMP/bogus-runtime" VIMRUNTIME="$TMP/bogus-runtime" NVIM="$TMP/bogus-nvim.sock" MYVIMRC="$REAL/config/nvim/init.lua" \
+    AZVICLI_CHAT_AGENT=leak AZVICLI_CHAT_BRIDGE=leak AZVICLI_CHAT_TOKEN=leak \
+    timeout 120 "$@" 2>&1)"
+  rc=$?
+  left="$(find "$REAL" -mindepth 2 2>/dev/null)"
+  if [ $rc -eq 0 ] && [ -z "$left" ]; then
+    pass "sandbox: $name leaves the real data dir alone"
+  else
+    fail "sandbox: $name leaves the real data dir alone" "rc $rc; written to the real dirs: ${left:-nothing}
+$out"
+  fi
+}
+sentinel "test-sandbox.lua (luajit, started directly)" luajit "$REPO_ROOT/tests/test-sandbox.lua" "$REAL"
 
 echo
 echo "== 5. python tests (azure-cli.py) =="
@@ -558,6 +605,25 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-acp.lua (headless nvim)" "$out"
   fi
 
+  # The same sentinel check as step 4's, under nvim: the probe, then the
+  # chat tests that used to leave conversations behind when run by hand.
+  for t in test-sandbox.lua test-chat.lua test-chat-persistent.lua test-chat-acp.lua; do
+    sentinel "$t (nvim -l, started directly)" nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/$t" "$REAL"
+  done
+  # A script loaded into an already-running nvim can't start again in a
+  # sandbox of its own, so outside one it refuses (and touches nothing).
+  out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" \
+    XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" \
+    timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-boards.lua" -c 'qa!' 2>&1)"
+  rc=$?
+  left="$(find "$REAL" -mindepth 2 2>/dev/null)"
+  if [ $rc -ne 0 ] && [[ "$out" == *"refusing to run outside a sandbox"* ]] && [ -z "$left" ]; then
+    pass "sandbox: test-boards.lua outside a sandbox refuses to run"
+  else
+    fail "sandbox: test-boards.lua outside a sandbox refuses to run" "rc $rc; written: ${left:-nothing}
+$out"
+  fi
+
   # tests/test-boards.lua: I (the Issues tab) only when --boards lists a
   # GitHub account with issues: - once on the demo config, once on it
   # trimmed to its Azure account. Each on its own fake workspace, wired up
@@ -566,7 +632,7 @@ if command -v nvim >/dev/null 2>&1; then
     ws="$TMP/boards-$expect"
     python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
     printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
-    out="$(BOARDS_EXPECT=$expect AZVICLI_FAKE_WS="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
+    out="$(BOARDS_EXPECT=$expect AZVICLI_FAKE_WS="$ws" AZVICLI_TEST_SANDBOX="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
       AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" \
       XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
       AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \

@@ -5,6 +5,7 @@
 --
 -- Usage: luajit test-keys.lua <config.lua path> <keys.lua path>
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local keymap_calls = {}
 vim = {
   deepcopy = function(t)

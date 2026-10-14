@@ -11,6 +11,7 @@
 -- a deletion, with B and c appearing as two virtual lines below it (nothing
 -- follows on that side, so they anchor below the last line).
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local marks = {}
 vim = {
   list_extend = function(a, b) for _, v in ipairs(b) do a[#a+1] = v end return a end,

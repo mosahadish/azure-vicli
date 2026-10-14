@@ -5,6 +5,7 @@
 -- a plan. Needs the main loop (insert mode, real input), so not nvim -l:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-confirm.lua"
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fails = 0
 local function check(name, ok, detail)
   if ok then io.stdout:write("ok   " .. name .. "\n")

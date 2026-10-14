@@ -24,6 +24,7 @@
 -- agree line-for-line, including each line's side/lineno.
 
 -- Minimal vim shim for the pure functions.
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 vim = { list_extend = function(a, b) for _, v in ipairs(b) do a[#a+1] = v end return a end,
         tbl_filter = function(f, t) local o = {} for _, v in ipairs(t) do if f(v) then o[#o+1] = v end end return o end,
         fn = { jobstart = function() error("no jobs in test") end }, schedule = function(f) f() end }

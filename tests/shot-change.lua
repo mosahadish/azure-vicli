@@ -1,6 +1,7 @@
 -- tests/shot-change.lua: the scene for docs/images/chat-ask-why.png - the
 -- change viewer on a made-up change for #3001, with a question answered under
 -- one of its lines (seeded in the questions file, as ga would leave it).
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local dir = vim.fn.stdpath("cache") .. "/azure-cli/fix-worktrees/widgets-wi3001"
 vim.fn.mkdir(dir, "p")
 local why = require("azure-cli.chat.store").root() .. "/why/widgets-wi3001.json"

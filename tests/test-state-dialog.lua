@@ -2,6 +2,7 @@
 -- helpers (gs's popup: how a child's state is mapped, the rendered lines,
 -- and the "also set children" toggles).
 -- Usage: luajit test-state-dialog.lua <state_dialog.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-state-dialog.lua <state_dialog.lua path>")
 local SD = dofile(path)

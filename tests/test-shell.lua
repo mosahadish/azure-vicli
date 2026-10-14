@@ -1,6 +1,7 @@
 -- test-shell.lua: lua/azure-cli/shell.lua's open_url without vim.ui.open
 -- (Neovim 0.9, #51): it starts xdg-open / open itself, detached.
 -- Usage: luajit test-shell.lua <shell.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-shell.lua <shell.lua path>")
 

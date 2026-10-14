@@ -4,6 +4,7 @@
 -- real headless Neovim:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-chat-plan.lua
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fails = 0
 local function check(name, ok, detail)
   print((ok and "ok  " or "FAIL") .. "  " .. name .. ((not ok and detail) and ("  -- " .. tostring(detail)) or ""))

@@ -1,6 +1,7 @@
 -- test-linked-prs.lua: lua/azure-cli/workitems/linked_prs.lua's pure
 -- helpers (the dashboard's PR marker, the detail view's PR lines).
 -- Usage: luajit test-linked-prs.lua <linked_prs.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-linked-prs.lua <linked_prs.lua path>")
 local LP = dofile(path)

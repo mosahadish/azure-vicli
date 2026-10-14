@@ -1,5 +1,6 @@
 -- test-review-pane.lua: review/pane.lua's pure fold-level and gutter
 -- computations. Usage: luajit test-review-pane.lua <pane.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-review-pane.lua <pane.lua>")
 vim = { api = {}, v = {} }  -- only the option callbacks touch vim; not exercised here

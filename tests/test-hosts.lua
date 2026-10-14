@@ -1,5 +1,6 @@
 -- test-hosts.lua: lua/azure-cli/hosts.lua's per-host capabilities.
 -- Usage: luajit test-hosts.lua <hosts.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-hosts.lua <hosts.lua path>")
 local H = dofile(path)

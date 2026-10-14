@@ -6,6 +6,7 @@
 -- marker. Any timeout prints DEMO-SMOKE-FAIL with what was on screen.
 -- Run by `nvim --headless -u <ws>/init.lua -c "luafile tests/demo-smoke.lua"`.
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local function text(buf)
   return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
 end

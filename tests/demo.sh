@@ -68,6 +68,12 @@ export XDG_CACHE_HOME="$WS/cache"
 export XDG_STATE_HOME="$WS/xdg-state"
 export AZVICLI_TOASTS="${AZVICLI_TOASTS:-0}"   # no desktop notifications from a demo
 unset AZVICLI_CONFIG AZVICLI_PROVIDER AZVICLI_PREFETCH_DIR
+# The workspace is the sandbox tests/sandbox.lua wants for the scripts
+# loaded into this nvim (demo-smoke.lua, shot-*.lua); and none of the nvim
+# or chat this was started from: its runtime, its agent's bridge.
+export AZVICLI_TEST_SANDBOX="$WS"
+unset VIM VIMRUNTIME NVIM MYVIMRC
+for v in $(env | sed -n 's/^\(AZVICLI_CHAT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 
 cat > "$WS/init.lua" <<EOF
 -- Written by tests/demo.sh: what a plugin manager's install boils down to.

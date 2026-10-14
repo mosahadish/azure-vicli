@@ -1,5 +1,6 @@
 -- test-prs.lua: lua/azure-cli/prs.lua's pure PR-record helpers.
 -- Usage: luajit test-prs.lua <prs.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-prs.lua <prs.lua path>")
 local P = dofile(path)

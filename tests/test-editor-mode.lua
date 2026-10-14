@@ -5,6 +5,7 @@
 -- nvim_feedkeys(..., "x") both end insert mode by themselves), so:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-editor-mode.lua"
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 vim.cmd("enew")
 local under = vim.api.nvim_get_current_win()
 local submitted

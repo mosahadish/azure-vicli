@@ -12,6 +12,7 @@
 -- Prints BOARDS-TEST-OK, or BOARDS-TEST-FAIL: <why>.
 -- Run by `nvim --headless -u <ws>/init.lua -c "luafile tests/test-boards.lua"`.
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local expect = vim.env.BOARDS_EXPECT or "issues"
 local issues = expect == "issues"
 

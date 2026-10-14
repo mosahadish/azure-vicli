@@ -9,6 +9,7 @@
 --
 -- Usage: luajit test-config.lua <config.lua path> [cache.lua path]
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 vim = {
   deepcopy = function(t)
     if type(t) ~= "table" then return t end

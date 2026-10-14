@@ -1,5 +1,6 @@
 -- test-review-viewed.lua: review/viewed.lua against an in-memory store.
 -- Usage: luajit test-review-viewed.lua <viewed.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-review-viewed.lua <viewed.lua>")
 vim = nil

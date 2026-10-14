@@ -5,6 +5,7 @@
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-key-hints.lua"
 -- prints KEY-HINTS-OK, or KEY-HINTS-FAIL and why.
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local function finish(ok, why)
   io.stdout:write((ok and "KEY-HINTS-OK" or ("KEY-HINTS-FAIL: " .. why)) .. "\n")
   vim.cmd(ok and "qa!" or "cq!")

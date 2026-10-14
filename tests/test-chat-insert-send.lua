@@ -7,6 +7,7 @@
 -- Needs the main loop (real input events, as in test-editor-mode.lua), so:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-chat-insert-send.lua"
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 require("azure-cli").setup({})
 local CHAT = require("azure-cli.chat")
 local sent = {}
