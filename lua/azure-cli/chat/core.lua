@@ -184,17 +184,47 @@ local GH_LOOK_ONLY = {
   issue = { view = WEB, list = WEB, status = WEB },
 }
 
+-- A configured remote's name: no path or URL (another transport, or a
+-- repo whose upload-pack runs).
+local REMOTE_NAME = "^[%w][%w._-]*$"
+
 -- Whether `git fetch` with `words` from `from` on only fetches: -q,
 -- --quiet or --prune, then a remote's name and branches. That writes
--- origin/* and FETCH_HEAD only: no path or URL (another transport, or
--- a repo whose upload-pack runs), no x:y or +x refspec (a local branch),
--- and no other option (--upload-pack, -c, --recurse-submodules, ...).
+-- origin/* and FETCH_HEAD only: a REMOTE_NAME, no x:y or +x refspec (a
+-- local branch), and no other option (--upload-pack, -c,
+-- --recurse-submodules, ...).
 local function fetch_reads(words, from)
   local k = from
   while words[k] == "-q" or words[k] == "--quiet" or words[k] == "--prune" do k = k + 1 end
-  if words[k] and not words[k]:match("^[%w][%w._-]*$") then return false end
+  if words[k] and not words[k]:match(REMOTE_NAME) then return false end
   for m = k + 1, #words do
     if not words[m]:match("^[%w_][%w._/-]*$") then return false end
+  end
+  return true
+end
+
+-- Whether `git remote` with `words` from `from` on only reads: -v or
+-- --verbose, then nothing (the list), show [-n] NAME... (show without
+-- -n asks the remote, as fetch does) or get-url [--push] [--all] NAME,
+-- each a REMOTE_NAME. add, remove, rename, set-url, prune, update, ...
+-- change something.
+local function remote_reads(words, from)
+  local k = from
+  if words[k] == "-v" or words[k] == "--verbose" then k = k + 1 end
+  local sub = words[k]
+  if sub == nil then return true end
+  k = k + 1
+  if sub == "show" then
+    if words[k] == "-n" then k = k + 1 end
+  elseif sub == "get-url" then
+    while words[k] == "--push" or words[k] == "--all" do k = k + 1 end
+    if #words ~= k then return false end
+  else
+    return false
+  end
+  if not words[k] then return false end
+  for m = k, #words do
+    if not words[m]:match(REMOTE_NAME) then return false end
   end
   return true
 end
@@ -310,6 +340,7 @@ local function look_only_part(words, unknown)
     local i = 2
     while words[i] == "--no-pager" or words[i] == "-C" or words[i] == "-P" do i = i + (words[i] == "-C" and 2 or 1) end
     if words[i] == "fetch" then return fetch_reads(words, i + 1) end
+    if words[i] == "remote" then return remote_reads(words, i + 1) end
     if words[i] == "worktree" then
       for m = i + 2, #words do if not WORKTREE_LIST[words[m]] then return false end end
       return words[i + 1] == "list"
@@ -321,6 +352,10 @@ local function look_only_part(words, unknown)
     -- GH_LOOK_ONLY's; any other gh command asks.
     local flags = (GH_LOOK_ONLY[words[2] or ""] or {})[words[3] or ""]
     return flags and not free and not bad_flag(words, 4, flags) or false
+  end
+  if name == "nvim" then
+    -- Only its version: anything else (-l, -c, +cmd, a file, an init) runs code.
+    return #words == 2 and (words[2] == "--version" or words[2] == "-v") and next(unknown) == nil
   end
   if name == "sed" then
     -- Scripts that only print (sed_reads), given first or with -e; no -i,
@@ -375,13 +410,14 @@ local function sub_end(cmd, i)
       while cmd:sub(k, k) ~= '"' do
         local d = cmd:sub(k, k)
         if d == "" then return nil end
-        if d == "\\" then k = k + 2
+        if d == "\\" or (d == "$" and cmd:sub(k + 1, k + 1):match("^[?#$]$")) then k = k + 2
         elseif d == "$" and cmd:sub(k + 1, k + 1) == "(" then
           if not nested() then return nil end
         else k = k + 1 end
       end
       k = k + 1
-    elseif c == "\\" then
+    elseif c == "\\" or (c == "$" and cmd:sub(k + 1, k + 1):match("^[?#$]$")) then
+      -- $? $# $$ too: their # isn't a comment, their $ doesn't start a $(.
       k = k + 2
     elseif c == "$" and cmd:sub(k + 1, k + 1) == "(" then
       if not nested() then return nil end
@@ -420,7 +456,8 @@ end
 
 -- `cmd` split the way the shell would: statements (split on |, &&, ||,
 -- ; and newlines), each a list of words, each word a list of pieces -
--- { text, quoted } or { var = NAME, quoted } for $NAME / ${NAME}, or
+-- { text, quoted } or { var = NAME, quoted } for $NAME / ${NAME} (and
+-- for $? $# $$, NAME ? # or $: value_of's SPECIAL), or
 -- { sub = TREE, refs, quoted } for $(...), quoted or not: its commands
 -- as shell_tree's nodes (look_only_tree checks them), refs when
 -- rev_parse_refs. nil when it has anything else that runs or writes:
@@ -445,7 +482,9 @@ local function shell_words(cmd)
     words = {}
   end
   local function ref(i)
-    local name = cmd:match("^%$([%a_][%w_]*)", i)
+    local name = cmd:match("^%$([?#$])", i)
+    if name then return name, i + 2 end
+    name = cmd:match("^%$([%a_][%w_]*)", i)
     if name then return name, i + 1 + #name end
     name = cmd:match("^%${([%a_][%w_]*)}", i)
     if name then return name, i + 3 + #name end
@@ -565,10 +604,14 @@ local UNKNOWN = {}
 -- What a rev_parse_refs $(...) prints: words that aren't flags or globs.
 local REFS = {}
 
+-- $? $# $$: always a number, so never a flag, a glob or two words; "0"
+-- stands for it. Not $- (letters, a flag's) or $! $@ $* $0-$9.
+local SPECIAL = { ["?"] = "0", ["#"] = "0", ["$"] = "0" }
+
 -- A $(...) piece's value, or a variable's.
 local function value_of(p, vars)
   if p.sub then return p.refs and REFS or UNKNOWN end
-  return p.text or vars[p.var]
+  return p.text or SPECIAL[p.var] or vars[p.var]
 end
 
 -- What word `w` becomes with `vars` filled in: unquoted, a value splits
@@ -788,8 +831,8 @@ end
 -- Whether shell command `cmd` (a string, or an argv list) only reads:
 -- every command in it - split on |, &&, || and ;, inside for loops,
 -- while read loops and $(...) too - is one of the commands above without a flag
--- that writes, once the variables the command sets itself (B=x; ... $B)
--- and its loop variables are filled in (what read reads could be
+-- that writes, once the variables the command sets itself (B=x; ... $B),
+-- $? $# $$ (numbers) and its loop variables are filled in (what read reads could be
 -- anything: look_only_part, as is what a $(...) of them prints, but a
 -- lone git rev-parse's); and nothing in it redirects - but a while
 -- loop's done < FILE - runs a script block or another kind of subcommand

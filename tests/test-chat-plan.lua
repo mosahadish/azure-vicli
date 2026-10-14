@@ -1046,6 +1046,24 @@ do
     "gh run list --commit $(git rev-parse --sq-quote a)", "gh run list --commit $(git rev-parse 'a b')",
     "sed $(git rev-parse HEAD) f", "git log \"--outp$(cat f)\"", "while read x; do git log \"--outp$x\"; done < f" }, false)
   check("look_only_command: $(...) that writes, >file, <(...), eval and sh -c still ask (#76)", wrong == nil, wrong)
+  -- #84: $? $# $$, git remote's reads, nvim --version.
+  wrong = again({ "for id in 1 2; do gh run watch $id; echo \"$id exit=$?\"; done", "echo $?", "echo \"$# $$\"",
+    "head -n $? f", "echo $(echo $#)", "echo \"$$(\"", "git log -1; echo exit=$?",
+    "git remote", "git remote -v", "git remote --verbose", "git remote show origin", "git remote show -n origin",
+    "git remote -v show origin", "git remote get-url origin", "git remote get-url --push origin",
+    "git remote get-url --all origin", "git -C ../r remote -v", "git remote -v | grep origin",
+    "nvim --version", "nvim -v", "nvim --version | head -1", "NVIM.exe --version" }, true)
+  check("look_only_command: $? $# $$, git remote -v/show/get-url, nvim --version (#84)", wrong == nil, wrong)
+  wrong = again({ "git remote add x y", "git remote set-url origin x", "git remote remove x", "git remote rm x",
+    "git remote rename a b", "git remote prune origin", "git remote update", "git remote set-head origin -a",
+    "git remote set-branches origin x", "git remote show https://h/r", "git remote show ../repo",
+    "git remote show ext::sh", "git remote show", "git remote get-url", "git remote get-url a b",
+    "git remote -v x", "git -c x=y remote -v", "git remote -v > f", "while read l; do git remote show $l; done < f",
+    "nvim -l x.lua", "nvim --headless -c q", "nvim", "nvim f", "nvim --version -c q", "nvim -v +q",
+    "echo $(nvim -l x)", "while read l; do nvim $l; done < f",
+    "echo $!", "echo $-", "git log $-", "echo $@", "echo $*", "echo $1", "echo ${#x}", "echo ${?}",
+    "C=$?; $C", "echo $? > f", "echo \"$-\"" }, false)
+  check("look_only_command: other git remote, other nvim, $- $! $@ $1 still ask (#84)", wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

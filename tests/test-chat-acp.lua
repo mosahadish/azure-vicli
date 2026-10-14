@@ -409,6 +409,20 @@ do
   end
   check("diff that writes, gh --web, gh pr/issue that acts and git worktree add/remove/prune still ask (#75)", #loud == 0,
     vim.inspect({ loud, asked }))
+  -- #84: $?, git remote's reads and nvim --version, through the popup's path.
+  asked, quiet, loud = { asked[1] }, {}, {}
+  for _, c in ipairs({ "for id in 1 2; do gh run watch $id; echo \"$id exit=$?\"; done", "git remote -v",
+    "git remote show origin", "git remote get-url origin", "nvim --version", "nvim -v" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "allow" and #asked == 1) then quiet[#quiet + 1] = c end
+  end
+  check("$?, git remote -v/show/get-url and nvim --version don't ask (#84)", #quiet == 0, vim.inspect({ quiet, asked }))
+  for k, c in ipairs({ "git remote add x y", "git remote set-url origin x", "git remote prune origin", "nvim -l x.lua",
+    "nvim --headless -c q", "echo $(nvim -l x)", "echo $-" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
+  end
+  check("other git remote, other nvim and $- still ask (#84)", #loud == 0, vim.inspect({ loud, asked }))
   asked = { asked[1] }
   UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(1) end
   a = ask("Write", { file_path = "notes.txt", content = "hi" })
