@@ -11,7 +11,9 @@
 --   M.open_all()  opens the ones not open yet, then comes back here; from
 --                 then on every new tab (a PR, a plan) goes after them,
 --                 and closing one goes back to the tab it was opened from
---   M.order()     moves the open ones to the front, in order (standalone)
+--   M.order()     moves the open ones to the front, in order, each followed
+--                 by its inner tabs (innertabs.lua) (standalone)
+--   M.tab(name)   the tab of an open home screen, or nil
 local M = {}
 
 M.SCREENS = {
@@ -35,6 +37,11 @@ local function tab_of(ft)
   return require("azure-cli.ui").find_tab(function(b) return vim.bo[b].filetype == ft end)
 end
 
+function M.tab(name)
+  local s = screen(name)
+  return s and (tab_of(s.ft))
+end
+
 -- Without the tab and buffer autocmds that moving around would fire (the
 -- chat panel follows you into every tab you enter).
 local function quietly(fn)
@@ -50,12 +57,20 @@ function M.order()
   local tab, win = vim.api.nvim_get_current_tabpage(), vim.api.nvim_get_current_win()
   quietly(function()
     local pos = 0
+    local INNER = require("azure-cli.innertabs")
     for _, s in ipairs(M.SCREENS) do
       local t = tab_of(s.ft)
       if t then
         vim.api.nvim_set_current_tabpage(t)
         vim.cmd("tabmove " .. pos)
         pos = pos + 1
+        -- Its inner tabs right after it, so gt and a tab line of your own
+        -- keep them together.
+        for _, m in ipairs(INNER.members(t)) do
+          vim.api.nvim_set_current_tabpage(m.tab)
+          vim.cmd("tabmove " .. pos)
+          pos = pos + 1
+        end
       end
     end
     vim.api.nvim_set_current_tabpage(tab)
@@ -124,10 +139,12 @@ function M.open_all()
   end })
   vim.api.nvim_create_autocmd("TabClosed", { group = group, callback = function()
     local back
+    local INNER = require("azure-cli.innertabs")
     for tab, from in pairs(opened_from) do
       if not vim.api.nvim_tabpage_is_valid(tab) then
         opened_from[tab] = nil
-        if vim.api.nvim_tabpage_is_valid(from) then back = from end
+        -- An inner tab: innertabs.lua goes back to the one before it.
+        if vim.api.nvim_tabpage_is_valid(from) and not INNER.owns(tab) then back = from end
       end
     end
     if back then vim.schedule(function()

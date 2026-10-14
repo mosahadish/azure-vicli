@@ -249,5 +249,24 @@ for _, s in ipairs({ "diff", "list", "workitem_view" }) do
   check("no chat_input on " .. s, config.get().keys[s].chat_input == nil)
 end
 
+-- 13. Inner tabs (innertabs.lua): ]r / [r, and g1..g9 for the strip's
+-- entries. They're bound on the PR dashboard and the reviewer's buffers
+-- next to those surfaces' own keys, so none of those may have a bare ] or
+-- [ - bound with nowait, it would fire before the r.
+check("tabs: ]r / [r", keys.resolve("tabs", "next") == "]r" and keys.resolve("tabs", "prev") == "[r")
+do
+  local pick = keys.resolve("tabs", "pick")
+  check("tabs: pick is g1..g9", type(pick) == "table" and #pick == 9 and pick[1] == "g1" and pick[9] == "g9")
+end
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav" }) do
+  local bare = {}
+  for action, spec in pairs(config.get().keys[s]) do
+    for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
+      if k == "]" or k == "[" then bare[#bare + 1] = action end
+    end
+  end
+  check("tabs: no bare ] or [ on " .. s, #bare == 0, table.concat(bare, ", "))
+end
+
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

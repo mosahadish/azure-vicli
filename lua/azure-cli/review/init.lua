@@ -131,12 +131,17 @@ end
 -- Leave the reviewer: close the tab when embedded, else quit nvim. The
 -- timers and scratch buffers this reviewer created go with it
 -- (EXT.cleanup, assigned near the end of this file once everything it
--- has to reach exists) - they used to linger until their next tick /
+-- has to reach exists, and kept in STATE.reviews[KEY]) - they used to linger until their next tick /
 -- forever.
 local function leave(force)
   local function go()
-    if STATE.review_cleanup then pcall(STATE.review_cleanup) end
+    -- This review's own cleanup: several can be open at once (inner tabs,
+    -- lua/azure-cli/innertabs.lua), each with its own timers and buffers.
+    local cleanup = STATE.reviews and STATE.reviews[KEY]
+    if cleanup then pcall(cleanup) end
     if EMBED then
+      -- An inner tab of Pull requests: back to the review before it.
+      pcall(function() require("azure-cli.innertabs").closing() end)
       pcall(vim.cmd, "tabclose")
     else
       vim.cmd("qa!")
@@ -381,6 +386,10 @@ local mark_current_file  -- highlights the file-list row for the shown diff; ass
 local EXT = { keys = { list = {}, diff = {}, overview = {}, nav = {} },
               help = { list = {}, diff = {}, overview = {}, nav = {} } }
 EXT.on_comment_popup = {}
+-- The record the dashboard handed over for THIS PR (STATE.PR_CURRENT is
+-- rewritten for every PR opened after it, and several reviews can be open
+-- at once - inner tabs, lua/azure-cli/innertabs.lua).
+EXT.pr_current = STATE.PR_CURRENT
 -- EXT.rpc is the shared daemon client for the data provider (azure-cli.py
 -- --serve - see rpc.lua's own header comment): every
 -- vim.fn.jobstart(EXT.provider(...), opts) below becomes
@@ -644,7 +653,7 @@ local function current_pr_record()
       end
     end
   end
-  local cur = STATE.PR_CURRENT
+  local cur = EXT.pr_current
   if cur and tostring(HOSTS.key(cur)) == KEY then
     return cur
   end
@@ -739,7 +748,7 @@ local pending_status = {}   -- thread id -> status key
 local pending_seq = 0
 
 local function my_display_name()
-  local rec = STATE.PR_CURRENT
+  local rec = EXT.pr_current
   if rec and tostring(require("azure-cli.hosts").key(rec)) == KEY and rec.myName and rec.myName ~= "" then
     return rec.myName
   end
@@ -2626,13 +2635,14 @@ set_list_winbar()
 -- Refresh the build badge from the shared cache (which the dashboard polls).
 -- No extra API calls here; it just re-reads the record. Standalone runs have no
 -- cache, so the badge stays hidden and this is a cheap no-op.
-if STATE.review_badge_timer then pcall(vim.fn.timer_stop, STATE.review_badge_timer) end
-STATE.review_badge_timer = vim.fn.timer_start(10000, function()
+-- This review's own timer (EXT, not STATE): with several reviews open at
+-- once, opening one used to stop the other's.
+EXT.badge_timer = vim.fn.timer_start(10000, function()
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     set_list_winbar()
   else
-    pcall(vim.fn.timer_stop, STATE.review_badge_timer)
-    STATE.review_badge_timer = nil
+    pcall(vim.fn.timer_stop, EXT.badge_timer)
+    EXT.badge_timer = nil
   end
 end, { ["repeat"] = -1 })
 
@@ -3154,7 +3164,7 @@ local function load_files()
           if cached then return end  -- already showing the cached list; the status refresh alone failing isn't fatal
           notify("Cannot diff PR #" .. ID .. " (" .. range .. "): branch not found in "
             .. (REPO_PATH ~= "" and REPO_PATH or "the current repo")
-            .. ". It may be deleted, or repo '" .. (env.AZVICLI_REPO or "?")
+            .. ". It may be deleted, or repo '" .. (EXT.pr_env.AZVICLI_REPO ~= "" and EXT.pr_env.AZVICLI_REPO or "?")
             .. "' isn't cloned here.", vim.log.levels.ERROR)
           if EMBED then leave() end
           return
@@ -3703,31 +3713,33 @@ refresh_threads = function(opts)
   end
 end
 
-if STATE.review_threads_timer then pcall(vim.fn.timer_stop, STATE.review_threads_timer) end
-STATE.review_threads_timer = vim.fn.timer_start(
+-- Per review, like the badge timer above.
+EXT.threads_timer = vim.fn.timer_start(
   require("azure-cli.config").get().timing.poll_seconds * 1000, function()
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     refresh_threads()
     EXT.check_new_push()
     EXT.check_source_sha()
   else
-    pcall(vim.fn.timer_stop, STATE.review_threads_timer)
-    STATE.review_threads_timer = nil
+    pcall(vim.fn.timer_stop, EXT.threads_timer)
+    EXT.threads_timer = nil
   end
 end, { ["repeat"] = -1 })
 -- The same refetch the poll above runs, for tests/demo-smoke.lua (opts as
--- for refresh_threads: on_done runs once it lands).
-STATE.review_refresh_threads = function(opts) refresh_threads(opts) end
+-- for refresh_threads: on_done runs once it lands). The last review opened.
+EXT.refresh_hook = function(opts) refresh_threads(opts) end
+STATE.review_refresh_threads = EXT.refresh_hook
 -- Whether the file list's preview-on-move is still waiting to open a row,
 -- also for tests/demo-smoke.lua (its NAV step: entering the list mustn't).
-STATE.review_preview_pending = function()
+EXT.preview_hook = function()
   return preview_timer ~= nil and #vim.fn.timer_info(preview_timer) > 0
 end
+STATE.review_preview_pending = EXT.preview_hook
 
 -- The file list keeps its absolute width across a terminal resize
 -- otherwise, with the diff pane absorbing all of the change.
 vim.api.nvim_create_autocmd("VimResized", {
-  group = vim.api.nvim_create_augroup("AzureCliReviewResize", { clear = true }),
+  group = vim.api.nvim_create_augroup("AzureCliReviewResize" .. KEY, { clear = true }),
   callback = function()
     if list_win and vim.api.nvim_win_is_valid(list_win) then fit_list_width() end
   end,
@@ -3745,11 +3757,15 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- (see the block right before `local ctx = {}` there) - reading them off
 -- EXT, which the IIFE already closes over for a dozen other fields, costs
 -- it no additional upvalues at all.
-STATE.review_cleanup = function()
-  STATE.review_refresh_threads = nil
-  STATE.review_preview_pending = nil
-  for _, name in ipairs({ "review_threads_timer", "review_badge_timer" }) do
-    if STATE[name] then pcall(vim.fn.timer_stop, STATE[name]); STATE[name] = nil end
+-- This review's cleanup, in STATE.reviews[KEY] (leave() runs it); several
+-- reviews can be open at once (inner tabs). STATE.review_cleanup cleans up
+-- every open one (tests/demo-smoke.lua's reset).
+EXT.cleanup = function()
+  if STATE.reviews and STATE.reviews[KEY] == EXT.cleanup then STATE.reviews[KEY] = nil end
+  if STATE.review_refresh_threads == EXT.refresh_hook then STATE.review_refresh_threads = nil end
+  if STATE.review_preview_pending == EXT.preview_hook then STATE.review_preview_pending = nil end
+  for _, name in ipairs({ "threads_timer", "badge_timer" }) do
+    if EXT[name] then pcall(vim.fn.timer_stop, EXT[name]); EXT[name] = nil end
   end
   local bufs = {}
   for _, entry in pairs(diff_cache) do bufs[#bufs + 1] = entry.buf end
@@ -3761,6 +3777,11 @@ STATE.review_cleanup = function()
       if b and vim.api.nvim_buf_is_valid(b) then pcall(vim.api.nvim_buf_delete, b, { force = true }) end
     end
   end)
+end
+STATE.reviews = STATE.reviews or {}
+STATE.reviews[KEY] = EXT.cleanup
+STATE.review_cleanup = function()
+  for _, cleanup in pairs(vim.tbl_values(STATE.reviews or {})) do pcall(cleanup) end
 end
 -- "Viewed" files (review/viewed.lua) - marked when a file is opened with
 -- focus, toggled by hand, counted in the winbar, skipped by ]m/[m.
@@ -3820,7 +3841,6 @@ EXT.toggle_inline = function()
   end
 end
 
-EXT.cleanup = STATE.review_cleanup
 EXT.render_overview = render_overview
 EXT.open_file = open_file
 EXT.ensure_diff_content = ensure_diff_content
@@ -3867,6 +3887,7 @@ EXT.status_options = status_options
   ctx.ID, ctx.ORG, ctx.PROJECT, ctx.SOURCE, ctx.TARGET = ID, ORG, PROJECT, SOURCE, TARGET
   ctx.KEY = KEY
   ctx.REPO_PATH, ctx.EMBED = REPO_PATH, EMBED
+  ctx.REPO = EXT.pr_env.AZVICLI_REPO
   ctx.provider = EXT.provider
   ctx.rpc = EXT.rpc
 

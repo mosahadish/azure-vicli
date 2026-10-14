@@ -124,6 +124,12 @@ local DEFAULT_KEYS = {
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
     edit_request = "cc",
   },
+  -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
+  -- and on everything opened from it (a PR's reviewer). pick's keys go to
+  -- the strip's entries in order - g1 the home list, g2 the first item.
+  tabs = {
+    next = "]r", prev = "[r", pick = { "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "g9" },
+  },
 }
 
 -- Key actions that used to exist: their old default and why they went.
@@ -729,11 +735,12 @@ end
 -- README's order, actions alphabetically, so a diff of two generated files
 -- is meaningful. Multi-key defaults render as Lua lists.
 local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan",
-  "agents" }
+  "agents", "tabs" }
 local SURFACE_TITLES = {
   dashboard = "Pull-request dashboard", list = "Reviewer: file list", diff = "Reviewer: diff pane",
   overview = "Reviewer: Overview page", nav = "Reviewer: gd/gr/gf revision buffers and peek",
   workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel", plan = "Agent plan window", agents = "Agents screen",
+  tabs = "Inner tabs (a home tab and what's opened from it)",
 }
 local function lua_literal(v)
   if type(v) == "string" then return string.format("%q", v) end

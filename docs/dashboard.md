@@ -33,6 +33,12 @@ lists every key: `Pull requests · N actionable · M mentions   [filter: x]
 they're non-zero/active (a filtered, non-syncing dashboard with nothing in
 Actionable just shows `Pull requests   ?: help`).
 
+`<CR>` on a PR opens it as an inner tab of this one, not a tab of its own:
+with reviews open, the winbar starts with a strip of them -
+`Pull requests │ !101 Fix auth │ [!102 Cache] ┃` - and `]r` / `[r` or
+`g2`..`g9` go to one (`g1` is back here). `<CR>` on a PR that's already
+open goes to its inner tab. See [Inner tabs](commands-and-keys.md#keys).
+
 The table's columns scale with the window instead of the fixed widths an
 older version hard-coded: title and reviewer summary grow to fill a wide
 terminal, id/badges/vote/thread-count stay fixed, and on a narrow one the

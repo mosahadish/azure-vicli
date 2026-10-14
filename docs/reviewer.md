@@ -4,9 +4,16 @@ _Part of the [azure-vicli](../README.md) docs._
 
 ## Reviewer
 
-Opening a PR adds a tab with the file list on the left and the selected
-content on the right. The first row is always the Overview: title,
-description, commits, and PR-level comments.
+Opening a PR adds an inner tab to Pull requests with the file list on the
+left and the selected content on the right. The first row is always the
+Overview: title, description, commits, and PR-level comments.
+
+Several reviews stay open side by side inside the Pull requests tab: the
+winbar's strip (`Pull requests │ !101 Fix auth │ [!102 Cache]`) lists them,
+`]r` / `[r` and `g1`..`g9` switch, and each keeps its file list, diff and
+cursor (and its own polling) while you're in another. `q` closes the one
+you're in and goes to the one before it, the list when it was the first
+([Inner tabs](commands-and-keys.md#keys)).
 
 ![The reviewer just opened: file list on the left, the Overview on the right](images/reviewer-files.png)
 

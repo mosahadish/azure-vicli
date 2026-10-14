@@ -1673,9 +1673,12 @@ local function open_pr_record(pr)
   if not pr then
     return
   end
-  -- Already open in a reviewer tab: go there rather than opening a twin.
-  if UI.goto_tab(function(b)
-    return vim.bo[b].filetype == "azurecli-files" and (vim.b[b].azure_cli_pr_key or vim.b[b].azure_cli_pr) == tostring(HOSTS.key(pr))
+  -- Already open (an inner tab of Pull requests, innertabs.lua, or a
+  -- reviewer tab of its own): go there rather than opening a twin.
+  local INNER = require("azure-cli.innertabs")
+  local key = tostring(HOSTS.key(pr))
+  if INNER.goto_key(key) or UI.goto_tab(function(b)
+    return vim.bo[b].filetype == "azurecli-files" and (vim.b[b].azure_cli_pr_key or vim.b[b].azure_cli_pr) == key
   end) then
     return
   end
@@ -1699,8 +1702,11 @@ local function open_pr_record(pr)
       notify("Could not open PR #" .. pr.id .. ": repo isn't available.", vim.log.levels.ERROR)
       return
     end
-    vim.cmd("tabnew")
-    require("azure-cli.review").open()
+    -- An inner tab of Pull requests (innertabs.lua), titled like the strip
+    -- shows it.
+    INNER.open("prs", key, "!" .. tostring(pr.id) .. " " .. tostring(pr.title or ""), function()
+      require("azure-cli.review").open()
+    end)
   end, true)
 end
 M.open_pr_by_record = open_pr_record

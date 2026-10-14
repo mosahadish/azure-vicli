@@ -79,6 +79,13 @@ end
 function M.entries(buf)
   local writes = require("azure-cli.keys").writes_on(buf)
   local out, seen = {}, {}
+  -- g1..g9 (innertabs.lua's tabs.pick) as one line, not nine.
+  local pick = vim.b[buf].azure_cli_tabs and require("azure-cli.keys").resolve("tabs", "pick")
+  pick = type(pick) == "table" and pick or (pick and { pick }) or {}
+  for _, k in ipairs(pick) do seen[k] = true end
+  if #pick > 1 and pick[1]:sub(1, 1) == "g" then
+    out[#out + 1] = { key = pick[1] .. "-" .. pick[#pick], desc = "go to inner tab n (the first is the list)", write = false }
+  end
   for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
     local lhs = m.lhs or ""
     if lhs:sub(1, 1) == "g" and #lhs > 1 and not seen[lhs] then

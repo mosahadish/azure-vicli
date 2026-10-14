@@ -217,13 +217,19 @@ end
 
 -- 'tabline': every tab by its title (the standalone launcher sets it;
 -- plugin users can: vim.o.tabline = "%!v:lua.require'azure-cli.ui'.tabline()").
+-- A home tab's inner tabs (lua/azure-cli/innertabs.lua) aren't listed: the
+-- home is, selected while you're in one of them.
 function M.tabline()
   M.theme()
+  local INNER = require("azure-cli.innertabs")
   local cur = vim.api.nvim_get_current_tabpage()
+  local cur_home = INNER.is_member(cur) and INNER.home_of(cur) or cur
   local out = {}
   for i, tab in ipairs(vim.api.nvim_list_tabpages()) do
-    local hl = tab == cur and "%#TabLineSel#" or "%#TabLine#"
-    out[#out + 1] = hl .. "%" .. i .. "T " .. (M.tab_title(tab):gsub("%%", "%%%%")) .. " "
+    if not INNER.is_member(tab) then
+      local hl = tab == cur_home and "%#TabLineSel#" or "%#TabLine#"
+      out[#out + 1] = hl .. "%" .. i .. "T " .. (M.tab_title(tab):gsub("%%", "%%%%")) .. " "
+    end
   end
   -- The chat's status strip on the right: the agent working, a question
   -- waiting for you, plans waiting for your review.
@@ -467,7 +473,14 @@ end
 -- value every later window inherits - the plugin used to turn line
 -- numbers off for the user's whole session that way. Every window-option
 -- write in this plugin goes through here.
+-- A winbar gets the inner-tab strip in front (lua/azure-cli/innertabs.lua's
+-- M.bar: empty except in the widest window of a home tab with inner tabs,
+-- or of one of those), so no winbar builder has to know about it.
+M.STRIP = "%{%v:lua.require'azure-cli.innertabs'.bar()%}"
 function M.wo(win, name, value)
+  if name == "winbar" and type(value) == "string" and value ~= "" and value:sub(1, #M.STRIP) ~= M.STRIP then
+    value = M.STRIP .. value
+  end
   vim.api.nvim_set_option_value(name, value, { win = win, scope = "local" })
 end
 

@@ -9,7 +9,7 @@ Installed as a plugin, everything goes through one user command:
 | Command | Effect |
 |---|---|
 | `:AzureCli` / `:AzureCli dashboard` | Open the [pull request dashboard](dashboard.md#pull-request-dashboard), in a new tab. |
-| `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, in a new tab - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
+| `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, as an inner tab of Pull requests (see Inner tabs below) - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
 | `:AzureCli workitems` | Open the [work-items dashboard](work-items.md#work-items), in a new tab. |
 | `:AzureCli issues` | Open the [issues dashboard](work-items.md#issues-github), in a new tab: a GitHub account's `issues:` project. With no such account it says so instead. |
 | `:AzureCli chat` | Show or hide the [chat panel](chat.md) - the same as `gq` on any azure-vicli screen. |
@@ -44,8 +44,21 @@ work on a visual selection aren't listed.
 have a tab of their own: `P` goes to the pull requests, `W` to the work
 items, `A` to the Agents screen, from any of them (or click the tab). The
 standalone launcher opens all three at startup and keeps them the first
-three tabs, in that order; a PR or a plan you open goes after them, and
-closing it takes you back to the tab you opened it from.
+three tabs, in that order; a plan you open goes after them, and closing it
+takes you back to the tab you opened it from.
+
+**Inner tabs.** A pull request you open stays inside the Pull requests tab,
+as an inner tab: the tab line keeps one entry for Pull requests, and the
+winbar shows a strip - `Pull requests │ !101 Fix auth │ [!102 Cache]` - the
+list first, then each open review, the one you're on in brackets. `]r` /
+`[r` go to the next / previous one, `g1`..`g9` to the n-th (`g1` the list),
+and `q` in a review closes it and goes to the one before it (the list when
+there's none). Opening a PR that's already open goes to its inner tab. Each
+keeps its own cursor, file list and diff while you're in another. (Each is
+still a Neovim tab underneath, so `gt` / `gT` visit them too; in your own
+Neovim, a `'tabline'` of your own lists them - azure-vicli's
+`ui.tabline()`, see [Configuration](configuration.md), doesn't.)
+Work items and plans come next.
 
 Press `g` and pause, and a small float in the bottom-right corner lists the
 screen's `g` keys and what each does (with the `↑` marks); the next key
@@ -59,7 +72,7 @@ turns it on or off regardless.
 
 Every key in every table in these docs is a *default* - `setup()`'s `keys`
 option remaps or unbinds any of them, per **surface** (`dashboard`, `list`,
-`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat`, `plan`, `agents` - roughly, one per
+`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat`, `plan`, `agents`, `tabs` - roughly, one per
 screen this tool shows) and **action** (a stable name for what the key
 does, independent of which key it's bound to):
 
@@ -419,4 +432,12 @@ paste the output here after changing a default.
 | `run_log` | `gH` |
 | `show_finished` | `gF` |
 | `workitems` | `W` |
+
+#### tabs
+
+| Action | Default key(s) |
+|---|---|
+| `next` | `]r` |
+| `pick` | `g1` / `g2` / `g3` / `g4` / `g5` / `g6` / `g7` / `g8` / `g9` |
+| `prev` | `[r` |
 <!-- END GENERATED KEYS TABLE -->

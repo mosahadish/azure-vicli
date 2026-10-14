@@ -18,7 +18,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The thirty-one Lua unit tests below it in this directory, against a
+#   4. The thirty-three Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed provider --threads.
 #   5. `python3 -m unittest` over tests/test_*.py - unit tests for
 #      azure-cli.py (the YAML-subset config parser, PR classification,
@@ -269,6 +269,7 @@ FOLLOWUP_LUA="$TMP/lua/lua/azure-cli/review/followup.lua"
 CONFIG_LUA="$TMP/lua/lua/azure-cli/config.lua"
 KEYS_LUA="$TMP/lua/lua/azure-cli/keys.lua"
 UI_LUA="$TMP/lua/lua/azure-cli/ui.lua"
+INNERTABS_LUA="$TMP/lua/lua/azure-cli/innertabs.lua"
 PROMPT_LUA="$TMP/lua/lua/azure-cli/prompt.lua"
 PRS_LUA="$TMP/lua/lua/azure-cli/prs.lua"
 MERGE_LUA="$TMP/lua/lua/azure-cli/merge.lua"
@@ -337,6 +338,7 @@ run_lua_test test-migrate.lua "$REPO_ROOT" "$MIGRATE_LUA"
 run_lua_test test-states.lua "$REPO_ROOT" "$STATES_LUA"
 run_lua_test test-config.lua "$REPO_ROOT" "$CONFIG_LUA" "$CACHE_LUA"
 run_lua_test test-ui.lua "$REPO_ROOT" "$UI_LUA"
+run_lua_test test-innertabs.lua "$REPO_ROOT" "$INNERTABS_LUA"
 run_lua_test test-prompt.lua "$REPO_ROOT" "$PROMPT_LUA"
 run_lua_test test-prs.lua "$REPO_ROOT" "$PRS_LUA"
 run_lua_test test-merge.lua "$REPO_ROOT" "$MERGE_LUA"
@@ -738,6 +740,7 @@ $out"
   smoke_check "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" GS
   smoke_check "smoke: gU moves a work item under another parent (picked, then typed) and the tree regroups" PARENT
   smoke_check "smoke: W's No sprint tab lists my open backlog/root items, and gi files one there" NOSPRINT
+  smoke_check "smoke: two PRs open as inner tabs of Pull requests: one tab-line entry, the strip, ]r/[r/g2 keep each cursor, no twin, q goes back" INNERTABS
   smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
   # Every check above got its own result only if the script ran to its end:
   # a crash, a hang (demo.sh's timeout) or a Lua error outside a check

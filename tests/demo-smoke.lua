@@ -3132,6 +3132,105 @@ section("BATCHQ", function()
   smoke_ok("BATCHQ")
 end)
 
+-- Inner tabs (innertabs.lua): two PRs opened from the dashboard stay
+-- inside its tab - the tab line lists Pull requests once, the strip in the
+-- winbar lists both; ]r / [r and g1..g9 switch, each review keeping its
+-- cursor; opening one again goes to it; q closes one and goes to the one
+-- before it, then to the list.
+section("INNERTABS", function()
+  local INNER = require("azure-cli.innertabs")
+  local UI = require("azure-cli.ui")
+  local function cur() return vim.api.nvim_get_current_tabpage() end
+  -- The keys are bound once the buffer's entered (scheduled): wait for them.
+  local function keys_here()
+    local b = vim.api.nvim_get_current_buf()
+    if not vim.wait(5000, function() return vim.b[b].azure_cli_tabs == true end, 20) then
+      return fail("no inner-tab keys on " .. vim.bo[b].filetype)
+    end
+  end
+  -- A tab's reviewer file list.
+  local function list_in(tab)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local b = vim.api.nvim_win_get_buf(w)
+      if vim.bo[b].filetype == "azurecli-files" then return b, w end
+    end
+  end
+  ensure_review()
+  local t101 = cur()
+  local _, w101 = list_in(t101)
+  vim.api.nvim_set_current_win(w101)
+  vim.api.nvim_win_set_cursor(w101, { 3, 0 })
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  require("azure-cli").open_review(102)
+  local t102
+  ok = vim.wait(20000, function()
+    t102 = cur()
+    local b = t102 ~= t101 and t102 ~= dash_tab and list_in(t102)
+    return b and vim.api.nvim_buf_line_count(b) > 1
+  end, 100)
+  if not ok then return fail("PR #102 never opened next to #101") end
+  local tabs = #vim.api.nvim_list_tabpages()
+  if INNER.home_of(t101) ~= dash_tab or INNER.home_of(t102) ~= dash_tab or #INNER.members(dash_tab) ~= 2 then
+    return fail("the two reviews aren't inner tabs of Pull requests: " .. vim.inspect(INNER.members(dash_tab)))
+  end
+  -- Neither review has an entry in the tab line (each entry starts with its
+  -- tab's %<n>T click target); the dashboard's tab does. Earlier checks may
+  -- have left tabs of their own, so only these three are looked at.
+  local line = UI.tabline()
+  local function listed(tab) return line:find("%" .. vim.api.nvim_tabpage_get_number(tab) .. "T", 1, true) ~= nil end
+  if listed(t101) or listed(t102) or not listed(dash_tab) or line:find("PR !", 1, true) then
+    return fail("the tab line lists the reviews: " .. line)
+  end
+  -- The strip, in the widest window of #102's tab.
+  local strip
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(t102)) do
+    local bar = vim.wo[w].winbar
+    if bar ~= "" then
+      local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
+      if s:find("Pull requests", 1, true) then strip = s end
+    end
+  end
+  if not (strip and strip:find("!101", 1, true) and strip:find("[!102", 1, true)) then
+    return fail("no strip with both reviews, #102 current: " .. tostring(strip))
+  end
+  keys_here()
+  feed("[r")
+  if cur() ~= t101 then return fail("[r didn't go back to #101") end
+  if vim.api.nvim_win_get_cursor(w101)[1] ~= 3 then
+    return fail("#101's file list lost its cursor: " .. vim.inspect(vim.api.nvim_win_get_cursor(w101)))
+  end
+  keys_here()
+  feed("]r")
+  if cur() ~= t102 then return fail("]r didn't go to #102") end
+  feed("g2")
+  if cur() ~= t101 then return fail("g2 didn't go to #101") end
+  feed("g1")
+  if cur() ~= dash_tab then return fail("g1 didn't go to the list") end
+  keys_here()
+  feed("g3")
+  if cur() ~= t102 then return fail("g3 on the list didn't go to #102") end
+  -- Opening #101 again goes to it, no second copy.
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  require("azure-cli").open_review(101)
+  if cur() ~= t101 or #vim.api.nvim_list_tabpages() ~= tabs then return fail("reopening #101 opened a twin") end
+  -- q on #102 goes to #101 (the one before it), q there to the list.
+  vim.api.nvim_set_current_tabpage(t102)
+  vim.api.nvim_set_current_win(select(2, list_in(t102)))
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t102) and cur() == t101 end, 20)
+  if not ok then
+    return fail("q on #102 didn't go back to #101: " .. vim.inspect({ closed = not vim.api.nvim_tabpage_is_valid(t102),
+      at = cur() == t101 and "101" or cur() == dash_tab and "list" or cur() == t102 and "102" or tostring(cur()),
+      float = float_text(), ft = vim.bo.filetype }))
+  end
+  vim.api.nvim_set_current_win(w101)
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t101) and cur() == dash_tab end, 20)
+  if not ok then return fail("q on #101 didn't go back to the list") end
+  if #INNER.members(dash_tab) ~= 0 then return fail("closed reviews are still listed") end
+  smoke_ok("INNERTABS")
+end)
+
 -- A GitHub account (github_host.py): the fake lists PR #7 from two
 -- repositories. Each opens in its own reviewer, with its own threads -
 -- per-PR state is keyed owner~repo~number, not by the number.
