@@ -180,7 +180,8 @@ function M.lines(spec, st)
     lines[#lines + 1] = l
     rows[#lines] = row
   end
-  add("Set #" .. tostring(spec.id) .. "  " .. (spec.type or "") .. " \u{00B7} " .. (spec.state or ""))
+  -- The state it has now: the one it's set to is the State: line's.
+  add("#" .. tostring(spec.id) .. "  " .. (spec.type or "") .. " \u{00B7} now " .. (spec.state or ""))
   if spec.title and spec.title ~= "" then add("  " .. cut(spec.title, 60)) end
   add("")
   add("State:   " .. cycler(st.states, st.si), { kind = "state" })
@@ -213,6 +214,17 @@ function M.lines(spec, st)
   add("")
   add("<Space>/l, h: cycle or toggle   <CR>: apply   q: close")
   return lines, rows
+end
+
+-- Where the State: line starts in `states` ({{label}}): on `current` when
+-- the list has it (GitHub's, where any Status follows any other), else on
+-- the first (Azure's transitions never list the current state; GitHub's
+-- No Status isn't a Status to set).
+function M.start_index(states, current)
+  for i, s in ipairs(states or {}) do
+    if s.label == current then return i end
+  end
+  return 1
 end
 
 -- "Also set children": turning it on with nothing selected brings the
@@ -449,6 +461,7 @@ function M._popup(spec, states)
   local notify = require("azure-cli.shell").notify
   local st = { si = 1, ri = 1, all = false, states = {} }
   for _, s in ipairs(states) do st.states[#st.states + 1] = { label = s } end
+  st.si = M.start_index(st.states, spec.state)
   local parent_cats   -- nil until fetched
   local kid_trans, kid_cats = {}, {}   -- per child id / per child type
   local rows = {}
@@ -627,6 +640,11 @@ function M._popup(spec, states)
     end
     local opt = st.ropts and st.ropts[st.ri]
     close()
+    -- Enter on the state it already has, with nothing else to set: no write.
+    if new == spec.state and #kids == 0 then
+      notify("#" .. shown(spec.ref) .. " is already " .. new .. ".")
+      return
+    end
     if opt and opt.other then
       require("azure-cli.prompt").input({ prompt = "Reason:", allow_empty = true }, function(r)
         if r ~= nil then M.apply(spec.ref, new, r, kids, spec.batch) end

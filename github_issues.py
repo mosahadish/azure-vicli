@@ -22,7 +22,8 @@ work item:
   an open one with no Status "No Status". `--wi-state set <id> Closed
   [completed|not planned]` closes the issue, any Status option sets the
   field (and reopens a closed issue). Status "Done" doesn't close anything
-  by itself: that's the project's own workflow's job, as on github.com;
+  by itself: that's the project's own workflow's job, as on github.com.
+  A new issue gets the first Status option (Todo);
 - an id is the issue number. Every <id> argument also takes
   owner/repo#n (or the owner~repo~n key records carry), and a bare number
   that two of the project's issues share is refused rather than guessed.
@@ -831,9 +832,10 @@ class IssueActions(object):
             print(CLOSED + "\tCompleted")
             return 0
         if cmd == "transitions":
+            # Every state, the current one too: any Status can follow any
+            # other, and gs opens on the one the issue has (state_dialog.lua).
             for s in self.states():
-                if s != a[1]:
-                    print(s)
+                print(s)
             return 0
         if cmd == "reasons":
             if a[1] == CLOSED:
@@ -1041,6 +1043,14 @@ class IssueActions(object):
         try:
             added = self.client.graphql(ADD_ITEM, {"project": self.project().id, "content": made.get("node_id")})
             item = (((added.get("addProjectV2ItemById") or {}).get("item")) or {}).get("id")
+            # The project's first Status (Todo), as GitHub's own board does:
+            # a project workflow may do it too, but not always, nor in time.
+            status = self.project().status
+            first = next((o for o in ((status or {}).get("options") or []) if o.get("id")), None)
+            if item and first:
+                self.client.graphql(UPDATE_FIELD, {"project": self.project().id, "item": item,
+                                                   "field": status.get("id"),
+                                                   "value": {"singleSelectOptionId": first["id"]}})
             if iteration:
                 self._set_iteration(owner, repo, number, item, iteration)
             if parent:

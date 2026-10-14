@@ -1687,9 +1687,9 @@ class Fake:
             print("Closed\tCompleted")
             return 0
         if cmd == "transitions":
+            # Like the real one: every state, the current one too.
             for s in GH_STATUS + ["Closed"]:
-                if s != a[1]:
-                    print(s)
+                print(s)
             return 0
         if cmd == "reasons":
             if a[1] == "Closed":

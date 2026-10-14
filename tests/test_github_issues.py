@@ -365,8 +365,11 @@ class StateTests(Base):
         c = Fake()
         self.assertEqual(run(c, "--wi-state", "states", "Issue")[1].splitlines(),
                          ["Todo\tProposed", "In Progress\tInProgress", "Done\tCompleted", "Closed\tCompleted"])
+        # Every state, the current one too: gs opens on it.
         self.assertEqual(run(c, "--wi-state", "transitions", "Issue", "Todo")[1].splitlines(),
-                         ["In Progress", "Done", "Closed"])
+                         ["Todo", "In Progress", "Done", "Closed"])
+        self.assertEqual(run(c, "--wi-state", "transitions", "Issue", "No Status")[1].splitlines(),
+                         ["Todo", "In Progress", "Done", "Closed"])
         self.assertEqual(run(c, "--wi-state", "reasons", "Issue", "Closed")[1].splitlines(),
                          ["completed", "not planned"])
         self.assertEqual(run(c, "--wi-state", "reasons", "Issue", "Done")[1], "")
@@ -431,10 +434,24 @@ class EditTests(Base):
         self.assertEqual(posts[0], ("POST", "/repos/o/r/issues", {"title": "New", "assignees": ["me"], "type": "Task"}))
         self.assertEqual(posts[1], ("POST", "/repos/o/r/issues/2/sub_issues", {"sub_issue_id": 9040}))
         self.assertEqual(c.gql("addProjectV2ItemById"), [{"project": "PRJ", "content": "I_40"}])
-        self.assertEqual(c.gql("updateProjectV2ItemFieldValue")[0]["value"], {"iterationId": "it3"})
+        # Status first: the project's first option (Todo), then the iteration.
+        self.assertEqual(c.gql("updateProjectV2ItemFieldValue"), [
+            {"project": "PRJ", "item": "ITEM_NEW", "field": "F_S", "value": {"singleSelectOptionId": "O_T"}},
+            {"project": "PRJ", "item": "ITEM_NEW", "field": "F_I", "value": {"iterationId": "it3"}}])
+
+    def test_create_without_a_status_field_sets_none(self):
+        c = Fake({"projectV2(number": {"repositoryOwner": {"projectV2": project(fields=(PRIORITY, ITERATION))}},
+                  "addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}},
+                  "updateProjectV2ItemFieldValue": {}},
+                 rest={("POST", "/repos/o/r/issues"): {"number": 43, "id": 1, "node_id": "I_43", "title": "T"}})
+        code, out, _ = run(c, "--wi-edit", "create", "Issue", "T")
+        self.assertEqual(code, 0)
+        self.assertNotIn("warning", json.loads(out))
+        self.assertEqual(c.gql("updateProjectV2ItemFieldValue"), [])
 
     def test_create_without_issue_types_sends_none(self):
-        c = Fake({"addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}}},
+        c = Fake({"addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}},
+                  "updateProjectV2ItemFieldValue": {}},
                  rest={("POST", "/repos/o/r/issues"): {"number": 41, "id": 1, "node_id": "I_41", "title": "T"}})
         run(c, "--wi-edit", "create", "Issue", "T")
         self.assertNotIn("type", c.rest_calls("POST")[0][2])
@@ -446,7 +463,8 @@ class EditTests(Base):
         self.assertIn("issues: repo:", err)
         self.assertEqual(c.rest_calls("POST"), [])
         c2 = Fake({"projectV2(number": {"repositoryOwner": {"projectV2": project(repos=(("o", "a"), ("o", "b")))}},
-                   "addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}}},
+                   "addProjectV2ItemById": {"addProjectV2ItemById": {"item": {"id": "X"}}},
+                   "updateProjectV2ItemFieldValue": {}},
                   rest={("POST", "/repos/o/b/issues"): {"number": 1, "id": 1, "node_id": "N", "title": "T"}})
         self.assertEqual(run(c2, "--wi-edit", "create", "Issue", "T", repo="b")[0], 0)
 

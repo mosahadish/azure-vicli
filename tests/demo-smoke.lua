@@ -892,6 +892,32 @@ do
   local made = gh_detail("demo-gh~gizmos~3002")
   if made.iterationPath ~= "Iteration 2" then return fail("the new issue isn't in Iteration 2: " .. vim.inspect(made)) end
   if made.description ~= "Wobbles past 4000 rpm." then return fail("n didn't save the new issue's body: " .. vim.inspect(made)) end
+  if made.state ~= "Todo" then return fail("n's new issue isn't Todo: " .. vim.inspect(made)) end
+
+  -- gs on it: the header names the state it has, the State: line opens on
+  -- it, and Enter sets what that line shows - never another state.
+  if not vim.wait(10000, function() return row_text(iss, 3002) ~= "" end, 100) then
+    return fail("#3002 isn't on the Issues tab", iss)
+  end
+  at_row(iss, 3002)
+  feed("gs")
+  local gs3002
+  if not vim.wait(15000, function() gs3002 = float_text() return gs3002 ~= nil and gs3002:find("State:", 1, true) ~= nil end, 100) then
+    return fail("gs on #3002 never opened the state popup")
+  end
+  if not (gs3002:find("#3002  Issue \u{00B7} now Todo", 1, true) and gs3002:find("State:   \u{2039} Todo \u{203A}", 1, true)) then
+    return fail("gs on the new #3002 should say now Todo and open on Todo:\n" .. gs3002)
+  end
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+    if l:find("^State:") then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+  end
+  feed("l")
+  if not vim.wait(5000, function() return (float_text() or ""):find("State:   \u{2039} In Progress \u{203A}", 1, true) ~= nil end, 50) then
+    return fail("l didn't move gs's State: to In Progress:\n" .. tostring(float_text()))
+  end
+  feed("<CR>")
+  ok = vim.wait(15000, function() return gh_detail("demo-gh~gizmos~3002").state == "In Progress" end, 200)
+  if not ok then return fail("gs + Enter didn't set #3002 to In Progress: " .. vim.inspect(gh_detail("demo-gh~gizmos~3002"))) end
   print("ISSUES-SMOKE-OK")
 
   -- Back on W: #3001 is still the Azure item, in the list and its cache.
