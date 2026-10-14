@@ -410,6 +410,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `revise` | `gR` |
+| `revisions` | `gh` |
 | `run_log` | `gH` |
 | `since` | `gi` |
 | `view_thread` | `K` |

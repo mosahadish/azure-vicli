@@ -4,7 +4,10 @@
 -- with the questions and requested changes under its lines, the chat
 -- alongside. Saving a plan's file by hand makes it a revision by you.
 -- Once the agent has changed files, the list's Changes section shows its
--- diff, file by file, in the plan pane (chat/plan_changes.lua).
+-- diff, file by file, in the plan pane (chat/plan_changes.lua). gh opens
+-- an older revision in the plan pane, read-only (view.old = its number):
+-- no threads, no keys that write, gh again (or anything that reloads the
+-- plan) back to the current one.
 --
 -- plan.lua loads it on its own load and reaches into it through M.changed
 -- (save + redraw), M.plan_win and M.show; it reaches plan.lua lazily
@@ -24,7 +27,7 @@ local function last_rev(rec) return rec.revisions[#rec.revisions] end
 -- `view` is the one being worked on: every key, autocmd and callback
 -- points it at its own plan's view first (use_buf / with_view), and the
 -- functions below read it.
-local view = nil  -- { tab, list_win, plan_win, list_buf, plan_buf, key, rec, sections, rows, width }
+local view = nil  -- { tab, list_win, plan_win, list_buf, plan_buf, key, rec, sections, rows, width, old }
 local views = {}  -- plan key -> its view
 local by_buf = {} -- buffer -> the view it belongs to
 local goto_code, unanswered, unsent  -- forward
@@ -45,6 +48,7 @@ local LIST_HELP = {
   { "revise", "ask for changes or send your answers (you say what; your unsent answers go along)" },
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
   "See",
+  { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "refresh", "reload it" },
   { "chat", "go to the chat" },
@@ -80,7 +84,8 @@ local PLAN_HELP = {
   end },
   { "open_file", "edit the plan by hand" },
   "See",
-  { "since", "mark what this revision changed against the one before (on by default; toggles)" },
+  { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles)" },
+  { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "refresh", "reload it" },
   { "chat", "go to the chat (in visual mode: send the selected lines)" },
@@ -114,13 +119,29 @@ local function view_of_tab(tab)
   return nil
 end
 
+-- The keys that write, or work on the current text's threads and lines:
+-- on an older revision (gh) they only say it's read-only.
+local CURRENT_ONLY = {
+  ask = true, request = true, answer = true, delete_thread = true, edit_request = true, expand_thread = true,
+  view_thread = true, approve = true, revise = true, open_file = true, goto_code = true, since = true,
+}
+
 -- KEYS().bind for the plan surface, on a buffer of one plan's view: the
 -- key works on that view.
 local function bind(buf, action, fn, opts)
   KEYS().bind(buf, "plan", action, function(...)
     use_buf(buf)
+    if view and view.old and CURRENT_ONLY[action] then
+      return notify("Revision " .. view.old .. " is read-only - " .. (key_of("plan", "revisions") or "gh")
+        .. " back to the current one.")
+    end
     return fn(...)
   end, opts)
+end
+
+-- The older revision shown instead of the current one (gh), or nil.
+local function old_rev()
+  return view and view.old and PLAN().revision(view.rec, view.old) or nil
 end
 
 local function close()
@@ -142,6 +163,7 @@ local link_ns = vim.api.nvim_create_namespace("azure_cli_plan_links")
 local function draw_links()
   if not (view and valid_buf(view.plan_buf)) then return end
   vim.api.nvim_buf_clear_namespace(view.plan_buf, link_ns, 0, -1)
+  if view.old then return end  -- the steps carry out the current text
   local lines = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
   local by_line = {}
   for _, k in ipairs(view.rec.links or {}) do
@@ -159,11 +181,14 @@ end
 
 local since_ns = vim.api.nvim_create_namespace("azure_cli_plan_since")
 
--- What this revision changed against the one before it, or nil (the first
--- revision, or gi turned it off): revision_changes' { changed, removed }.
+-- What this revision changed against the one before it (the previous one
+-- kept: its number in view.changes_since), or nil (the first revision, gi
+-- turned it off, an older one shown): revision_changes' { changed, removed }.
 local function since()
   local revs = view.rec.revisions
-  if view.since_off or #revs < 2 then return nil end
+  view.changes_since = nil
+  if view.since_off or view.old or #revs < 2 then return nil end
+  view.changes_since = revs[#revs - 1].n or (#revs - 1)
   local old = vim.split(revs[#revs - 1].markdown or "", "\n", { plain = true })
   local new = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
   local diff = (vim.text and vim.text.diff) or vim.diff
@@ -172,33 +197,25 @@ local function since()
   return PLAN().revision_changes(old, new, ok and hunks or {})
 end
 
--- The bar beside each line this revision changed, and the lines it took
--- out (struck through, where they were).
+-- The bar beside each line this revision changed - only that: the text it
+-- took out isn't shown (#90; gh opens the revision before).
 local function draw_since()
   if not (view and valid_buf(view.plan_buf)) then return end
   vim.api.nvim_buf_clear_namespace(view.plan_buf, since_ns, 0, -1)
   local ch = since()
   view.changes = ch
   if not ch then return end
-  local n = vim.api.nvim_buf_line_count(view.plan_buf)
   for l in pairs(ch.changed) do
     pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, since_ns, l - 1, 0,
       { sign_text = "\u{258E}", sign_hl_group = "AzureCliPlanChanged", priority = 5 })
   end
-  for at, gone in pairs(ch.removed) do
-    local vl = {}
-    for _, g in ipairs(gone) do vl[#vl + 1] = { { "\u{2212} " .. g, "AzureCliPlanRemoved" } } end
-    if at <= n then
-      pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, since_ns, at - 1, 0, { virt_lines = vl, virt_lines_above = true })
-    else
-      pcall(vim.api.nvim_buf_set_extmark, view.plan_buf, since_ns, n - 1, 0, { virt_lines = vl })
-    end
-  end
 end
 
+-- The questions and requests under their lines - none on an older
+-- revision: they're on the current one's lines.
 local function draw_threads()
   if not (view and valid_buf(view.plan_buf)) then return end
-  THREADS().draw(view.plan_buf, view.plan_win, view.rec.threads, function(th) return th.line end,
+  THREADS().draw(view.plan_buf, view.plan_win, view.old and {} or view.rec.threads, function(th) return th.line end,
     { send = KEYS().name("plan", "revise"), drop = key_of("plan", "delete_thread"), edit = key_of("plan", "edit_request") })
   draw_links()
 end
@@ -221,12 +238,18 @@ local function set_winbars()
   if not_sent > 0 and rec.status ~= "approved" and rec.status ~= "done" then
     tags[#tags + 1] = "[" .. not_sent .. " answer" .. (not_sent == 1 and "" or "s") .. " unsent]"
   end
-  if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. (#rec.revisions - 1) .. "]" end
+  if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. tostring(view.changes_since) .. "]" end
+  local count = PLAN().rev_count(rec)
   if PC().showing(view) then
     PC().winbar(view)  -- a file of the Changes section is in the plan pane
+  elseif view.old and valid_win(view.plan_win) then
+    -- An older revision (gh): which one, and the way back.
+    pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. PLAN().target_label(rec.target),
+      "rev " .. view.old .. " of " .. count, "read-only" },
+      { "[" .. (key_of("plan", "revisions") or "gh") .. " back to the current one]" }))
   elseif valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. PLAN().target_label(rec.target),
-      #rec.revisions > 1 and ("rev " .. #rec.revisions) or nil }, tags))
+      count > 1 and ("rev " .. count) or nil }, tags))
   end
   if valid_win(view.list_win) then
     pcall(UI().wo, view.list_win, "winbar", UI().winbar({ "Sections" }, {}))
@@ -260,7 +283,12 @@ local function render_list()
   add(" " .. UI().fit(PLAN().target_label(rec.target) .. "  " .. (rec.title or ""), width - 2), "AzureCliSection")
   local st, st_hl = PLAN().status_label(rec)
   if rec.allow_push and rec.status == "approved" then st = st .. " \u{00B7} may push" end
-  add(" " .. st .. (#rec.revisions > 1 and ("  \u{00B7} revision " .. #rec.revisions) or ""), st_hl)
+  local count = PLAN().rev_count(rec)
+  add(" " .. st .. (count > 1 and ("  \u{00B7} revision " .. count) or ""), st_hl)
+  if view.old then
+    add(" " .. UI().fit("revision " .. view.old .. " of " .. count .. " \u{00B7} read-only \u{00B7} "
+      .. KEYS().name("plan", "revisions") .. " back", width - 2), "AzureCliAccent")
+  end
   local decided = rec.status == "approved" or rec.status == "done"
   -- Answers you gave that the agent hasn't seen yet, and the key that sends them.
   local not_sent = unsent()
@@ -277,7 +305,8 @@ local function render_list()
   end
   add("")
   local per, per_req = {}, {}
-  for _, th in ipairs(rec.threads) do
+  -- An older revision's sections: no badges, the threads are the current one's.
+  for _, th in ipairs(view.old and {} or rec.threads) do
     local s = PLAN().section_at(view.sections, th.line)
     -- Your answers aren't questions: the header's [?N] skips them too.
     local into = th.kind == "request" and per_req or th.kind ~= "answer" and per or nil
@@ -291,7 +320,7 @@ local function render_list()
       if per_req[s.line] then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{270E}" .. per_req[s.line] end
       if section_changed(s) then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{00B1}" end
       if s.items > 0 and s.title:lower():find("file", 1, true) then badge = (badge ~= "" and (badge .. " ") or "") .. s.items end
-      if open_q > 0 and not decided and s.level == 2 and s.title:lower():find("question", 1, true) then
+      if open_q > 0 and not decided and not view.old and s.level == 2 and s.title:lower():find("question", 1, true) then
         badge = (badge ~= "" and (badge .. " ") or "") .. open_q .. " to answer"
       end
       local indent = string.rep("  ", math.max(0, s.level - 2))
@@ -314,21 +343,28 @@ local function render_list()
   end
   add("")
   local hints = {}
-  if not decided then
-    hints[#hints + 1] = { "plan", "approve", "approve" }
-    hints[#hints + 1] = { "plan", "revise", not_sent > 0 and "send your answers / ask for changes" or "ask for changes" }
-  end
-  hints[#hints + 1] = { "plan", "ask", "ask about a line" }
-  if not decided then hints[#hints + 1] = { "plan", "request", "ask a change on a line" } end
-  if select(2, THREADS().counts(rec.threads)) > 0 then
-    hints[#hints + 1] = { "plan", "delete_thread", "drop a queued change" }
-  end
-  if open_q > 0 then hints[#hints + 1] = { "plan", "answer", "answer an open question" } end
-  if decided then
-    hints[#hints + 1] = { "plan", "goto_code", "the code a step became" }
+  if view.old then
+    -- An older revision: only the way back (the other keys need the current one).
+    hints[#hints + 1] = { "plan", "revisions", "back to the current revision" }
     hints[#hints + 1] = { "plan", "run_log", "what happened so far" }
   else
-    hints[#hints + 1] = { "plan", "open_file", "edit it yourself" }
+    if not decided then
+      hints[#hints + 1] = { "plan", "approve", "approve" }
+      hints[#hints + 1] = { "plan", "revise", not_sent > 0 and "send your answers / ask for changes" or "ask for changes" }
+    end
+    hints[#hints + 1] = { "plan", "ask", "ask about a line" }
+    if not decided then hints[#hints + 1] = { "plan", "request", "ask a change on a line" } end
+    if select(2, THREADS().counts(rec.threads)) > 0 then
+      hints[#hints + 1] = { "plan", "delete_thread", "drop a queued change" }
+    end
+    if open_q > 0 then hints[#hints + 1] = { "plan", "answer", "answer an open question" } end
+    if decided then
+      hints[#hints + 1] = { "plan", "goto_code", "the code a step became" }
+      hints[#hints + 1] = { "plan", "run_log", "what happened so far" }
+    else
+      hints[#hints + 1] = { "plan", "open_file", "edit it yourself" }
+    end
+    if count > 1 then hints[#hints + 1] = { "plan", "revisions", "open an older revision" } end
   end
   hints[#hints + 1] = { "plan", "help", "all keys" }
   local hl_, hhls = KEYS().hint_lines(hints)
@@ -348,7 +384,10 @@ end
 
 local function render_plan()
   if not (view and valid_buf(view.plan_buf)) then return end
-  local lines = PLAN().lines(view.rec)
+  -- An older revision (gh) gone - pruned meanwhile: the current one.
+  local old = old_rev()
+  if not old then view.old = nil end
+  local lines = old and vim.split(old.markdown or "", "\n", { plain = true }) or PLAN().lines(view.rec)
   view.sections = PLAN().sections(lines)
   vim.bo[view.plan_buf].modifiable = true
   vim.api.nvim_buf_set_lines(view.plan_buf, 0, -1, false, lines)
@@ -400,6 +439,15 @@ local function render()
   render_list()
   set_winbars()
   load_changes()
+end
+
+-- From an older revision (gh) back to the current one: true when it was
+-- on one.
+local function to_current()
+  if not (view and view.old) then return false end
+  view.old = nil
+  render()
+  return true
 end
 
 -- Saves the plan and redraws the viewer if it shows it.
@@ -524,16 +572,20 @@ local function answer_here()
   })
 end
 
+-- The current revision's lines: the plan pane's, unless it shows an older one.
+local function current_lines()
+  if view.old then return PLAN().lines(view.rec) end
+  return valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
+end
+
 -- How many of the plan's open questions you haven't answered.
 unanswered = function()
-  local lines = valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
-  return PLAN().unanswered(lines, view.rec.threads)
+  return PLAN().unanswered(current_lines(), view.rec.threads)
 end
 
 -- How many of your answers haven't gone to the agent yet.
 unsent = function()
-  local lines = valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
-  return PLAN().unsent_answers(lines, view.rec.threads)
+  return PLAN().unsent_answers(current_lines(), view.rec.threads)
 end
 
 local function already_sent()
@@ -621,7 +673,7 @@ vim.api.nvim_create_autocmd("BufWritePost", {
     PLAN().save(rec)
     if alive(views[key]) then
       with_view(views[key], function()
-        view.rec = rec
+        view.rec, view.old = rec, nil
         render()
       end)
     end
@@ -637,10 +689,11 @@ end
 -- ]t / [t: the next / previous of the plan's open questions (answered or
 -- not) and threads, in line order. Moves the plan window's cursor, so from
 -- the section list too - which keeps its own cursor (moving it would send
--- the plan back to the section).
+-- the plan back to the section). From an older revision: the current one's.
 local function jump_thread(dir)
   if not valid_win(view.plan_win) then return end
   back_to_plan()
+  to_current()
   local row = vim.api.nvim_win_get_cursor(view.plan_win)[1]
   local stops = PLAN().jump_stops(vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false), view.rec.threads)
   local best
@@ -653,6 +706,39 @@ local function jump_thread(dir)
   end
   vim.api.nvim_win_set_cursor(view.plan_win, { best, 0 })
   vim.api.nvim_win_call(view.plan_win, function() vim.cmd("normal! zz") end)
+end
+
+-- gh: an older revision of the plan in the plan pane, read-only - picked
+-- from the ones kept, newest first, with who wrote it and when; on an
+-- older one, back to the current one.
+local function revisions()
+  if to_current() then
+    return notify("Back to the current revision (" .. PLAN().rev_count(view.rec) .. ").")
+  end
+  local rec = view.rec
+  if #rec.revisions < 2 then return notify("This is the only revision of the plan.") end
+  local cur, approved = PLAN().rev_count(rec), PLAN().last_approved(rec)
+  local items = {}
+  for i = #rec.revisions, 1, -1 do items[#items + 1] = rec.revisions[i] end
+  local v = view
+  require("azure-cli.prompt").select({ prompt = "Open which revision (read-only)", items = items,
+    format = function(r)
+      local tags = {}
+      if r.n == cur then tags[#tags + 1] = "current" end
+      if r.n == approved then tags[#tags + 1] = "approved" end
+      return "rev " .. tostring(r.n) .. (#tags > 0 and (" (" .. table.concat(tags, ", ") .. ")") or "")
+        .. " \u{00B7} " .. (r.by == "you" and "by you" or "by the agent")
+        .. (r.at and (" \u{00B7} " .. os.date("%m-%d %H:%M", r.at)) or "")
+    end }, function(r)
+      if not (r and alive(v)) then return end
+      with_view(v, function()
+        back_to_plan()
+        view.old = r.n ~= cur and r.n or nil
+        render()
+        if view.old then pcall(vim.api.nvim_win_set_cursor, view.plan_win, { 1, 0 }) end
+      end)
+      refocus(v)
+    end)
 end
 
 local function ask(from, to)
@@ -726,6 +812,7 @@ local function goto_row(r, focus)
     r = st and { file = st.files[1].path }
   end
   if r and r.file then
+    to_current()  -- the change carries out the current revision
     if PC().show(view, r.file, focus) then set_winbars() end
   elseif r and r.line then
     goto_section(r, focus)
@@ -738,6 +825,7 @@ local function setup_list(buf)
   end, { desc = "go to the section (a changed file: its diff)" })
   bind(buf, "next_thread", function() jump_thread(1) end, { desc = "move the plan to the next open question or thread" })
   bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "move the plan to the previous open question or thread" })
+  bind(buf, "revisions", revisions, { desc = "open an older revision, read-only / back to the current one" })
   bind(buf, "help", function() help(LIST_HELP) end, { desc = "keys" })
   bind_common(buf)
   -- Moving through the sections scrolls the plan to each one.
@@ -787,7 +875,7 @@ local function setup_plan(buf)
     view.since_off = not view.since_off
     render()
     notify(view.since_off and "Not marking what changed." or (view.changes and "Marking what changed since revision "
-      .. (#view.rec.revisions - 1) .. ".") or "This is the first revision.")
+      .. tostring(view.changes_since) .. ".") or "This is the first revision.")
   end, { desc = "mark what this revision changed (toggle)" })
   bind(buf, "next_thread", function() jump_thread(1) end, { desc = "next open question or thread" })
   bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "previous open question or thread" })
@@ -795,6 +883,7 @@ local function setup_plan(buf)
     if valid_win(view.list_win) then vim.api.nvim_set_current_win(view.list_win) end
   end, { desc = "back to the section list" })
   bind(buf, "goto_code", function() goto_code() end, { desc = "the code this line became" })
+  bind(buf, "revisions", revisions, { desc = "open an older revision, read-only / back to the current one" })
   bind(buf, "help", function() help(PLAN_HELP) end, { desc = "keys" })
   bind_common(buf)
 end
@@ -830,7 +919,7 @@ function M.open(key, line)
   UI().theme()
   if alive(views[key]) then
     view = views[key]
-    view.rec = rec
+    view.rec, view.old = rec, nil
     vim.api.nvim_set_current_tabpage(view.tab)
   else
     local width = view and view.width or 32
@@ -902,7 +991,7 @@ function M.refresh()
   if not view then return end
   local rec = PLAN().load(view.key)
   if not rec then return end
-  view.rec = rec
+  view.rec, view.old = rec, nil
   render()
 end
 
@@ -929,14 +1018,18 @@ end
 function M.describe_view(win)
   local rec = view.rec
   local snap = { screen = "plan", plan = { key = rec.key, title = rec.title, status = rec.status,
-    revision = #rec.revisions, file = PLAN().path(rec.key) } }
+    revision = PLAN().rev_count(rec), viewing_revision = view.old, file = PLAN().path(rec.key) } }
   if rec.target.work_item_id then
     snap.work_item = { id = rec.target.work_item_id }
   else
     snap.pr = require("azure-cli.chat.tools").pr_record(rec.target.pr_id) or { id = rec.target.pr_id }
   end
   snap.note = "Looking at your plan for " .. PLAN().target_label(rec.target) .. " \"" .. tostring(rec.title) .. "\" ("
-    .. (PLAN().status_label(rec)):gsub("^%S+ ", "") .. ", revision " .. #rec.revisions .. ", file " .. snap.plan.file .. ")"
+    .. (PLAN().status_label(rec)):gsub("^%S+ ", "") .. ", revision " .. snap.plan.revision .. ", file " .. snap.plan.file .. ")"
+  if view.old then
+    snap.note = snap.note .. " - reading its older revision " .. view.old .. " (read-only; the plan is revision "
+      .. snap.plan.revision .. ")"
+  end
   local diff = win == view.plan_win and PC().describe(view, win)
   if diff then
     -- A file of the Changes section: the line of the change under the cursor.
@@ -966,7 +1059,7 @@ end
 
 -- Shows `rec` (a new revision) in its tab, if that's open.
 function M.show(key, rec)
-  if alive(views[key]) then with_view(views[key], function() view.rec = rec; render() end) end
+  if alive(views[key]) then with_view(views[key], function() view.rec, view.old = rec, nil; render() end) end
 end
 
 return M

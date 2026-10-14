@@ -592,7 +592,8 @@ their line when the text around them changes.
 | `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
-| `gi` | Mark what this revision changed against the one before (on by default; toggles) |
+| `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles) |
+| `gh` | Open an older revision, read-only (on one: back to the current one) |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
@@ -657,9 +658,19 @@ sends all of this to that agent's own conversation.
 
 **What changed since the last revision.** When the agent sends a new
 revision (or you save your own), the lines it changed get a bar beside
-them, the lines it took out show struck through where they were, and the
-section list marks the sections that changed (`±`); the winbar says which
-revision it compares with. `gi` turns the marks off and on.
+them and the section list marks the sections that changed (`±`); the
+winbar says which revision it compares with. The text it took out isn't
+shown - `gh` opens the revision before. `gi` turns the marks off and on.
+
+**Older revisions.** `gh` lists the plan's revisions, newest first, with
+who wrote each and when (`rev 3 (approved) · by the agent · 10-14 16:39`);
+picking an older one shows it in the plan pane, read-only - the winbar
+says `rev 3 of 5 · read-only`, the questions under the lines and the keys
+that write stay with the current one, and `gh` again (or `r`, or a new
+revision) goes back. A plan keeps its last `chat.plan_revisions` (3)
+revisions, and always the one last approved - with 5 revisions and the
+2nd approved, it keeps 2, 4 and 5. They keep their numbers. A plan with
+more from before is cut down the next time it's saved.
 
 **From the plan to the code and back.** `gd` on a plan line opens the
 code it became: the agent ties the parts of its change to the plan lines
@@ -695,8 +706,8 @@ stories, `"stories"` only for work items (comment fixes go straight
 ahead), `false` for neither (`/plan` still works).
 
 Plans live under Neovim's data directory, `azure-cli-chat/plans/<wi-3001 |
-pr-101>.md` (the text `gf` edits) and `.json` (status, revisions,
-questions).
+pr-101>.md` (the text `gf` edits) and `.json` (status, the revisions
+kept, questions).
 
 ## Several agents at once
 

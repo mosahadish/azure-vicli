@@ -123,6 +123,7 @@ local DEFAULT_KEYS = {
     refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
     edit_request = "cc",
+    revisions = "gh",
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to
@@ -290,6 +291,7 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
+  plan_revisions = "number",
   test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
 }
 -- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
@@ -358,6 +360,9 @@ local function validate_chat(chat)
   end
   if out.plan_first ~= nil and out.plan_first ~= true and out.plan_first ~= false and out.plan_first ~= "stories" then
     error("azure-cli.setup: chat.plan_first must be true, false or \"stories\"")
+  end
+  if out.plan_revisions ~= nil and (out.plan_revisions < 1 or out.plan_revisions ~= math.floor(out.plan_revisions)) then
+    error("azure-cli.setup: chat.plan_revisions must be a whole number, at least 1")
   end
   if out.input_height < 1 then error("azure-cli.setup: chat.input_height must be at least 1") end
   local function check_agent(a, where)
@@ -874,6 +879,7 @@ function M.render_options()
   w("    -- prompts = { security = \"Look for injection and secrets in this PR.\", standup = false },")
   w("    -- plan_first = true,           -- plan before changing code")
   w("    -- plan_template = \"...\",       -- the plan's sections")
+  w("    -- plan_revisions = 3,          -- revisions kept per plan (and the approved one)")
   w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
   w("    -- max_agents = 3,              -- agents working at once")
   w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")

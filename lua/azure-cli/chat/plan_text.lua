@@ -232,6 +232,71 @@ function M.revision_changes(old, new, hunks)
   return out
 end
 
+-- ---------------------------------------------------------------------------
+-- Revisions (#90): each keeps its real number `n`, so dropping old ones
+-- (prune_revisions) doesn't renumber the rest - "rev 5" stays rev 5, and
+-- approved_rev / allowed_rev / last_approved_rev are those numbers.
+
+-- Gives every revision of `rec` its number: one without (a plan from
+-- before #90, never pruned) is numbered by its place. Pure (changes rec).
+function M.number_revisions(rec)
+  local prev = 0
+  for i, r in ipairs(rec.revisions or {}) do
+    if type(r.n) ~= "number" then r.n = math.max(i, prev + 1) end
+    prev = r.n
+  end
+end
+
+-- The plan's newest revision number (how many it has had), 0 for none. Pure.
+function M.rev_count(rec)
+  local revs = rec.revisions or {}
+  local last = revs[#revs]
+  return last and (last.n or #revs) or 0
+end
+
+-- Revision number `n` of `rec`, or nil (pruned, or never). Pure.
+function M.revision(rec, n)
+  if not n then return nil end
+  for i, r in ipairs(rec.revisions or {}) do
+    if (r.n or i) == n then return r end
+  end
+  return nil
+end
+
+-- The number of the revision last approved: rec.last_approved_rev, else
+-- (a plan from before #90) the last "Approved revision N" event; nil when
+-- none was. A new revision doesn't clear it, unlike approved_rev. Pure.
+function M.last_approved(rec)
+  if rec.last_approved_rev then return rec.last_approved_rev end
+  if rec.approved_rev then return rec.approved_rev end
+  for i = #(rec.events or {}), 1, -1 do
+    local e = rec.events[i]
+    local n = e.kind == "approved" and tostring(e.text or ""):match("^Approved revision (%d+)")
+    if n then return tonumber(n) end
+  end
+  return nil
+end
+
+-- The revisions to keep of `revs` (numbered): at most `keep` - the newest,
+-- then revision `protect` (the approved one) if it's there, then the
+-- newest of the rest - but never fewer than those two. In their order. Pure.
+function M.prune_revisions(revs, keep, protect)
+  keep = math.max(1, math.floor(tonumber(keep) or 3))
+  if #revs <= keep then return revs end
+  local take = { [#revs] = true }
+  local n = 1
+  for i, r in ipairs(revs) do
+    if protect and r.n == protect and not take[i] then take[i] = true n = n + 1 end
+  end
+  for i = #revs - 1, 1, -1 do
+    if n >= keep then break end
+    if not take[i] then take[i] = true n = n + 1 end
+  end
+  local out = {}
+  for i, r in ipairs(revs) do if take[i] then out[#out + 1] = r end end
+  return out
+end
+
 -- The command the plan's Test plan section gives: its first ``` block
 -- (sh, bash, shell, cmd, pwsh, powershell or no language), lines joined
 -- with " && ". Without one, its inline `code` that starts with a test
@@ -524,7 +589,7 @@ end
 function M.approval_message(rec, lines)
   local label = M.target_label(rec.target)
   local rev = last_rev(rec)
-  local text = "I approve the plan for " .. label .. " (revision " .. #rec.revisions .. "). Go ahead and make the "
+  local text = "I approve the plan for " .. label .. " (revision " .. M.rev_count(rec) .. "). Go ahead and make the "
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
   if rec.allow_push then
@@ -610,7 +675,7 @@ function M.pr_description(rec, lines)
   local q = 0
   for _, th in ipairs(rec.threads or {}) do if th.kind ~= "request" and th.answer then q = q + 1 end end
   out[#out + 1] = ""
-  out[#out + 1] = "_From the plan for " .. M.target_label(rec.target) .. " (revision " .. #(rec.revisions or {})
+  out[#out + 1] = "_From the plan for " .. M.target_label(rec.target) .. " (revision " .. M.rev_count(rec)
     .. (q > 0 and (", " .. q .. " question" .. (q == 1 and "" or "s") .. " answered") or "") .. ")._"
   return table.concat(out, "\n")
 end
@@ -626,7 +691,7 @@ function M.run_log(rec, o, date)
   local out = { "# Run log: " .. M.target_label(rec.target) .. " " .. tostring(rec.title or ""), "" }
   local st = M.status_label(rec)
   out[#out + 1] = "Status: " .. st:gsub("^%S+ ", "") .. (rec.allow_push and " (pushing allowed)" or "") .. " · "
-    .. #rec.revisions .. " revision" .. (#rec.revisions == 1 and "" or "s")
+    .. M.rev_count(rec) .. " revision" .. (M.rev_count(rec) == 1 and "" or "s")
   out[#out + 1] = ""
   -- One timeline: the plan's events, the questions, the agent's tool calls.
   local tl = {}

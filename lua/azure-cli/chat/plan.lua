@@ -20,7 +20,9 @@
 --
 -- Kept under stdpath("data")/azure-cli-chat/plans/: <key>.md (the plan's
 -- text, the file gf edits) and <key>.json (its title, status, revisions
--- and questions), key = "wi-<id>" or "pr-<id>".
+-- and questions), key = "wi-<id>" or "pr-<id>". Only the last
+-- chat.plan_revisions (3) revisions are kept, and the one last approved;
+-- each keeps its real number (M.save, plan_text.lua's prune_revisions).
 --
 -- In three files, one module: this one (storage, the gate, approving,
 -- the run log, the tools), chat/plan_text.lua (the pure helpers - key,
@@ -121,6 +123,7 @@ function M.load(key)
   if not okd or type(rec) ~= "table" then return nil end
   rec.revisions = rec.revisions or {}
   rec.threads = rec.threads or {}
+  M.number_revisions(rec)
   return rec
 end
 
@@ -128,7 +131,14 @@ end
 -- once, kept up to date by M.save.
 local index = nil
 
+-- Saving keeps at most chat.plan_revisions (3) revisions - never the
+-- newest or the one last approved dropped (#90). A plan from before that
+-- with more is pruned the same way the next time it's saved.
 function M.save(rec)
+  rec.revisions = rec.revisions or {}
+  M.number_revisions(rec)
+  rec.last_approved_rev = M.last_approved(rec)
+  rec.revisions = M.prune_revisions(rec.revisions, config().plan_revisions or 3, rec.last_approved_rev)
   if index then index[rec.key] = { status = rec.status, label = M.target_label(rec.target) } end
   vim.fn.mkdir(M.root(), "p")
   vim.fn.writefile({ vim.json.encode(rec) }, M.root() .. "/" .. rec.key .. ".json")
@@ -159,7 +169,7 @@ end
 -- an earlier revision's (stage's) files don't count; the text as it is
 -- now while none is approved.
 function M.files_section(rec)
-  local rev = rec.approved_rev and rec.revisions[rec.approved_rev]
+  local rev = M.revision(rec, rec.approved_rev)
   return M.planned_files(rev and vim.split(rev.markdown or "", "\n", { plain = true }) or current_lines(rec))
 end
 
@@ -216,11 +226,15 @@ end
 
 -- A new revision `markdown` by `by` ("agent" / "you"): the file rewritten
 -- (when the agent wrote it), the questions moved to their lines, the status
--- back to waiting for the user.
+-- back to waiting for the user. The one last approved stays known
+-- (last_approved_rev), so pruning keeps it.
 function M.add_revision(rec, markdown, by)
-  rec.revisions[#rec.revisions + 1] = { at = os.time(), by = by, markdown = markdown }
+  M.number_revisions(rec)
+  rec.last_approved_rev = M.last_approved(rec)
+  local n = M.rev_count(rec) + 1
+  rec.revisions[#rec.revisions + 1] = { n = n, at = os.time(), by = by, markdown = markdown }
   rec.events = rec.events or {}
-  table.insert(rec.events, { at = os.time(), kind = "revision", text = "Revision " .. #rec.revisions
+  table.insert(rec.events, { at = os.time(), kind = "revision", text = "Revision " .. n
     .. (by == "you" and ", edited by you" or ", by the agent") })
   local lines = vim.split(markdown, "\n", { plain = true })
   if by == "agent" then
@@ -366,10 +380,11 @@ function M.approve(key, allow_push)
     return false, ({ approved = "already approved", done = "implemented already" })[rec.status] or rec.status
   end
   rec.status = "approved"
-  rec.approved_rev = #rec.revisions
+  rec.approved_rev = M.rev_count(rec)
+  rec.last_approved_rev = rec.approved_rev
   rec.approved_at = os.time()
   rec.allow_push = allow_push or nil
-  M.add_event(rec, "approved", "Approved revision " .. #rec.revisions
+  M.add_event(rec, "approved", "Approved revision " .. rec.approved_rev
     .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
   VIEW().changed(rec)
   local CHAT = require("azure-cli.chat")
@@ -563,7 +578,7 @@ function M.tools(T)
           M.open(key)
         end
         done({
-          shown = true, revision = #rec.revisions, file = M.path(key),
+          shown = true, revision = M.rev_count(rec), file = M.path(key),
           missing_sections = M.missing(args.markdown, M.template()),
           -- How the tests run: without one the user can't run them (gb)
           -- and every test run of yours asks.
@@ -594,7 +609,7 @@ function M.tools(T)
           qs[#qs + 1] = { line = th.line, about = th.anchor, question = th.question, answer = th.answer }
         end
         local rev = last_rev(rec)
-        done({ title = rec.title, status = rec.status, revision = #rec.revisions,
+        done({ title = rec.title, status = rec.status, revision = M.rev_count(rec),
           edited_by_user = rev and rev.by == "you" or false,
           markdown = table.concat(current_lines(rec), "\n"), questions = qs })
       end,

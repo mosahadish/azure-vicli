@@ -1309,6 +1309,123 @@ do
   vim.fn.delete(wt .. ".branch")
 end
 
+-- --- #90: revisions - no strike-out, older ones read-only, only 3 kept ------------------------
+do
+  local function revs(...)
+    local out = {}
+    for _, n in ipairs({ ... }) do out[#out + 1] = { n = n, by = "agent", markdown = "## Files\n- `r" .. n .. ".lua` - x" } end
+    return out
+  end
+  local function ns(list)
+    local out = {}
+    for _, r in ipairs(list) do out[#out + 1] = r.n end
+    return table.concat(out, ",")
+  end
+  check("#90 prune: the last 3 when none is approved", ns(PLAN.prune_revisions(revs(1, 2, 3, 4, 5), 3)) == "3,4,5")
+  check("#90 prune: an older approved one and the 2 newest", ns(PLAN.prune_revisions(revs(1, 2, 3, 4, 5), 3, 2)) == "2,4,5")
+  check("#90 prune: the approved one among the newest", ns(PLAN.prune_revisions(revs(1, 2, 3, 4, 5), 3, 4)) == "3,4,5")
+  check("#90 prune: keep 1 still keeps the newest and the approved one",
+    ns(PLAN.prune_revisions(revs(1, 2, 3, 4, 5), 1, 2)) == "2,5")
+  check("#90 prune: 3 or fewer stay", ns(PLAN.prune_revisions(revs(1, 2), 3, 1)) == "1,2")
+
+  -- Saved and loaded: 3 kept, with their real numbers.
+  local key = "wi-9090"
+  local function md(n) return "# Plan " .. n .. "\n\n## Goal\nrev " .. n .. " goal\n\n## Files\n- `r" .. n .. ".lua` - x" end
+  local rec = { key = key, target = { work_item_id = 9090 }, title = "Revs", status = "draft", threads = {}, revisions = {} }
+  for n = 1, 5 do PLAN.add_revision(rec, md(n), "agent") PLAN.save(rec) end
+  rec = PLAN.load(key)
+  check("#90 save: 5 revisions keep the last 3, numbered 3-5", ns(rec.revisions) == "3,4,5", ns(rec.revisions))
+  check("#90 rev_count: the real number", PLAN.rev_count(rec) == 5)
+  check("#90 the events still name every revision", rec.events[#rec.events].text:find("Revision 5", 1, true) ~= nil)
+
+  -- A plan from before #90: no numbers, more than 3, approved revision 2.
+  vim.fn.writefile({ vim.json.encode({ key = "wi-9091", target = { work_item_id = 9091 }, status = "draft", threads = {},
+    revisions = { { markdown = md(1) }, { markdown = md(2) }, { markdown = md(3) }, { markdown = md(4) }, { markdown = md(5) } },
+    events = { { kind = "approved", text = "Approved revision 2" }, { kind = "revision", text = "Revision 3, by the agent" } } }) },
+    PLAN.root() .. "/wi-9091.json")
+  local old = PLAN.load("wi-9091")
+  check("#90 load: an old plan's revisions numbered by place, nothing dropped on load",
+    ns(old.revisions) == "1,2,3,4,5" and PLAN.last_approved(old) == 2)
+  PLAN.save(old)
+  old = PLAN.load("wi-9091")
+  check("#90 an old plan is pruned on its next save, its approved revision kept",
+    ns(old.revisions) == "2,4,5" and old.last_approved_rev == 2 and PLAN.revision(old, 2).markdown == md(2), ns(old.revisions))
+  pcall(vim.fn.delete, PLAN.root() .. "/wi-9091.json")
+
+  -- Approving after pruning approves revision 5's text, and keeps it through the next ones.
+  local CHAT = require("azure-cli.chat")
+  local send, find = CHAT.send, CHAT.find_conversation
+  local sent
+  CHAT.send = function(text) sent = text return {} end
+  CHAT.find_conversation = function() return nil end
+  local ok = PLAN.approve(key)
+  CHAT.send, CHAT.find_conversation = send, find
+  rec = PLAN.load(key)
+  check("#90 approve after pruning: revision 5, its Files", ok and rec.approved_rev == 5 and rec.last_approved_rev == 5
+    and vim.deep_equal(PLAN.files_section(rec), { "r5.lua" }) and tostring(sent):find("(revision 5)", 1, true) ~= nil,
+    vim.inspect({ rec.approved_rev, PLAN.files_section(rec) }))
+  for n = 6, 8 do PLAN.add_revision(rec, md(n), "agent") PLAN.save(rec) end
+  rec = PLAN.load(key)
+  check("#90 the approved revision outlives newer ones", ns(rec.revisions) == "5,7,8" and PLAN.last_approved(rec) == 5,
+    ns(rec.revisions))
+
+  -- The plan view: no struck-out lines; gh opens rev 7 read-only and back.
+  PLAN.open(key)
+  local v = PLAN.current()
+  local function feed(k) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "x", false) end
+  local function text() return table.concat(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false), "\n") end
+  local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]
+  local bars, virt = 0, 0
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, { details = true })) do
+    if m[4].sign_text then bars = bars + 1 end
+    if m[4].virt_lines then virt = virt + 1 end
+  end
+  check("#90 a bar beside the changed lines, no struck-out old text", bars > 0 and virt == 0, vim.inspect({ bars, virt }))
+  check("#90 the winbar compares with the previous kept revision", vim.wo[v.plan_win].winbar:find("since rev 7", 1, true) ~= nil
+    and vim.wo[v.plan_win].winbar:find("rev 8", 1, true) ~= nil, vim.wo[v.plan_win].winbar)
+  local PROMPT = require("azure-cli.prompt")
+  local select, labels = PROMPT.select, nil
+  PROMPT.select = function(o, cb)
+    labels = {}
+    for _, it in ipairs(o.items) do labels[#labels + 1] = o.format(it) end
+    cb(o.items[2])
+  end
+  vim.api.nvim_set_current_win(v.plan_win)
+  feed("gh")
+  PROMPT.select = select
+  check("#90 gh lists the kept revisions newest first, the approved one marked",
+    labels and labels[1]:find("^rev 8 %(current%)") and labels[3]:find("^rev 5 %(approved%)") ~= nil, vim.inspect(labels))
+  check("#90 gh opens rev 7 read-only", v.old == 7 and text() == md(7) and not vim.bo[v.plan_buf].modifiable
+    and vim.wo[v.plan_win].winbar:find("rev 7 of 8", 1, true) and vim.wo[v.plan_win].winbar:find("read-only", 1, true),
+    vim.wo[v.plan_win].winbar)
+  check("#90 the section list says so",
+    table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"):find("revision 7 of 8", 1, true) ~= nil)
+  local nthreads = #rec.threads
+  local editor = require("azure-cli.editor")
+  local eopen, opened = editor.open, false
+  editor.open = function() opened = true end
+  feed("gc")
+  feed("ga")
+  feed("gA")
+  editor.open = eopen
+  rec = PLAN.load(key)
+  check("#90 keys that write do nothing on an older revision", not opened and #rec.threads == nthreads
+    and rec.status == "draft" and v.old == 7)
+  feed("gh")
+  check("#90 gh goes back to the current revision", v.old == nil and text() == md(8)
+    and not vim.wo[v.plan_win].winbar:find("read-only", 1, true))
+  -- Reloading from an older revision: the current one again.
+  PROMPT.select = function(o, cb) cb(o.items[3]) end
+  feed("gh")
+  PROMPT.select = select
+  check("#90 rev 5 opened", v.old == 5 and text() == md(5))
+  PLAN.refresh()
+  check("#90 r puts the current revision back", v.old == nil and text() == md(8))
+  pcall(vim.cmd, "tabclose")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
+end
+
 -- --- the azure-vicli palette in plugin mode ----------------------------------------------------
 do
   require("azure-cli").setup({ ui = { palette = "azure-vicli" } })

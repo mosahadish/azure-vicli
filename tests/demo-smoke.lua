@@ -2329,24 +2329,17 @@ section("PLAN", function()
     return fail("dd / cc touched a sent change: " .. vim.inspect(rec.threads[#rec.threads]))
   end
   if vim.wo[v.plan_win].winbar:find("queued", 1, true) then return fail("the winbar still counts a queued change") end
-  -- What revision 3 changed against yours: line 8 marked, your Open
-  -- questions shown as taken out; gi turns the marks off.
+  -- What revision 3 changed against yours: line 8 marked, with a bar
+  -- only - the text it took out isn't shown struck through (#90); gi
+  -- turns the marks off.
   local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]
-  local bar8, removed = false, false
-  local qline
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false)) do
-    if l == "- Should admins be exempt?" then qline = i end
-  end
+  local bar8, struck = false, false
   for _, m in ipairs(vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, { details = true })) do
     if m[2] == 7 and m[4].sign_text then bar8 = true end
-    -- Your hand-written question: taken out, or rewritten as the agent's.
-    if qline and m[2] == qline - 1 and m[4].sign_text then removed = true end
-    for _, vl in ipairs(m[4].virt_lines or {}) do
-      if vl[1][1]:find("Should admins be exempt?", 1, true) then removed = true end
-    end
+    if m[4].virt_lines then struck = true end
   end
-  if not (bar8 and removed and vim.wo[v.plan_win].winbar:find("since rev 2", 1, true)) then
-    return fail("revision 3's changes aren't marked: " .. vim.inspect({ bar8, removed, vim.wo[v.plan_win].winbar }))
+  if not (bar8 and not struck and vim.wo[v.plan_win].winbar:find("since rev 2", 1, true)) then
+    return fail("revision 3's changes aren't marked as a bar only: " .. vim.inspect({ bar8, struck, vim.wo[v.plan_win].winbar }))
   end
   if not table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"):match("Approach[^\n]*\u{00B1}") then
     return fail("the section list doesn't mark Approach as changed")
@@ -2593,7 +2586,8 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   require("azure-cli").setup({ ui = { confirm = "select" }, chat = { max_agents = 1, agent = { label = "Fake Claude", timeout_seconds = 60,
     cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   local main_turns = #STATE.chat.entries
-  local before3002 = #((PLAN.load("wi-3002") or { revisions = {} }).revisions)
+  -- Its revision number: only 3 revisions are kept (#90), so not their count.
+  local before3002 = PLAN.rev_count(PLAN.load("wi-3002") or { revisions = {} })
   local bw = vim.fn.win_findbuf(wis)[1]
   if not bw then return fail("the work-items board isn't showing") end
   vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(bw))
@@ -2617,7 +2611,7 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   if not vim.wo[av.win].winbar:find("1 working", 1, true) then return fail("the Agents winbar: " .. vim.wo[av.win].winbar) end
   local both = vim.wait(60000, function()
     local a, b = PLAN.load("wi-3001"), PLAN.load("wi-3002")
-    return a and a.status == "draft" and b and #b.revisions > before3002 and b.status == "draft"
+    return a and a.status == "draft" and b and PLAN.rev_count(b) > before3002 and b.status == "draft"
       and AGENTS.working() == 0 and #AGENTS.queued() == 0
   end, 100)
   if not both then return fail("the two board agents didn't both plan: " .. vim.inspect({ AGENTS.working(), #AGENTS.queued() })) end
