@@ -895,6 +895,9 @@ function M.open(title, dir, raw, keep)
     end
   end
   local function focus()
+    -- Not out of a question that opened meanwhile (an agent's run_tests
+    -- straight after show_fix): that would answer it.
+    if require("azure-cli.ui").choosing() then return end
     local w = (#view.files > 0 and not (keep and keep.list)) and view.diff_win or view.list_win
     if valid_win(w) then vim.api.nvim_set_current_win(w) end
   end

@@ -800,9 +800,13 @@ vim.api.nvim_create_autocmd({ "TabEnter", "BufWinEnter" }, {
   callback = function()
     vim.schedule(function()
       M.sync_active()
-      local st = STATE()
-      local tab = vim.api.nvim_get_current_tabpage()
-      if st.visible and not panel_open_in(tab) and plugin_tab(tab) then open_here(false) end
+      -- A question's popup (its own BufWinEnter brings us here) would be
+      -- split from and left, which answers it: follow once it's answered.
+      require("azure-cli.ui").after_choose(function()
+        local st = STATE()
+        local tab = vim.api.nvim_get_current_tabpage()
+        if st.visible and not panel_open_in(tab) and plugin_tab(tab) then open_here(false) end
+      end)
     end)
   end,
 })

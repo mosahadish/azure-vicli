@@ -728,18 +728,37 @@ end
 -- <CR> presses the focused one. Opened from insert mode it leaves it, and
 -- goes back to it after. cb(index), once. With ui.confirm = "select" it's
 -- vim.ui.select (prompt.lua) instead - the details in a float beside it.
+-- How many of those popups are open, and what waits for them all to close
+-- (M.after_choose): a view that would move the cursor while one asks - the
+-- chat panel following into a tab, a viewer taking the focus - and with it
+-- close the popup, answering its cancel button.
+local choosing, after_choose = 0, {}
+function M.choosing() return choosing > 0 end
+function M.after_choose(fn)
+  if choosing == 0 then return fn() end
+  after_choose[#after_choose + 1] = fn
+end
+
 function M.choose(opts, cb)
   opts = opts or {}
   M.theme()
   local labels = opts.buttons or { "Yes", "Cancel" }
   local cancel = opts.cancel
   if cancel == nil then cancel = #labels elseif cancel == false then cancel = nil end
-  local done = false
+  local done, counted = false, false
   local details_win
   local function finish(i)
     if done then return end
     done = true
     if details_win and vim.api.nvim_win_is_valid(details_win) then pcall(vim.api.nvim_win_close, details_win, true) end
+    if counted then
+      choosing = choosing - 1
+      if choosing == 0 and #after_choose > 0 then
+        local waiting = after_choose
+        after_choose = {}
+        vim.schedule(function() for _, fn in ipairs(waiting) do pcall(fn) end end)
+      end
+    end
     cb(i)
   end
   local function details_float(focus_row)
@@ -780,10 +799,11 @@ function M.choose(opts, cb)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
   local ns = vim.api.nvim_create_namespace("azure_cli_confirm")
-  local rows = {}
+  local rows, spans = {}, {}
   local function draw()
     local lines, hls
     lines, hls, rows = M.choose_lines(opts.lines, labels, focused, width, hint, not armed(), opts.stack)
+    for i = 1, #labels do spans[i] = hls[i] end  -- the buttons come first: { row, from, to, group }
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
@@ -824,6 +844,8 @@ function M.choose(opts, cb)
   local wcfg = { relative = "editor", row = top, col = col, width = width, height = height, style = "minimal",
     border = M.border(), zindex = 200 }
   if opts.title then wcfg.title, wcfg.title_pos = " " .. opts.title .. " ", "center" end
+  -- Counted before it opens: opening it fires autocmds already.
+  choosing, counted = choosing + 1, true
   local ok, win = pcall(vim.api.nvim_open_win, buf, true, wcfg)
   if not ok then
     wcfg.title, wcfg.title_pos = nil, nil
@@ -831,13 +853,25 @@ function M.choose(opts, cb)
   end
   if not ok then
     -- Can't take the focus here (the command line, say): the menu instead.
+    choosing, counted = choosing - 1, false
     if details_win and vim.api.nvim_win_is_valid(details_win) then pcall(vim.api.nvim_win_close, details_win, true) end
     details_win = nil
     return as_select()
   end
   M.float_hl(win)
   if was_insert then vim.cmd("stopinsert") end
-  local function place() pcall(vim.api.nvim_win_set_cursor, win, { rows[focused] or 1, 0 }) end
+  -- The cursor sits on the focused button, and <CR> presses the one under
+  -- the cursor - however it got there (the mouse, <C-w>, a motion).
+  local function place()
+    pcall(vim.api.nvim_win_set_cursor, win, { rows[focused] or 1, spans[focused] and spans[focused][2] or 0 })
+  end
+  local function under_cursor()
+    if not vim.api.nvim_win_is_valid(win) then return nil end
+    local pos = vim.api.nvim_win_get_cursor(win)
+    for i, s in ipairs(spans) do
+      if rows[i] == pos[1] and pos[2] >= s[2] and pos[2] < s[3] then return i end
+    end
+  end
   place()
   if not armed() then
     vim.defer_fn(function()
@@ -863,7 +897,7 @@ function M.choose(opts, cb)
   local function move(d) focused = (focused - 1 + d) % #labels + 1; draw(); place() end
   for _, k in ipairs({ "<Tab>", "l", "j", "<Right>", "<Down>" }) do vim.keymap.set("n", k, guarded(function() move(1) end), kopts) end
   for _, k in ipairs({ "<S-Tab>", "h", "k", "<Left>", "<Up>" }) do vim.keymap.set("n", k, guarded(function() move(-1) end), kopts) end
-  vim.keymap.set("n", "<CR>", guarded(function() answer(focused) end), kopts)
+  vim.keymap.set("n", "<CR>", guarded(function() answer(under_cursor() or focused) end), kopts)
   for k, i in pairs(opts.keys or {}) do vim.keymap.set("n", k, guarded(function() answer(i) end), kopts) end
   -- Never guarded: backing out is always safe.
   for _, k in ipairs({ "q", "<Esc>" }) do vim.keymap.set("n", k, function() answer(cancel) end, kopts) end
@@ -874,8 +908,30 @@ function M.choose(opts, cb)
       end
     end, kopts)
   end
-  vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true,
-    callback = function() vim.schedule(function() answer(cancel) end) end })
+  -- The button the cursor lands on lights up (before keys count, arming
+  -- puts the cursor back on the focused one).
+  vim.api.nvim_create_autocmd("CursorMoved", { buffer = buf, callback = function()
+    local i = armed() and under_cursor()
+    if i and i ~= focused then focused = i; draw() end
+  end })
+  -- Leaving it answers its cancel button - unless that happens before its
+  -- keys count: then it wasn't you (a split opening, a view taking the
+  -- cursor), and the popup takes the focus back and keeps asking.
+  local function on_leave()
+    local early = not armed()
+    vim.schedule(function()
+      if done then return end
+      if early and vim.api.nvim_win_is_valid(win) then
+        pcall(vim.api.nvim_set_current_win, win)
+        if vim.api.nvim_get_current_win() == win then
+          vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true, callback = on_leave })
+          return
+        end
+      end
+      answer(cancel)
+    end)
+  end
+  vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true, callback = on_leave })
   return win
 end
 

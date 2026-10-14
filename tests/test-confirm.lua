@@ -140,6 +140,97 @@ do
   check("chat: <CR> on the focused button denies", got == false, tostring(got))
 end
 
+-- The chat's question, answered with each of its keys (issue #41: y did
+-- nothing and <CR> on Allow declined).
+local function feed(keys) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false) end
+local function ask_chat(keys, before)
+  local CHAT = require("azure-cli.chat")
+  local got
+  CHAT.confirm("The agent wants to run `bash tests/run.sh` in wt.", function(yes) got = yes end)
+  local popup = vim.api.nvim_get_current_win()
+  if before then before(popup) end
+  vim.wait(500)
+  feed(keys)
+  vim.wait(100, function() return got ~= nil end, 10)
+  if got == nil and vim.api.nvim_win_is_valid(popup) then pcall(vim.api.nvim_win_close, popup, true) vim.wait(30) end
+  return got, popup
+end
+check("chat: y after the moment allows", ask_chat("y") == true)
+check("chat: <Tab> to Allow, <CR> allows", ask_chat("<Tab><CR>") == true)
+check("chat: n denies", ask_chat("n") == false)
+do
+  local lit
+  local got = ask_chat("<CR>", function(popup)
+    vim.wait(500)
+    -- The cursor put on Allow some other way than Tab (a mouse click does this).
+    local buf = vim.api.nvim_win_get_buf(popup)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+      local c = l:find("Allow", 1, true)
+      if c then vim.api.nvim_win_set_cursor(popup, { i, c }) vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf }) end
+    end
+    local line = vim.api.nvim_win_get_cursor(popup)[1]
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, { line - 1, 0 }, { line - 1, -1 }, { details = true })) do
+      if m[4].hl_group == "AzureCliButtonActive" then lit = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1]
+        :sub(m[3] + 1, m[4].end_col) end
+    end
+  end)
+  check("chat: the cursor on Allow lights it, and <CR> allows", got == true and lit and lit:find("Allow", 1, true),
+    vim.inspect({ got, lit }))
+end
+do
+  local main = vim.api.nvim_get_current_win()
+  local still, answered
+  local got = ask_chat("y", function(popup)
+    vim.api.nvim_set_current_win(main)  -- something takes the cursor before keys count
+    vim.wait(50)
+    still = vim.api.nvim_win_is_valid(popup) and vim.api.nvim_get_current_win() == popup
+  end)
+  check("chat: the focus taken before keys count comes back, and y allows", still and got == true,
+    vim.inspect({ still, got }))
+  answered = ask_chat("<Esc>", function() end)
+  check("chat: <Esc> still denies", answered == false)
+end
+
+-- The issue's sequence: show_fix opens the change tab, the agent's
+-- run_tests asks straight away, and the chat panel following into the tab
+-- (its BufWinEnter, on a scheduled callback) used to split from the popup -
+-- leaving it, which declined. Through the tool's own ask path.
+do
+  local CHAT = require("azure-cli.chat")
+  local TOOLS = require("azure-cli.chat.tools")
+  CHAT.show(false)
+  local rt = TOOLS.by_name.run_tests
+  local real = { run = rt.run, confirm = rt.confirm, preapproved = rt.preapproved, details = rt.details }
+  local ran, logged, answer = false, {}, nil
+  rt.run = function(_, _, done) ran = true done({ passed = true }) end
+  rt.confirm = function() return "run `bash tests/run.sh` in wt" end
+  rt.preapproved, rt.details = nil, nil
+  vim.cmd("tabnew")
+  vim.bo.filetype = "azurecli-changes"
+  local tab = vim.api.nvim_get_current_tabpage()
+  TOOLS.call("run_tests", { work_item_id = 41 }, { main_win = function() end,
+    log = function(l) logged[#logged + 1] = l end, confirm = CHAT.confirm }, function(t, e) answer = { t, e } end)
+  local popup = vim.api.nvim_get_current_win()
+  vim.wait(100)
+  check("issue: the popup keeps the focus while the chat panel would follow",
+    vim.api.nvim_win_is_valid(popup) and vim.api.nvim_get_current_win() == popup and answer == nil,
+    vim.inspect({ answer, logged }))
+  vim.wait(450)
+  feed("y")
+  vim.wait(200, function() return answer ~= nil end, 10)
+  check("issue: y runs the tests, nothing declined", ran and answer and answer[2] == false
+    and not table.concat(logged, "|"):find("declined", 1, true), vim.inspect({ answer, logged }))
+  vim.wait(100)
+  local panel = false
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+    if vim.b[vim.api.nvim_win_get_buf(w)].azure_cli_chat then panel = true end
+  end
+  check("issue: the chat panel follows into the tab once it's answered", panel)
+  for k, v in pairs(real) do rt[k] = v end
+  vim.cmd("tabclose!")
+  CHAT.hide()
+end
+
 -- Approving a plan: three buttons, p lets it push.
 do
   local PLAN = require("azure-cli.chat.plan")
