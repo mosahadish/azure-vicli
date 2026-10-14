@@ -4,18 +4,20 @@
 -- after you say yes - it's text the agent wrote. The last result is kept
 -- per worktree (stdpath("data")/azure-cli-chat/why/<worktree>.tests.json).
 -- Your own command for the repository (chat.test_cmd) wins over the plan's
--- and runs without asking
--- with a fingerprint of the change it ran on, so the change viewer can say
--- "passed", "failed" or "passed, before the last change"; commit_and_push_fix
--- shows it in its question; the agent can run them itself (run_tests,
--- which asks too) and read the output.
+-- and runs without asking.
+-- A result keeps the fingerprint of the change it ran on and who started it
+-- (you from the change viewer's gb, or the agent's run_tests), so the change
+-- viewer can say "passed", "failed" or "stale" (it ran on an older change),
+-- and commit_and_push_fix's question says which run it means. A run you
+-- declined, or one that never started, leaves no result.
 --
 --   M.fingerprint(diff)   what identifies the change a run saw (pure)
 --   M.label(result, fp)   the winbar tag for a result (pure)
+--   M.describe(result, fp, opts)   the commit question's line for it (pure)
 --   M.tail(lines, n)      the last n non-empty lines of the output (pure)
 --   M.load(dir) / M.running(dir)
---   M.run(dir, cmd, fp, cb)   runs it (no asking - callers ask): cb(result)
---   M.ask_and_run(dir, cmd, fp, cb)   asks first; cb(result) or cb(nil)
+--   M.run(dir, cmd, fp, cb, opts)   runs it (no asking - callers ask): cb(result)
+--   M.ask_and_run(dir, cmd, fp, cb, opts)   asks first; cb(result) or cb(nil)
 local M = {}
 
 M.TIMEOUT = 600
@@ -66,16 +68,50 @@ function M.tail(lines, n)
   return out
 end
 
--- "[✓ tests passed]", "[✗ tests failed (exit 2)]", "[✓ tests passed, before
--- the last change]", "[⠋ tests running]" - nil when they never ran. Pure
--- (`now_fp` is the change's fingerprint now).
+-- How a run ended: "passed", "timed out", "failed (exit 2)". Pure.
+function M.outcome(result)
+  if result.code == 0 then return "passed" end
+  return result.timed_out and "timed out" or ("failed (exit " .. tostring(result.code) .. ")")
+end
+
+-- "[✓ tests passed]", "[✗ tests failed (exit 2)]", "[↻ tests stale - last
+-- run passed, on an older change]", "[⌛ tests running]" - nil when they
+-- never ran. A run on an older change is stale whatever it said: that's
+-- what it is now. Pure (`now_fp` is the change's fingerprint now).
 function M.label(result, now_fp, is_running)
   if is_running then return "[\u{231B} tests running]" end
   if not result then return nil end
-  local stale = now_fp and result.fingerprint ~= now_fp
-  local base = result.code == 0 and "\u{2713} tests passed"
-    or (result.timed_out and "\u{2717} tests timed out" or ("\u{2717} tests failed (exit " .. tostring(result.code) .. ")"))
-  return "[" .. base .. (stale and ", before the last change" or "") .. "]"
+  if now_fp and result.fingerprint ~= now_fp then
+    return "[\u{21BB} tests stale - last run " .. M.outcome(result) .. ", on an older change]"
+  end
+  return "[" .. (result.code == 0 and "\u{2713}" or "\u{2717}") .. " tests " .. M.outcome(result) .. "]"
+end
+
+-- Who started a run (result.by); results from before it was kept say so.
+local function started_by(result, key)
+  if result.by == "user" then return "you (" .. key .. ")" end
+  if result.by == "agent" then return "the agent (run_tests)" end
+  return "unknown"
+end
+
+-- The line commit_and_push_fix's question shows for `result` against the
+-- change as it is now (`now_fp`): which run - its command, when, who
+-- started it - and whether it ran on this change. opts: key (the change
+-- viewer's run_tests key, "gb"), fmt (a time -> text, os.date's by
+-- default), running. Pure but for the default fmt.
+function M.describe(result, now_fp, opts)
+  opts = opts or {}
+  local key = opts.key or "gb"
+  local fmt = opts.fmt or function(ts) return os.date("%m-%d %H:%M", ts) end
+  if opts.running then return "Tests: running now - their result isn't in yet." end
+  if not result then return "Tests: not run on this change yet (" .. key .. " in the change viewer)." end
+  local which = "`" .. tostring(result.cmd) .. "`, started by " .. started_by(result, key)
+    .. (result.at and (" at " .. fmt(result.at)) or "")
+  if now_fp and result.fingerprint ~= now_fp then
+    return "Tests: stale - the last run (" .. which .. ", " .. M.outcome(result)
+      .. ") was on an older version of the change; run them again (" .. key .. ")."
+  end
+  return "Tests: " .. M.outcome(result) .. " - " .. which .. ", on this change."
 end
 
 local function path(dir)
@@ -99,8 +135,10 @@ end
 
 -- Runs `cmd` through 'shell' in `dir`; cb(result) once it's done, result =
 -- { cmd, code, timed_out, output (the last KEEP_LINES lines), at, seconds,
--- fingerprint = fp }.
-function M.run(dir, cmd, fp, cb)
+-- fingerprint = fp, by }. opts.by: who started it, "user" (gb) or "agent"
+-- (run_tests).
+function M.run(dir, cmd, fp, cb, opts)
+  local by = (opts or {}).by
   if running[dir] then return cb(nil, "the tests are already running") end
   running[dir] = true
   local out, started = {}, os.time()
@@ -113,7 +151,7 @@ function M.run(dir, cmd, fp, cb)
         running[dir] = nil
         local keep = #out > M.KEEP_LINES and vim.list_slice(out, #out - M.KEEP_LINES + 1) or out
         local r = { cmd = cmd, code = code, timed_out = timed_out or nil, output = keep, at = os.time(),
-          seconds = os.time() - started, fingerprint = fp }
+          seconds = os.time() - started, fingerprint = fp, by = by }
         save(dir, r)
         pcall(require("azure-cli.chat.plan").event_for_worktree, dir, "tests",
           "Tests (" .. cmd .. "): " .. (M.label(r) or ""):gsub("^%[", ""):gsub("%]$", ""))
@@ -133,11 +171,12 @@ function M.run(dir, cmd, fp, cb)
   end, M.TIMEOUT * 1000)
 end
 
-function M.ask_and_run(dir, cmd, fp, cb)
+-- Declined: cb(nil, "declined"), and the last result stays as it was.
+function M.ask_and_run(dir, cmd, fp, cb, opts)
   require("azure-cli.prompt").confirm({ title = "Run the plan's tests?", prompt = "In "
     .. vim.fn.fnamemodify(dir, ":t") .. ": " .. cmd }, function(yes)
     if not yes then return cb(nil, "declined") end
-    M.run(dir, cmd, fp, cb)
+    M.run(dir, cmd, fp, cb, opts)
   end)
 end
 

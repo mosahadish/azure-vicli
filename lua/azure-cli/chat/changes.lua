@@ -523,20 +523,28 @@ local function run_tests()
     end
     -- Your own command (chat.test_cmd) runs straight away; the agent's asks.
     local runner = source == "config" and TR.run or TR.ask_and_run
-    runner(dir, cmd, fp, function(r, err)
-      if not r then
-        if err ~= "declined" then notify("The tests didn't run: " .. tostring(err), vim.log.levels.WARN) end
-        return
+    -- The tests run on the worktree as it is now, which this tab may not
+    -- show yet (the agent edited since): the fingerprint comes from a fresh
+    -- diff, the one commit_and_push_fix compares with - this tab's when
+    -- that fails.
+    local TF = require("azure-cli.chat.tools_fix")
+    TF.load(dir, require("azure-cli.chat.tools").git, function(ok, diff)
+      local now_fp = ok and TR.fingerprint(diff or "") or fp
+      runner(dir, cmd, now_fp, function(r, err)
+        if not r then
+          if err ~= "declined" then notify("The tests didn't run: " .. tostring(err), vim.log.levels.WARN) end
+          return
+        end
+        require("azure-cli.chat").note("Tests on " .. title:gsub("^Proposed change %- ", "") .. " (" .. cmd .. "): "
+          .. (TR.label(r) or ""):gsub("^%[", ""):gsub("%]$", "") .. ".")
+        if use_dir(dir) then M.refresh(dir) end
+        if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
+      end, { by = "user" })
+      if use_dir(dir) and view.current then
+        local f = view.files[view.current]
+        set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
       end
-      require("azure-cli.chat").note("Tests on " .. title:gsub("^Proposed change %- ", "") .. " (" .. cmd .. "): "
-        .. (TR.label(r) or ""):gsub("^%[", ""):gsub("%]$", "") .. ".")
-      if use_dir(dir) then M.refresh(dir) end
-      if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
     end)
-    if use_dir(dir) and view.current then
-      local f = view.files[view.current]
-      set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
-    end
   end
   if not last then return go() end
   require("azure-cli.prompt").select({ prompt = "Tests " .. (TR.label(last, fp) or ""),

@@ -536,8 +536,49 @@ do
   check("label: passed / failed / stale / running / never",
     TR.label({ code = 0, fingerprint = "a" }, "a") == "[\u{2713} tests passed]"
       and TR.label({ code = 2, fingerprint = "a" }, "a") == "[\u{2717} tests failed (exit 2)]"
-      and TR.label({ code = 0, fingerprint = "a" }, "b") == "[\u{2713} tests passed, before the last change]"
+      and TR.label({ code = 0, fingerprint = "a" }, "b") == "[\u{21BB} tests stale - last run passed, on an older change]"
+      and TR.label({ code = 1, fingerprint = "a" }, "b") == "[\u{21BB} tests stale - last run failed (exit 1), on an older change]"
       and TR.label(nil, "a", true):find("running", 1, true) ~= nil and TR.label(nil, "a") == nil)
+  -- describe: the commit question's line - which run, and whether it's this change's.
+  local o = { key = "gb", fmt = function(ts) return "T" .. ts end }
+  local d = TR.describe({ cmd = "bash tests/run.sh", code = 0, fingerprint = "a", at = 5, by = "user" }, "a", o)
+  check("describe: a passing gb run", d == "Tests: passed - `bash tests/run.sh`, started by you (gb) at T5, on this change.", d)
+  d = TR.describe({ cmd = "make", code = 1, fingerprint = "a", at = 5, by = "agent" }, "a", o)
+  check("describe: a failing run", d == "Tests: failed (exit 1) - `make`, started by the agent (run_tests) at T5, on this change.", d)
+  d = TR.describe({ cmd = "make", code = 1, fingerprint = "old", at = 5, by = "agent" }, "a", o)
+  check("describe: a failed run on older code is stale, not failed", d == "Tests: stale - the last run (`make`, started by "
+    .. "the agent (run_tests) at T5, failed (exit 1)) was on an older version of the change; run them again (gb).", d)
+  d = TR.describe({ cmd = "make", code = 0, fingerprint = "old", at = 5, by = "user" }, "a", o)
+  check("describe: a passed run on older code is stale too", d:find("^Tests: stale") ~= nil and d:find("passed)", 1, true) ~= nil, d)
+  d = TR.describe(nil, "a", o)
+  check("describe: no run", d == "Tests: not run on this change yet (gb in the change viewer).", d)
+  d = TR.describe({ cmd = "make", code = 0, fingerprint = "a", at = 5 }, "a", o)
+  check("describe: a run from before who started it was kept", d:find("started by unknown at T5", 1, true) ~= nil, d)
+  d = TR.describe({ cmd = "make", code = 1, fingerprint = "a" }, "a", { running = true })
+  check("describe: running now", d:find("^Tests: running now") ~= nil, d)
+  check("describe: timed out", TR.describe({ cmd = "m", code = 143, timed_out = true, fingerprint = "a", by = "user" }, "a", o)
+    :find("^Tests: timed out") ~= nil)
+  -- run keeps who started it; a declined run leaves the last result as it was.
+  local wdir = vim.fn.tempname() .. "-wi4242"
+  vim.fn.mkdir(wdir, "p")
+  local got
+  TR.run(wdir, "true", "fp1", function(r) got = r end, { by = "user" })
+  vim.wait(5000, function() return got ~= nil end, 20)
+  local saved = TR.load(wdir)
+  check("run: a gb run is kept with who started it", got and got.code == 0 and saved and saved.by == "user"
+    and saved.fingerprint == "fp1", vim.inspect(saved))
+  local PROMPT = require("azure-cli.prompt")
+  local real_confirm = PROMPT.confirm
+  PROMPT.confirm = function(_, cb) cb(false) end
+  local r2, e2 = "unset", nil
+  TR.ask_and_run(wdir, "false", "fp2", function(r, err) r2, e2 = r, err end, { by = "agent" })
+  PROMPT.confirm = real_confirm
+  local after = TR.load(wdir)
+  check("ask_and_run: declined runs nothing and keeps the last result", r2 == nil and e2 == "declined"
+    and after and after.by == "user" and after.code == 0 and after.fingerprint == "fp1", vim.inspect(after))
+  check("describe: a declined run isn't a failure", TR.describe(after, "fp1", o):find("^Tests: passed") ~= nil)
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/why/" .. vim.fn.fnamemodify(wdir, ":t") .. ".tests.json")
+  vim.fn.delete(wdir, "rf")
   check("tail: the last non-empty lines", table.concat(TR.tail({ "a", "", "b", "c", "" }, 2), "|") == "b|c")
   check("repo_of: story and fix worktrees", TR.repo_of("/x/fix-worktrees/widgets-wi3001") == "widgets"
     and TR.repo_of("/x/my-repo-101/") == "my-repo" and TR.repo_of("C:\\w\\api-wi7") == "api")

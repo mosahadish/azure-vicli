@@ -404,11 +404,12 @@ setmetatable(M, { __call = function(_, T)
         local t = locate(a)
         if not t then return cb(nil) end
         M.diff(t.dir, function(_, diff)
-          -- The plan's tests, as they last ran, above the diff.
+          -- The plan's tests' last run - which one, and whether it was on
+          -- this change - above the diff.
           local TR = require("azure-cli.chat.tests_run")
-          local tag = TR.label(TR.load(t.dir), TR.fingerprint(diff or ""))
           local lines = vim.split(diff or "", "\n", { plain = true })
-          table.insert(lines, 1, "Tests: " .. (tag and tag:gsub("^%[", ""):gsub("%]$", "") or ("not run on this change (" .. require("azure-cli.keys").name("diff", "run_tests") .. " in the change viewer)")))
+          table.insert(lines, 1, TR.describe(TR.load(t.dir), TR.fingerprint(diff or ""),
+            { key = require("azure-cli.keys").name("diff", "run_tests"), running = TR.running(t.dir) }))
           table.insert(lines, 2, "")
           cb(lines)
         end, T.git)
@@ -509,7 +510,7 @@ setmetatable(M, { __call = function(_, T)
             pcall(require("azure-cli.chat.changes").refresh, t.dir)
             done({ exit_code = r.code, passed = r.code == 0, timed_out = r.timed_out, seconds = r.seconds,
               output = table.concat(TR.tail(r.output, 80), "\n") })
-          end)
+          end, { by = "agent" })
         end, T.git)
       end,
     },

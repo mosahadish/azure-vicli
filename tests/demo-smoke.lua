@@ -1831,9 +1831,9 @@ do
   -- The tests ran on the change as it was: the list says so now.
   local stale = vim.wait(5000, function()
     cwin = v_list_win()
-    return cwin and diff_winbar():find("tests passed, before the last change", 1, true) ~= nil
+    return cwin and diff_winbar():find("tests stale - last run passed", 1, true) ~= nil
   end, 50)
-  if not stale then return fail("the tests' result isn't marked as before the last change: " .. diff_winbar()) end
+  if not stale then return fail("the tests' result isn't marked stale: " .. diff_winbar()) end
   vim.ui.select = real_select
   -- create_pull_request without a description gets the plan's; with one
   -- and from_plan, both; the question shows it.
