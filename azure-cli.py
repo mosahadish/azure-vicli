@@ -3924,8 +3924,14 @@ def boards(config):
             issues.append({"owner": a.owner or "", "project": "" if p is None else str(p),
                            "scope": str(a.issues.get("scope") or "mine").strip().lower(),
                            # What a GitHub PR's AZVICLI_ORG is (create_pull_request's).
-                           "apiUrl": a.api_url})
-    return {"workItems": any(a.work_items for a in config.accounts if not a.is_github()), "issues": issues}
+                           "apiUrl": a.api_url,
+                           # Where its repos are cloned: start_story finds a
+                           # clone before the PR list has loaded (#64).
+                           "clonesDir": a.clones_dir or ""})
+    azure = [a for a in config.accounts if not a.is_github() and a.clones_dir]
+    azure.sort(key=lambda a: not a.work_items)  # the work-items account's first
+    return {"workItems": any(a.work_items for a in config.accounts if not a.is_github()), "issues": issues,
+            "azureClonesDir": azure[0].clones_dir if azure else ""}
 
 
 def cmd_boards():

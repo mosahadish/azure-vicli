@@ -331,6 +331,8 @@ function M.ask_approval(keys, cb)
   require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
       "The agent goes ahead with it. Letting it push skips the questions before its push and its pull request"
         .. (has_cmd and ", once the plan's tests pass on its change." or "."),
+      -- #57: p on a plan that works on an existing branch opens no PR.
+      "On an existing branch it pushes straight to it - no PR.",
     }, buttons = { plain, with_push, "Cancel" }, keys = { a = 1, p = 2 }, cancel = 3,
     hint = "a approve \u{00B7} p approve and let it push \u{00B7} Esc cancel \u{00B7} Tab moves" }, function(i)
     if i == 1 or i == 2 then cb(i == 2) end
@@ -400,7 +402,8 @@ function M.pr_allowed(a, cb)
   local rec = M.for_pull_request(a.work_item_ids, a.source)
   if not (rec and rec.allow_push and rec.target and rec.target.work_item_id) then return cb(false) end
   local wi = rec.target.work_item_id
-  local _, branch, base = require("azure-cli.chat.tools_fix").find_story(wi)
+  local _, branch, base, existing = require("azure-cli.chat.tools_fix").find_story(wi)
+  if existing then return cb(false, "the story for #" .. wi .. " works on the existing branch " .. branch .. " - no PR") end
   local linked = false
   for _, id in ipairs(a.work_item_ids or {}) do if tostring(id) == tostring(wi) then linked = true end end
   if type(rec.pr) == "table" then return cb(false, "the plan for #" .. wi .. " already opened PR !" .. tostring(rec.pr.id)) end

@@ -39,8 +39,10 @@ local function is_repo(p)
 end
 
 -- The worktree for work item `id` in repository `repo`: <root>/<repo>-wi<id>.
--- Its branch is kept next to it in <dir>.branch (the worktree's HEAD is
--- detached, like a fix's, so the user's clone may have the branch out too).
+-- Its branch is kept next to it in <dir>.branch: the worktree is on that
+-- branch (#59), unless git couldn't put it there (the branch is out in the
+-- user's clone or another worktree, or has commits origin hasn't) - then
+-- its HEAD is detached, like a fix's.
 function M.story_path(repo, id)
   return M.root() .. "/" .. (tostring(repo) .. "-wi" .. tostring(id)):gsub("[^%w%._%-]", "_")
 end
@@ -69,19 +71,58 @@ function M.inside(wt, path)
   return table.concat(parts, "/")
 end
 
--- Work item `id`'s story worktree, whichever repository: dir, branch, and
--- the branch it started from when start_story recorded it (<dir>.branch:
--- the branch, then its base).
+-- Work item `id`'s story worktree, whichever repository: dir, branch, the
+-- branch it started from when start_story recorded it, and whether the
+-- branch existed before start_story (then the change is pushed straight to
+-- it, with no PR - #57). <dir>.branch: the branch, its base, "existing".
 function M.find_story(id)
   for _, d in ipairs(vim.fn.glob(M.root() .. "/*-wi" .. tostring(id), false, true)) do
     if is_repo(d) then
       local ok, lines = pcall(vim.fn.readfile, d .. ".branch")
       local branch = ok and lines[1] and vim.trim(lines[1]) or ""
       local base = ok and lines[2] and vim.trim(lines[2]) or ""
-      if branch ~= "" then return d, branch, base ~= "" and base or nil end
+      local existing = ok and lines[3] and vim.trim(lines[3]) == "existing" or false
+      if branch ~= "" then return d, branch, base ~= "" and base or nil, existing end
     end
   end
   return nil
+end
+
+-- Adds worktree `wt` of `clone` on branch `name` (its origin/<name> just
+-- fetched): a new local branch tracking it, or the local one fast-forwarded
+-- to it. When git can't (the branch is out elsewhere, or has commits origin
+-- hasn't), a detached worktree at origin/<name> instead. cb(ok, err, note) -
+-- note says why it's detached.
+function M.add_story_worktree(clone, wt, name, cb, git)
+  local remote = "origin/" .. name
+  local function detached(why)
+    git({ "git", "-C", clone, "worktree", "add", "-q", "--detach", wt, remote }, function(ok, _, err)
+      if not ok then return cb(false, err) end
+      cb(true, nil, "The worktree is detached at " .. remote .. " (" .. why .. "); commit_and_push_fix still pushes "
+        .. "to " .. name .. ".")
+    end)
+  end
+  local function on_branch(argv, why_not)
+    git(argv, function(ok, _, err)
+      if ok then return cb(true) end
+      git({ "git", "-C", clone, "worktree", "prune" }, function() detached(why_not(vim.trim(err or ""))) end)
+    end)
+  end
+  git({ "git", "-C", clone, "rev-parse", "-q", "--verify", "refs/heads/" .. name }, function(has_local)
+    if not has_local then
+      return on_branch({ "git", "-C", clone, "worktree", "add", "-q", "--track", "-b", name, wt, remote },
+        function(err) return "git couldn't make the local branch: " .. err end)
+    end
+    git({ "git", "-C", clone, "merge-base", "--is-ancestor", "refs/heads/" .. name, remote }, function(behind)
+      if not behind then return detached("the local " .. name .. " has commits " .. remote .. " hasn't") end
+      -- git refuses to move (or check out) a branch that's out elsewhere.
+      git({ "git", "-C", clone, "branch", "-f", name, remote }, function(fok, _, ferr)
+        if not fok then return detached("git couldn't move the local " .. name .. ": " .. vim.trim(ferr or "")) end
+        on_branch({ "git", "-C", clone, "worktree", "add", "-q", wt, name },
+          function(err) return "git couldn't check it out: " .. err end)
+      end)
+    end)
+  end)
 end
 
 -- The CI of the pull request behind a change (#51): PR `pr_id` for a fix,
@@ -261,17 +302,20 @@ setmetatable(M, { __call = function(_, T)
     {
       name = "start_story",
       description = "Starts implementing a work item (user story, bug, task): creates branch `name` from `from` on "
-        .. "the server, linked to the work item, and a git worktree of it. Returns the directory: edit files ONLY "
+        .. "the server, linked to the work item, and a git worktree on it. Returns the directory: edit files ONLY "
         .. "there, then call show_fix and, when the user agrees, commit_and_push_fix (both with work_item_id), then "
         .. "offer create_pull_request. Ask the user which repository and base branch when they aren't clear; name "
-        .. "the branch like feature/<id>-<short-title>. Calling it again for the same work item reuses the worktree. "
+        .. "the branch like feature/<id>-<short-title>. To work on an existing branch itself (e.g. from = name), "
+        .. "give its name: no branch is created, the change is pushed straight to it, and no pull request is "
+        .. "offered. Calling it again for the same work item reuses the worktree. "
         .. "Runs without asking (nothing but the empty branch leaves the machine until commit_and_push_fix). "
         .. "For a GitHub issue (board = \"github\"), the branch is linked to the issue (its Development section).",
       schema = { type = "object", properties = {
         work_item_id = { type = "integer" },
         repo = { type = "string", description = "repository name (owner/repo on GitHub also works)" },
         from = { type = "string", description = "branch to start from, e.g. develop" },
-        name = { type = "string", description = "the new branch's name, without refs/heads/" },
+        name = { type = "string", description = "the new branch's name, or an existing branch's to work on it "
+          .. "directly; without refs/heads/" },
         board = T.board_props.board,
         item_repo = T.board_props.repo_of_item,
       }, required = { "work_item_id", "repo", "from", "name" } },
@@ -286,35 +330,43 @@ setmetatable(M, { __call = function(_, T)
             next = "Edit files under the directory, then call show_fix with work_item_id." })
         end
         local B = T.board_for(args, env)
-        local org, project, clone = T.repo_location(args.repo, B)
+        local org, project, clone, tried = T.repo_location(args.repo, B)
         local repo = tostring(args.repo):match("/(.+)$") or args.repo
         if not is_repo(clone) then
-          return done(nil, args.repo .. " isn't cloned locally (clones_dir in azure-cli.yml, or open one of its PRs "
-            .. "from the dashboard to clone it)")
+          return done(nil, args.repo .. " isn't cloned locally - "
+            .. (#(tried or {}) > 0 and ("looked in " .. table.concat(tried, ", ") .. "; no git repository there")
+              or "no clones_dir is known for it")
+            .. " (set clones_dir in azure-cli.yml, or open one of its PRs from the dashboard to clone it)")
         end
         local wt = M.story_path(repo, id)
         local undo
         local function failed(what)
           done(nil, what .. (undo and (" (" .. args.name .. " was created on the server; start_story again uses it)") or ""))
         end
-        local function checkout()
+        local function checkout(existing)
           env.log("git fetch " .. args.name)
           T.git({ "git", "-C", clone, "fetch", "-q", "origin", args.name }, function(fok, _, ferr)
             if not fok then return failed("fetching " .. args.name .. " failed: " .. ferr) end
             vim.fn.mkdir(M.root(), "p")
             T.git({ "git", "-C", clone, "worktree", "prune" }, function()
-              T.git({ "git", "-C", clone, "worktree", "add", "-q", "--detach", wt, "origin/" .. args.name }, function(ok, _, err)
+              M.add_story_worktree(clone, wt, args.name, function(ok, err, note)
                 if not ok then return failed("creating the worktree failed: " .. err) end
-                vim.fn.writefile({ args.name, args.from or "" }, wt .. ".branch")
-                done({ directory = wt, branch = args.name, repo = repo,
-                  next = "Edit files under the directory, then call show_fix with work_item_id." }, nil, undo)
-              end)
+                vim.fn.writefile({ args.name, args.from or "", existing and "existing" or "" }, wt .. ".branch")
+                done({ directory = wt, branch = args.name, repo = repo, note = note,
+                  existing_branch = existing or nil,
+                  next = "Edit files under the directory, then call show_fix with work_item_id."
+                    .. (existing and (" It's the existing branch " .. args.name .. ": commit_and_push_fix pushes "
+                      .. "straight to it, and there's no pull request to open.") or "") }, nil, undo)
+              end, T.git)
             end)
           end)
         end
         -- An existing branch (made by hand, or by create_branch) is used as it is.
         T.git({ "git", "-C", clone, "ls-remote", "--heads", "origin", "refs/heads/" .. args.name }, function(_, heads)
-          if vim.trim(heads or "") ~= "" then return checkout() end
+          if vim.trim(heads or "") ~= "" then return checkout(true) end
+          if args.name == args.from then
+            return done(nil, "there's no branch " .. args.name .. " on origin to work on (from and name are the same)")
+          end
           T.provider({ "--wi-edit", "create-branch", T.wi_ref(B, id, args.item_repo), org, project, repo, args.from,
             args.name }, B.env,
             function(ok, out, err)
@@ -445,9 +497,14 @@ setmetatable(M, { __call = function(_, T)
                 pcall(require("azure-cli.chat.plan").event_for_worktree, wt, "pushed",
                   "Pushed " .. vim.trim(sha) .. " to " .. t.branch .. ": " .. tostring(args.message))
                 local rec = t.wi and require("azure-cli.chat.plan").load("wi-" .. tostring(t.wi))
-                local base = t.wi and select(3, M.find_story(t.wi)) or nil
+                local base, existing
+                if t.wi then base, existing = select(3, M.find_story(t.wi)) end
                 local next_step = ""
-                if rec and rec.allow_push and rec.pr == nil then
+                if existing then
+                  -- Worked on an existing branch: pushed straight to it, no PR (#57).
+                  next_step = " " .. t.branch .. " is the existing branch the story works on: the change is on it "
+                    .. "now, and there's no pull request to open."
+                elseif rec and rec.allow_push and rec.pr == nil then
                   next_step = " The approved plan lets you open its pull request without asking: call "
                     .. "create_pull_request now - source " .. t.branch .. ", target " .. (base or "the branch you started from")
                     .. ", work_item_ids [" .. t.wi .. "], no description (the plan's is used), not a draft."

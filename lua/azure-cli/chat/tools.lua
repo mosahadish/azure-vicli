@@ -86,28 +86,37 @@ end
 
 -- Repository `repo`'s org, project and local clone: from a PR in that
 -- repository when there is one, else the work-item account's org/project
--- and <clones_dir>/<repo> from any PR (one clones_dir per account). On
--- board B GitHub's (`repo` may then be owner/name), the org is the issues
--- account's API root and the project its owner, as on a GitHub PR record.
+-- and <clones_dir>/<repo> - clones_dir from any PR (one per account), or,
+-- before the PR list has loaded, from the config as --boards gave it
+-- (#64). On board B GitHub's (`repo` may then be owner/name), the org is
+-- the issues account's API root and the project its owner, as on a GitHub
+-- PR record. Fourth: where it looked, as "path (where clones_dir came
+-- from)" - for the error when the clone isn't there.
 function M.repo_location(repo, B)
   local owner, name = tostring(repo or ""):match("^([^/]+)/(.+)$")
   name = name or repo
   local github = B and B.host == "github"
-  local org, project, clone, dir = "", "", "", nil
+  local org, project, clone, dir, from = "", "", "", nil, nil
   for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do
     if p.repo == name and (not owner or p.project == owner) and (not github or p.host == "github") then
-      return p.org or "", p.project or "", M.clone_path(p)
+      local path = M.clone_path(p)
+      return p.org or "", p.project or "", path, (path ~= "" and { path .. " (from its PR !" .. tostring(p.id) .. ")" } or {})
     end
-    if not github or p.host == "github" then dir = dir or (p.clonesDir ~= "" and p.clonesDir or nil) end
+    if not dir and (not github or p.host == "github") and (p.clonesDir or "") ~= "" then
+      dir, from = p.clonesDir, "clones_dir from the PR list"
+    end
   end
+  local boards = STATE().BOARDS or {}
   if github then
     local acct = M.issues_account()
     org, project = acct.apiUrl or "", owner or acct.owner or ""
+    if not dir and (acct.clonesDir or "") ~= "" then dir, from = acct.clonesDir, "clones_dir from azure-cli.yml" end
   else
     org, project = vim.env.AZVICLI_WI_COLLECTION or "", vim.env.AZVICLI_WI_PROJECT or ""
+    if not dir and (boards.azureClonesDir or "") ~= "" then dir, from = boards.azureClonesDir, "clones_dir from azure-cli.yml" end
   end
   if dir then clone = M.clone_path({ clonesDir = dir, repo = name }) end
-  return org, project, clone
+  return org, project, clone, (clone ~= "" and { clone .. " (" .. from .. ")" } or {})
 end
 
 -- ---------------------------------------------------------------------------

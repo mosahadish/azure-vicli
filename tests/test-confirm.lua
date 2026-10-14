@@ -363,6 +363,8 @@ do
   local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false), "\n")
   check("approve: Approve, Approve and push, Cancel", text:find("Approve", 1, true)
     and text:find("let it push", 1, true) and text:find("Cancel", 1, true), text)
+  check("approve #57: it says an existing branch gets no PR", text:find("existing branch", 1, true)
+    and text:find("no PR", 1, true), text)
   vim.api.nvim_feedkeys("p", "x", false)
   vim.wait(100, function() return got ~= nil end, 10)
   check("approve: p approves and lets it push", got == true, tostring(got))

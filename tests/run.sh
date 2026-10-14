@@ -524,6 +524,16 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
+  # start_story against a scratch origin and clone: the worktree on its
+  # branch (#59), the clone from clones_dir (#64), no PR on an existing
+  # branch (#57).
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-start-story.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all start_story tests passed"* ]]; then
+    pass "test-start-story.lua (headless nvim)"
+  else
+    fail "test-start-story.lua (headless nvim)" "$out"
+  fi
+
   # The comment editor leaves insert mode behind it (needs the main loop).
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-editor-mode.lua" 2>&1)"
   if [[ "$out" == *EDITOR-MODE-OK* ]]; then
