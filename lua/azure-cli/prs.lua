@@ -145,4 +145,17 @@ function M.failed_accounts(lines)
   return names
 end
 
+-- Whether a --list that failed for `names` should warn, given `prev` (the
+-- key it last returned; "" at first): only when the set of failed accounts
+-- changed, so an account that keeps failing doesn't warn on every poll. A
+-- clean list resets the key, so failing again after a recovery warns again.
+-- Returns (warn, key).
+function M.failed_accounts_changed(prev, names)
+  local sorted = {}
+  for i, n in ipairs(names or {}) do sorted[i] = n end
+  table.sort(sorted)
+  local key = table.concat(sorted, "\n")
+  return key ~= "" and key ~= (prev or ""), key
+end
+
 return M

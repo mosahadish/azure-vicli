@@ -1572,11 +1572,16 @@ local function load(silent, force)
         vim.bo[buf].modifiable = false
         return
       end
-      -- Some accounts failed but the rest listed: show those, and say which.
+      -- Some accounts failed but the rest listed: show those, and say which
+      -- - logged every time, warned only when the failing set changes.
       local failed = PRS.failed_accounts(err)
+      local warn
+      warn, STATE.PR_LIST_FAILED = PRS.failed_accounts_changed(STATE.PR_LIST_FAILED, failed)
       if #failed > 0 then
         local LOG = require("azure-cli.log")
         LOG.record("PR list", LOG.join_output({}, err))
+      end
+      if warn then
         notify("Some accounts failed: " .. table.concat(failed, ", ") .. "  (:AzureCli log)", vim.log.levels.WARN)
       end
       if not vim.api.nvim_buf_is_valid(buf) then return end

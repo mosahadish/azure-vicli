@@ -80,5 +80,18 @@ check("failed_accounts: nil", #P.failed_accounts(nil) == 0)
 check("failed_accounts: a total failure's line isn't partial",
   #P.failed_accounts({ "azure-cli --list failed: HTTP 401" }) == 0)
 
+-- failed_accounts_changed: the dashboard polls every 30 s, so the same
+-- failing accounts warn once, not every tick; a recovery re-arms it.
+local key, warn = ""
+local polls = { { "b" }, { "b" }, { "b", "a" }, { "a", "b" }, {}, {}, { "a", "b" }, { "a" } }
+local warned = {}
+for i, names in ipairs(polls) do
+  warn, key = P.failed_accounts_changed(key, names)
+  warned[i] = warn and "W" or "-"
+end
+check("failed_accounts_changed: warns on a change, a recovery re-arms it", table.concat(warned) == "W-W---WW",
+  table.concat(warned))
+check("failed_accounts_changed: nil prev and names", P.failed_accounts_changed(nil, nil) == false)
+
 print(fails == 0 and "test-prs: all cases pass" or ("test-prs: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

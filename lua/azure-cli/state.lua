@@ -24,6 +24,7 @@ local M = {}
 -- PR dashboard / reviewer
 M.PR_LIST_CACHE = nil               -- { prs, ts }
 M.PR_COMPLETED = {}                 -- PR id -> os.time() completed this session (prs.lua's drop_completed)
+M.PR_LIST_FAILED = ""               -- the failed accounts last warned about (prs.lua's failed_accounts_changed)
 M.PR_WORKITEMS = {}                 -- PR id -> { list, ts }: its linked work items (pr_workitems.lua)
 M.PR_DASHBOARD_RENDER = nil         -- the PR dashboard's change-aware redraw, for other screens' writes
 M.PR_CURRENT = nil                  -- metadata for the PR currently being opened
