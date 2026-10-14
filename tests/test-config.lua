@@ -384,6 +384,9 @@ do
   for k, v in pairs(defaults.ui) do
     assert(opts.ui and opts.ui[k] == v, "ui." .. k .. " preserved")
   end
+  for k, v in pairs(defaults.dashboard_web) do
+    assert(opts.dashboard_web and opts.dashboard_web[k] == v, "dashboard_web." .. k .. " preserved")
+  end
   for field in pairs(config._CHAT_FIELDS) do
     assert(text:find("%f[%w_]" .. field .. " =") or text:find("%f[%w_]" .. field .. ","), "the options file mentions chat." .. field)
   end
@@ -504,6 +507,29 @@ do
     local ok, err = pcall(config.setup, { ui = bad })
     check("ui: rejects " .. next(bad), not ok and tostring(err):find("ui", 1, true) ~= nil, err)
   end
+  config.setup({})
+end
+
+-- dashboard_web: the phone dashboard (#97) - off, on loopback, never on every interface.
+do
+  local w = config.get().dashboard_web
+  check("dashboard_web: off by default, loopback, port 8797", w.enabled == false and w.bind == "127.0.0.1"
+    and w.port == 8797)
+  config.setup({ dashboard_web = { enabled = true, bind = "100.64.0.5" } })
+  w = config.get().dashboard_web
+  check("dashboard_web: a VPN address accepted, the port left at its default", w.enabled == true
+    and w.bind == "100.64.0.5" and w.port == 8797)
+  config.setup({ dashboard_web = { port = 0 } })
+  check("dashboard_web: port 0 (any free one) accepted", config.get().dashboard_web.port == 0)
+  for _, bad in ipairs({ { bind = "0.0.0.0" }, { bind = "::" }, { bind = " 0.0.0.0 " }, { bind = "" }, { bind = "[::]" },
+    { bind = 1 }, { port = 70000 }, { port = 1.5 }, { port = "80" }, { enabled = "yes" }, { colour = 1 } }) do
+    local ok, err = pcall(config.setup, { dashboard_web = bad })
+    check("dashboard_web: rejects " .. next(bad) .. " = " .. tostring(bad[next(bad)]),
+      not ok and tostring(err):find("dashboard_web", 1, true) ~= nil, err)
+  end
+  local ok, err = pcall(config.setup, { dashboard_web = { bind = "0.0.0.0" } })
+  check("dashboard_web: says why every interface is refused", not ok and tostring(err):find("every interface", 1, true),
+    err)
   config.setup({})
 end
 

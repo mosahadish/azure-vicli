@@ -218,11 +218,44 @@ local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto", confirm = "popup" }
 local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
 
+-- setup({dashboard_web=...}): the phone dashboard (lua/azure-cli/web.lua,
+-- #97) - a read-only web page of the Agents screen. Off unless `enabled`;
+-- :AzureCli web start then serves it on `bind`:`port`. Loopback by default:
+-- to reach it from a phone, set `bind` to this machine's LAN or VPN address.
+-- An address that listens everywhere (0.0.0.0, ::) is refused.
+local DEFAULTS_DASHBOARD_WEB = { enabled = false, bind = "127.0.0.1", port = 8797 }
+local ALL_INTERFACES = { [""] = true, ["*"] = true, ["0.0.0.0"] = true, ["::"] = true, ["[::]"] = true,
+  ["0:0:0:0:0:0:0:0"] = true }
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
   row_numbers = DEFAULT_ROW_NUMBERS, chat = DEFAULTS_CHAT, ui = DEFAULTS_UI,
+  dashboard_web = DEFAULTS_DASHBOARD_WEB,
 }
+
+local function validate_dashboard_web(w)
+  if type(w) ~= "table" then error("azure-cli.setup: `dashboard_web` must be a table") end
+  local out = vim.deepcopy(DEFAULTS_DASHBOARD_WEB)
+  for k, v in pairs(w) do
+    if k == "enabled" then
+      if type(v) ~= "boolean" then error("azure-cli.setup: dashboard_web.enabled must be true or false") end
+    elseif k == "bind" then
+      if type(v) ~= "string" or ALL_INTERFACES[(v:gsub("^%s+", ""):gsub("%s+$", ""))] then
+        error("azure-cli.setup: dashboard_web.bind must be one address (this machine's LAN or VPN address, "
+          .. "or 127.0.0.1) - listening on every interface (0.0.0.0, ::) isn't allowed")
+      end
+    elseif k == "port" then
+      if type(v) ~= "number" or v ~= math.floor(v) or v < 0 or v > 65535 then
+        error("azure-cli.setup: dashboard_web.port must be a whole number from 0 to 65535 (0: any free port)")
+      end
+    else
+      error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in dashboard_web")
+    end
+    out[k] = v
+  end
+  return out
+end
 
 local function validate_ui(ui)
   if type(ui) ~= "table" then error("azure-cli.setup: `ui` must be a table") end
@@ -683,6 +716,8 @@ function M.setup(opts)
   if opts.chat ~= nil then chat = validate_chat(opts.chat) end
   local ui = DEFAULTS.ui
   if opts.ui ~= nil then ui = validate_ui(opts.ui) end
+  local dashboard_web = DEFAULTS.dashboard_web
+  if opts.dashboard_web ~= nil then dashboard_web = validate_dashboard_web(opts.dashboard_web) end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
@@ -695,6 +730,7 @@ function M.setup(opts)
     row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
     chat = chat,
     ui = ui,
+    dashboard_web = dashboard_web,
   }
   if ui.palette == "azure-vicli" then
     pcall(function() require("azure-cli.palette").apply({ follow = true }) end)
@@ -805,6 +841,13 @@ function M.render_options()
   w("  ui = {")
   for _, k in ipairs(sorted_keys(DEFAULTS.ui)) do
     w("    " .. k .. " = " .. lua_literal(DEFAULTS.ui[k]) .. ",")
+  end
+  w("  },")
+  w("  -- The phone dashboard (:AzureCli web): a read-only web page of the Agents screen.")
+  w("  -- Off by default; set bind to this machine's LAN or VPN address to reach it.")
+  w("  dashboard_web = {")
+  for _, k in ipairs(sorted_keys(DEFAULTS.dashboard_web)) do
+    w("    " .. k .. " = " .. lua_literal(DEFAULTS.dashboard_web[k]) .. ",")
   end
   w("  },")
   w("")

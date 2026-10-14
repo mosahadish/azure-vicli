@@ -5416,6 +5416,267 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Web dashboard - a read-only page of the Agents screen, for a phone (#97)
+# ---------------------------------------------------------------------------
+#
+# `--web-dashboard --bind <addr> --port <n>`: lua/azure-cli/web.lua starts it
+# for :AzureCli web start, writes the Agents screen's rows to its stdin (one
+# JSON snapshot per line, only when they change) and closes stdin to stop
+# it. It runs in its own process, not inside Neovim: whatever on the LAN
+# reaches the port only ever talks to Python's http.server here, so a slow
+# or malformed client can't stall the editor.
+#
+# Security, as #97 asks:
+#  - a bind that listens everywhere (0.0.0.0, ::) is refused, not warned;
+#  - the token is new each start, kept in memory, and printed only on the
+#    first stdout line (to Lua); ?token= sets an HttpOnly, SameSite=Strict
+#    cookie and redirects it out of the address bar; compared with
+#    hmac.compare_digest; missing or wrong = 401;
+#  - GET only (405 otherwise), no CORS headers, a CSP that allows only the
+#    page's own inline script and style (by hash), and the page builds every
+#    row with textContent - the row text comes from issues and agents;
+#  - no request logging (the token is in the first URL), and the token is
+#    never written to stderr, which Neovim keeps in :AzureCli log.
+# web_page_json keeps only the fields the Agents screen shows, whatever
+# arrives on stdin.
+
+_WEB_ROW_FIELDS = ("label", "title", "state", "ago", "cost", "detail")
+_WEB_COOKIE = "azvicli_web"
+_WEB_ALL_INTERFACES = ("", "*", "0.0.0.0", "::", "[::]")
+
+_WEB_STYLE = (
+    ":root{color-scheme:light dark;--bg:#fff;--fg:#1f2328;--muted:#59636e;--card:#f6f8fa;--line:#d1d9e0;"
+    "--accent:#0969da;--bad:#d1242f;--ok:#1a7f37;--wait:#9a6700}"
+    "@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9198a1;--card:#151b23;"
+    "--line:#3d444d;--accent:#4493f8;--bad:#f85149;--ok:#3fb950;--wait:#d29922}}"
+    "*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}"
+    "body{margin:0;padding:12px;background:var(--bg);color:var(--fg);"
+    "font:16px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;overflow-wrap:anywhere}"
+    "h1{font-size:1.3rem;margin:0}h2{font-size:1rem;margin:20px 0 8px;color:var(--muted)}"
+    "header p{margin:4px 0;color:var(--muted)}#status.stale{color:var(--bad)}"
+    ".row{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0 0 8px}"
+    ".top{display:flex;gap:8px;align-items:baseline}.label{color:var(--accent);font-weight:600;flex:none}"
+    ".title{flex:1;min-width:0}.meta{margin-top:4px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:.92rem}"
+    ".state{font-weight:600}.g1 .state{color:var(--wait)}.g2 .state{color:var(--accent)}"
+    ".g3 .state,.g4 .state{color:var(--ok)}.muted{color:var(--muted)}"
+    ".detail{margin-top:4px;font-size:.85rem;color:var(--muted);font-family:ui-monospace,monospace}"
+)
+
+_WEB_SCRIPT = (
+    '"use strict";(function(){'
+    'var rowsEl=document.getElementById("rows"),totalsEl=document.getElementById("totals"),'
+    'statusEl=document.getElementById("status"),last=0,failed=false,out=false;'
+    'function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;'
+    'if(text!=null)e.textContent=String(text);return e;}'
+    'function render(d){totalsEl.textContent=d.totals||"";rowsEl.textContent="";var items=d.items||[];'
+    'if(!items.length)rowsEl.appendChild(el("p","muted","No agents yet."));'
+    'items.forEach(function(it){if(it.header){rowsEl.appendChild(el("h2",null,it.header));return;}'
+    'var r=el("section","row g"+(it.group|0)),top=el("div","top"),meta=el("div","meta");'
+    'top.appendChild(el("span","label",it.label));top.appendChild(el("span","title",it.title));r.appendChild(top);'
+    'meta.appendChild(el("span","state",it.state));if(it.ago)meta.appendChild(el("span","muted",it.ago));'
+    'if(it.cost)meta.appendChild(el("span","muted",it.cost));r.appendChild(meta);'
+    'if(it.detail)r.appendChild(el("div","detail",it.detail));rowsEl.appendChild(r);});'
+    'if(d.hidden)rowsEl.appendChild(el("p","muted",d.hidden+" finished more than "+(d.finished_days||7)'
+    '+" days ago (not shown)"));}'
+    'function tick(){var s=Math.round((Date.now()-last)/1000);'
+    'statusEl.textContent=out?"Signed out - open the URL from :AzureCli web again."'
+    ':failed?("Can\\u2019t reach Neovim"+(last?" - last updated "+s+"s ago":""))'
+    ':last?"Updated "+s+"s ago":"Loading\\u2026";statusEl.className=(failed||out)?"stale":"";}'
+    'function poll(){fetch("/rows.json",{cache:"no-store",credentials:"same-origin"}).then(function(r){'
+    'if(r.status===401){out=true;throw 0;}if(!r.ok)throw 0;return r.json();})'
+    '.then(function(d){render(d);last=Date.now();failed=false;tick();})'
+    '.catch(function(){failed=true;tick();});}'
+    'poll();setInterval(poll,3000);setInterval(tick,1000);'
+    'document.addEventListener("visibilitychange",function(){if(!document.hidden)poll();});'
+    '})();'
+)
+
+_WEB_PAGE = (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer">'
+    '<title>azure-vicli agents</title><style>' + _WEB_STYLE + '</style></head>'
+    '<body><header><h1>Agents</h1><p id="totals"></p><p id="status">Loading…</p></header>'
+    '<main id="rows"></main><script>' + _WEB_SCRIPT + '</script></body></html>'
+).encode("utf-8")
+
+
+def _web_csp_hash(text):
+    return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii") + "'"
+
+
+WEB_CSP = ("default-src 'none'; script-src {0}; style-src {1}; connect-src 'self'; img-src 'none'; "
+           "base-uri 'none'; form-action 'none'; frame-ancestors 'none'").format(
+               _web_csp_hash(_WEB_SCRIPT), _web_csp_hash(_WEB_STYLE))
+
+
+def _web_text(v, limit):
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return ""
+    return str(v)[:limit]
+
+
+def web_page_json(snap):
+    """What /rows.json serves for a snapshot Lua sent (web.lua's
+    M.snapshot): its items - group headers and rows - with only the fields
+    the Agents screen shows, as text, plus the totals line and how many
+    finished ones are hidden. Anything else in the snapshot is dropped.
+    Pure."""
+    snap = snap if isinstance(snap, dict) else {}
+    raw = snap.get("items")
+    items = []
+    for it in (raw if isinstance(raw, list) else [])[:500]:
+        if not isinstance(it, dict):
+            continue
+        if it.get("header"):
+            items.append({"header": _web_text(it["header"], 80)})
+            continue
+        row = {k: _web_text(it.get(k), 300) for k in _WEB_ROW_FIELDS}
+        g = it.get("group")
+        row["group"] = g if isinstance(g, int) and not isinstance(g, bool) and 1 <= g <= 4 else 3
+        items.append(row)
+
+    def count(k):
+        v = snap.get(k)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+    return {"items": items, "totals": _web_text(snap.get("totals"), 300),
+            "hidden": count("hidden"), "finished_days": count("finished_days")}
+
+
+def web_bind_allowed(bind):
+    """False for an address that listens on every interface (0.0.0.0, ::,
+    empty): the phone dashboard is only ever reachable where it was bound
+    on purpose."""
+    b = (bind or "").strip()
+    if b in _WEB_ALL_INTERFACES:
+        return False
+    try:
+        import ipaddress
+        return not ipaddress.ip_address(b.strip("[]")).is_unspecified
+    except ValueError:
+        return True  # a host name, e.g. localhost
+
+
+def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=None):
+    """--web-dashboard: serves the page and /rows.json on bind:port until
+    stdin closes, reading snapshots from stdin. The first stdout line is
+    {"port", "token"}. Returns 2 (with a line on stderr) when the bind is
+    refused or the port can't be had."""
+    import hmac
+    import http.server
+    import secrets
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    if not web_bind_allowed(bind):
+        stderr.write("ERROR: the phone dashboard won't listen on every interface ({0!r}): set "
+                     "dashboard_web.bind to your LAN or VPN address\n".format(bind))
+        stderr.flush()
+        return 2
+    token = token or secrets.token_urlsafe(32)
+    latest = {"body": json.dumps(web_page_json({})).encode("utf-8")}
+
+    def authorised(given):
+        return bool(given) and hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        server_version = "azure-vicli"
+        sys_version = ""
+        timeout = 15  # a client that stops mid-request lets its thread go
+
+        def log_message(self, *args):
+            pass  # the first URL carries the token
+
+        def _send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=()):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy", WEB_CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cache-Control", "no-store")
+            for k, v in headers:
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _cookie(self):
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == _WEB_COOKIE:
+                    return value
+            return None
+
+        def do_GET(self):
+            url = urllib.parse.urlsplit(self.path)
+            given = urllib.parse.parse_qs(url.query).get("token")
+            if given is not None:
+                if not authorised(given[0]):
+                    return self._send(401, b"unauthorized\n")
+                return self._send(303, headers=(
+                    ("Location", "/"),
+                    ("Set-Cookie", "{0}={1}; HttpOnly; SameSite=Strict; Path=/".format(_WEB_COOKIE, token))))
+            if not authorised(self._cookie()):
+                return self._send(401, b"unauthorized\n")
+            if url.path == "/":
+                return self._send(200, _WEB_PAGE, "text/html; charset=utf-8")
+            if url.path == "/rows.json":
+                return self._send(200, latest["body"], "application/json")
+            return self._send(404, b"not found\n")
+
+        def _refuse(self):
+            self._send(405, b"read-only: GET only\n", headers=(("Allow", "GET"),))
+
+        do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _refuse
+
+    host = (bind or "").strip().strip("[]")
+
+    class Server(http.server.ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        daemon_threads = True
+
+    try:
+        server = Server((host, int(port)), Handler)
+    except (OSError, ValueError, OverflowError) as e:
+        stderr.write("ERROR: the phone dashboard can't listen on {0}:{1}: {2}\n".format(bind, port, e))
+        stderr.flush()
+        return 2
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    stdout.write(json.dumps({"port": server.server_address[1], "token": token}) + "\n")
+    stdout.flush()
+    for raw in stdin:
+        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        try:
+            latest["body"] = json.dumps(web_page_json(json.loads(line)), ensure_ascii=False).encode("utf-8")
+        except ValueError:
+            continue
+    server.shutdown()
+    server.server_close()
+    return 0
+
+
+def web_dashboard_main(args):
+    """argv after --web-dashboard: --bind <addr> --port <n>."""
+    opts = {"--bind": "127.0.0.1", "--port": "8797"}
+    i = 0
+    while i < len(args):
+        if args[i] in opts and i + 1 < len(args):
+            opts[args[i]] = args[i + 1]
+            i += 2
+        else:
+            sys.stderr.write("ERROR: --web-dashboard takes --bind <addr> --port <n>\n")
+            return 2
+    try:
+        port = int(opts["--port"])
+    except ValueError:
+        sys.stderr.write("ERROR: --web-dashboard: --port must be a number\n")
+        return 2
+    return web_dashboard_serve(opts["--bind"], port)
+
+
 def main(argv=None):
     """Thin wrapper: --serve runs the daemon loop, an empty argv either
     branch-prefetches or launches the nvim dashboard (both stay here rather
@@ -5434,6 +5695,8 @@ def main(argv=None):
         return mcp_serve()
     if argv[:1] == ["--mcp-http"]:
         return mcp_http_serve()
+    if argv[:1] == ["--web-dashboard"]:
+        return web_dashboard_main(argv[1:])
 
     if not argv:
         # No flags at all: either branch-prefetch (AZVICLI_PREFETCH=1|all -

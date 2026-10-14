@@ -813,6 +813,35 @@ agent in the chat panel - its winbar names it (`Chat · Claude · #3001`) -
 so asking why, approving or asking for changes there goes to the agent
 that wrote the plan; everywhere else the panel is your main conversation.
 
+### Phone dashboard
+
+To watch the agents from a phone, `:AzureCli web start` serves a
+read-only web page of the Agents screen from this machine: each row as the
+screen shows it (#id, title, status, age, cost, the current step), "Needs
+you" first, and the totals line. It updates itself every few seconds,
+fits a phone's width, and follows its light or dark mode. It shows no plan
+text, code, diffs or tokens, and has no buttons - approving and the rest
+stay in Neovim.
+
+It's off until you turn it on, and listens only where you say:
+
+```lua
+require("azure-cli").setup({
+  dashboard_web = { enabled = true, bind = "100.101.102.103" },  -- this machine's Tailscale (or LAN) address
+})
+```
+
+`start` shows the URL, token included, in a float - open it on the phone
+(`status` shows it again). The token is new every start and kept only in
+memory; the first visit swaps it for a cookie and drops it from the
+address bar, and a request without it gets 401. `:AzureCli web stop` stops
+it (so does leaving Neovim). `bind` defaults to `127.0.0.1` (this machine
+only), `port` to `8797`; `0.0.0.0` and `::` (every interface) are refused.
+The page is plain HTTP, so prefer a VPN such as Tailscale - which encrypts
+the traffic - over an open Wi-Fi. The server is `azure-cli.py
+--web-dashboard`, a process of its own: GET only, no CORS, a strict
+Content-Security-Policy, and no request log.
+
 ## What the agent can do
 
 The agent gets an MCP server named `azure-vicli` with these tools:

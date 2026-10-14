@@ -10,7 +10,8 @@ end
 vim.g.loaded_azure_cli = true
 
 local SUBCOMMANDS = { "dashboard", "review", "workitems", "issues", "chat", "agents", "doctor", "toasts", "status", "log",
-  "perf", "options", "help" }
+  "perf", "web", "options", "help" }
+local WEB_ACTIONS = { "start", "stop", "status" }
 
 local function show_help()
   local lines = {
@@ -27,7 +28,8 @@ local function show_help()
     "  :AzureCli status      show the provider daemon's status",
     "  :AzureCli log         show this session's error log",
     "  :AzureCli perf        request timings logged with AZVICLI_DEBUG=1: per screen, slowest, per endpoint",
-    "  :AzureCli options     every option at its default: azure-cli.lua (standalone), or a list to copy into setup()",
+    "  :AzureCli web start|stop|status  the phone dashboard: a read-only web page of the Agents screen",
+    "  :AzureCli options    every option at its default: azure-cli.lua (standalone), or a list to copy into setup()",
     "  :AzureCli help        this message",
   }
   vim.notify(table.concat(lines, "\n"))
@@ -70,6 +72,8 @@ local function dispatch(opts)
     require("azure-cli.log").open()
   elseif sub == "perf" then
     require("azure-cli.perf").open()
+  elseif sub == "web" then
+    require("azure-cli.web").command(args[2])
   elseif sub == "options" then
     require("azure-cli.shell").open_options_file()
   elseif sub == "help" then
@@ -81,8 +85,11 @@ end
 
 vim.api.nvim_create_user_command("AzureCli", dispatch, {
   nargs = "*",
-  desc = "Azure DevOps dashboard (dashboard | review <id> | workitems | chat | agents | doctor | toasts | status | log | perf | options | help)",
+  desc = "Azure DevOps dashboard (dashboard | review <id> | workitems | chat | agents | doctor | toasts | status | log | perf | web | options | help)",
   complete = function(arg_lead, cmd_line, _)
+    if cmd_line:match("^%s*%S+%s+web%s+%S*$") then
+      return vim.tbl_filter(function(s) return s:find(arg_lead, 1, true) == 1 end, WEB_ACTIONS)
+    end
     local parts = vim.split(vim.trim(cmd_line), "%s+")
     -- parts[1] is "AzureCli" itself; completing the subcommand while only
     -- one argument has been typed so far (plus whatever's still being typed).
