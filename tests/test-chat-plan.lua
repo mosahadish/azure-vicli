@@ -681,7 +681,7 @@ do
     "sed -n '1,5w out' f", "sed 's/a/b/w out' f", "sed 's/a/b/e' f", "sed --in-place s/a/b/ f", "sed -ni 1p f",
     "sed -n 'r x' f", "sed -n 1p -e 'w x' f", "sed --expression=1e f", "sed '1!G;h;$!d' -f x f",
     "git show x:f > out", "git show x:f | sed -n 1p > out", "git grep x origin/y | tee out",
-    "for f in $(ls); do cat $f; done", "for f in a; do rm $f; done", "for f in a; do cat $f; done > out",
+    "for f in $(rm x); do cat $f; done", "for f in a; do rm $f; done", "for f in a; do cat $f; done > out",
     "for ((i=0;i<3;i++)); do ls; done", "for f in a; do git checkout $f; done", "for f in a; do ls",
     "for f in a; ls; done", "done", "for PATH in .; do ls; done", "for f in a; do cat $f; done && rm x",
     "for f in a; do echo `rm x`; done" }, false)
@@ -771,6 +771,26 @@ do
     "git worktree list --expire now", "git worktree list x", "git -c core.x=y worktree list", "git worktree list > f" }, false)
   check("look_only_command: diff that writes, gh pr/issue that acts or opens a browser, git worktree add/remove/prune still ask (#75)",
     wrong == nil, wrong)
+  -- #76: $(...) of look-only commands, and a redirect then ; or &&.
+  wrong = again({ "echo $(git rev-parse HEAD)",
+    "sha=$(git rev-parse origin/github-host) && gh run list --commit $sha",
+    "gh run watch 1 --exit-status >/dev/null 2>&1; gh run list",
+    "echo \"$(git rev-parse --short HEAD)\"", "R=origin/x; echo $(git log -1 --format=%H $R)",
+    "echo $(echo $(git rev-parse HEAD))", "for f in $(git ls-files lua); do wc -l $f; done",
+    "gh run list >/dev/null && gh run list", "git log 2>&1 | head; git status",
+    "sha=\"$(git rev-parse --verify -q HEAD)\"; gh run list --commit \"$sha\"", "echo $(cat f)",
+    "echo $(git grep -n 'a)' -- x.lua)" }, true)
+  check("look_only_command: $(...) of look-only commands, a redirect then ; or && (#76)", wrong == nil, wrong)
+  wrong = again({ "echo $(git push)", "echo \"$(git push)\"", "x=$(rm -rf a)", "echo $(git log > f)",
+    "echo $(echo $(git push))", "echo $(git rev-parse HEAD) > out", "gh run list >/dev/null; rm x",
+    "gh run list 2>&1 > f", "gh run list >/dev/null &", "diff <(ls) <(ls)", "tee >(cat)",
+    "eval $(git rev-parse HEAD)", "sh -c \"$(git rev-parse HEAD)\"", "$(git rev-parse HEAD)",
+    "echo `git rev-parse HEAD`", "echo $((1+2))", "echo $(git rev-parse HEAD", "echo $(ls # )\nrm x\n)",
+    "x=$(cat f) && gh run list --commit $x", "gh $(git rev-parse HEAD) list",
+    "gh run list --commit x$(git rev-parse HEAD)", "gh run list --commit $(git rev-parse --abbrev-ref HEAD)",
+    "gh run list --commit $(git rev-parse --sq-quote a)", "gh run list --commit $(git rev-parse 'a b')",
+    "sed $(git rev-parse HEAD) f", "git log \"--outp$(cat f)\"", "while read x; do git log \"--outp$x\"; done < f" }, false)
+  check("look_only_command: $(...) that writes, >file, <(...), eval and sh -c still ask (#76)", wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

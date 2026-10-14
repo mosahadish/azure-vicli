@@ -351,15 +351,85 @@ local function look_only_part(words, unknown)
   return flags ~= nil and not (free and #flags > 0) and not bad_flag(words, 2, flags)
 end
 
+local shell_tree
+
+-- Where the $( at i closes: the index of its ), past quotes, backslashes
+-- and a nested $( ... ). nil when it doesn't close, or holds an unquoted
+-- ( ` or # (a comment could hide the ) - $(( is arithmetic).
+local function sub_end(cmd, i)
+  local k, n = i + 2, #cmd
+  local function nested()
+    local e = cmd:sub(k + 1, k + 1) == "(" and sub_end(cmd, k)
+    k = e and e + 1
+    return e
+  end
+  while k <= n do
+    local c = cmd:sub(k, k)
+    if c == ")" then return k end
+    if c == "'" then
+      k = cmd:find("'", k + 1, true)
+      if not k then return nil end
+      k = k + 1
+    elseif c == '"' then
+      k = k + 1
+      while cmd:sub(k, k) ~= '"' do
+        local d = cmd:sub(k, k)
+        if d == "" then return nil end
+        if d == "\\" then k = k + 2
+        elseif d == "$" and cmd:sub(k + 1, k + 1) == "(" then
+          if not nested() then return nil end
+        else k = k + 1 end
+      end
+      k = k + 1
+    elseif c == "\\" then
+      k = k + 2
+    elseif c == "$" and cmd:sub(k + 1, k + 1) == "(" then
+      if not nested() then return nil end
+    elseif c == "(" or c == "`" or c == "#" then
+      return nil
+    else
+      k = k + 1
+    end
+  end
+end
+
+-- Whether a $(...)'s tree is one `git rev-parse` of literal revs, with
+-- only options that print hashes or full ref names: its output is words
+-- that can't be a flag or a glob (--abbrev-ref's could start with -).
+local REV_PARSE_OPTS = { ["--verify"] = true, ["-q"] = true, ["--quiet"] = true, ["--short"] = true,
+  ["--symbolic-full-name"] = true }
+local function rev_parse_refs(tree)
+  local s = #tree == 1 and tree[1].words
+  if not s or #s < 2 then return false end
+  local words = {}
+  for k, w in ipairs(s) do
+    if #w ~= 1 or not w[1].text then return false end
+    words[k] = w[1].text
+  end
+  if words[1] ~= "git" or words[2] ~= "rev-parse" then return false end
+  for k = 3, #words do
+    local w = words[k]
+    if w:match("^%-") then
+      if not (REV_PARSE_OPTS[w] or w:match("^%-%-short=%d+$")) then return false end
+    elseif w == "" or w:match("[%s*?%[]") then
+      return false
+    end
+  end
+  return true
+end
+
 -- `cmd` split the way the shell would: statements (split on |, &&, ||,
 -- ; and newlines), each a list of words, each word a list of pieces -
--- { text, quoted } or { var = NAME, quoted } for $NAME / ${NAME}. nil
--- when it has anything else that runs or writes: outside quotes > < &
--- ( ) { } ` and other $ forms; inside double quotes $( and `. Throwing
--- errors away, or merging them, writes nothing: 2>/dev/null, 2>$null,
--- *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file). A plain
--- < (not <<, <( <& <>) is a word of its own, { { redirect = "<" } },
--- which shell_tree allows only after a while loop's done.
+-- { text, quoted } or { var = NAME, quoted } for $NAME / ${NAME}, or
+-- { sub = TREE, refs, quoted } for $(...), quoted or not: its commands
+-- as shell_tree's nodes (look_only_tree checks them), refs when
+-- rev_parse_refs. nil when it has anything else that runs or writes:
+-- outside quotes > < & ( ) { } ` and other $ forms; inside double quotes
+-- `. Throwing errors away, or merging them, writes nothing: 2>/dev/null,
+-- 2>$null, *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file -
+-- that ; & or | may end). A plain < (not <<, <( <& <>) is a word of its
+-- own, { { redirect = "<" } }, which shell_tree allows only after a while
+-- loop's done.
 local function shell_words(cmd)
   local stmts, words, word = {}, {}, nil
   local function add(text, quoted)
@@ -379,6 +449,16 @@ local function shell_words(cmd)
     if name then return name, i + 1 + #name end
     name = cmd:match("^%${([%a_][%w_]*)}", i)
     if name then return name, i + 3 + #name end
+  end
+  -- The $( at i as a piece of the word; past its ), nil when it won't do.
+  local function sub(i, quoted)
+    local close = sub_end(cmd, i)
+    local stmts = close and shell_words(cmd:sub(i + 2, close - 1))
+    local tree = stmts and shell_tree(stmts, 1, false)
+    if not tree or #tree == 0 then return nil end
+    word = word or {}
+    word[#word + 1] = { sub = tree, refs = rev_parse_refs(tree), quoted = quoted }
+    return close + 1
   end
   local i, n = 1, #cmd
   while i <= n do
@@ -403,6 +483,9 @@ local function shell_words(cmd)
           if name then
             word[#word + 1] = { var = name, quoted = true }
             i = j
+          elseif cmd:sub(i + 1, i + 1) == "(" then
+            i = sub(i, true)
+            if not i then return nil end
           elseif cmd:sub(i + 1, i + 1):match("^[%w_{(@*#?!%$%-]$") then
             return nil
           else
@@ -419,6 +502,9 @@ local function shell_words(cmd)
       -- backslashes go too, which doesn't matter for matching).
       if cmd:sub(i + 1, i + 1) ~= "\n" then add(cmd:sub(i + 1, i + 1), false) end
       i = i + 2
+    elseif c == "$" and cmd:sub(i + 1, i + 1) == "(" then
+      i = sub(i, false)
+      if not i then return nil end
     elseif c == "$" then
       local name, j = ref(i)
       if not name then return nil end
@@ -441,7 +527,7 @@ local function shell_words(cmd)
       end
       local after = cmd:match("^>%s*/dev/null()", i) or cmd:match("^>%s*%$null()", i)
         or (fd == "2" and cmd:match("^>&1()", i))
-      if not after or not cmd:sub(after, after):match("^%s?$") then return nil end
+      if not after or not cmd:sub(after, after):match("^[%s;&|]?$") then return nil end
       i = after
     elseif c == "<" then
       if cmd:sub(i + 1, i + 1):match("^[<(&>]$") then return nil end
@@ -473,22 +559,40 @@ local function settable(name)
   return not SHELL_VARS[name] and not name:match("^BASH") and os.getenv(name) == nil
 end
 
--- The value of a variable `while read` sets: whatever the file holds.
+-- The value of a variable `while read` sets: whatever the file holds;
+-- also what a $(...) prints.
 local UNKNOWN = {}
+-- What a rev_parse_refs $(...) prints: words that aren't flags or globs.
+local REFS = {}
+
+-- A $(...) piece's value, or a variable's.
+local function value_of(p, vars)
+  if p.sub then return p.refs and REFS or UNKNOWN end
+  return p.text or vars[p.var]
+end
 
 -- What word `w` becomes with `vars` filled in: unquoted, a value splits
 -- on spaces (so B='--output x' can't hide a flag), quoted it doesn't.
 -- nil when a name isn't set by the command itself. Second, which of the
--- words an UNKNOWN value is in: "free" when it starts the word or isn't
--- quoted (it could be any word, or several), else "inside".
+-- words an UNKNOWN value is in: "free" when it starts the word, isn't
+-- quoted or follows a - (it could be any word, or several, or finish a
+-- flag), else "inside". REFS is "inside" when it's the whole word, else
+-- UNKNOWN.
 local function expand(w, vars)
   local out, unknown, cur, any, unk = {}, {}, "", false, nil
   local function push() out[#out + 1] = cur; unknown[#out] = unk end
   for _, p in ipairs(w) do
-    local v = p.text or vars[p.var]
+    local v = value_of(p, vars)
     if v == nil then return nil end
-    if v == UNKNOWN then
-      unk = (not p.quoted or cur == "") and "free" or unk or "inside"
+    if v == REFS then
+      for _, q in ipairs(w) do
+        if q ~= p and q.text ~= "" then v = UNKNOWN end
+      end
+    end
+    if v == REFS then
+      unk, any = unk or "inside", true
+    elseif v == UNKNOWN then
+      unk = (not p.quoted or cur == "" or cur:match("^%-")) and "free" or unk or "inside"
       any = true
     elseif p.text or p.quoted then
       cur, any = cur .. v, true
@@ -513,9 +617,14 @@ local function assignment(w, vars)
   local name, value = first.text:match("^([%a_][%w_]*)=(.*)$")
   if not name then return nil end
   for k = 2, #w do
-    local v = w[k].text or vars[w[k].var]
+    local v = value_of(w[k], vars)
     if v == nil then return nil end
-    value = (v == UNKNOWN or value == UNKNOWN) and UNKNOWN or value .. v
+    if v == REFS or value == REFS then
+      -- REFS only as the whole value (sha=$(git rev-parse x)).
+      value = (value == "" and v) or (v == "" and value) or UNKNOWN
+    else
+      value = (v == UNKNOWN or value == UNKNOWN) and UNKNOWN or value .. v
+    end
   end
   return name, value
 end
@@ -565,7 +674,7 @@ end
 -- read loops, up to the `done` that closes the loop they're in (`inside`:
 -- "for" or "while"); where they end, and the word a while loop reads
 -- from (done < FILE). nil when they don't parse.
-local function shell_tree(stmts, i, inside)
+function shell_tree(stmts, i, inside)
   local nodes = {}
   while i <= #stmts do
     local s = stmts[i]
@@ -609,12 +718,28 @@ local function readable(path)
   return path ~= "" and (not path:match("^/+dev/") or path == "/dev/null" or path == "/dev/stdin")
 end
 
+local look_only_tree
+
+-- Whether every $(...) in `words` only looks, with `vars` in scope; what
+-- one sets stays in it, as in a subshell.
+local function subs_look_only(words, vars)
+  for _, w in ipairs(words) do
+    for _, p in ipairs(w) do
+      if p.sub and not look_only_tree(p.sub, setmetatable({}, { __index = vars })) then return false end
+    end
+  end
+  return true
+end
+
 -- Whether every command in shell_tree's `nodes` only looks, with
 -- `vars` the variables set so far. A for loop's body is checked once per
 -- value of its list (once with "" when it's empty), a while read loop's
--- once with UNKNOWN.
-local function look_only_tree(nodes, vars)
+-- once with UNKNOWN; the $(...)s in a node first.
+function look_only_tree(nodes, vars)
   for _, node in ipairs(nodes) do
+    if not subs_look_only(node.words or node.list or {}, vars) or (node.from and not subs_look_only({ node.from }, vars)) then
+      return false
+    end
     if node.body then
       for _, name in ipairs(node.names) do if not settable(name) then return false end end
       local values = {}
@@ -661,12 +786,13 @@ local function look_only_tree(nodes, vars)
 end
 
 -- Whether shell command `cmd` (a string, or an argv list) only reads:
--- every command in it - split on |, &&, || and ;, inside for loops and
--- while read loops too - is one of the commands above without a flag
+-- every command in it - split on |, &&, || and ;, inside for loops,
+-- while read loops and $(...) too - is one of the commands above without a flag
 -- that writes, once the variables the command sets itself (B=x; ... $B)
 -- and its loop variables are filled in (what read reads could be
--- anything: look_only_part); and nothing in it redirects - but a while
--- loop's done < FILE - runs a subcommand or a script block
+-- anything: look_only_part, as is what a $(...) of them prints, but a
+-- lone git rev-parse's); and nothing in it redirects - but a while
+-- loop's done < FILE - runs a script block or another kind of subcommand
 -- (shell_words). Reads the environment only to refuse assigning a
 -- variable that's already in it.
 function M.look_only_command(cmd)

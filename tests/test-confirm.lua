@@ -459,6 +459,41 @@ do
   vim.wait(100, function() return yes ~= nil end, 10)
   check("#62 the same command writing to a file still asks", popup and yes == false, tostring(yes))
 end
+do
+  -- #76: the commands agents check CI with after pushing, the way
+  -- Claude Code asks for them, again and again; near misses still ask.
+  local RUN = require("azure-cli.chat.run")
+  -- { entry, yes }: yes set once it's answered.
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({ "echo $(git rev-parse HEAD)",
+    "sha=$(git rev-parse origin/github-host) && gh run list --commit $sha",
+    "gh run watch 1 --exit-status >/dev/null 2>&1; gh run list" }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#76 " .. cmd .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "echo $(git push)", "x=$(cat f) && gh run list --commit $x",
+    "gh run list >/dev/null 2>&1; rm x" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#76 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
 
 -- Approving a plan: three buttons, p lets it push.
 do
