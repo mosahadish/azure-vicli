@@ -17,7 +17,8 @@
 -- Grouped by what needs you first (M.arrange), the most recent first in
 -- each group; finished means its PR was merged or abandoned
 -- (plan.pr_closed), and those over M.FINISHED_DAYS old hide until gF.
--- <CR> (or gq) opens the row's agent: its plan's tab with that agent's
+-- <CR> (or gq) opens the row's agent: its plan as an inner tab of this one
+-- (innertabs.lua; again: back to it as you left it) with that agent's
 -- conversation in the chat, or - before it has planned - its conversation
 -- in a popup; gd its change, gH its run log; <C-c> stops what it's doing;
 -- dd discards its plan, asking first (chat/plan_discard.lua).
@@ -309,7 +310,8 @@ local function row_here()
   return view and view.rows[vim.api.nvim_win_get_cursor(0)[1]]
 end
 
--- <CR> / gq: the row's agent. With a plan, its plan's tab - the chat there
+-- <CR> / gq: the row's agent. With a plan, its plan's inner tab (already
+-- open: that tab, as it was; q there comes back here) - the chat there
 -- shows that plan's own conversation (chat's sync_active) - and the panel
 -- opened on it; before it has planned, its conversation in the popup ga
 -- opens on the PR dashboard, the panel keeping the main one (issue #87).

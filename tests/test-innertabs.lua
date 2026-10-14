@@ -64,6 +64,9 @@ check("item key: never a PR's", M.item_key("azure", 101) ~= "101" and M.item_key
 check("item key: W's #7 and I's #7 differ", M.item_key("azure", 7) ~= M.item_key("github", 7))
 check("item home: Work items", M.item_home("azure") == "workitems" and M.item_home(nil) == "workitems")
 check("item home: Issues", M.item_home("github") == "issues")
+check("plan key", M.plan_key("wi-3001") == "plan:wi-3001")
+check("plan key: never a work item's or a PR's",
+  M.plan_key("wi-3001") ~= M.item_key("azure", 3001) and M.plan_key("pr-101") ~= "101")
 
 print(fails == 0 and "innertabs: all cases pass" or ("innertabs: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

@@ -792,7 +792,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 
 | Key (Agents screen) | Action |
 |---|---|
-| `<CR>` | The row's agent: its plan's tab, with that agent's conversation in the chat; before it has planned, its conversation in a popup (watch it, or `i` to talk to it), the panel keeping the main chat |
+| `<CR>` | The row's agent: its plan, as an inner tab of Agents (`]r` / `[r` / `g1`..`g9` switch, `q` goes back; already open: back to it as you left it), with that agent's conversation in the chat; before it has planned, its conversation in a popup (watch it, or `i` to talk to it), the panel keeping the main chat |
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |

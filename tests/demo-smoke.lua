@@ -3441,6 +3441,246 @@ section("INNERTABS-WI", function()
   smoke_ok("INNERTABS-WI")
 end)
 
+-- Inner tabs, stage 3: plans open inside Agents (A) - the strip, ]r / [r /
+-- g1..g3, <CR> on an open plan's row goes back to it as it was (its older
+-- revision, a Changes file), a new revision reloads it, q goes to the one
+-- before it then the list (or back to where it was opened from), dd on a
+-- row whose plan is open closes its tab. Its own plans (#3101, #3102) and
+-- agents, so it needs no other section.
+section("INNERTABS-PLAN", function()
+  local INNER = require("azure-cli.innertabs")
+  local HOME = require("azure-cli.home")
+  local UI = require("azure-cli.ui")
+  local CHAT = require("azure-cli.chat")
+  local PLAN = require("azure-cli.chat.plan")
+  local PC = require("azure-cli.chat.plan_changes")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local STATE = require("azure-cli.state")
+  local function cur() return vim.api.nvim_get_current_tabpage() end
+  local function keys_here()
+    local b = vim.api.nvim_get_current_buf()
+    if not vim.wait(5000, function() return vim.b[b].azure_cli_tabs == true end, 20) then
+      return fail("no inner-tab keys on " .. vim.bo[b].filetype)
+    end
+  end
+  local function strip_of(tab)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local bar = vim.wo[w].winbar
+      if bar ~= "" then
+        local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
+        if s:find("\u{2502}", 1, true) then return s end
+      end
+    end
+  end
+  local function listed(tab)
+    return UI.tabline():find("%" .. vim.api.nvim_tabpage_get_number(tab) .. "T", 1, true) ~= nil
+  end
+  -- Two plans with three revisions each, and their agents' conversations
+  -- (the Agents screen's rows); #3101 with a story worktree that changed
+  -- a file (its Changes section).
+  local function md(id, n) return "# Plan " .. id .. " rev " .. n .. "\n\n## Goal\ngoal " .. n .. "\n\n## Files\n- `a.lua` - x" end
+  for _, id in ipairs({ 3101, 3102 }) do
+    local rec = { key = "wi-" .. id, target = { work_item_id = id }, title = "Tabbed " .. id, status = "draft",
+      threads = {}, revisions = {} }
+    for n = 1, 3 do PLAN.add_revision(rec, md(id, n), "agent") end
+    PLAN.save(rec)
+    local c = CHAT.conversation("wi-" .. id, { label = "#" .. id, title = "Tabbed " .. id, target = { work_item_id = id } })
+    c.entries = { { role = "agent", text = "planned #" .. id, status = "done" } }
+  end
+  local wt = FIX.root() .. "/widgets-wi3101"
+  vim.fn.delete(wt, "rf")
+  vim.fn.mkdir(wt, "p")
+  vim.fn.writefile({ "feature/3101-x", "main" }, wt .. ".branch")
+  local function sh(args) return vim.fn.system(vim.list_extend({ "git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t" }, args)) end
+  sh({ "init", "-q" })
+  vim.fn.writefile({ "local a = 1" }, wt .. "/a.lua")
+  sh({ "add", "-A" })
+  sh({ "commit", "-q", "-m", "base" })
+  vim.fn.writefile({ "local a = 2" }, wt .. "/a.lua")
+  local function cleanup()
+    for _, id in ipairs({ 3101, 3102 }) do
+      STATE.chat.convs["wi-" .. id] = nil
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".json")
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".md")
+    end
+    vim.fn.delete(wt, "rf")
+    vim.fn.delete(wt .. ".branch")
+  end
+
+  ensure_dashboard()
+  HOME.go("agents")
+  local av = require("azure-cli.chat.agents_view").current()
+  local atab = HOME.tab("agents")
+  if not (av and atab and cur() == atab) then cleanup() return fail("A didn't open the Agents screen") end
+  vim.api.nvim_set_current_win(av.win)
+  feed("r")
+  -- <CR> on row `label`: its plan, an inner tab of Agents.
+  local function open_row(label)
+    vim.api.nvim_set_current_tabpage(atab)
+    vim.api.nvim_set_current_win(av.win)
+    local row
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+      if l:find(label .. " ", 1, true) then row = i break end
+    end
+    if not row then cleanup() return fail("no " .. label .. " row on the Agents screen", av.buf) end
+    vim.api.nvim_win_set_cursor(av.win, { row, 0 })
+    feed("<CR>")
+    -- The panel <CR> opens (scheduled): closed again, the focus back in the plan.
+    local tab = cur()
+    vim.wait(1000, function() return STATE.chat.wins[tab] ~= nil end, 20)
+    CHAT.hide()
+    vim.cmd("stopinsert")
+    local v = PLAN.open_views()["wi-" .. label:sub(2)]
+    if v and v.tab == tab and vim.api.nvim_win_is_valid(v.plan_win) then vim.api.nvim_set_current_win(v.plan_win) end
+    return tab, v
+  end
+  local t1, v1 = open_row("#3101")
+  local t2, v2 = open_row("#3102")
+  if not (v1 and v2 and t1 == v1.tab and t2 == v2.tab and t1 ~= t2) then cleanup() return fail("<CR> didn't open both plans") end
+  if INNER.home_of(t1) ~= atab or INNER.home_of(t2) ~= atab or #INNER.members(atab) ~= 2 then
+    cleanup()
+    return fail("the plans aren't inner tabs of Agents: " .. vim.inspect(INNER.members(atab)))
+  end
+  if listed(t1) or listed(t2) or not listed(atab) then cleanup() return fail("the tab line lists the plans: " .. UI.tabline()) end
+  local strip = strip_of(t2)
+  if not (strip and strip:find("Agents", 1, true) and strip:find("#3101", 1, true) and strip:find("[#3102", 1, true)) then
+    cleanup()
+    return fail("no strip with both plans, #3102 current: " .. tostring(strip))
+  end
+  -- Each keeps its cursor; ]r / [r / g1..g3 switch.
+  vim.api.nvim_win_set_cursor(v1.plan_win, { 3, 0 })
+  vim.api.nvim_set_current_win(v2.plan_win)
+  keys_here()
+  feed("[r")
+  if cur() ~= t1 then cleanup() return fail("[r didn't go back to #3101") end
+  if vim.api.nvim_win_get_cursor(v1.plan_win)[1] ~= 3 then cleanup() return fail("#3101's plan lost its cursor") end
+  keys_here()
+  feed("]r")
+  if cur() ~= t2 then cleanup() return fail("]r didn't go to #3102") end
+  feed("g2")
+  if cur() ~= t1 then cleanup() return fail("g2 didn't go to #3101") end
+  feed("g1")
+  if cur() ~= atab then cleanup() return fail("g1 didn't go to the Agents list") end
+  keys_here()
+  feed("g3")
+  if cur() ~= t2 then cleanup() return fail("g3 on the list didn't go to #3102") end
+
+  -- #3101: an older revision (gh) and its Changes file, kept through a
+  -- switch away and <CR> on its row again - no twin.
+  local PROMPT = require("azure-cli.prompt")
+  local select = PROMPT.select
+  PROMPT.select = function(o, cb) cb(o.items[2]) end
+  vim.api.nvim_set_current_tabpage(t1)
+  vim.api.nvim_set_current_win(v1.plan_win)
+  feed("gh")
+  PROMPT.select = select
+  if v1.old ~= 2 then cleanup() return fail("gh didn't open #3101's revision 2: " .. tostring(v1.old)) end
+  vim.api.nvim_win_set_cursor(v1.plan_win, { 2, 0 })
+  keys_here()
+  feed("g1")
+  local tabs = #vim.api.nvim_list_tabpages()
+  local again = open_row("#3101")
+  if again ~= t1 or #vim.api.nvim_list_tabpages() ~= tabs or #INNER.members(atab) ~= 2 then
+    cleanup()
+    return fail("<CR> on the open #3101 opened a twin")
+  end
+  if v1.old ~= 2 or vim.api.nvim_win_get_cursor(v1.plan_win)[1] ~= 2 then
+    cleanup()
+    return fail("back in #3101, its older revision or cursor is gone: " .. vim.inspect({ v1.old, vim.api.nvim_win_get_cursor(v1.plan_win) }))
+  end
+  -- Its Changes section: a.lua's diff in the plan pane (gh first, back to the current revision).
+  feed("gh")
+  ok = vim.wait(5000, function()
+    local st = PC.state("wi-3101")
+    return st and st.files[1] and st.files[1].path == "a.lua"
+  end, 20)
+  if not ok then cleanup() return fail("#3101 has no Changes section") end
+  local ra
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v1.list_buf, 0, -1, false)) do
+    if l:find(" a.lua", 1, true) then ra = i end
+  end
+  vim.api.nvim_set_current_win(v1.list_win)
+  vim.api.nvim_win_set_cursor(v1.list_win, { ra or 1, 0 })
+  feed("<CR>")
+  if PC.showing(v1) ~= "a.lua" then cleanup() return fail("<CR> on a.lua didn't show its diff in #3101's tab") end
+  if not (strip_of(t1) or ""):find("[#3101", 1, true) then cleanup() return fail("no strip over the diff: " .. tostring(strip_of(t1))) end
+  keys_here()
+  feed("g3")
+  if cur() ~= t2 then cleanup() return fail("g3 from the diff didn't go to #3102") end
+  open_row("#3101")
+  if cur() ~= t1 or PC.showing(v1) ~= "a.lua" then cleanup() return fail("back in #3101, its diff is gone") end
+
+  -- A new revision of #3101 (submit_plan): the tab reloads to it, retitled.
+  local rec = PLAN.load("wi-3101")
+  rec.title = "Tabbed again"
+  PLAN.add_revision(rec, md(3101, 4), "agent")
+  PLAN.save(rec)
+  PLAN.open("wi-3101")
+  local m1 = INNER.members(atab)[1]
+  if cur() ~= t1 or v1.old ~= nil or #INNER.members(atab) ~= 2 or not (m1 and m1.title:find("Tabbed again", 1, true)) then
+    cleanup()
+    return fail("a new revision didn't reload #3101's tab: " .. vim.inspect({ v1.old, INNER.members(atab) }))
+  end
+
+  -- Opened from outside Agents (the PR list): q goes back there.
+  vim.api.nvim_set_current_tabpage(t2)
+  vim.api.nvim_set_current_win(v2.plan_win)
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t2) and cur() == t1 end, 20)
+  if not ok then cleanup() return fail("q on #3102 didn't go back to #3101") end
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  PLAN.open("wi-3102")
+  local t3 = cur()
+  if INNER.home_of(t3) ~= atab then cleanup() return fail("#3102 opened from the PR list isn't an inner tab of Agents") end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t3) and cur() == dash_tab end, 20)
+  if not ok then cleanup() return fail("q on #3102 opened from the PR list didn't go back there") end
+
+  -- dd on #3101's row while its tab is open: the tab closes, the list stays.
+  vim.api.nvim_set_current_tabpage(atab)
+  vim.api.nvim_set_current_win(av.win)
+  local confirm = UI.confirm
+  UI.confirm = function(_, cb) cb(true) end
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+    if l:find("#3101 ", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  end
+  feed("dd")
+  ok = vim.wait(10000, function() return not vim.api.nvim_tabpage_is_valid(t1) and PLAN.load("wi-3101") == nil end, 50)
+  UI.confirm = confirm
+  if not ok or cur() ~= atab or #INNER.members(atab) ~= 0 then
+    cleanup()
+    return fail("dd on #3101 didn't close its tab and stay on the list: " .. vim.inspect({ ok, cur() == atab, INNER.members(atab) }))
+  end
+
+  -- <CR> on an agent that hasn't planned yet: still #87's popup, no inner tab.
+  local early = CHAT.conversation("wi-9188", { label = "#9188", title = "Not planned yet", target = { work_item_id = 9188 } })
+  early.entries = { { role = "agent", text = "STILL-PLANNING-9188", status = "done" } }
+  feed("r")
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+    if l:find("#9188", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  end
+  feed("<CR>")
+  local pw = CHAT.popup_wins()
+  local popped = pw and pw.key == "wi-9188" and cur() == atab and #INNER.members(atab) == 0
+  if pw then
+    vim.api.nvim_set_current_win(pw.log)
+    CHAT.hide()
+    vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+  end
+  STATE.chat.convs["wi-9188"] = nil
+  if not popped then cleanup() return fail("<CR> on an agent without a plan didn't stay #87's popup") end
+
+  -- q in the last plan goes to the Agents list.
+  open_row("#3102")
+  local t4 = cur()
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t4) and cur() == atab end, 20)
+  if not ok then cleanup() return fail("q on the only plan didn't go back to the Agents list") end
+  cleanup()
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  smoke_ok("INNERTABS-PLAN")
+end)
+
 -- A GitHub account (github_host.py): the fake lists PR #7 from two
 -- repositories. Each opens in its own reviewer, with its own threads -
 -- per-PR state is keyed owner~repo~number, not by the number.

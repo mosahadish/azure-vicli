@@ -146,6 +146,8 @@ end
 
 local function close()
   if view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then
+    -- An inner tab of Agents: back to the one before it (innertabs.lua).
+    if vim.api.nvim_get_current_tabpage() == view.tab then pcall(require("azure-cli.innertabs").closing) end
     pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(view.tab))
   end
 end
@@ -911,63 +913,92 @@ PC().hooks = {
   end,
 }
 
--- Opens (or brings to the front, reloaded) the plan `key`, at plan line
--- `line` when given.
+-- What the plan's inner tab shows in the Agents strip (innertabs.lua).
+local function strip_title(rec)
+  return vim.trim(PLAN().target_label(rec.target) .. " " .. tostring(rec.title or ""))
+end
+
+-- Builds plan `key`'s two panes in the current (new) tab, for view `v`.
+local function build(v, key)
+  v.tab = vim.api.nvim_get_current_tabpage()
+  v.list_win = vim.api.nvim_get_current_win()
+  v.list_buf = vim.api.nvim_get_current_buf()
+  by_buf[v.list_buf] = v
+  vim.bo[v.list_buf].buftype = "nofile"
+  vim.bo[v.list_buf].bufhidden = "wipe"
+  vim.bo[v.list_buf].filetype = "azurecli-plan"
+  pcall(vim.api.nvim_buf_set_name, v.list_buf, "azure-cli://plan/" .. key .. "/sections")
+  setup_list(v.list_buf)
+  vim.cmd("belowright vsplit")
+  v.plan_win = vim.api.nvim_get_current_win()
+  v.plan_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[v.plan_buf].buftype = "nofile"
+  vim.bo[v.plan_buf].bufhidden = "wipe"
+  vim.bo[v.plan_buf].filetype = "markdown"
+  vim.b[v.plan_buf].azure_cli_view = "azurecli-plan"
+  vim.b[v.plan_buf].azure_cli_title = "Plan"
+  by_buf[v.plan_buf] = v
+  pcall(vim.api.nvim_buf_set_name, v.plan_buf, "azure-cli://plan/" .. key)
+  vim.api.nvim_win_set_buf(v.plan_win, v.plan_buf)
+  pcall(vim.treesitter.start, v.plan_buf, "markdown")
+  setup_plan(v.plan_buf)
+  UI().plain_window(v.list_win, { cursorline = true })
+  plan_window(v.plan_win)
+  pcall(vim.api.nvim_win_set_width, v.list_win, v.width)
+  vim.api.nvim_create_autocmd("WinResized", {
+    buffer = v.list_buf,
+    callback = function()
+      vim.schedule(function() if alive(v) then with_view(v, function() render_list() draw_threads() end) end end)
+    end,
+  })
+  -- The tab went: forget its view.
+  for _, b in ipairs({ v.list_buf, v.plan_buf }) do
+    vim.api.nvim_create_autocmd("BufWipeout", { buffer = b, once = true, callback = function()
+      by_buf[b] = nil
+      if views[key] == v then views[key] = nil end
+      -- The Changes section's diff buffers (and the plan's text, kept
+      -- loaded while a diff was in its window).
+      if b == v.list_buf then PC().forget(key, v) end
+    end })
+  end
+end
+
+-- Opens plan `key` as an inner tab of Agents (innertabs.lua; a tab of its
+-- own when Agents isn't open), at plan line `line` when given. Already
+-- open: goes to its tab as it was (cursor, section, Changes file, older
+-- revision) - reloaded only for `line` (gp) or a newer revision.
 function M.open(key, line)
   local rec = PLAN().load(key)
   if not rec then return nil, "no plan " .. tostring(key) end
   UI().theme()
-  if alive(views[key]) then
-    view = views[key]
+  local INNER = require("azure-cli.innertabs")
+  local had = views[key]
+  if alive(had) and not line and PLAN().rev_count(rec) == PLAN().rev_count(had.rec) then
+    view = had
+    vim.api.nvim_set_current_tabpage(view.tab)
+    vim.cmd("redrawtabline")
+    pcall(function() require("azure-cli.chat").sync_active() end)
+    return view.tab
+  end
+  if alive(had) then
+    view = had
     view.rec, view.old = rec, nil
     vim.api.nvim_set_current_tabpage(view.tab)
+    INNER.retitle(view.tab, nil, strip_title(rec))
   else
-    local width = view and view.width or 32
-    view = { key = key, rec = rec, width = width, sections = {}, rows = {} }
-    views[key] = view
-    vim.cmd("tabnew")
-    view.tab = vim.api.nvim_get_current_tabpage()
-    view.list_win = vim.api.nvim_get_current_win()
-    view.list_buf = vim.api.nvim_get_current_buf()
-    by_buf[view.list_buf] = view
-    vim.bo[view.list_buf].buftype = "nofile"
-    vim.bo[view.list_buf].bufhidden = "wipe"
-    vim.bo[view.list_buf].filetype = "azurecli-plan"
-    pcall(vim.api.nvim_buf_set_name, view.list_buf, "azure-cli://plan/" .. key .. "/sections")
-    setup_list(view.list_buf)
-    vim.cmd("belowright vsplit")
-    view.plan_win = vim.api.nvim_get_current_win()
-    view.plan_buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[view.plan_buf].buftype = "nofile"
-    vim.bo[view.plan_buf].bufhidden = "wipe"
-    vim.bo[view.plan_buf].filetype = "markdown"
-    vim.b[view.plan_buf].azure_cli_view = "azurecli-plan"
-    vim.b[view.plan_buf].azure_cli_title = "Plan"
-    by_buf[view.plan_buf] = view
-    pcall(vim.api.nvim_buf_set_name, view.plan_buf, "azure-cli://plan/" .. key)
-    vim.api.nvim_win_set_buf(view.plan_win, view.plan_buf)
-    pcall(vim.treesitter.start, view.plan_buf, "markdown")
-    setup_plan(view.plan_buf)
-    UI().plain_window(view.list_win, { cursorline = true })
-    plan_window(view.plan_win)
-    pcall(vim.api.nvim_win_set_width, view.list_win, width)
-    local v = view
-    vim.api.nvim_create_autocmd("WinResized", {
-      buffer = view.list_buf,
-      callback = function()
-        vim.schedule(function() if alive(v) then with_view(v, function() render_list() draw_threads() end) end end)
-      end,
-    })
-    -- The tab went: forget its view.
-    for _, b in ipairs({ view.list_buf, view.plan_buf }) do
-      vim.api.nvim_create_autocmd("BufWipeout", { buffer = b, once = true, callback = function()
-        by_buf[b] = nil
-        if views[key] == v then views[key] = nil end
-        -- The Changes section's diff buffers (and the plan's text, kept
-        -- loaded while a diff was in its window).
-        if b == v.list_buf then PC().forget(key, v) end
-      end })
+    -- Its tab with a pane closed by hand: closed, so the strip doesn't
+    -- send this back to it.
+    if had and had.tab and vim.api.nvim_tabpage_is_valid(had.tab) and #vim.api.nvim_list_tabpages() > 1 then
+      pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(had.tab))
     end
+    local v = { key = key, rec = rec, width = view and view.width or 32, sections = {}, rows = {} }
+    views[key] = v
+    INNER.open("agents", INNER.plan_key(key), strip_title(rec), function() build(v, key) end)
+    if not v.tab then
+      views[key] = nil
+      return nil, "couldn't open the plan " .. tostring(key)
+    end
+    view = v
   end
   vim.t[view.tab].azure_cli_title = "Plan " .. PLAN().target_label(rec.target)
   vim.t[view.tab].azure_cli_plan_key = key
@@ -1059,7 +1090,10 @@ end
 
 -- Shows `rec` (a new revision) in its tab, if that's open.
 function M.show(key, rec)
-  if alive(views[key]) then with_view(views[key], function() view.rec, view.old = rec, nil; render() end) end
+  if alive(views[key]) then
+    with_view(views[key], function() view.rec, view.old = rec, nil; render() end)
+    require("azure-cli.innertabs").retitle(views[key].tab, nil, strip_title(rec))
+  end
 end
 
 return M

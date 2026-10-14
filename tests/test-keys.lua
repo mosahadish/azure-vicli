@@ -252,9 +252,10 @@ end
 
 -- 13. Inner tabs (innertabs.lua): ]r / [r, and g1..g9 for the strip's
 -- entries. They're bound on the PR dashboard, the boards (W, I), the
--- reviewer's and the work-item view's buffers next to those surfaces' own
--- keys, so none of those may have a key that starts one of them (a bare ]
--- or [) - bound with nowait, it would fire before the r.
+-- reviewer's, the work-item view's, the Agents screen's and the plan's
+-- buffers next to those surfaces' own keys, so none of those may have a
+-- key that starts one of them (a bare ] or [) - bound with nowait, it
+-- would fire before the r.
 check("tabs: ]r / [r", keys.resolve("tabs", "next") == "]r" and keys.resolve("tabs", "prev") == "[r")
 local tab_keys = {}
 do
@@ -265,7 +266,7 @@ do
     for _, k in ipairs(type(spec) == "table" and spec or { spec }) do tab_keys[#tab_keys + 1] = k end
   end
 end
-for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view" }) do
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "agents", "plan" }) do
   local bad = {}
   for action, spec in pairs(config.get().keys[s]) do
     for _, k in ipairs(type(spec) == "table" and spec or { spec }) do

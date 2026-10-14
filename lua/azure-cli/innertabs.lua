@@ -14,13 +14,14 @@
 -- an item that's already open goes to its inner tab.
 --
 -- An item goes to its kind's home, wherever it's opened from: a PR to Pull
--- requests, an Azure work item to Work items, a GitHub issue to Issues.
--- When that home isn't open (plugin mode, only the work items open), it
--- opens as a tab of its own, as before. One opened from outside its home
+-- requests, an Azure work item to Work items, a GitHub issue to Issues, a
+-- plan to Agents (chat/plan_view.lua). When that home isn't open (plugin
+-- mode, only the work items open), it opens as a tab of its own, as before. One opened from outside its home
 -- (gW in a review, the chat) goes back there when it's closed.
 --
 --   M.open(name, key, title, open_fn)  opens an item in home `name`
 --   M.item_key(host, ref), M.item_home(host)  a work item's key and home
+--   M.plan_key(key)    a plan's key (its home is Agents)
 --   M.retitle(tab, key, title)  what the inner tab `tab` shows changed
 --   M.goto_key(key)    goes to the inner tab showing `key`; true if it did
 --   M.home_of(tab)     the home tab `tab` belongs to (itself for a home)
@@ -30,12 +31,17 @@
 --   M.closing()        a screen's close key, right before its :tabclose
 --
 -- The pure helpers (M.wrap, M.close_target, M.strip_text, M.item_key,
--- M.item_home) take no vim.* and are tested under plain luajit by
--- tests/test-innertabs.lua.
+-- M.item_home, M.plan_key) take no vim.* and are tested under plain
+-- luajit by tests/test-innertabs.lua.
 local M = {}
 
 -- The homes whose items open as inner tabs (home.lua's screen names).
-M.ENABLED = { prs = true, workitems = true, issues = true }
+M.ENABLED = { prs = true, workitems = true, issues = true, agents = true }
+
+-- A plan's key: "plan:wi-3001" - never a PR's or a work item's. Pure.
+function M.plan_key(key)
+  return "plan:" .. tostring(key)
+end
 
 -- A work item's key: "wi:azure:3001", "wi:github:owner~repo~7" - never a
 -- PR's (hosts.lua's key). Pure.

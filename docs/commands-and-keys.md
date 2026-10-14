@@ -45,8 +45,8 @@ work on a visual selection aren't listed.
 have a tab of their own: `P` goes to the pull requests, `W` to the work
 items, `A` to the Agents screen, from any of them (or click the tab). The
 standalone launcher opens all three at startup and keeps them the first
-three tabs, in that order; a plan you open goes after them, and closing it
-takes you back to the tab you opened it from.
+three tabs, in that order; what you open from them stays inside them, as
+inner tabs (below).
 
 **Inner tabs.** A pull request you open stays inside the Pull requests tab,
 as an inner tab: the tab line keeps one entry for Pull requests, and the
@@ -59,7 +59,12 @@ keeps its own cursor, file list and diff while you're in another. (Each is
 still a Neovim tab underneath, so `gt` / `gT` visit them too; in your own
 Neovim, a `'tabline'` of your own lists them - azure-vicli's
 `ui.tabline()`, see [Configuration](configuration.md), doesn't.)
-Work items and plans come next.
+The same goes for work items (inside Work items), issues (inside Issues)
+and plans (inside Agents): `<CR>` on an Agents row whose plan is already
+open goes back to it as you left it - the older revision you were reading,
+the Changes file you were on - and `dd` on that row closes its tab. One
+opened from elsewhere (`gW` in a review, a plan the chat's agent wrote)
+goes back there when you close it.
 
 Press `g` and pause, and a small float in the bottom-right corner lists the
 screen's `g` keys and what each does (with the `↑` marks); the next key
