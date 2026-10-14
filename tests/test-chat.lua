@@ -31,6 +31,16 @@ do
     { role = "you", text = "q1" }, { role = "agent", text = "a1" }, { role = "agent", text = "" } } })
   check("compose: a replay carries the preamble and the conversation",
     replay:find(CHAT.PREAMBLE, 1, true) and replay:find("## The conversation so far\n\nUser: q1\n\nYou: a1\n\n## Current view", 1, true))
+  -- Shell writes always ask; Edit/Write on a planned file doesn't (#70).
+  for name, text in pairs({ first = first, replay = replay }) do
+    local missing = {}
+    for _, phrase in ipairs({ "with your Edit and Write tools", "never with shell commands or scripts through Bash",
+      "sed -i", "always asks the user to allow it", "use delete_fix_file" }) do
+      if not text:find(phrase, 1, true) then missing[#missing + 1] = phrase end
+    end
+    check("compose: the " .. name .. " message says to edit with Edit/Write, not shell", #missing == 0,
+      "missing: " .. table.concat(missing, ", "))
+  end
 end
 
 -- --- parse_answer / expand ---------------------------------------
