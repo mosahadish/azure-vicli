@@ -1997,8 +1997,15 @@ section("PLAN", function()
   CHAT.send("make a plan for #3002")
   local e = answered(n)
   if not e then return fail("no answer to the plan request: " .. vim.inspect(st.entries[#st.entries])) end
-  for _, s in ipairs({ "No plan for #3002 yet", "submit_plan: {", "isn't approved yet" }) do
+  -- #71: before approval start_story gives a read-only worktree to plan in,
+  -- both times, and makes no branch (the answer's JSON writes / as \/).
+  for _, s in ipairs({ "A read-only worktree for planning, detached at origin", "submit_plan: {",
+    "Nothing was created on the server" }) do
     if not e.text:find(s, 1, true) then return fail("\"" .. s .. "\" missing from the answer:\n" .. e.text) end
+  end
+  local _, previews = e.text:gsub('"read_only":true', "")
+  if previews ~= 2 or e.text:find("3002-planned", 1, true) then
+    return fail("start_story before approval wasn't a read-only worktree both times:\n" .. e.text)
   end
   local v = PLAN.current()
   if not (v and vim.api.nvim_tabpage_is_valid(v.tab) and vim.api.nvim_win_is_valid(v.plan_win)) then

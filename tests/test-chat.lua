@@ -43,6 +43,28 @@ do
   end
 end
 
+-- #71: planners read the story's branch in start_story's read-only
+-- worktree, not copies of it out of the clone.
+do
+  local CORE = require("azure-cli.chat.core")
+  local AGENTS = require("azure-cli.chat.agents")
+  local missing = {}
+  for _, phrase in ipairs({ "start_story then only gives you a read-only worktree", "call start_story first",
+    "with your Read and Grep tools", "never by copying them out with git show or git archive",
+    "which branch and commit its line numbers refer to" }) do
+    if not CORE.PREAMBLE:find(phrase, 1, true) then missing[#missing + 1] = phrase end
+  end
+  check("#71 preamble: plan in start_story's read-only worktree", #missing == 0, "missing: " .. table.concat(missing, ", "))
+  check("#71 /plan: reads a work item's code in start_story's worktree",
+    CORE.DEFAULT_PROMPTS.plan:find("read-only worktree start_story gives you", 1, true) ~= nil)
+  for _, board in ipairs({ "github", "azure" }) do
+    local p = AGENTS.plan_prompt({ id = 7, title = "t", board = board ~= "azure" and board or nil })
+    check("#71 plan_prompt (" .. board .. "): start_story's read-only worktree first",
+      p:find("call start_story for its repository and branch first", 1, true)
+        and p:find("read-only worktree of that branch to read with Read/Grep", 1, true), p)
+  end
+end
+
 -- --- parse_answer / expand ---------------------------------------
 do
   local text, sid = CHAT.parse_answer('{"type":"result","result":"  Hello\\n","session_id":"s-1"}', "", vim.json.decode)

@@ -254,6 +254,63 @@ setmetatable(M, { __call = function(_, T)
     work_item_id = { type = "integer", description = "for a start_story change" },
   } }
 
+  -- start_story before its plan is approved (#71): a worktree of the branch
+  -- the story goes on - origin/<name>, or origin/<from> for a new branch -
+  -- for the planner to read the code in. Detached (so a branch out
+  -- elsewhere doesn't matter), nothing made on the server, and no
+  -- <dir>.branch, so find_story, show_fix and commit_and_push_fix don't
+  -- see it. Called again, it moves to the branch's tip when it's clean.
+  local function preview(clone, wt, args, done)
+    T.git({ "git", "-C", clone, "ls-remote", "--heads", "origin", "refs/heads/" .. args.name }, function(_, heads)
+      local branch = vim.trim(heads or "") ~= "" and args.name or args.from
+      local ref = "origin/" .. branch
+      T.git({ "git", "-C", clone, "fetch", "-q", "origin", branch }, function(fok, _, ferr)
+        if not fok then return done(nil, "fetching " .. branch .. " failed: " .. ferr) end
+        local function ready(kept)
+          T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
+            sha = vim.trim(sha or "")
+            done({ directory = wt, ref = ref, sha = sha, read_only = true,
+              note = "A read-only worktree for planning, detached at " .. ref .. " (" .. sha .. ")"
+                .. (kept and ", kept where it was: it has uncommitted changes" or "") .. ". Nothing was created "
+                .. "on the server. Read files here with your Read and Grep tools, don't change them, and say in the "
+                .. "plan that its line numbers refer to " .. ref .. " @ " .. sha .. ".",
+              next = "Write the plan with submit_plan and wait for the user's approval; then call start_story again "
+                .. "with the same arguments - this directory becomes the story's worktree." })
+          end)
+        end
+        if is_repo(wt) then
+          T.git({ "git", "-C", wt, "status", "--porcelain" }, function(_, st)
+            if vim.trim(st or "") ~= "" then return ready(true) end
+            T.git({ "git", "-C", wt, "checkout", "-q", "--detach", ref }, function(ok, _, err)
+              if not ok then return done(nil, "moving the worktree to " .. ref .. " failed: " .. err) end
+              ready()
+            end)
+          end)
+        else
+          vim.fn.mkdir(M.root(), "p")
+          T.git({ "git", "-C", clone, "worktree", "prune" }, function()
+            T.git({ "git", "-C", clone, "worktree", "add", "-q", "--detach", wt, ref }, function(ok, _, err)
+              if not ok then return done(nil, "creating the worktree failed: " .. err) end
+              ready()
+            end)
+          end)
+        end
+      end)
+    end)
+  end
+
+  -- Removes the planning worktree at `wt`, if there is one, then cont().
+  local function clear_preview(clone, wt, done, cont)
+    if not is_repo(wt) then return cont() end
+    T.git({ "git", "-C", clone, "worktree", "remove", wt }, function(ok, _, err)
+      if not ok then
+        return done(nil, "the read-only worktree " .. wt .. " from planning has changes, so it wasn't replaced by "
+          .. "the story's (" .. vim.trim(err or "") .. "). Ask the user what to do with them.")
+      end
+      cont()
+    end)
+  end
+
   return {
     {
       name = "start_fix",
@@ -307,8 +364,10 @@ setmetatable(M, { __call = function(_, T)
         .. "offer create_pull_request. Ask the user which repository and base branch when they aren't clear; name "
         .. "the branch like feature/<id>-<short-title>. To work on an existing branch itself (e.g. from = name), "
         .. "give its name: no branch is created, the change is pushed straight to it, and no pull request is "
-        .. "offered. Calling it again for the same work item reuses the worktree. "
-        .. "Runs without asking (nothing but the empty branch leaves the machine until commit_and_push_fix). "
+        .. "offered. Calling it again for the same work item reuses the worktree. Before its plan is approved it "
+        .. "only gives a read-only worktree of that branch (detached, nothing created on the server) to read the "
+        .. "code there while planning; called again once the plan is approved, the same directory becomes the "
+        .. "story's worktree. Runs without asking (nothing but the empty branch leaves the machine until commit_and_push_fix). "
         .. "For a GitHub issue (board = \"github\"), the branch is linked to the issue (its Development section).",
       schema = { type = "object", properties = {
         work_item_id = { type = "integer" },
@@ -322,10 +381,20 @@ setmetatable(M, { __call = function(_, T)
       risk = "write",
       run = function(args, env, done)
         local id = args.work_item_id
-        local planned, why = require("azure-cli.chat.plan").gate({ work_item_id = id })
-        if not planned then return done(nil, why) end
+        local PLAN = require("azure-cli.chat.plan")
+        local planned, why = PLAN.gate({ work_item_id = id })
+        -- Not approved yet: a read-only worktree to plan in (#71) - unless
+        -- the plan was carried out already, which needs a new one first.
+        local rec = not planned and PLAN.load(PLAN.key({ work_item_id = id }))
+        if rec and rec.status == "done" then return done(nil, why) end
         local existing, ebranch = M.find_story(id)
         if existing then
+          if not planned then
+            return done({ directory = existing, branch = ebranch, read_only = true,
+              note = "The story's worktree, started before; its plan isn't approved yet, so read files here but "
+                .. "don't change them.",
+              next = "Write the plan with submit_plan and wait for the user's approval." })
+          end
           return done({ directory = existing, branch = ebranch, note = "Already started - kept as it was.",
             next = "Edit files under the directory, then call show_fix with work_item_id." })
         end
@@ -339,6 +408,7 @@ setmetatable(M, { __call = function(_, T)
             .. " (set clones_dir in azure-cli.yml, or open one of its PRs from the dashboard to clone it)")
         end
         local wt = M.story_path(repo, id)
+        if not planned then return preview(clone, wt, args, done) end
         local undo
         local function failed(what)
           done(nil, what .. (undo and (" (" .. args.name .. " was created on the server; start_story again uses it)") or ""))
@@ -361,25 +431,30 @@ setmetatable(M, { __call = function(_, T)
             end)
           end)
         end
-        -- An existing branch (made by hand, or by create_branch) is used as it is.
-        T.git({ "git", "-C", clone, "ls-remote", "--heads", "origin", "refs/heads/" .. args.name }, function(_, heads)
-          if vim.trim(heads or "") ~= "" then return checkout(true) end
-          if args.name == args.from then
-            return done(nil, "there's no branch " .. args.name .. " on origin to work on (from and name are the same)")
-          end
-          T.provider({ "--wi-edit", "create-branch", T.wi_ref(B, id, args.item_repo), org, project, repo, args.from,
-            args.name }, B.env,
-            function(ok, out, err)
-              if not ok then return done(nil, "creating the branch failed: " .. err) end
-              local okd, res = pcall(vim.json.decode, out)
-              res = okd and type(res) == "table" and res or {}
-              undo = { op = "delete_branch", org = org, project = project, repo = repo, name = args.name,
-                sha = res.objectId, board = B.host }
-              env.log("created " .. args.name .. " from " .. args.from
-                .. (res.linked and (", linked to #" .. tostring(res.linked)) or "")
-                .. (res.linkError and (" (not linked: " .. res.linkError .. ")") or ""))
-              checkout()
-            end)
+        -- The read-only worktree planning used (no <dir>.branch, so
+        -- find_story didn't take it) gives way to the story's - not forced:
+        -- a change made in it stops here rather than being thrown away.
+        clear_preview(clone, wt, done, function()
+          -- An existing branch (made by hand, or by create_branch) is used as it is.
+          T.git({ "git", "-C", clone, "ls-remote", "--heads", "origin", "refs/heads/" .. args.name }, function(_, heads)
+            if vim.trim(heads or "") ~= "" then return checkout(true) end
+            if args.name == args.from then
+              return done(nil, "there's no branch " .. args.name .. " on origin to work on (from and name are the same)")
+            end
+            T.provider({ "--wi-edit", "create-branch", T.wi_ref(B, id, args.item_repo), org, project, repo, args.from,
+              args.name }, B.env,
+              function(ok, out, err)
+                if not ok then return done(nil, "creating the branch failed: " .. err) end
+                local okd, res = pcall(vim.json.decode, out)
+                res = okd and type(res) == "table" and res or {}
+                undo = { op = "delete_branch", org = org, project = project, repo = repo, name = args.name,
+                  sha = res.objectId, board = B.host }
+                env.log("created " .. args.name .. " from " .. args.from
+                  .. (res.linked and (", linked to #" .. tostring(res.linked)) or "")
+                  .. (res.linkError and (" (not linked: " .. res.linkError .. ")") or ""))
+                checkout()
+              end)
+          end)
         end)
       end,
     },

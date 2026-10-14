@@ -49,17 +49,23 @@ function M.working()
   return n
 end
 
+-- Where a planner reads the code (#71): the branch the story goes on, not
+-- the clone's default branch.
+M.READ_IN_WORKTREE = "call start_story for its repository and branch first: before approval it gives you a "
+  .. "read-only worktree of that branch to read with Read/Grep"
+
 function M.plan_prompt(item)
   if item.board == "github" then
     return "/plan GitHub issue #" .. tostring(item.id) .. (item.repo and (" in " .. item.repo) or "")
       .. (item.title and (" \"" .. item.title .. "\"") or "")
-      .. ": read it (get_work_item with board = \"github\"), look at the code it touches, then write the plan for it "
-      .. "with submit_plan (work_item_id " .. tostring(item.id) .. "). Pass board = \"github\" to every work-item "
+      .. ": read it (get_work_item with board = \"github\"), look at the code it touches (" .. M.READ_IN_WORKTREE
+      .. "), then write the plan for it with submit_plan (work_item_id " .. tostring(item.id) .. "). Pass board = \"github\" to every work-item "
       .. "tool for it. You were started from the Issues board, one agent per issue - this conversation is about "
       .. "this one only."
   end
   return "/plan Work item #" .. tostring(item.id) .. (item.title and (" \"" .. item.title .. "\"") or "")
-    .. ": read it, look at the code it touches, then write the plan for it with submit_plan (work_item_id "
+    .. ": read it, look at the code it touches (" .. M.READ_IN_WORKTREE .. "), then write the plan for it with "
+    .. "submit_plan (work_item_id "
     .. tostring(item.id) .. "). You were started from the board, one agent per work item - this conversation is "
     .. "about this one only."
 end

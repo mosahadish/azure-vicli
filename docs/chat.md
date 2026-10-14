@@ -804,7 +804,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `create_work_item` | A new top-level work item (title, body, type, sprint), assigned to you | **yes** |
 | `requeue_build` | Queues the PR's build again | no |
 | `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you in a tab like the reviewer: changed files on the left, `]c`/`[c` through the changes); throwing it away | no |
-| `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
+| `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in (before its plan is approved, only a read-only worktree of the branch, to plan in). `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
 | `run_tests` | Runs the plan's test command (or another) in the fix/story worktree; returns the exit code and the end of the output | **yes**, showing the command |
 | `delete_fix_file` | Deletes a file in the fix/story worktree (the agent's own file tools can't delete); any path outside the worktree is refused, so it needs no shell permission | no |
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
@@ -889,7 +889,11 @@ tasks and pushes can't be undone from here; the list says so.
    the base branch (e.g. `feature/3001-login-throttle` from `develop`),
    linked to the work item like `create_branch`, and a worktree of it under
    `{fix_root}`. An existing branch of that name is used as it is, and
-   asking again for the same work item picks up where it left off.
+   asking again for the same work item picks up where it left off. While
+   planning (before you approve), `start_story` only makes a read-only
+   worktree of that branch, detached, with nothing created on the server:
+   the agent reads the code it plans for there, and the same directory
+   becomes the story's worktree once you approve.
 3. It edits files there, then `show_fix` shows you the change.
 4. `commit_and_push_fix` asks, with the diff, then pushes to the branch.
 5. It offers `create_pull_request` (which asks too), linking the work item.

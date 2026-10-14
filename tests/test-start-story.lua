@@ -5,7 +5,9 @@
 --   #64 the clone is found from the config's clones_dir (--boards) before
 --       the PR list has loaded, and the error names where it looked;
 --   #57 a story on an existing branch is pushed straight to it: no PR step,
---       and create_pull_request isn't preapproved for it.
+--       and create_pull_request isn't preapproved for it;
+--   #71 before the plan is approved, a read-only worktree of the branch to
+--       plan in, which becomes the story's once it is.
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-start-story.lua
 dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
@@ -128,6 +130,84 @@ end
 do
   local res, err = call("start_story", { work_item_id = 4, repo = "o/repo", from = "nope", name = "nope", board = "github" })
   check("#57 from = name, no such branch: refused", res == nil and tostring(err):find("no branch nope", 1, true), err)
+end
+
+-- #71: before its plan is approved, start_story gives a read-only worktree
+-- of the branch to plan in - detached, nothing made on the server, no
+-- story started; approved, the same directory becomes the story's.
+do
+  require("azure-cli.config").setup({ chat = { plan_first = true } })
+  local function approve(id)
+    PLAN.save({ key = PLAN.key({ work_item_id = id }), target = { work_item_id = id }, status = "approved",
+      revisions = {}, threads = {} })
+  end
+  local function story(id, from, name)
+    return call("start_story", { work_item_id = id, repo = "o/repo", from = from, name = name, board = "github" })
+  end
+  local made = #created
+
+  -- An existing branch: the preview is at its tip.
+  local res, err = story(11, "host", "host")
+  local wt = FIX.story_path("repo", 11)
+  check("#71 existing branch, no plan: a read-only worktree", res and res.read_only == true and res.directory == wt, err)
+  check("#71 preview: detached at origin's tip", head(wt) == ""
+    and sh({ "git", "-C", wt, "rev-parse", "HEAD" }) == sh({ "git", "-C", origin, "rev-parse", "host" }), head(wt))
+  check("#71 preview: nothing created on the server", #created == made, vim.inspect(created))
+  check("#71 preview: no story started", FIX.find_story(11) == nil and vim.fn.filereadable(wt .. ".branch") == 0)
+  check("#71 preview: says which branch and commit the plan's lines refer to", res and res.note
+    and res.note:find("origin/host @ " .. sh({ "git", "-C", origin, "rev-parse", "--short", "host" }), 1, true), vim.inspect(res))
+
+  -- Called again before approval: moved to the branch's new tip.
+  sh({ "git", "-C", seed, "fetch", "-q" })
+  sh({ "git", "-C", seed, "checkout", "-q", "-B", "host", "origin/host" })
+  vim.fn.writefile({ "three" }, seed .. "/a.txt")
+  sh({ "git", "-C", seed, "commit", "-q", "-am", "three" })
+  sh({ "git", "-C", seed, "push", "-q", "origin", "host" })
+  res, err = story(11, "host", "host")
+  check("#71 preview again: same directory, at the new tip", res and res.directory == wt
+    and sh({ "git", "-C", wt, "rev-parse", "HEAD" }) == sh({ "git", "-C", origin, "rev-parse", "host" }), err)
+
+  -- Approved: host is out in #1's worktree, so the story's worktree falls
+  -- back to detached (the github-host case) - in the same directory.
+  approve(11)
+  res, err = story(11, "host", "host")
+  check("#71 approved, branch out elsewhere: the story's worktree, detached", res and not res.read_only
+    and res.directory == wt and head(wt) == "" and FIX.find_story(11) == wt, err or vim.inspect(res))
+  check("#71 approved, branch out elsewhere: still pushes to it", res and type(res.note) == "string"
+    and res.note:find("still pushes to host", 1, true), vim.inspect(res))
+
+  -- An existing branch nobody has out: on it once approved.
+  sh({ "git", "-C", seed, "push", "-q", "origin", "refs/remotes/origin/main:refs/heads/free" })
+  res, err = story(13, "free", "free")
+  wt = FIX.story_path("repo", 13)
+  check("#71 existing branch: preview detached", res and res.read_only and head(wt) == "", err)
+  approve(13)
+  res, err = story(13, "free", "free")
+  check("#71 existing branch, approved: the same directory, on the branch", res and res.directory == wt
+    and head(wt) == "free", err or head(wt))
+
+  -- A new branch: the preview is of the base, and the branch is only made
+  -- once the plan is approved.
+  res, err = story(12, "main", "feature/12-y")
+  wt = FIX.story_path("repo", 12)
+  check("#71 new branch, no plan: preview of the base, no branch made", res and res.read_only and head(wt) == ""
+    and sh({ "git", "-C", wt, "rev-parse", "HEAD" }) == sh({ "git", "-C", origin, "rev-parse", "main" })
+    and #created == made, err or vim.inspect(created))
+  approve(12)
+  res, err = story(12, "main", "feature/12-y")
+  check("#71 new branch, approved: made and checked out in the same directory", res and res.directory == wt
+    and #created == made + 1 and head(wt) == "feature/12-y", err or head(wt))
+
+  -- A change made in the preview isn't thrown away.
+  res = story(14, "main", "feature/14-z")
+  wt = FIX.story_path("repo", 14)
+  vim.fn.writefile({ "edited" }, wt .. "/a.txt")
+  approve(14)
+  res, err = story(14, "main", "feature/14-z")
+  check("#71 approved, preview changed: refused, says so", res == nil and tostring(err):find("has changes", 1, true), err)
+  check("#71 approved, preview changed: the change is kept", vim.fn.readfile(wt .. "/a.txt")[1] == "edited")
+
+  require("azure-cli.config").setup({ chat = { plan_first = false } })
 end
 
 -- #64: not cloned - the error names the path it tried.

@@ -15,8 +15,8 @@ What it does depends on the message:
   "fix it"  start_fix, an edit, show_fix, commit_and_push_fix on PR 101
   "implement"  start_story for work item 3001 (twice: the second reuses
             it), a new file, show_fix, commit_and_push_fix
-  "make a plan"  start_story for 3002 (refused: no plan yet), submit_plan,
-            start_story again (refused: not approved yet)
+  "make a plan"  start_story for 3002 (a read-only worktree: no plan yet),
+            submit_plan, start_story again (the same: not approved yet)
   "About ..."  (a question from a plan / change-viewer line) answers
             "BECAUSE-<the quoted line>" and nothing else
   "revise the plan"  counts the line requests, submit_plan revision 3
