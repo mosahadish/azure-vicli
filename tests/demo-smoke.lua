@@ -392,13 +392,24 @@ local function call_at()
     if c then return i, c - 1 end
   end
 end
--- What was on screen, for a timeout below.
+-- Whether the file list's preview is queued to replace what the diff
+-- window shows.
+local function preview_pending()
+  local pending = require("azure-cli.state").review_preview_pending
+  return pending ~= nil and pending()
+end
+-- What was on screen, for a timeout below. Which window has focus and
+-- whether a preview is pending are there too: that preview is what took
+-- the gd jump away on Neovim 0.9 (#77).
 local function nav_state()
   local cur, shown = vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_buf(dwin)
+  local win = vim.api.nvim_get_current_win()
+  local where = win == dwin and "diff" or win == vim.fn.bufwinid(files) and "file list" or tostring(win)
   local msgs = vim.split(vim.fn.execute("messages"), "\n")
-  return ("current buffer %d %q; the diff window shows %d %q, cursor %s, winbar %q; last messages: %s"):format(
-    cur, vim.api.nvim_buf_get_name(cur), shown, vim.api.nvim_buf_get_name(shown),
-    vim.inspect(vim.api.nvim_win_get_cursor(dwin)), vim.wo[dwin].winbar,
+  return ("focus in the %s window, current buffer %d %q; the diff window shows %d %q (%d lines), cursor %s, winbar %q; preview pending %s; last messages: %s"):format(
+    where, cur, vim.api.nvim_buf_get_name(cur), shown, vim.api.nvim_buf_get_name(shown),
+    vim.api.nvim_buf_line_count(shown), vim.inspect(vim.api.nvim_win_get_cursor(dwin)), vim.wo[dwin].winbar,
+    tostring(preview_pending()),
     table.concat(vim.list_slice(msgs, math.max(1, #msgs - 3)), " | "))
 end
 -- auth.py's diff - this buffer or a rebuilt one - is in the diff window,
@@ -456,6 +467,13 @@ end
 toggle_ws()
 if not vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(dwin)):find("src/throttle.py", 1, true) then
   return fail("a rebuild (gw) pulled the diff window out of the gd jump: " .. nav_state())
+end
+-- Nor may going to the file list for gw: its cursor didn't move, so no
+-- preview may be on its way to put auth.py over the jump. On Neovim 0.9,
+-- entering the list fired one, and <BS> lost the race to it whenever more
+-- than its 80 ms passed before the keypress (#77).
+if preview_pending() then
+  return fail("going to the file list for gw queued a preview over the gd jump: " .. nav_state())
 end
 feed("<BS>")
 ok = vim.wait(10000, on_auth_diff, 100)

@@ -3042,6 +3042,11 @@ vim.api.nvim_create_autocmd("CursorMoved", {
         line = target
       end
     end
+    -- Still on the row it was on: Neovim 0.9 fires CursorMoved just for
+    -- entering the list (0.10+ doesn't). Previewing then would put that
+    -- row's file over whatever the diff window shows - a gd jump a gw
+    -- rebuild deliberately left alone, say - so only a real move previews.
+    if line == EXT.list_last_line then return end
     EXT.list_last_line = line
     if preview_timer then vim.fn.timer_stop(preview_timer) end
     preview_timer = vim.fn.timer_start(require("azure-cli.diffbuf").PREVIEW_MS, function()
@@ -3053,6 +3058,14 @@ vim.api.nvim_create_autocmd("CursorMoved", {
       if path then open_file(path, false) end
     end)
   end,
+})
+-- The row the list is left on is the one coming back to it starts from: a
+-- cursor set from code (<CR> right after nvim_win_set_cursor, say) fires no
+-- CursorMoved on 0.9 before focus leaves, so without this, entering the
+-- list again would look like a move there and preview it.
+vim.api.nvim_create_autocmd("WinLeave", {
+  buffer = list_buf,
+  callback = function() EXT.list_last_line = vim.api.nvim_win_get_cursor(0)[1] end,
 })
 
 -- Start on the Overview row and prime it in the diff pane, same as any file.
@@ -3705,6 +3718,11 @@ end, { ["repeat"] = -1 })
 -- The same refetch the poll above runs, for tests/demo-smoke.lua (opts as
 -- for refresh_threads: on_done runs once it lands).
 STATE.review_refresh_threads = function(opts) refresh_threads(opts) end
+-- Whether the file list's preview-on-move is still waiting to open a row,
+-- also for tests/demo-smoke.lua (its NAV step: entering the list mustn't).
+STATE.review_preview_pending = function()
+  return preview_timer ~= nil and #vim.fn.timer_info(preview_timer) > 0
+end
 
 -- The file list keeps its absolute width across a terminal resize
 -- otherwise, with the diff pane absorbing all of the change.
@@ -3729,6 +3747,7 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- it no additional upvalues at all.
 STATE.review_cleanup = function()
   STATE.review_refresh_threads = nil
+  STATE.review_preview_pending = nil
   for _, name in ipairs({ "review_threads_timer", "review_badge_timer" }) do
     if STATE[name] then pcall(vim.fn.timer_stop, STATE[name]); STATE[name] = nil end
   end
