@@ -852,10 +852,10 @@ do
   feed("n")
   vim.ui.input = real_input
   if not choose_popup("child of #12") then return end
-  -- Then its body, in the description editor.
+  -- Then its body, in the description editor: a markdown float (by its
+  -- buffer - Neovim before 0.10 opens it without a title).
   ok = vim.wait(10000, function()
-    local c = vim.api.nvim_win_get_config(0)
-    return c.relative ~= "" and type(c.title) == "table" and vim.inspect(c.title):find("Description", 1, true) ~= nil
+    return vim.api.nvim_win_get_config(0).relative ~= "" and vim.bo.filetype == "markdown" and vim.bo.modifiable
   end, 50)
   if not ok then return fail("n never asked for the new issue's description") end
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Wobbles past 4000 rpm." })
