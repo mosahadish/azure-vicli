@@ -126,4 +126,23 @@ function M.drop_completed(done, list, now)
   return kept
 end
 
+-- The accounts a --list that still exited 0 couldn't list, in order and
+-- once each: azure-cli.py prints "azure-cli --list failed for <account>:
+-- <message>" on stderr for every one (#95), keeping the others' records.
+M.LIST_PARTIAL_PREFIX = "azure-cli --list failed for "
+
+function M.failed_accounts(lines)
+  local names, seen = {}, {}
+  for _, line in ipairs(lines or {}) do
+    if line:sub(1, #M.LIST_PARTIAL_PREFIX) == M.LIST_PARTIAL_PREFIX then
+      local name = line:sub(#M.LIST_PARTIAL_PREFIX + 1):match("^(.-): ")
+      if name and not seen[name] then
+        seen[name] = true
+        names[#names + 1] = name
+      end
+    end
+  end
+  return names
+end
+
 return M

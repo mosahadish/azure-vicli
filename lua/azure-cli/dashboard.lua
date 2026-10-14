@@ -1572,6 +1572,13 @@ local function load(silent, force)
         vim.bo[buf].modifiable = false
         return
       end
+      -- Some accounts failed but the rest listed: show those, and say which.
+      local failed = PRS.failed_accounts(err)
+      if #failed > 0 then
+        local LOG = require("azure-cli.log")
+        LOG.record("PR list", LOG.join_output({}, err))
+        notify("Some accounts failed: " .. table.concat(failed, ", ") .. "  (:AzureCli log)", vim.log.levels.WARN)
+      end
       if not vim.api.nvim_buf_is_valid(buf) then return end
       for _, line in ipairs(out) do
         if line:gsub("%s", "") ~= "" then

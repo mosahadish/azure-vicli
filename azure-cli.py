@@ -2022,48 +2022,107 @@ class AzureDevOpsPullRequestSource:
         element = self._build_element(org, pat, account, pr, "Created", load_threads, user_id, user_name)
         return ("Created", element)
 
-    def fetch_grouped_pull_requests(self):
-        """Mirrors AzureDevOpsPullRequestSource.FetchGroupedPullRequests:
-        one connection per organization, assigned + created listings
-        requested together, each PR's follow-up work (threads, build
-        status) run concurrently bounded by a shared pool of 8 - matching
-        the C# build's single, run-lifetime SemaphoreSlim(8) - and drained
-        in listing order (assigned first, then created) so the output never
-        reshuffles between refreshes.
-        """
-        records = []
-        executor = ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT_PULL_REQUESTS)
+    def _org_identity(self, org, pat):
+        """(user_id, user_name, from_cache) for one org, run on a pool
+        worker: the connectionData hit flag is per thread, so it's read on
+        the thread that made the call."""
+        _conn_data_take_hit()
+        user_id, user_name = self._whoami_for_org(org, pat)
+        return [user_id, user_name, _conn_data_take_hit()]
+
+    def _list_account(self, org, pat, account, user_id):
+        """One account's two listings, assigned then created - in sequence,
+        so a retry after a stale identity redoes exactly both."""
+        assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
+        created = self._list_prs(org, pat, account.project, creator_id=user_id)
+        return assigned, created
+
+    def _account_listings(self, org_state, account, future):
+        """`future`'s listings, retried once with a fresh identity when they
+        failed on one from the daemon's cache (see ConnectionDataCache).
+        Runs on the calling (draining) thread, so an org is invalidated and
+        looked up afresh at most once however many of its accounts failed."""
         try:
+            return future.result()
+        except AdoHttpError as e:
+            if e.status not in CONN_DATA_AUTH_STATUSES:
+                raise
+            org, pat, identity = org_state["org"], org_state["pat"], org_state["identity"]
+            if identity[2]:
+                identity[2] = False
+                conn_data_invalidate(org, pat)
+                identity[0], identity[1] = self._whoami_for_org(org, pat)
+                org_state["refreshed"] = True
+            elif not org_state.get("refreshed"):
+                raise
+            return self._list_account(org, pat, account, identity[0])
+
+    def fetch_grouped_pull_requests(self):
+        """fetch_grouped_pull_requests_partial's records, raising the first
+        account's error (in config order) if any account failed."""
+        records, errors = self.fetch_grouped_pull_requests_partial()
+        if errors:
+            raise errors[0][1]
+        return records
+
+    def fetch_grouped_pull_requests_partial(self, executor=None):
+        """Mirrors AzureDevOpsPullRequestSource.FetchGroupedPullRequests,
+        concurrently: one connectionData per organization, every account's
+        assigned + created listings and each PR's follow-up work (threads,
+        build status) all on one pool of 8 - `executor`, else its own,
+        matching the C# build's single, run-lifetime SemaphoreSlim(8). No
+        task waits on another (only this thread waits), so sharing the
+        bounded pool can't deadlock. Drained in config order, listing order
+        within an account (assigned first, then created), so the output
+        never reshuffles between refreshes.
+
+        Returns (records, errors): errors is [(account, exception)] in
+        config order, and a failed account only loses its own records - a
+        missing PAT or a failed connectionData fails each account of that
+        org.
+        """
+        records, failed, orgs = [], {}, []
+        own = executor is None
+        if own:
+            executor = ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT_PULL_REQUESTS)
+        try:
+            # _perf_bind: the perf log's run (AZVICLI_DEBUG) follows the
+            # work onto the pool; with it off, the methods themselves.
             for org, accounts in self.config.accounts_by_org():
                 pat = self._pick_pat(accounts)
-                if not pat:
-                    raise RuntimeError(
+                orgs.append({"org": org, "accounts": accounts, "pat": pat, "listings": [], "error": None,
+                             "identity": executor.submit(_perf_bind(self._org_identity), org, pat) if pat else None})
+            for st in orgs:
+                if st["identity"] is None:
+                    st["error"] = RuntimeError(
                         "The configured organization ({0}) has no configured PAT; a PAT is required "
-                        "(no Azure AD fallback in this build).".format(org)
+                        "(no Azure AD fallback in this build).".format(st["org"])
                     )
-                _conn_data_take_hit()
-                user_id, user_name = self._whoami_for_org(org, pat)
-                from_cache = _conn_data_take_hit()
+                    continue
+                try:
+                    st["identity"] = st["identity"].result()
+                except Exception as e:  # noqa: BLE001 - reported for this org's accounts
+                    st["error"] = e
+                    continue
+                st["listings"] = [executor.submit(_perf_bind(self._list_account), st["org"], st["pat"], account,
+                                                  st["identity"][0]) for account in st["accounts"]]
+
+            pending = []
+            for st in orgs:
+                org, pat = st["org"], st["pat"]
+                if st["error"] is not None:
+                    for account in st["accounts"]:
+                        failed[id(account)] = st["error"]
+                    continue
                 repo_cache = RepoBranchCache()
-
-                for account in accounts:
+                for account, listing in zip(st["accounts"], st["listings"]):
                     try:
-                        assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
-                        created = self._list_prs(org, pat, account.project, creator_id=user_id)
-                    except AdoHttpError as e:
-                        if not (from_cache and e.status in CONN_DATA_AUTH_STATUSES):
-                            raise
-                        # The identity came from the daemon's cache: look
-                        # it up afresh and retry once (see ConnectionDataCache).
-                        conn_data_invalidate(org, pat)
-                        from_cache = False
-                        user_id, user_name = self._whoami_for_org(org, pat)
-                        assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
-                        created = self._list_prs(org, pat, account.project, creator_id=user_id)
-
+                        assigned, created = self._account_listings(st, account, listing)
+                    except Exception as e:  # noqa: BLE001 - reported for this account
+                        failed[id(account)] = e
+                        continue
+                    user_id, user_name = st["identity"][0], st["identity"][1]
                     futures = []
-                    # _perf_bind: the perf log's run (AZVICLI_DEBUG) follows the
-                    # work onto the pool; with it off, the methods themselves.
                     for pr in assigned:
                         futures.append(
                             executor.submit(_perf_bind(self._process_assigned), org, pat, account, pr, user_id,
@@ -2074,14 +2133,21 @@ class AzureDevOpsPullRequestSource:
                             executor.submit(_perf_bind(self._process_created), org, pat, account, pr, user_id,
                                             user_name)
                         )
+                    pending.append((account, futures))
 
-                    for fut in futures:
-                        _state, element = fut.result()
-                        if element is not None:
-                            records.append(element)
+            for account, futures in pending:
+                try:
+                    elements = [fut.result()[1] for fut in futures]
+                except Exception as e:  # noqa: BLE001 - reported for this account
+                    failed[id(account)] = e
+                    continue
+                records.extend(element for element in elements if element is not None)
         finally:
-            executor.shutdown(wait=True)
-        return records
+            if own:
+                executor.shutdown(wait=True)
+        errors = [(account, failed[id(account)]) for st in orgs for account in st["accounts"]
+                  if id(account) in failed]
+        return records, errors
 
     def requeue_build_validation(self, pull_request_id):
         """Mirrors AzureDevOpsPullRequestSource.RequeueBuildValidationAsync."""
@@ -4886,15 +4952,44 @@ def _github_pr_action(flag, rest, account, env):
         return 1
 
 
+LIST_PARTIAL_PREFIX = "azure-cli --list failed for "
+
+
 def cmd_list(config, env=None):
+    """Azure's records, then each GitHub account's, all listed at once on
+    one pool of 8 (#95) and printed in config order. An account that fails
+    only loses its own records: with others listed, exit 0 and one
+    "azure-cli --list failed for <account>: <message>" line each on stderr
+    (dashboard.lua warns with them); when every account failed, exit 1
+    with the first one's "azure-cli --list failed: <message>", as before.
+    """
     try:
+        gh_accounts = config.github_accounts()
         source = AzureDevOpsPullRequestSource(config, env)
-        for record in source.fetch_grouped_pull_requests():
+        executor = ThreadPoolExecutor(max_workers=source.MAX_CONCURRENT_PULL_REQUESTS)
+        try:
+            gh = github() if gh_accounts else None
+            gh_futures = [executor.submit(_perf_bind(gh.list_records), account, env) for account in gh_accounts]
+            records, errors = source.fetch_grouped_pull_requests_partial(executor)
+            for account, fut in zip(gh_accounts, gh_futures):
+                try:
+                    records.extend(fut.result())
+                except Exception as ex:  # noqa: BLE001 - reported for this account
+                    errors.append((account, ex))
+        finally:
+            executor.shutdown(wait=True)
+        total = len(gh_accounts) + sum(len(accounts) for _org, accounts in config.accounts_by_org())
+        if errors and len(errors) == total:
+            raise errors[0][1]
+        for record in records:
             sys.stdout.write(json.dumps(record) + "\n")
-        for account in config.github_accounts():
-            for record in github().list_records(account, env):
-                sys.stdout.write(json.dumps(record) + "\n")
         sys.stdout.flush()
+        for account, ex in errors:
+            label = getattr(account, "label", None)
+            print("{0}{1}: {2}".format(LIST_PARTIAL_PREFIX, label() if callable(label) else account, ex),
+                  file=sys.stderr)
+            if _debug_enabled(env):
+                print("".join(traceback.format_exception(type(ex), ex, ex.__traceback__)), file=sys.stderr)
         return 0
     except Exception as ex:  # noqa: BLE001 - mirrors the exe's catch-all
         _fail_action("--list", ex, env)
