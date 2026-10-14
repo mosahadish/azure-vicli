@@ -734,8 +734,9 @@ changes to agents rather than doing them itself:
 - **A plan with no agent** - one the main chat wrote before this, or whose
   conversation was pruned - gets an idle agent conversation of its own when
   the plans are restored, so the Agents screen lists it. Approve it (`gA`)
-  to hand it to that agent, or ask the main chat to `discard_plan` it (it
-  asks first; the files move to `plans/discarded/`).
+  to hand it to that agent, or discard it: `dd` on its row, or ask the main
+  chat to `discard_plan` it (both ask first; the files move to
+  `plans/discarded/`).
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
   tab. The main chat can't approve a plan, and an agent can't start or
   message other agents.
@@ -786,6 +787,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gH` | Its run log |
 | `gq` | The same as `<CR>` |
 | `<C-c>` | Stop what it's doing |
+| `dd` | Discard its plan, any plan (an agent's too). It asks first, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is removed only when there's nothing in it: one with uncommitted or unpushed changes is kept, and the question says so. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `r` / `q` / `?` | Redraw / close / keys |
 

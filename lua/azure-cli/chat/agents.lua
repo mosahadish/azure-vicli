@@ -22,6 +22,7 @@
 --   M.pump()                  starts queued ones while there's room
 --                             (chat/init.lua calls it after every answer)
 --   M.queued()                the waiting ones, in order
+--   M.unqueue(key)            takes one out (its plan discarded)
 --   M.max()                   chat.max_agents
 --   M.plan_prompt(item)       the first message (pure)
 local M = {}
@@ -259,6 +260,18 @@ function M.start_for(text, snap)
   if #items > 0 then said[#said + 1] = (M.start_for_items(items, extra)) end
   if #prs > 0 then said[#said + 1] = (M.start_for_prs(prs, threads_of, extra)) end
   return table.concat(said, " ")
+end
+
+-- Takes `key` out of the queue (its plan discarded, #98): whether it was
+-- there.
+function M.unqueue(key)
+  for i, q in ipairs(queue) do
+    if q.key == key then
+      table.remove(queue, i)
+      return true
+    end
+  end
+  return false
 end
 
 -- For tests: forget the queue.

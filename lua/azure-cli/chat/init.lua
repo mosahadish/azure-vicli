@@ -251,7 +251,7 @@ function M.restore_plans()
           .. "moved to agents. " .. (plan.status == "approved"
             and "Tell this agent to carry it out (or ask the main chat to message_agent it), "
             or "Approve it (gA) to hand it to an agent, ")
-          .. "or ask the main chat to discard_plan it." }
+          .. "or discard it (dd on the Agents screen, or ask the main chat to discard_plan it)." }
         adopted[#adopted + 1] = label
       end
     end
@@ -259,7 +259,7 @@ function M.restore_plans()
   if #adopted > 0 then
     table.sort(adopted)
     notify("Plan" .. (#adopted == 1 and " " or "s ") .. table.concat(adopted, ", ") .. " had no agent - "
-      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now: approve to hand on, or discard_plan.")
+      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now: approve to hand on, or dd there to discard.")
   end
 end
 

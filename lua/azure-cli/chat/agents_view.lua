@@ -19,7 +19,8 @@
 -- (plan.pr_closed), and those over M.FINISHED_DAYS old hide until gF.
 -- <CR> (or gq) opens the row's agent: its plan's tab with that agent's
 -- conversation in the chat, or - before it has planned - its conversation
--- in a popup; gd its change, gH its run log; <C-c> stops what it's doing.
+-- in a popup; gd its change, gH its run log; <C-c> stops what it's doing;
+-- dd discards its plan, asking first (chat/plan_discard.lua).
 -- Redrawn every second while it's showing.
 --
 --   M.rows(convs, queued, plan_of, now)  the rows (pure)
@@ -334,6 +335,7 @@ local HELP = {
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
+  { "discard", "discard its plan (asks first; not while it works; a worktree with changes is kept)" },
   "Window",
   { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
@@ -367,6 +369,10 @@ local function setup(buf)
     if not (r and r.conv and r.conv.running) then return notify("That agent isn't doing anything.") end
     CHAT().cancel_conversation(r.conv)
   end, { desc = "stop it" })
+  -- dd: discard the row's plan - asks first, refused while it works (#98).
+  K.bind(buf, "agents", "discard", function()
+    require("azure-cli.chat.plan_discard").ask(row_here(), render)
+  end, { desc = "discard its plan (asks first)" })
   -- gA: approve the row's plan (in visual mode: every selected row's that
   -- waits for you) - one question for all, each goes to its own agent.
   local function approve_rows(rows)

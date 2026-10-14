@@ -617,6 +617,16 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-plan.lua (headless nvim)" "$out"
   fi
 
+  # dd on the Agents screen (#98): discarding a row's plan, against real
+  # worktrees - asks first, refused while working, keeps a worktree with
+  # changes, moves the files to plans/discarded/.
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-plan-discard.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all plan-discard tests passed"* ]]; then
+    pass "test-plan-discard.lua (headless nvim)"
+  else
+    fail "test-plan-discard.lua (headless nvim)" "$out"
+  fi
+
   # chat/init.lua's `send`: one agent process for the whole conversation
   # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
   # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.

@@ -134,6 +134,11 @@ function M.save(rec)
   vim.fn.writefile({ vim.json.encode(rec) }, M.root() .. "/" .. rec.key .. ".json")
 end
 
+-- Plan `key`'s files are gone (chat/plan_discard.lua): out of the index.
+function M.forget(key)
+  if index then index[key] = nil end
+end
+
 local function last_rev(rec) return rec.revisions[#rec.revisions] end
 
 -- The plan's text as it is on disk now (the user may have edited it).
@@ -616,16 +621,8 @@ function M.tools(T)
           return done(nil, "an agent has worked on the plan for " .. M.target_label(target)
             .. " - it isn't discarded this way (message_agent it, or the user reviews it)")
         end
-        local dir = M.root() .. "/discarded"
-        vim.fn.mkdir(dir, "p")
-        local stamp = os.date("%Y%m%d-%H%M%S")
-        for _, ext in ipairs({ ".json", ".md" }) do
-          local from = M.root() .. "/" .. key .. ext
-          if vim.fn.filereadable(from) == 1 and vim.fn.rename(from, dir .. "/" .. key .. "-" .. stamp .. ext) ~= 0 then
-            return done(nil, "couldn't move " .. from)
-          end
-        end
-        if index then index[key] = nil end
+        local dir, err = require("azure-cli.chat.plan_discard").move_files(key)
+        if not dir then return done(nil, err) end
         CHAT.drop_conversation(key)
         done("Discarded the plan for " .. M.target_label(target) .. " (moved to " .. dir .. ").")
       end,

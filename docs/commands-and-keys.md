@@ -423,6 +423,7 @@ paste the output here after changing a default.
 | `changes` | `gd` |
 | `chat` | `gq` |
 | `chat_input` | `i` |
+| `discard` | `dd` |
 | `help` | `?` |
 | `issues` | `I` |
 | `open` | `<CR>` |
