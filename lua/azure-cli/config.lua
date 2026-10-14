@@ -252,8 +252,10 @@ local CHAT_FIELDS = {
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
   test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
 }
+-- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
+  idle_timeout_seconds = "number", max_turn_seconds = "number",
   models = "table", strip = "table", acp = "boolean", premium_requests = "table",
   planner_model = "string", implementer_model = "string",
 }

@@ -299,9 +299,9 @@ picks goes through `session/set_config_option`.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this
   work item": the agent edits files in a worktree under `{fix_root}`, never
   in your checkout. Leave it out if you don't want the agent changing code.
-- **Stopping** a message (`<C-c>`, a timeout) first asks Copilot to stop the
-  turn (`session/cancel`), and only stops the process if that doesn't work
-  within 5s - so the session normally survives it.
+- **Stopping** a message (`<C-c>`, a [timeout](#fields)) first asks Copilot
+  to stop the turn (`session/cancel`), and only stops the process if that
+  doesn't work within 5s - so the session normally survives it.
 
 Check `--add-dir` and `--allow-tool` against your `copilot --help`; if
 Copilot rejects a flag, the error shows in the chat.
@@ -353,7 +353,17 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 | `planner_model` / `implementer_model` | A plan's own agent (`gP`, `/plan`, `start_agents`) plans on `planner_model`, and once you approve its plan, implements on `implementer_model`; the main chat stays on `model`. Either missing: that stage uses `model`. An ACP agent switches in its session; another starts again on the new model and gets the conversation. `gm` picks a model for the conversation you're in only, over all of these. |
 | `label` | The agent's name in the panel. |
 | `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls). Unused with `acp`. |
-| `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900) - a timeout stops the process (`acp`: asks the agent to stop the turn first). |
+| `env` | Extra environment. |
+| `idle_timeout_seconds` | How long the agent may go quiet in a message before it's stopped (default 600). Everything it sends - a chunk of its answer, a tool call, a permission request - starts the count again, and it doesn't run while one of azure-vicli's tools works (`run_tests`, a push) or a popup waits for you. `timeout_seconds`, its old name, still works. |
+| `max_turn_seconds` | How long one message may take in all, however busy the agent is (default 7200), less the time popups waited for you. |
+
+**Timeouts.** When either one fires, the message is stopped as `<C-c>`
+would (`acp`: the agent is asked to stop the turn first), its status says
+which and how long - `timed out (idle 10m)`, `timed out (cap 2h)`, also on
+the Agents screen - and a line under it names the setting:
+`✗ timed out: no output from the agent for 10m (idle_timeout_seconds = 600)`.
+Claude Code sends nothing while its own shell runs a command, so keep the
+idle timeout above your longest build.
 
 `followup`, `session_pattern` and `persistent` are gone: they were for
 starting a process per message and resuming a session each time. A config

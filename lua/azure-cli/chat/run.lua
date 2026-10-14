@@ -10,6 +10,8 @@
 local M = {}
 
 local CORE = require("azure-cli.chat.core")
+local WD = require("azure-cli.chat.watchdog")
+local function now() return (vim.uv or vim.loop).now() / 1000 end
 local function CHAT() return require("azure-cli.chat") end
 local function I() return require("azure-cli.chat")._ end
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
@@ -109,15 +111,27 @@ local function where_label(snap)
   return nil
 end
 
+-- `confirm` (a tool_env's, a confirm_for's) that counts the popup's wait
+-- as time asking you on turn watchdog `w` (nil: none).
+local function asking_confirm(confirm, w)
+  if not w then return confirm end
+  return function(question, cb, ...)
+    WD.asking(w, 1, now())
+    return confirm(question, function(...) WD.asking(w, -1, now()); return cb(...) end, ...)
+  end
+end
+
 -- Whether an agent may use one of its own tools (a shell command, a file
 -- edit, ...): the rules every agent's requests go through, whatever its
 -- protocol - ACP's session/request_permission (send_acp) and Claude Code's
 -- --permission-prompt-tool (the bridge's "permission" call, below). `st`
 -- is the conversation (nil: the main chat), `entry` the message being
 -- answered, `tool` an ACP tool call ({ kind, title, rawInput, locations });
--- answer(yes) runs once it's decided - at once, or after the popup.
+-- answer(yes) runs once it's decided - at once, or after the popup;
+-- `w`, the turn's watchdog, counts the popup's wait as asking you.
 --
-local function decide_permission(st, entry, tool, answer)
+local function decide_permission(st, entry, tool, answer, w)
+  local function confirm_for(conv) return asking_confirm(I().confirm_for(conv), w) end
   st = st or {}
   local raw = type(tool.rawInput) == "table" and tool.rawInput or {}
   local cmd = raw.command or raw.cmd
@@ -252,7 +266,10 @@ local PERMISSION_TOOL = {
     tool_use_id = { type = "string" } }, required = { "tool_name", "input" } },
 }
 
-local function bridge_handler(entry_ref, conv)
+-- `run_st`: the conversation whose turn the calls belong to (the main
+-- chat's state for the main chat, where `conv` is nil) - its watchdog
+-- (st.running.watch) hears of each call, and waits while one runs.
+local function bridge_handler(entry_ref, conv, run_st)
   return function(req, reply)
     local TOOLS = require("azure-cli.chat.tools")
     if req.method == "list" then
@@ -260,17 +277,24 @@ local function bridge_handler(entry_ref, conv)
       tools[#tools + 1] = PERMISSION_TOOL
       return reply({ tools = tools })
     end
+    local w = run_st and run_st.running and run_st.running.watch
     if req.method == "call" and req.name == "permission" then
       local args = type(req.arguments) == "table" and req.arguments or {}
       local input = type(args.input) == "table" and next(args.input) and args.input or vim.empty_dict()
+      if w then WD.busy(w, 1, now()) end
       return decide_permission(conv, entry_ref() or { tools = {} }, M.claude_tool(args), function(yes)
+        if w then WD.busy(w, -1, now()) end
         reply({ text = vim.json.encode(yes and { behavior = "allow", updatedInput = input }
           or { behavior = "deny", message = "The user didn't allow this." }) })
-      end)
+      end, w)
     end
     if req.method == "call" then
       local entry = entry_ref() or { tools = {} }
-      return TOOLS.call(req.name, req.arguments, tool_env(entry, conv), function(text, is_err)
+      local env = tool_env(entry, conv)
+      env.confirm = asking_confirm(env.confirm, w)
+      if w then WD.busy(w, 1, now()) end
+      return TOOLS.call(req.name, req.arguments, env, function(text, is_err)
+        if w then WD.busy(w, -1, now()) end
         reply({ text = text, error = is_err or nil })
       end)
     end
@@ -328,6 +352,7 @@ local function turn_on_stdout(get_turn)
   return function(_, d)
     local turn = get_turn()
     if not turn or turn.done then return end
+    if turn.watch and d and (d[2] ~= nil or (d[1] or "") ~= "") then WD.activity(turn.watch, now()) end
     if d and CORE.stream_feed(turn.reader, d, vim.json.decode) then
       vim.schedule(function()
         turn.absorb()
@@ -359,6 +384,9 @@ end
 -- The spinner turns every 120ms (only the winbars and statuslines are
 -- redrawn); the whole transcript, for the seconds count, once a second.
 -- Shared by send and send_acp below - both just need `st.running` set.
+-- Once a second it also asks the turn's watchdog (`st.running.watch`)
+-- whether it ran out of time, and if so calls `st.running.on_timeout`
+-- with which limit fired - once.
 local function start_spinner(st)
   st.running.tick = 0
   CHAT().set_winbars()
@@ -366,7 +394,17 @@ local function start_spinner(st)
     local run = st.running
     if not run then return end
     run.tick = run.tick + 1
-    if run.tick % 8 == 0 then render() else CHAT().set_winbars() end
+    if run.tick % 8 == 0 then
+      local fired = run.watch and run.on_timeout and WD.check(run.watch, now())
+      if fired then
+        local on_timeout = run.on_timeout
+        run.on_timeout = nil
+        on_timeout(fired)
+      end
+      render()
+    else
+      CHAT().set_winbars()
+    end
   end, { ["repeat"] = -1 })
 end
 
@@ -382,6 +420,10 @@ end
 local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse, opts)
   local ACP = require("azure-cli.chat.acp")
   local done = false
+  -- This turn's idle timeout and cap (chat/watchdog.lua), and which of
+  -- them stopped it, if one did.
+  local w = WD.new(WD.limits(agent), now())
+  local timed_out
   local function finish(status, extra_text)
     if done then return end
     done = true
@@ -389,7 +431,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       if st.running.timer then pcall(vim.fn.timer_stop, st.running.timer) end
       st.running = nil
     end
-    entry.status = status
+    entry.status = timed_out and WD.status(timed_out, w) or status
     if extra_text and extra_text ~= "" then
       entry.text = (entry.text ~= "" and (entry.text .. "\n\n") or "") .. extra_text
     end
@@ -410,6 +452,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
 
   local function on_update(method, params)
     if method ~= "session/update" then return end
+    WD.activity(w, now())
     local u = params.update or {}
     if u.sessionUpdate == "agent_message_chunk" then
       local t = type(u.content) == "table" and u.content.text
@@ -467,7 +510,8 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       if pick then conn.respond(id, { outcome = { outcome = "selected", optionId = pick } })
       else conn.respond(id, { outcome = { outcome = "cancelled" } }) end
     end
-    decide_permission(st, entry, tool, answer)
+    WD.activity(w, now())
+    decide_permission(st, entry, tool, answer, w)
   end
 
   local function send_prompt(pj)
@@ -488,21 +532,20 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     -- rather than closing over this call's `entry`/`finish`/etc, which a
     -- later message would otherwise still be pointing at.
     pj.on_update, pj.on_permission, pj.finish = on_update, on_permission, finish
-    st.running = { acp = true, entry = entry, job = pj.job,
+    st.running = { acp = true, entry = entry, job = pj.job, watch = w,
       cancel = function()
         pcall(pj.conn.notify, "session/cancel", { sessionId = pj.acp_session_id })
         vim.defer_fn(function()
           if st.running and st.running.entry == entry and not done then pcall(vim.fn.jobstop, pj.job) end
         end, 5000)
       end }
+    st.running.on_timeout = function(fired)
+      if done then return end
+      timed_out = fired
+      table.insert(entry.tools, WD.line(fired, w))
+      st.running.cancel()
+    end
     start_spinner(st)
-    local timeout = tonumber(agent.timeout_seconds) or 900
-    vim.defer_fn(function()
-      if st.running and st.running.entry == entry and not done then
-        table.insert(entry.tools, "\u{2717} timed out after " .. timeout .. "s")
-        st.running.cancel()
-      end
-    end, timeout * 1000)
   end
 
   local model = vars.model ~= "" and vars.model or nil
@@ -767,9 +810,9 @@ send = function(text, opts)
     -- A plan's own agent: its tool calls come with its id (the relay's
     -- AZVICLI_CHAT_AGENT / X-Azvicli-Agent) and land in this conversation.
     st.bridge_entry = entry
-    BRIDGE.route(st.agent_id, bridge_handler(function() return st.bridge_entry end, st))
+    BRIDGE.route(st.agent_id, bridge_handler(function() return st.bridge_entry end, st, st))
   else
-    BRIDGE.handler = bridge_handler(function() return entry end)
+    BRIDGE.handler = bridge_handler(function() return entry end, nil, st)
   end
   render()
 
@@ -799,7 +842,8 @@ send = function(text, opts)
     for i = seen_tools + 1, #reader.tools do table.insert(entry.tools, "\u{00B7} " .. reader.tools[i]) end
     seen_tools = #reader.tools
   end
-  local turn = { entry = entry, reader = reader, err = err, absorb = absorb, cancelled = false, done = false }
+  local turn = { entry = entry, reader = reader, err = err, absorb = absorb, cancelled = false, done = false,
+    watch = WD.new(WD.limits(agent), now()) }
   function turn.finish(code, cancelled)
     if turn.done then return end
     turn.done = true
@@ -813,7 +857,9 @@ send = function(text, opts)
     end
     entry.tokens = reader.tokens
     if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
-    if cancelled then
+    if turn.timed_out then
+      entry.status = WD.status(turn.timed_out, turn.watch)
+    elseif cancelled then
       entry.status = "stopped"
     elseif code and code ~= 0 then
       entry.status = "failed (exit " .. code .. ")"
@@ -896,16 +942,14 @@ send = function(text, opts)
   pcall(vim.fn.chansend, job, stdin_text)
 
   turn.pj = st.persistent_job
-  st.running = { job = job, turn = turn, entry = entry }
+  st.running = { job = job, turn = turn, entry = entry, watch = turn.watch }
+  st.running.on_timeout = function(fired)
+    if turn.done then return end
+    turn.timed_out, turn.cancelled = fired, true
+    table.insert(entry.tools, WD.line(fired, turn.watch))
+    pcall(vim.fn.jobstop, job)
+  end
   start_spinner(st)
-  local timeout = tonumber(agent.timeout_seconds) or 900
-  vim.defer_fn(function()
-    if st.running and st.running.turn == turn then
-      turn.cancelled = true
-      table.insert(entry.tools, "\u{2717} timed out after " .. timeout .. "s")
-      pcall(vim.fn.jobstop, job)
-    end
-  end, timeout * 1000)
   return entry
 end
 M.send = send

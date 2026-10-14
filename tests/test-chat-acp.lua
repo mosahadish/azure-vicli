@@ -387,6 +387,27 @@ do
   UI.choose = real_choose
 end
 
+-- Issue #27: the idle timeout stops a quiet turn through session/cancel,
+-- so the session survives it; a popup waiting for you isn't idle.
+do
+  local AG = require("azure-cli.config").get().chat.agent
+  AG.idle_timeout_seconds = 1
+  CHAT.new_chat(true)
+  local q, qerr = send_and_wait("GOQUIET")
+  check("idle timeout: a quiet ACP turn is stopped", q ~= nil and q.status == "timed out (idle 1s)", qerr or (q and q.status))
+  check("idle timeout: it says so, naming the setting", q and table.concat(q.tools, "\n")
+    :find("no output from the agent for 1s (idle_timeout_seconds = 1)", 1, true) ~= nil, q and vim.inspect(q.tools))
+  local n = send_and_wait("after")
+  check("idle timeout: the session survives it (its turn 2)", n and n.status == "done" and n.text:match("^turn 2,") ~= nil,
+    n and n.text)
+  UI.choose = function(_, cb) vim.defer_fn(function() cb(2) end, 2500) end
+  local p, perr = send_and_wait("EXEC=rm_-rf_build")
+  check("idle timeout: 2.5s on a popup isn't idle", p ~= nil and p.status == "done"
+    and p.text:find("exec[rm -rf build]=no", 1, true) ~= nil, perr or (p and (p.status .. " " .. p.text)))
+  UI.choose = real_choose
+  AG.idle_timeout_seconds = nil
+end
+
 CHAT.new_chat(true)
 os.remove(marker)
 

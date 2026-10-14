@@ -62,6 +62,10 @@ function M.rows(convs, queued, plan_of, now, frame)
         group = 4
       elseif rec and rec.pr_state == "abandoned" then
         state, hl, group = "\u{2717} PR abandoned", "AzureCliMuted", 4
+      elseif last and type(last.status) == "string" and last.status:match("^timed out") then
+        -- Before the plan's own state: an implementer that ran out of
+        -- time would otherwise still show "approved".
+        state, hl, group = "\u{2717} " .. last.status, "AzureCliStatusBad", 1
       elseif rec and rec.status == "draft" then
         state, hl, group = "\u{25CF} plan waits for you", "AzureCliStatusDraft", 1
       elseif rec and rec.status == "changes_requested" then

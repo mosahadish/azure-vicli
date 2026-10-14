@@ -335,6 +335,58 @@ do
   CHAT.new_chat(true)
 end
 
+-- Issue #27: the timeout is an idle one (no output for N seconds) plus a
+-- separate cap on the whole turn, and the chat says which one fired.
+do
+  local function timeouts(idle, cap)
+    require("azure-cli").setup({ chat = { agent = {
+      label = "Fake Persistent", idle_timeout_seconds = idle, max_turn_seconds = cap,
+      cmd = { py, fake },
+    } } })
+    CHAT.new_chat(true)
+  end
+  local function said(e, s)
+    for _, l in ipairs(e and e.tools or {}) do if l:find(s, 1, true) then return true end end
+    return false
+  end
+
+  timeouts(1, 30)
+  local q, qerr = send_and_wait("go quiet")
+  check("timeout: the idle one fires when the agent goes quiet", q ~= nil and q.status == "timed out (idle 1s)",
+    qerr or (q and q.status))
+  check("timeout: it says which, after how long, and the setting",
+    said(q, "timed out: no output from the agent for 1s") and said(q, "idle_timeout_seconds = 1"), q and vim.inspect(q.tools))
+  check("timeout: it took about the idle time, not the agent's 6s", q and os.time() - q.started <= 4,
+    q and (os.time() - q.started))
+  check("timeout: what it said so far stays", q and q.text:find("Thinking...", 1, true) ~= nil, q and q.text)
+  check("timeout: the agent isn't running any more", not CHAT.busy())
+  local nx, nxerr = send_and_wait("after the timeout")
+  check("timeout: the next message still gets answered", nx ~= nil and nx.status == "done", nxerr or (nx and nx.status))
+
+  -- Output every 0.3s for 3s: three times the idle timeout - the old wall
+  -- clock of that length would have stopped it.
+  local s, serr = send_and_wait("stream steadily")
+  check("timeout: steady output past the old wall-clock limit doesn't time out", s ~= nil and s.status == "done",
+    serr or (s and (s.status .. " " .. vim.inspect(s.tools))))
+  check("timeout: its answer arrived", s and s.text:find(": stream steadily", 1, true) ~= nil, s and s.text)
+
+  timeouts(30, 1)
+  local c, cerr = send_and_wait("stream steadily")
+  check("timeout: the cap fires however steady the output", c ~= nil and c.status == "timed out (cap 1s)",
+    cerr or (c and c.status))
+  check("timeout: the cap names itself", said(c, "the turn ran 1s, the cap (max_turn_seconds = 1)")
+    and not said(c, "idle_timeout_seconds"), c and vim.inspect(c.tools))
+  check("timeout: and not the agent's last chunk", c and not c.text:find("chunk 9", 1, true), c and c.text)
+
+  -- The Agents screen says it too, ahead of an approved plan's "approved".
+  local AV = require("azure-cli.chat.agents_view")
+  local rows = AV.rows({ { plan_key = "wi-27", entries = STATE.chat.entries } }, {},
+    function() return { status = "approved", title = "T" } end, os.time())
+  check("timeout: the Agents screen shows which one fired", rows[1] and rows[1].state == "\u{2717} timed out (cap 1s)",
+    rows[1] and rows[1].state)
+  CHAT.new_chat(true)
+end
+
 -- A plain one-shot CLI (answers one message, exits) can't stay running:
 -- the message fails with an explanation instead of hanging.
 do

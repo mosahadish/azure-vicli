@@ -53,6 +53,17 @@ def main():
 
         if turn == 1:
             emit({"type": "system", "subtype": "init", "session_id": session})
+        # Issue #27's timeouts: "go quiet" starts and then says nothing for
+        # 6s; "stream steadily" sends a chunk every 0.3s for 3s.
+        if "go quiet" in asked:
+            import time
+            emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "Thinking..."}]}})
+            time.sleep(6)
+        if "stream steadily" in asked:
+            import time
+            for n in range(10):
+                emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "chunk {0}\n".format(n)}]}})
+                time.sleep(0.3)
         emit({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}})
         # Like Claude Code: the process's cost so far, and this turn's tokens.
         emit({"type": "result", "subtype": "success", "result": answer, "session_id": session,

@@ -524,6 +524,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
+  # A chat turn's idle timeout and hard cap (chat/watchdog.lua), on a
+  # clock the test turns by hand.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-watchdog.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-watchdog tests passed"* ]]; then
+    pass "test-chat-watchdog.lua (headless nvim)"
+  else
+    fail "test-chat-watchdog.lua (headless nvim)" "$out"
+  fi
+
   # start_story against a scratch origin and clone: the worktree on its
   # branch (#59), the clone from clones_dir (#64), no PR on an existing
   # branch (#57).
