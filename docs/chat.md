@@ -847,10 +847,34 @@ require("azure-cli").setup({
 ```
 
 `start` shows the URL, token included, in a float - open it on the phone
-(`status` shows it again). The token is new every start and kept only in
-memory; the first visit swaps it for a cookie and drops it from the
-address bar, and a request without it gets 401. `:AzureCli web stop` stops
-it (so does leaving Neovim). `bind` defaults to `127.0.0.1` (this machine
+(`status` shows it again). The first visit swaps the token for a cookie
+and drops it from the address bar, and a request without it gets 401.
+`:AzureCli web stop` stops it (so does leaving Neovim).
+
+The token is kept across restarts, so a bookmarked link keeps working:
+it's stored in `stdpath("state")/azure-cli/web-token` (e.g.
+`~/.local/state/nvim/azure-cli/web-token`), a file created with mode
+`0600` - never chmod-ed after the fact - and replaced in one step. The
+server reads or makes that file itself: only its path is on the server's
+command line, never the token (so `ps` doesn't show it), and the token is
+in no log - not `:AzureCli log`, not the `AZVICLI_DEBUG` perf log. If the
+file is missing, unreadable or malformed, the next start makes a new
+token. If it's a symlink, someone else's, or readable by other users (say
+`0644`), it isn't trusted: the start makes a new token, writes a fresh
+`0600` file and warns you to send the new URL (on Windows the
+permission check is skipped). `dashboard_web.persist_token = false` keeps
+the token in memory only, new every start, as before.
+
+`:AzureCli web rotate` makes a new token. While the dashboard runs, the old
+link and every phone signed in with it get 401 at once; the new token is
+saved, and the float shows the new URL. While it's stopped, rotate deletes
+the stored token, so the next `start` makes a new URL. `status` says
+whether a token is stored.
+
+Two Neovims share the one file: both serve the same token (with a fixed
+`port` only the first can listen; with `port = 0` both do). Rotating in
+one swaps its own server's token at once, but the other Neovim's running
+server keeps the old token until it restarts. `bind` defaults to `127.0.0.1` (this machine
 only), `port` to `8797`; `0.0.0.0` and `::` (every interface) are refused.
 The page is plain HTTP, so prefer a VPN such as Tailscale - which encrypts
 the traffic - over an open Wi-Fi. The server is `azure-cli.py

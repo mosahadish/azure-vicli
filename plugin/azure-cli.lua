@@ -11,7 +11,7 @@ vim.g.loaded_azure_cli = true
 
 local SUBCOMMANDS = { "dashboard", "review", "workitems", "issues", "chat", "agents", "doctor", "toasts", "status", "log",
   "perf", "web", "options", "help" }
-local WEB_ACTIONS = { "start", "stop", "status" }
+local WEB_ACTIONS = { "start", "stop", "status", "rotate" }
 
 local function show_help()
   local lines = {
@@ -28,7 +28,7 @@ local function show_help()
     "  :AzureCli status      show the provider daemon's status",
     "  :AzureCli log         show this session's error log",
     "  :AzureCli perf        request timings logged with AZVICLI_DEBUG=1: per screen, slowest, per endpoint",
-    "  :AzureCli web start|stop|status  the phone dashboard: a read-only web page of the Agents screen",
+    "  :AzureCli web start|stop|status|rotate  the phone dashboard: a read-only web page of the Agents screen",
     "  :AzureCli options    every option at its default: azure-cli.lua (standalone), or a list to copy into setup()",
     "  :AzureCli help        this message",
   }

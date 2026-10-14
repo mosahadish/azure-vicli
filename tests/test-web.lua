@@ -85,5 +85,22 @@ check("url: an IPv4 bind", M.url("100.64.0.5", 8797, "abc") == "http://100.64.0.
 check("url: an IPv6 bind is bracketed", M.url("fd7a::1", 8797, "abc") == "http://[fd7a::1]:8797/?token=abc")
 check("url: an already bracketed one isn't doubled", M.url("[::1]", 1, "t") == "http://[::1]:1/?token=t")
 
+-- argv (#105): the token file's path with persist_token, never a token.
+local base = { "python3", "/p/azure-cli.py" }
+local cfg = { bind = "100.64.0.5", port = 8797, persist_token = true }
+local a = M.argv(base, cfg, "/state/azure-cli/web-token")
+check("argv: --web-dashboard, the bind and port, then the token file",
+  table.concat(a, " ") == "python3 /p/azure-cli.py --web-dashboard --bind 100.64.0.5 --port 8797 "
+    .. "--token-file /state/azure-cli/web-token", table.concat(a, " "))
+check("argv: a fresh table, base untouched", a ~= base and #base == 2)
+local off = M.argv(base, { bind = "127.0.0.1", port = 0, persist_token = false }, "/state/azure-cli/web-token")
+check("argv: no token file with persist_token = false",
+  table.concat(off, " ") == "python3 /p/azure-cli.py --web-dashboard --bind 127.0.0.1 --port 0", table.concat(off, " "))
+local tokenish = {}
+for _, v in ipairs(a) do
+  if v == "--token" or v:match("^[%w_%-]+$") and #v == 43 then tokenish[#tokenish + 1] = v end
+end
+check("argv: nothing token-shaped on it", #tokenish == 0, table.concat(tokenish, ","))
+
 print(fails == 0 and "test-web: all cases pass" or ("test-web: " .. fails .. " failed"))
 if fails > 0 then os.exit(1) end

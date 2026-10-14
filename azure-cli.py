@@ -5911,9 +5911,9 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
 #
 # Security, as #97 asks:
 #  - a bind that listens everywhere (0.0.0.0, ::) is refused, not warned;
-#  - the token is new each start, kept in memory, and printed only on the
-#    first stdout line (to Lua); ?token= sets an HttpOnly, SameSite=Strict
-#    cookie and redirects it out of the address bar; compared with
+#  - the token is printed only on stdout, one {"port", "token"} line per
+#    token (to Lua); ?token= sets an HttpOnly, SameSite=Strict cookie and
+#    redirects it out of the address bar; compared with
 #    hmac.compare_digest; missing or wrong = 401;
 #  - GET only (405 otherwise), no CORS headers, a CSP that allows only the
 #    page's own inline script and style (by hash), and the page builds every
@@ -5922,6 +5922,18 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
 #    never written to stderr, which Neovim keeps in :AzureCli log.
 # web_page_json keeps only the fields the Agents screen shows, whatever
 # arrives on stdin.
+#
+# The token across restarts (#105): with --token-file <path> (Lua passes
+# stdpath("state")/azure-cli/web-token) the token is read from that file,
+# or made and written there, so the phone link survives a restart. Only
+# the path is on argv - never the token (ps shows argv). The file is born
+# 0600 (os.open with the mode, never chmod after), put in place atomically,
+# and not trusted when it's a symlink, malformed, readable by others or
+# someone else's: then a new token replaces it and the port line says why
+# ("replaced"). A {"control": "rotate"} line on stdin makes a new token,
+# saves it and drops the old one at once (old cookies get 401), then prints
+# a new port line. Another Neovim's server using the same file keeps the
+# token it read until it restarts.
 
 _WEB_ROW_FIELDS = ("label", "title", "state", "ago", "cost", "detail")
 _WEB_COOKIE = "azvicli_web"
@@ -6040,14 +6052,123 @@ def web_bind_allowed(bind):
         return True  # a host name, e.g. localhost
 
 
-def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=None):
+# What secrets.token_urlsafe(32) makes; a stored token has to look like it.
+_WEB_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+
+def web_new_token():
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def _web_token_tmp(path, token):
+    """A new file next to `path` holding `token`, born 0600 (O_EXCL: never
+    an existing file, whatever the umask). Returns its path."""
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    tmp = os.path.join(d, ".{0}.{1}.{2}.tmp".format(os.path.basename(path), os.getpid(), os.urandom(4).hex()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.write(fd, (token + "\n").encode("ascii"))
+        os.fsync(fd)
+    except OSError:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
+    os.close(fd)
+    return tmp
+
+
+def web_token_write(path, token):
+    """Saves `token` at `path`, replacing whatever is there in one step (a
+    symlink there is replaced, not followed). Raises OSError."""
+    tmp = _web_token_tmp(path, token)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        os.unlink(tmp)
+        raise
+
+
+def web_token_create(path, token):
+    """Saves `token` at `path` only if nothing is there yet: True when it
+    did, False when another process got there first. Raises OSError."""
+    tmp = _web_token_tmp(path, token)
+    try:
+        os.link(tmp, path)
+        return True
+    except FileExistsError:
+        return False
+    except (AttributeError, NotImplementedError, PermissionError):
+        # No hard links here: replace instead (the race it closes is two
+        # Neovims starting in the same instant).
+        os.replace(tmp, path)
+        return True
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
+def web_token_read(path):
+    """(token, None) for a stored token that can be trusted, else (None,
+    why): "missing", or why it isn't trusted - a symlink, malformed,
+    unreadable, someone else's, or readable by others (POSIX only)."""
+    import stat
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError as e:
+        return None, "unreadable ({0})".format(e.strerror or e)
+    if stat.S_ISLNK(st.st_mode):
+        return None, "a symlink"
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as e:
+        return None, "unreadable ({0})".format(e.strerror or e)
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            return None, "not a regular file"
+        if os.name != "nt":
+            if st.st_uid != os.getuid():
+                return None, "owned by another user"
+            if st.st_mode & 0o077:
+                return None, "permissions were {0:04o}".format(stat.S_IMODE(st.st_mode))
+        data = fh.read(256)
+    token = data.decode("ascii", errors="replace").strip()
+    if not _WEB_TOKEN_RE.match(token):
+        return None, "malformed"
+    return token, None
+
+
+def web_token_load(path):
+    """The token stored at `path`, or a new one saved there: (token,
+    replaced) where `replaced` says why a stored file wasn't used (None
+    when it was, or there was none). Raises OSError when it can't save."""
+    token, why = web_token_read(path)
+    if token:
+        return token, None
+    token = web_new_token()
+    if why == "missing":
+        if web_token_create(path, token):
+            return token, None
+        other, why = web_token_read(path)  # another Neovim wrote it first
+        if other:
+            return other, None
+    web_token_write(path, token)
+    return token, why
+
+
+def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=None, token_file=None):
     """--web-dashboard: serves the page and /rows.json on bind:port until
     stdin closes, reading snapshots from stdin. The first stdout line is
-    {"port", "token"}. Returns 2 (with a line on stderr) when the bind is
-    refused or the port can't be had."""
+    {"port", "token"} (plus "stored", "replaced" or "error" with
+    `token_file`), and another follows each {"control": "rotate"} line.
+    Returns 2 (with a line on stderr) when the bind is refused or the port
+    can't be had."""
     import hmac
     import http.server
-    import secrets
     stdin = stdin or sys.stdin.buffer
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
@@ -6056,10 +6177,26 @@ def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=
                      "dashboard_web.bind to your LAN or VPN address\n".format(bind))
         stderr.flush()
         return 2
-    token = token or secrets.token_urlsafe(32)
+    note = {}
+
+    def cant_save(e):
+        note["stored"] = False
+        note["error"] = "can't save the token in {0}: {1}".format(token_file, e.strerror or e)
+
+    if not token and token_file:
+        try:
+            token, why = web_token_load(token_file)
+            note["stored"] = True
+            if why:
+                note["replaced"] = why
+        except OSError as e:
+            cant_save(e)
+    # One holder, read on every request: a rotate swaps it and the old
+    # token stops working at once.
+    current = {"token": token or web_new_token()}
     latest = {"body": json.dumps(web_page_json({})).encode("utf-8")}
 
-    def authorised(given):
+    def authorised(given, token):
         return bool(given) and hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -6093,15 +6230,16 @@ def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=
             return None
 
         def do_GET(self):
+            token = current["token"]
             url = urllib.parse.urlsplit(self.path)
             given = urllib.parse.parse_qs(url.query).get("token")
             if given is not None:
-                if not authorised(given[0]):
+                if not authorised(given[0], token):
                     return self._send(401, b"unauthorized\n")
                 return self._send(303, headers=(
                     ("Location", "/"),
                     ("Set-Cookie", "{0}={1}; HttpOnly; SameSite=Strict; Path=/".format(_WEB_COOKIE, token))))
-            if not authorised(self._cookie()):
+            if not authorised(self._cookie(), token):
                 return self._send(401, b"unauthorized\n")
             if url.path == "/":
                 return self._send(200, _WEB_PAGE, "text/html; charset=utf-8")
@@ -6127,36 +6265,56 @@ def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=
         stderr.flush()
         return 2
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    stdout.write(json.dumps({"port": server.server_address[1], "token": token}) + "\n")
-    stdout.flush()
+
+    def announce():
+        stdout.write(json.dumps(dict(note, port=server.server_address[1], token=current["token"])) + "\n")
+        stdout.flush()
+
+    announce()
     for raw in stdin:
         line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
         try:
-            latest["body"] = json.dumps(web_page_json(json.loads(line)), ensure_ascii=False).encode("utf-8")
+            msg = json.loads(line)
         except ValueError:
             continue
+        if isinstance(msg, dict) and msg.get("control") == "rotate":
+            # Swapped before it's saved: the old token is dead even if
+            # saving fails.
+            current["token"] = web_new_token()
+            note.pop("replaced", None)
+            if token_file:
+                try:
+                    web_token_write(token_file, current["token"])
+                    note["stored"] = True
+                    note.pop("error", None)
+                except OSError as e:
+                    cant_save(e)
+            announce()
+            continue
+        latest["body"] = json.dumps(web_page_json(msg), ensure_ascii=False).encode("utf-8")
     server.shutdown()
     server.server_close()
     return 0
 
 
 def web_dashboard_main(args):
-    """argv after --web-dashboard: --bind <addr> --port <n>."""
-    opts = {"--bind": "127.0.0.1", "--port": "8797"}
+    """argv after --web-dashboard: --bind <addr> --port <n> [--token-file
+    <path>]. There is no --token: argv is visible to every process."""
+    opts = {"--bind": "127.0.0.1", "--port": "8797", "--token-file": ""}
     i = 0
     while i < len(args):
         if args[i] in opts and i + 1 < len(args):
             opts[args[i]] = args[i + 1]
             i += 2
         else:
-            sys.stderr.write("ERROR: --web-dashboard takes --bind <addr> --port <n>\n")
+            sys.stderr.write("ERROR: --web-dashboard takes --bind <addr> --port <n> [--token-file <path>]\n")
             return 2
     try:
         port = int(opts["--port"])
     except ValueError:
         sys.stderr.write("ERROR: --web-dashboard: --port must be a number\n")
         return 2
-    return web_dashboard_serve(opts["--bind"], port)
+    return web_dashboard_serve(opts["--bind"], port, token_file=opts["--token-file"] or None)
 
 
 def main(argv=None):

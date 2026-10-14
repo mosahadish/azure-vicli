@@ -6,7 +6,17 @@
 --   :AzureCli web start    starts it (only with dashboard_web.enabled) and
 --                          shows its URL, token included, in a float
 --   :AzureCli web status   the URL again, or that it isn't running
---   :AzureCli web stop     stops it; the next start makes a new token
+--   :AzureCli web stop     stops it
+--   :AzureCli web rotate   a new token: the old URL and signed-in phones
+--                          get 401 at once (#105)
+--
+-- The token (#105): with dashboard_web.persist_token (the default) it is
+-- kept in M.token_path(), so the URL survives restarts. The server reads
+-- or makes that file itself (0600, see azure-cli.py's "Web dashboard"
+-- section): only the file's path goes on its argv, never the token, and
+-- the token comes back only on the server's stdout, into the URL. Nothing
+-- here logs it. Rotating while it runs is a {"control":"rotate"} line on
+-- its stdin; while stopped, rotate deletes the file.
 --
 -- While it runs, every M.EVERY ms the Agents screen's rows
 -- (agents_view.rows/arrange, read only) go to the server's stdin as one
@@ -15,12 +25,14 @@
 --
 --   M.snapshot(arranged, rows, counts, fmt)  the page's JSON (pure)
 --   M.url(bind, port, token)                 the URL to open (pure)
---   M.start() / M.stop() / M.status() / M.command(sub)
+--   M.argv(base, cfg, token_file)            the server's command line (pure)
+--   M.token_path()                           where the token is stored
+--   M.start() / M.stop() / M.status() / M.rotate() / M.command(sub)
 local M = {}
 
 M.EVERY = 2000
 
-local srv = nil  -- { job, url, timer, last, out, stopping }
+local srv = nil  -- { job, url, timer, last, out, stopping, stored, error, rotating }
 
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
 
@@ -77,6 +89,22 @@ function M.url(bind, port, token)
   return "http://" .. host .. ":" .. tostring(port) .. "/?token=" .. tostring(token)
 end
 
+-- The server's command line: `base` (config.provider_cmd()) plus
+-- --web-dashboard and its options; --token-file only with persist_token.
+-- It takes no token, so none can end up on argv. Pure.
+function M.argv(base, cfg, token_file)
+  local a = {}
+  for _, v in ipairs(base) do a[#a + 1] = v end
+  for _, v in ipairs({ "--web-dashboard", "--bind", cfg.bind, "--port", tostring(cfg.port) }) do a[#a + 1] = v end
+  if cfg.persist_token ~= false and token_file then
+    a[#a + 1] = "--token-file"
+    a[#a + 1] = token_file
+  end
+  return a
+end
+
+function M.token_path() return vim.fn.stdpath("state") .. "/azure-cli/web-token" end
+
 local function snapshot_line()
   local AV = require("azure-cli.chat.agents_view")
   local AG = require("azure-cli.chat.agents")
@@ -107,9 +135,20 @@ local function show()
     "  " .. srv.url,
     "",
     "Open it on your phone (same network or a VPN such as Tailscale).",
-    "Anyone with this URL can see the page until :AzureCli web stop;",
-    "the next start makes a new URL.",
+    "Anyone with this URL can see the page while it runs, until",
+    ":AzureCli web rotate.",
+    "",
   }
+  if srv.stored then
+    lines[#lines + 1] = "The token is stored in " .. M.token_path() .. ","
+    lines[#lines + 1] = "so the URL survives restarts."
+  elseif srv.error then
+    lines[#lines + 1] = "The token couldn't be stored (" .. srv.error .. "):"
+    lines[#lines + 1] = "the next start makes a new URL."
+  else
+    lines[#lines + 1] = "The token is kept in memory only (persist_token = false):"
+    lines[#lines + 1] = "the next start makes a new URL."
+  end
   if LOOPBACK[trim(bind)] then
     lines[#lines + 1] = ""
     lines[#lines + 1] = "Listening on " .. trim(bind) .. " only: set dashboard_web.bind to this machine's"
@@ -132,23 +171,46 @@ function M.start()
   local s = { out = "" }
   srv = s
   local err_lines = {}
-  local argv = require("azure-cli.config").provider_argv("--web-dashboard", "--bind", cfg.bind, "--port",
-    tostring(cfg.port))
+  local token_file
+  if cfg.persist_token ~= false then
+    token_file = M.token_path()
+    pcall(vim.fn.mkdir, vim.fn.fnamemodify(token_file, ":h"), "p", tonumber("700", 8))
+  end
+  local argv = M.argv(require("azure-cli.config").provider_cmd(), cfg, token_file)
+  -- One {"port", "token", ...} line when it's listening, and one more for
+  -- each rotate. The token goes into the URL only - never a message or log.
+  local function on_line(line)
+    local okj, info = pcall(vim.json.decode, line)
+    if not (okj and type(info) == "table" and info.port and info.token) then return end
+    local first = s.url == nil
+    s.url = M.url(cfg.bind, info.port, info.token)
+    s.stored = info.stored == true
+    s.error = type(info.error) == "string" and info.error or nil
+    local replaced = type(info.replaced) == "string" and info.replaced or nil
+    vim.schedule(function()
+      if srv ~= s then return end
+      if first then push() end
+      if replaced then
+        notify("The stored phone-dashboard token wasn't safe to use (" .. replaced .. "), so there's a new one: "
+          .. "send the new URL to your phone.", vim.log.levels.WARN)
+      end
+      if s.error then notify("The phone-dashboard token " .. s.error, vim.log.levels.WARN) end
+      if s.rotating then
+        s.rotating = nil
+        notify("Phone dashboard token rotated: the old link and signed-in phones get 401 now.")
+      end
+      show()
+    end)
+  end
   local ok, job = pcall(vim.fn.jobstart, argv, {
     on_stdout = function(_, d)
-      if s.url or not d then return end
+      if not d then return end
       s.out = s.out .. table.concat(d, "\n")
-      local first = s.out:match("^([^\n]*)\n")
-      if not first then return end
-      local okj, info = pcall(vim.json.decode, first)
-      if okj and type(info) == "table" and info.port and info.token then
-        s.url = M.url(cfg.bind, info.port, info.token)
-        s.out = ""
-        vim.schedule(function()
-          if srv ~= s then return end
-          push()
-          show()
-        end)
+      while true do
+        local line, rest = s.out:match("^([^\n]*)\n(.*)$")
+        if not line then break end
+        s.out = rest
+        on_line(line)
       end
     end,
     on_stderr = function(_, d) if d then vim.list_extend(err_lines, d) end end,
@@ -199,21 +261,60 @@ function M.stop(quiet)
   if not quiet then notify("The phone dashboard stopped.") end
 end
 
+local function stored()
+  return (vim.uv or vim.loop).fs_lstat(M.token_path()) ~= nil
+end
+
 function M.status()
   if srv and srv.url then return show() end
   if srv then return notify("The phone dashboard is starting.") end
-  notify("The phone dashboard isn't running (:AzureCli web start).")
+  local cfg = require("azure-cli.config").get().dashboard_web or {}
+  local token
+  if cfg.persist_token == false then
+    token = "Its token isn't stored (persist_token = false): each start makes a new URL."
+  elseif stored() then
+    token = "Its token is stored in " .. M.token_path() .. ": the next start keeps the URL."
+  else
+    token = "No token is stored yet: the next start makes a new URL and keeps it."
+  end
+  notify("The phone dashboard isn't running (:AzureCli web start). " .. token)
+end
+
+-- A new token. Running: the server swaps it at once (old cookies get 401),
+-- saves it and sends the new URL, which on_line shows. Stopped: the stored
+-- file goes, so the next start makes a new one.
+function M.rotate()
+  if srv and srv.job and srv.url then
+    srv.rotating = true
+    pcall(vim.fn.chansend, srv.job, '{"control":"rotate"}\n')
+    return
+  end
+  if srv then return notify("The phone dashboard is starting: rotate once it shows its URL.") end
+  local cfg = require("azure-cli.config").get().dashboard_web or {}
+  if cfg.persist_token == false then
+    return notify("The phone dashboard isn't running and stores no token: nothing to rotate.")
+  end
+  if not stored() then
+    return notify("No phone-dashboard token is stored: the next :AzureCli web start makes a new URL.")
+  end
+  local ok, err = (vim.uv or vim.loop).fs_unlink(M.token_path())
+  if not ok then
+    return notify("Couldn't delete the stored phone-dashboard token (" .. M.token_path() .. "): " .. tostring(err),
+      vim.log.levels.ERROR)
+  end
+  notify("Stored phone-dashboard token deleted: the next :AzureCli web start makes a new URL.")
 end
 
 function M.running() return srv ~= nil and srv.url ~= nil end
 
--- :AzureCli web [start|stop|status]
+-- :AzureCli web [start|stop|status|rotate]
 function M.command(sub)
   sub = sub or "status"
   if sub == "start" then return M.start() end
   if sub == "stop" then return M.stop() end
   if sub == "status" then return M.status() end
-  notify("azure-cli: :AzureCli web takes start, stop or status", vim.log.levels.ERROR)
+  if sub == "rotate" then return M.rotate() end
+  notify("azure-cli: :AzureCli web takes start, stop, status or rotate", vim.log.levels.ERROR)
 end
 
 return M

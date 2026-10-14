@@ -536,8 +536,12 @@ do
     and w.bind == "100.64.0.5" and w.port == 8797)
   config.setup({ dashboard_web = { port = 0 } })
   check("dashboard_web: port 0 (any free one) accepted", config.get().dashboard_web.port == 0)
+  check("dashboard_web: persist_token on by default (#105)", config.get().dashboard_web.persist_token == true)
+  config.setup({ dashboard_web = { persist_token = false } })
+  check("dashboard_web: persist_token = false accepted", config.get().dashboard_web.persist_token == false)
   for _, bad in ipairs({ { bind = "0.0.0.0" }, { bind = "::" }, { bind = " 0.0.0.0 " }, { bind = "" }, { bind = "[::]" },
-    { bind = 1 }, { port = 70000 }, { port = 1.5 }, { port = "80" }, { enabled = "yes" }, { colour = 1 } }) do
+    { bind = 1 }, { port = 70000 }, { port = 1.5 }, { port = "80" }, { enabled = "yes" }, { colour = 1 },
+    { persist_token = "no" } }) do
     local ok, err = pcall(config.setup, { dashboard_web = bad })
     check("dashboard_web: rejects " .. next(bad) .. " = " .. tostring(bad[next(bad)]),
       not ok and tostring(err):find("dashboard_web", 1, true) ~= nil, err)

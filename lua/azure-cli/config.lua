@@ -233,7 +233,9 @@ local BORDERS = { rounded = true, single = true, double = true, solid = true, sh
 -- :AzureCli web start then serves it on `bind`:`port`. Loopback by default:
 -- to reach it from a phone, set `bind` to this machine's LAN or VPN address.
 -- An address that listens everywhere (0.0.0.0, ::) is refused.
-local DEFAULTS_DASHBOARD_WEB = { enabled = false, bind = "127.0.0.1", port = 8797 }
+-- `persist_token` (#105): keep the token in stdpath("state") (0600) so the
+-- phone link survives a restart, until :AzureCli web rotate.
+local DEFAULTS_DASHBOARD_WEB = { enabled = false, bind = "127.0.0.1", port = 8797, persist_token = true }
 local ALL_INTERFACES = { [""] = true, ["*"] = true, ["0.0.0.0"] = true, ["::"] = true, ["[::]"] = true,
   ["0:0:0:0:0:0:0:0"] = true }
 
@@ -248,8 +250,8 @@ local function validate_dashboard_web(w)
   if type(w) ~= "table" then error("azure-cli.setup: `dashboard_web` must be a table") end
   local out = vim.deepcopy(DEFAULTS_DASHBOARD_WEB)
   for k, v in pairs(w) do
-    if k == "enabled" then
-      if type(v) ~= "boolean" then error("azure-cli.setup: dashboard_web.enabled must be true or false") end
+    if k == "enabled" or k == "persist_token" then
+      if type(v) ~= "boolean" then error("azure-cli.setup: dashboard_web." .. k .. " must be true or false") end
     elseif k == "bind" then
       if type(v) ~= "string" or ALL_INTERFACES[(v:gsub("^%s+", ""):gsub("%s+$", ""))] then
         error("azure-cli.setup: dashboard_web.bind must be one address (this machine's LAN or VPN address, "

@@ -6,8 +6,10 @@ import base64
 import hashlib
 import http.client
 import json
+import os
 import re
 import socket
+import stat
 import threading
 import unittest
 from io import StringIO
@@ -206,6 +208,229 @@ class WebServerBindTests(WebServerTests):
         self.assertEqual(resp.status, 200)
         with self.assertRaises(OSError):
             self.request("GET", "/", self.cookie(), host="127.0.0.1")
+
+
+class Served:
+    """A web_dashboard_serve on 127.0.0.1:0 in a thread, fed through a
+    socket pair: .line(n) is its n-th stdout line, .stop() closes stdin."""
+
+    def __init__(self, **kw):
+        self.r, self.w = socket.socketpair()
+        self.reader = self.r.makefile("rb")
+        self.out, self.err, self.rc = StringIO(), StringIO(), []
+        self.thread = threading.Thread(target=lambda: self.rc.append(ac.web_dashboard_serve(
+            "127.0.0.1", 0, stdin=self.reader, stdout=self.out, stderr=self.err, **kw)))
+        self.thread.start()
+        self.port = self.line(0)["port"]
+
+    def line(self, n):
+        for _ in range(500):
+            lines = self.out.getvalue().splitlines()
+            if len(lines) > n and self.out.getvalue().endswith("\n"):
+                return json.loads(lines[n])
+            threading.Event().wait(0.01)
+        raise AssertionError("no stdout line {0}: {1!r} {2!r}".format(n, self.out.getvalue(), self.err.getvalue()))
+
+    def send(self, obj):
+        self.w.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+
+    def get(self, path, cookie=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path, headers={"Cookie": cookie} if cookie else {})
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        return resp.status
+
+    def stop(self):
+        self.w.close()
+        self.thread.join(5)
+        self.reader.close()
+        self.r.close()
+        return self.rc
+
+
+class WebTokenFileTests(unittest.TestCase):
+    """--token-file (#105): the token survives a restart, is stored 0600,
+    and a file that can't be trusted is replaced."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "state", "azure-cli", "web-token")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def serve(self):
+        s = Served(token_file=self.path)
+        first = s.line(0)
+        self.assertEqual(s.stop(), [0])
+        self.assertNotIn(first["token"], s.err.getvalue())
+        return first
+
+    def test_a_restart_keeps_the_token(self):
+        one, two = self.serve(), self.serve()
+        self.assertRegex(one["token"], r"^[A-Za-z0-9_-]{43}$")
+        self.assertEqual(one["token"], two["token"])
+        self.assertTrue(one["stored"] and two["stored"])
+        self.assertNotIn("replaced", two)
+        with open(self.path) as fh:
+            self.assertEqual(fh.read().strip(), one["token"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_the_file_is_born_0600_whatever_the_umask(self):
+        old = os.umask(0)
+        try:
+            self.serve()
+        finally:
+            os.umask(old)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        self.assertEqual(os.listdir(os.path.dirname(self.path)), ["web-token"])  # no temp file left
+
+    def test_a_missing_or_malformed_file_makes_a_fresh_token(self):
+        first = self.serve()["token"]
+        for bad in ("", "short", first + "x", "not a token at all, with spaces in it, 43c"):
+            ac.web_token_write(self.path, bad) if bad else open(self.path, "w").close()
+            if os.name != "nt":
+                os.chmod(self.path, 0o600)
+            line = self.serve()
+            self.assertRegex(line["token"], r"^[A-Za-z0-9_-]{43}$", bad)
+            self.assertEqual(line["replaced"], "malformed", bad)
+        os.unlink(self.path)
+        line = self.serve()
+        self.assertNotIn("replaced", line)
+        self.assertTrue(line["stored"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_a_file_others_can_read_is_replaced(self):
+        first = self.serve()["token"]
+        os.chmod(self.path, 0o644)
+        line = self.serve()
+        self.assertNotEqual(line["token"], first)
+        self.assertEqual(line["replaced"], "permissions were 0644")
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        self.assertEqual(self.serve()["token"], line["token"])
+
+    @unittest.skipIf(os.name == "nt", "symlinks")
+    def test_a_symlink_is_not_followed(self):
+        target = os.path.join(self.dir.name, "elsewhere")
+        token = "A" * 43
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.write(fd, token.encode())
+        os.close(fd)
+        os.makedirs(os.path.dirname(self.path))
+        os.symlink(target, self.path)
+        line = self.serve()
+        self.assertNotEqual(line["token"], token)
+        self.assertEqual(line["replaced"], "a symlink")
+        self.assertFalse(os.path.islink(self.path))
+        with open(target) as fh:
+            self.assertEqual(fh.read(), token)  # the link's target left alone
+
+    def test_two_starts_share_one_stored_token(self):
+        token = ac.web_new_token()
+        self.assertTrue(ac.web_token_create(self.path, token))
+        self.assertFalse(ac.web_token_create(self.path, ac.web_new_token()))
+        self.assertEqual(ac.web_token_load(self.path), (token, None))
+
+    def test_unsavable_falls_back_to_memory(self):
+        os.makedirs(os.path.dirname(self.path))
+        os.mkdir(self.path)  # a directory where the file should be
+        s = Served(token_file=self.path)
+        first = s.line(0)
+        self.assertFalse(first["stored"])
+        self.assertIn("can't save the token", first["error"])
+        self.assertEqual(s.get("/?token=" + first["token"]), 303)
+        self.assertEqual(s.stop(), [0])
+
+
+class WebRotateTests(unittest.TestCase):
+    """{"control": "rotate"} (#105): a new token, saved, and the old URL
+    and cookie get 401 at once."""
+
+    def test_rotate_invalidates_the_old_token(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "web-token")
+            s = Served(token_file=path)
+            try:
+                old = s.line(0)["token"]
+                self.assertEqual(s.get("/rows.json", "azvicli_web=" + old), 200)
+                s.send({"control": "rotate"})
+                new = s.line(1)
+                self.assertNotEqual(new["token"], old)
+                self.assertEqual(new["port"], s.port)
+                self.assertTrue(new["stored"])
+                self.assertEqual(s.get("/rows.json", "azvicli_web=" + old), 401)
+                self.assertEqual(s.get("/?token=" + old), 401)
+                self.assertEqual(s.get("/rows.json", "azvicli_web=" + new["token"]), 200)
+                self.assertEqual(s.get("/?token=" + new["token"]), 303)
+                with open(path) as fh:
+                    self.assertEqual(fh.read().strip(), new["token"])
+                s.send({"items": [{"label": "#1", "title": "still fed", "group": 2}]})
+            finally:
+                self.assertEqual(s.stop(), [0])
+            for t in (old, new["token"]):
+                self.assertNotIn(t, s.err.getvalue())
+
+    def test_rotate_without_a_token_file(self):
+        s = Served()
+        try:
+            old = s.line(0)["token"]
+            self.assertNotIn("stored", s.line(0))
+            s.send({"control": "rotate"})
+            new = s.line(1)["token"]
+            self.assertNotEqual(new, old)
+            self.assertEqual(s.get("/?token=" + old), 401)
+            self.assertEqual(s.get("/?token=" + new), 303)
+        finally:
+            self.assertEqual(s.stop(), [0])
+
+
+class WebTokenNeverExposedTests(unittest.TestCase):
+    """The real `azure-cli.py --web-dashboard` process (#105): the token is
+    on stdout only - not on argv (ps), stderr (:AzureCli log) or the debug
+    perf log (#91)."""
+
+    def test_not_on_argv_stderr_or_the_debug_log(self):
+        import subprocess
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "state", "web-token")
+            env = dict(os.environ, AZVICLI_DEBUG="1", AZVICLI_PREFETCH_DIR=os.path.join(d, "cache"))
+            argv = [sys.executable, ac.__file__, "--web-dashboard", "--bind", "127.0.0.1", "--port", "0",
+                    "--token-file", path]
+            p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=env)
+            try:
+                token = json.loads(p.stdout.readline())["token"]
+                cmdline = "/proc/{0}/cmdline".format(p.pid)
+                if os.path.exists(cmdline):
+                    with open(cmdline, "rb") as fh:
+                        self.assertNotIn(token.encode(), fh.read())
+                self.assertNotIn(token, " ".join(argv))
+                p.stdin.write(b'{"control": "rotate"}\n')
+                p.stdin.flush()
+                rotated = json.loads(p.stdout.readline())["token"]
+            finally:
+                _, err = p.communicate(timeout=10)
+            self.assertEqual(p.returncode, 0, err)
+            logged = err
+            for root, _, files in os.walk(os.path.join(d, "cache")):
+                for f in files:
+                    with open(os.path.join(root, f), "rb") as fh:
+                        logged += fh.read()
+            for t in (token, rotated):
+                self.assertNotIn(t.encode(), logged)
+
+    def test_there_is_no_token_option(self):
+        import contextlib
+        err = StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(ac.web_dashboard_main(["--token", "x" * 43]), 2)
+        self.assertIn("--token-file <path>", err.getvalue())
 
 
 class WebPageTests(unittest.TestCase):
