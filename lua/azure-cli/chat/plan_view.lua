@@ -34,6 +34,8 @@ local function key_of(surface, action) return KEYS().first(surface, action) end
 local LIST_HELP = {
   "Navigate",
   { "open", "go to the section" },
+  { "next_thread", "move the plan to the next open question or thread, in line order (answered ones too)" },
+  { "prev_thread", "move the plan to the previous open question or thread" },
   "Decide",
   { "approve", "approve it - the agent goes ahead" },
   { "revise", "ask for changes (you say what)" },
@@ -48,7 +50,8 @@ local LIST_HELP = {
 }
 local PLAN_HELP = {
   "Navigate",
-  { "next_thread", "next question" }, { "prev_thread", "previous question" },
+  { "next_thread", "next open question or thread, in line order (answered ones too)" },
+  { "prev_thread", "previous open question or thread" },
   { "goto_code", "the code this line became (a linked step, or a Files entry's file)" },
   { "back", "back to the section list" },
   "Ask the agent",
@@ -534,17 +537,24 @@ local function thread_at_cursor()
   return THREADS().at_line(view.rec.threads, row)
 end
 
+-- ]t / [t: the next / previous of the plan's open questions (answered or
+-- not) and threads, in line order. Moves the plan window's cursor, so from
+-- the section list too - which keeps its own cursor (moving it would send
+-- the plan back to the section).
 local function jump_thread(dir)
-  local row = vim.api.nvim_win_get_cursor(0)[1]
+  if not valid_win(view.plan_win) then return end
+  local row = vim.api.nvim_win_get_cursor(view.plan_win)[1]
+  local stops = PLAN().jump_stops(vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false), view.rec.threads)
   local best
-  for _, th in ipairs(view.rec.threads) do
-    if (dir > 0 and th.line > row and (not best or th.line < best))
-        or (dir < 0 and th.line < row and (not best or th.line > best)) then
-      best = th.line
-    end
+  for _, l in ipairs(stops) do
+    if dir > 0 and l > row then best = l break end
+    if dir < 0 and l < row then best = l end
   end
-  if not best then return notify(dir > 0 and "No further questions." or "No earlier questions.") end
-  vim.api.nvim_win_set_cursor(0, { best, 0 })
+  if not best then
+    return notify(dir > 0 and "No further questions or threads." or "No earlier questions or threads.")
+  end
+  vim.api.nvim_win_set_cursor(view.plan_win, { best, 0 })
+  vim.api.nvim_win_call(view.plan_win, function() vim.cmd("normal! zz") end)
 end
 
 local function ask(from, to)
@@ -612,6 +622,8 @@ local function setup_list(buf)
   bind(buf, "open", function()
     goto_section(view.rows[vim.api.nvim_win_get_cursor(0)[1]], true)
   end, { desc = "go to the section" })
+  bind(buf, "next_thread", function() jump_thread(1) end, { desc = "move the plan to the next open question or thread" })
+  bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "move the plan to the previous open question or thread" })
   bind(buf, "help", function() help(LIST_HELP) end, { desc = "keys" })
   bind_common(buf)
   -- Moving through the sections scrolls the plan to each one.
@@ -663,8 +675,8 @@ local function setup_plan(buf)
     notify(view.since_off and "Not marking what changed." or (view.changes and "Marking what changed since revision "
       .. (#view.rec.revisions - 1) .. ".") or "This is the first revision.")
   end, { desc = "mark what this revision changed (toggle)" })
-  bind(buf, "next_thread", function() jump_thread(1) end, { desc = "next question" })
-  bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "previous question" })
+  bind(buf, "next_thread", function() jump_thread(1) end, { desc = "next open question or thread" })
+  bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "previous open question or thread" })
   bind(buf, "back", function()
     if valid_win(view.list_win) then vim.api.nvim_set_current_win(view.list_win) end
   end, { desc = "back to the section list" })

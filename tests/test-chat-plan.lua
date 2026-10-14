@@ -444,6 +444,109 @@ do
     table.concat(got, "|") == "Q1?|Q2?", table.concat(got, "|"))
 end
 
+-- --- ]t / [t: the open questions and threads, in line order (#81) -------------------------------
+do
+  local lines = { "# T", "## Goal", "x", "## Open questions", "- A?", "- B?", "## Risks", "r" }
+  check("jump_stops: two open questions, no threads", table.concat(PLAN.jump_stops(lines, {}), ",") == "5,6",
+    table.concat(PLAN.jump_stops(lines, {}), ","))
+  local threads = { { line = 8, question = "after" }, { line = 3, question = "before" }, { kind = "answer", line = 5, question = "Yes." },
+    { line = 99, question = "past the end" } }
+  check("jump_stops: with threads - in line order, each once, none past the end",
+    table.concat(PLAN.jump_stops(lines, threads), ",") == "3,5,6,8", table.concat(PLAN.jump_stops(lines, threads), ","))
+  local qs = PLAN.question_status(lines, threads)
+  check("question_status: each open question with your answer", #qs == 2 and qs[1].answer == threads[3] and qs[2].answer == nil)
+  check("unanswered: counts question_status's unanswered", PLAN.unanswered(lines, threads) == 1)
+
+  -- In the plan view: ]t / [t from the plan and from the section list.
+  local KEYS = require("azure-cli.keys")
+  local NOTIFY = require("azure-cli.notify")
+  local flash, said = NOTIFY.flash, nil
+  NOTIFY.flash = function(msg) said = msg end
+  local function feed(k) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "x", false) end
+  local nxt, prv = KEYS.first("plan", "next_thread"), KEYS.first("plan", "prev_thread")
+  local function open(key, markdown, ths)
+    PLAN.save({ key = key, target = { work_item_id = 9081 }, title = "Jumps", status = "draft",
+      revisions = { { by = "agent", markdown = markdown } }, threads = ths or {} })
+    PLAN.open(key)
+    return PLAN.current()
+  end
+  local function close(v, key)
+    pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(v.tab))
+    pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  end
+  local function line_of(v, text)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false)) do if l == text then return i end end
+  end
+  local function row(v) return vim.api.nvim_win_get_cursor(v.plan_win)[1] end
+
+  local md = "# Jumps\n\n## Goal\nx\n\n## Open questions\n- Error or fallback?\n- Admins too?\n\n## Risks\nnone"
+  local v = open("wi-9081", md)
+  local q1, q2 = line_of(v, "- Error or fallback?"), line_of(v, "- Admins too?")
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { 1, 0 })
+  feed(nxt)
+  local first = row(v)
+  feed(nxt)
+  local second = row(v)
+  said = nil
+  feed(nxt)
+  check("]t: each open question in turn (no threads), then says there's no further one",
+    first == q1 and second == q2 and row(v) == q2 and (said or ""):find("No further", 1, true) ~= nil,
+    vim.inspect({ first, second, row(v), q1, q2, said }))
+  feed(prv)
+  local back = row(v)
+  said = nil
+  feed(prv)
+  check("[t: walks back, then says there's no earlier one", back == q1 and row(v) == q1
+    and (said or ""):find("No earlier", 1, true) ~= nil, vim.inspect({ back, row(v), said }))
+  close(v, "wi-9081")
+
+  -- Mixed: a thread on Goal, an answered question, an open one, a thread after.
+  v = open("wi-9081", md, {})
+  local goal, risk = line_of(v, "x"), line_of(v, "none")
+  q1, q2 = line_of(v, "- Error or fallback?"), line_of(v, "- Admins too?")
+  v.rec.threads = { { line = risk, question = "after?" }, { kind = "answer", line = q1, question = "An error." },
+    { line = goal, question = "why?" } }
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { 1, 0 })
+  local seen = {}
+  for _ = 1, 4 do feed(nxt) seen[#seen + 1] = row(v) end
+  check("]t: questions (answered too) and threads in line order",
+    table.concat(seen, ",") == table.concat({ goal, q1, q2, risk }, ","), table.concat(seen, ","))
+
+  -- From the section list: the plan's cursor moves, the focus and the list's cursor stay.
+  vim.api.nvim_set_current_win(v.list_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { 1, 0 })
+  local list_row = vim.api.nvim_win_get_cursor(v.list_win)[1]
+  feed(nxt)
+  check("]t in the section list moves the plan's cursor", row(v) == goal and vim.api.nvim_get_current_win() == v.list_win
+    and vim.api.nvim_win_get_cursor(v.list_win)[1] == list_row, vim.inspect({ row(v), goal }))
+  feed(nxt)
+  feed(prv)
+  check("[t in the section list walks the plan back", row(v) == goal, row(v))
+
+  -- ? in both says what they visit.
+  local function help_text(win)
+    vim.api.nvim_set_current_win(win)
+    local before = {}
+    for _, w in ipairs(vim.api.nvim_list_wins()) do before[w] = true end
+    feed(KEYS.first("plan", "help"))
+    local text = ""
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if not before[w] then
+        text = text .. table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false), "\n")
+        pcall(vim.api.nvim_win_close, w, true)
+      end
+    end
+    return text
+  end
+  local ph, lh = help_text(v.plan_win), help_text(v.list_win)
+  check("? help: ]t / [t visit the open questions and threads, in the plan and the list",
+    ph:find("open question or thread", 1, true) ~= nil and lh:find("open question or thread", 1, true) ~= nil, ph .. "\n--\n" .. lh)
+  close(v, "wi-9081")
+  NOTIFY.flash = flash
+end
+
 -- --- an agent for a PR's comments ---------------------------------------------------------
 do
   local AG = require("azure-cli.chat.agents")

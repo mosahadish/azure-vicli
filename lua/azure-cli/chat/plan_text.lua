@@ -455,14 +455,37 @@ function M.open_questions(lines)
   return out
 end
 
+-- The plan's open questions (`lines`), each with your answer to it - the
+-- thread of kind "answer" on its line in `threads` - or none:
+-- { { line, text, answer = thread|nil } }. Pure.
+function M.question_status(lines, threads)
+  local answers = {}
+  for _, th in ipairs(threads or {}) do if th.kind == "answer" then answers[th.line] = th end end
+  local out = M.open_questions(lines)
+  for _, q in ipairs(out) do q.answer = answers[q.line] end
+  return out
+end
+
 -- How many of the plan's open questions (`lines`) have no answer of yours
 -- (a thread of kind "answer" on their line) in `threads`. Pure.
 function M.unanswered(lines, threads)
-  local answered = {}
-  for _, th in ipairs(threads or {}) do if th.kind == "answer" then answered[th.line] = true end end
   local n = 0
-  for _, q in ipairs(M.open_questions(lines)) do if not answered[q.line] then n = n + 1 end end
+  for _, q in ipairs(M.question_status(lines, threads)) do if not q.answer then n = n + 1 end end
   return n
+end
+
+-- Where ]t / [t stop in the plan (`lines`): every open question, answered
+-- or not, and every thread's line, sorted, each once; a thread past the
+-- end is left out. Pure.
+function M.jump_stops(lines, threads)
+  local seen, out = {}, {}
+  local function add(l)
+    if l and l >= 1 and l <= #lines and not seen[l] then seen[l] = true out[#out + 1] = l end
+  end
+  for _, q in ipairs(M.open_questions(lines)) do add(q.line) end
+  for _, th in ipairs(threads or {}) do add(th.line) end
+  table.sort(out)
+  return out
 end
 
 -- Your answers (threads of kind "answer") as lines for a message: "- <the
