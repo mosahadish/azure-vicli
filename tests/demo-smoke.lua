@@ -3225,6 +3225,196 @@ section("INNERTABS", function()
   smoke_ok("INNERTABS")
 end)
 
+-- Inner tabs, stage 2: work items open inside Work items (W), issues inside
+-- Issues (I) - the same strip, ]r / [r / g1..g9, no twins, q goes back -
+-- each view describing its own item to the chat; <CR> on a child line
+-- retitles its inner tab; gW from a review lands in W and q goes back to
+-- the review. Opens W and I itself, so it needs no other section.
+section("INNERTABS-WI", function()
+  local INNER = require("azure-cli.innertabs")
+  local HOME = require("azure-cli.home")
+  local UI = require("azure-cli.ui")
+  local function cur() return vim.api.nvim_get_current_tabpage() end
+  local function keys_here()
+    local b = vim.api.nvim_get_current_buf()
+    if not vim.wait(5000, function() return vim.b[b].azure_cli_tabs == true end, 20) then
+      return fail("no inner-tab keys on " .. vim.bo[b].filetype)
+    end
+  end
+  -- `tab`'s buffer of filetype `ft`, and its window.
+  local function buf_in(tab, ft)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local b = vim.api.nvim_win_get_buf(w)
+      if vim.bo[b].filetype == ft then return b, w end
+    end
+  end
+  -- <CR> on row #id of the list `ft` in home `home`: the item's inner tab,
+  -- once its view shows it.
+  local function open_row(home, ft, item_ft, id)
+    vim.api.nvim_set_current_tabpage(home)
+    local lb, lw = buf_in(home, ft)
+    if not lb then return fail("no " .. ft .. " list in its tab") end
+    vim.api.nvim_set_current_win(lw)
+    local row
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(lb, 0, -1, false)) do
+      if l:find("#" .. id .. " ", 1, true) then row = i break end
+    end
+    if not row then return fail("no #" .. id .. " row", lb) end
+    vim.api.nvim_win_set_cursor(lw, { row, 0 })
+    feed("<CR>")
+    local t, vb
+    ok = vim.wait(15000, function()
+      t = cur()
+      vb = t ~= home and buf_in(t, item_ft)
+      return vb and vim.api.nvim_buf_line_count(vb) > 3 and text(vb):find("Loading", 1, true) == nil
+    end, 100)
+    if not ok then return fail("#" .. id .. " never opened from " .. ft, vb) end
+    return t, vb
+  end
+  local function strip_of(tab)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local bar = vim.wo[w].winbar
+      if bar ~= "" then
+        local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
+        if s:find("\u{2502}", 1, true) then return s end
+      end
+    end
+  end
+  local function listed(tab)
+    return UI.tabline():find("%" .. vim.api.nvim_tabpage_get_number(tab) .. "T", 1, true) ~= nil
+  end
+
+  -- Both boards, from their home tabs.
+  ensure_workitems()
+  HOME.go("workitems")
+  local wtab = cur()
+  local has
+  vim.wait(10000, function() has = require("azure-cli.workitems.board").has_issues() return has ~= nil end, 50)
+  if not has then return fail("--boards never reported the demo's GitHub project") end
+  HOME.go("issues")
+  local itab = cur()
+  ok = vim.wait(15000, function()
+    local ib = buf_in(itab, "azurecli-issues")
+    return ib and text(ib):find("#12 ", 1, true) ~= nil and text(ib):find("#13 ", 1, true) ~= nil
+  end, 100)
+  if not ok or itab == wtab then return fail("I never listed issues #12 and #13") end
+
+  -- W: #3001 and #3002.
+  local t1, v1 = open_row(wtab, "azurecli-workitems", "azurecli-workitem", 3001)
+  local _, w1 = buf_in(t1, "azurecli-workitem")
+  vim.api.nvim_win_set_cursor(w1, { 3, 0 })
+  local t2 = open_row(wtab, "azurecli-workitems", "azurecli-workitem", 3002)
+  if INNER.home_of(t1) ~= wtab or INNER.home_of(t2) ~= wtab or #INNER.members(wtab) ~= 2 then
+    return fail("#3001 and #3002 aren't inner tabs of Work items: " .. vim.inspect(INNER.members(wtab)))
+  end
+  if listed(t1) or listed(t2) or not listed(wtab) then return fail("the tab line lists the items: " .. UI.tabline()) end
+  local strip = strip_of(t2)
+  if not (strip and strip:find("Work items", 1, true) and strip:find("#3001", 1, true) and strip:find("[#3002", 1, true)) then
+    return fail("no strip with both items, #3002 current: " .. tostring(strip))
+  end
+  keys_here()
+  feed("[r")
+  if cur() ~= t1 then return fail("[r didn't go back to #3001") end
+  if vim.api.nvim_win_get_cursor(w1)[1] ~= 3 then return fail("#3001's view lost its cursor") end
+  keys_here()
+  feed("]r")
+  if cur() ~= t2 then return fail("]r didn't go to #3002") end
+  feed("g2")
+  if cur() ~= t1 then return fail("g2 didn't go to #3001") end
+  feed("g1")
+  if cur() ~= wtab then return fail("g1 didn't go to the Work items list") end
+  keys_here()
+  feed("g3")
+  if cur() ~= t2 then return fail("g3 on the list didn't go to #3002") end
+  -- Opening #3001 again, from the list or from elsewhere: no twin.
+  local tabs = #vim.api.nvim_list_tabpages()
+  open_row(wtab, "azurecli-workitems", "azurecli-workitem", 3001)
+  if cur() ~= t1 or #vim.api.nvim_list_tabpages() ~= tabs then return fail("reopening #3001 opened a twin") end
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  require("azure-cli.pr_workitems").open_item(3001)
+  if cur() ~= t1 or #vim.api.nvim_list_tabpages() ~= tabs then return fail("gW on #3001 opened a twin") end
+  -- q on #3002 goes to #3001, the one before it.
+  vim.api.nvim_set_current_tabpage(t2)
+  vim.api.nvim_set_current_win(select(2, buf_in(t2, "azurecli-workitem")))
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t2) and cur() == t1 end, 20)
+  if not ok then return fail("q on #3002 didn't go back to #3001") end
+
+  -- <CR> on #3001's child #3011: shown in the same inner tab, retitled.
+  vim.api.nvim_set_current_win(w1)
+  local crow
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v1, 0, -1, false)) do
+    if l:find("3011", 1, true) then crow = i break end
+  end
+  if not crow then return fail("#3001's view lists no child #3011", v1) end
+  vim.api.nvim_win_set_cursor(w1, { crow, 0 })
+  feed("<CR>")
+  ok = vim.wait(15000, function()
+    local m = INNER.members(wtab)[1]
+    return cur() == t1 and m and m.key == INNER.item_key("azure", 3011) and m.title:find("#3011 Count failed", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("<CR> on #3011 didn't retitle the inner tab: " .. vim.inspect(INNER.members(wtab))) end
+  if not INNER.goto_key(INNER.item_key("azure", 3011)) or INNER.goto_key(INNER.item_key("azure", 3001)) then
+    return fail("the inner tab's key didn't follow to #3011")
+  end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t1) and cur() == wtab end, 20)
+  if not ok then return fail("q on the last item didn't go back to the Work items list") end
+
+  -- I: issues #12 and #13, in Issues - not in Work items.
+  local i12 = open_row(itab, "azurecli-issues", "azurecli-issue", 12)
+  local i13 = open_row(itab, "azurecli-issues", "azurecli-issue", 13)
+  if INNER.home_of(i12) ~= itab or INNER.home_of(i13) ~= itab or #INNER.members(itab) ~= 2
+      or #INNER.members(wtab) ~= 0 then
+    return fail("#12 and #13 aren't inner tabs of Issues: " .. vim.inspect(INNER.members(itab)))
+  end
+  strip = strip_of(i13)
+  if not (strip and strip:find("Issues", 1, true) and strip:find("#12", 1, true) and strip:find("[#13", 1, true)) then
+    return fail("no Issues strip with #12 and #13: " .. tostring(strip))
+  end
+  -- Each view tells the chat its own issue.
+  local VIEW = require("azure-cli.chat.view")
+  local s12 = VIEW.snapshot(select(2, buf_in(i12, "azurecli-issue")))
+  local s13 = VIEW.snapshot(select(2, buf_in(i13, "azurecli-issue")))
+  if not (s12.work_item and s12.work_item.id == 12 and s13.work_item and s13.work_item.id == 13) then
+    return fail("the chat sees the wrong issue: " .. vim.inspect({ s12.work_item, s13.work_item }))
+  end
+  keys_here()
+  feed("[r")
+  if cur() ~= i12 then return fail("[r in I didn't go to #12") end
+  keys_here()
+  feed("g3")
+  if cur() ~= i13 then return fail("g3 in I didn't go to #13") end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(i13) and cur() == i12 end, 20)
+  if not ok then return fail("q on #13 didn't go back to #12") end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(i12) and cur() == itab end, 20)
+  if not ok then return fail("q on #12 didn't go back to the Issues list") end
+
+  -- gW from a review: #3002 lands in Work items, q goes back to the review.
+  ensure_review()
+  local rtab = cur()
+  require("azure-cli.pr_workitems").open_item(3002)
+  local tg
+  ok = vim.wait(15000, function()
+    tg = cur()
+    local vb = tg ~= rtab and buf_in(tg, "azurecli-workitem")
+    return vb and text(vb):find("Loading", 1, true) == nil and vim.api.nvim_buf_line_count(vb) > 3
+  end, 100)
+  if not ok then return fail("gW never opened #3002") end
+  if INNER.home_of(tg) ~= HOME.tab("workitems") then return fail("gW's #3002 isn't an inner tab of Work items") end
+  if not (INNER.members(HOME.tab("workitems"))[1] or {}).title:find("#3002 ", 1, true) then
+    return fail("the strip didn't get #3002's title: " .. vim.inspect(INNER.members(HOME.tab("workitems"))))
+  end
+  vim.api.nvim_set_current_win(select(2, buf_in(tg, "azurecli-workitem")))
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(tg) and cur() == rtab end, 20)
+  if not ok then return fail("q on gW's #3002 didn't go back to the review") end
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  smoke_ok("INNERTABS-WI")
+end)
+
 -- A GitHub account (github_host.py): the fake lists PR #7 from two
 -- repositories. Each opens in its own reviewer, with its own threads -
 -- per-PR state is keyed owner~repo~number, not by the number.

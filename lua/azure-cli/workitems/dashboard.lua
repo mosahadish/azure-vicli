@@ -889,12 +889,16 @@ local function on_click()
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<LeftMouse>", true, false, true), "n", false)
 end
 
--- Open the work item under the cursor in the read-only detail view (new tab).
+-- Open the work item under the cursor in the read-only detail view: an
+-- inner tab of this screen (innertabs.lua), or the one it's open in.
 local function open_item()
   local it = current_item()
   if not it then return end
-  vim.cmd("tabnew")
-  require("azure-cli.workitems.view").open(B, ref(it))
+  local INNER = require("azure-cli.innertabs")
+  INNER.open(INNER.item_home(B.host), INNER.item_key(B.host, ref(it)),
+    "#" .. tostring(it.id) .. " " .. tostring(it.title or ""), function()
+      require("azure-cli.workitems.view").open(B, ref(it))
+    end)
 end
 
 -- `id` (a board ref: the id on Azure, owner~repo~n on GitHub) is `it`?
@@ -1766,8 +1770,8 @@ KEYS.bind(buf, "workitems", "tree", toggle_tree, { desc = "tree view: each " .. 
 KEYS.bind(buf, "workitems", "filter", set_wi_filter, { desc = "filter by id, title, state or assignee" })
 KEYS.bind(buf, "workitems", "browser", open_browser, { desc = "open in the browser" })
 KEYS.bind(buf, "workitems", "refresh", function() load(false, true) end, { desc = "refresh" })
--- next_sprint/prev_sprint default to a two-key list ("]"/"<Tab>" and
--- "["/"<S-Tab>") - KEYS.bind binds every key in that list to the same fn.
+-- next_sprint/prev_sprint: <Tab> / <S-Tab> (a bare ] / [ would make the
+-- inner-tab keys ]r / [r wait); a list of keys binds each to the same fn.
 KEYS.bind(buf, "workitems", "next_sprint", function() goto_sprint(1) end, { desc = "next " .. SPRINT })
 KEYS.bind(buf, "workitems", "prev_sprint", function() goto_sprint(-1) end, { desc = "previous " .. SPRINT })
 KEYS.bind(buf, "workitems", "goto_sprint_n", goto_sprint_count, { desc = "jump to " .. SPRINT .. " n" })

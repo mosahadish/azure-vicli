@@ -55,5 +55,15 @@ do
 end
 check("strip: nothing to show", select(2, M.strip_text({}, 1, 80)) == "")
 
+-- Work items (stage 2): a key per board, never a PR's (hosts.lua's key: the
+-- id on Azure, owner~repo~n on GitHub), and the home each opens in.
+check("item key: Azure", M.item_key("azure", 3001) == "wi:azure:3001")
+check("item key: GitHub", M.item_key("github", "acme~web~7") == "wi:github:acme~web~7")
+check("item key: unknown board is Azure", M.item_key(nil, "3001") == "wi:azure:3001")
+check("item key: never a PR's", M.item_key("azure", 101) ~= "101" and M.item_key("github", "acme~web~7") ~= "acme~web~7")
+check("item key: W's #7 and I's #7 differ", M.item_key("azure", 7) ~= M.item_key("github", 7))
+check("item home: Work items", M.item_home("azure") == "workitems" and M.item_home(nil) == "workitems")
+check("item home: Issues", M.item_home("github") == "issues")
+
 print(fails == 0 and "innertabs: all cases pass" or ("innertabs: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

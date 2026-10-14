@@ -310,13 +310,13 @@ paste the output here after changing a default.
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
 | `new` | `n` |
-| `next_sprint` | `]` / `<Tab>` |
+| `next_sprint` | `<Tab>` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `pr_list` | `P` |
-| `prev_sprint` | `[` / `<S-Tab>` |
+| `prev_sprint` | `<S-Tab>` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |

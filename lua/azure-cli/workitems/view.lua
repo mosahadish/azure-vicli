@@ -72,10 +72,23 @@ local ASSIGNEE = env.AZVICLI_WI_ASSIGNEE or ""
 -- workitems/linked_prs.lua's M.link now.
 
 local buf = vim.api.nvim_get_current_buf()
+-- This view's tab: an inner tab of Work items / Issues (innertabs.lua),
+-- whose strip label follows the item shown here.
+local tab = vim.api.nvim_get_current_tabpage()
+local INNER = require("azure-cli.innertabs")
+-- The window showing this view: renders land after a load, maybe while
+-- you're in another tab.
+local function view_win()
+  for _, w in ipairs(vim.api.nvim_tabpage_is_valid(tab) and vim.api.nvim_tabpage_list_wins(tab) or {}) do
+    if vim.api.nvim_win_get_buf(w) == buf then return w end
+  end
+end
 vim.bo[buf].buftype = "nofile"
 vim.bo[buf].filetype = B.item_ft
 -- What this view's ↑ keys change, for the key hints (keyhints.lua).
 vim.b[buf].azure_cli_service = WORDS.service
+-- A winbar from the start, so the inner-tab strip shows while it loads.
+if ID ~= "" then pcall(UI.wo, 0, "winbar", UI.winbar({ "#" .. (ID:match("~(%d+)$") or ID) }, {})) end
 -- A GitHub issue's body is Markdown, shown as written.
 if B.host == "github" then vim.bo[buf].syntax = "markdown" end
 
@@ -291,9 +304,11 @@ local function render(data)
   end
 
   pcall(function()
-    UI.wo(0, "winbar", UI.winbar({ "#" .. tostring(it.id or "?"), it.type or "", it.state or "" }, {}))
-    vim.b.azure_cli_title = "#" .. tostring(it.id or "?")
+    local w = view_win()
+    if w then UI.wo(w, "winbar", UI.winbar({ "#" .. tostring(it.id or "?"), it.type or "", it.state or "" }, {})) end
+    vim.b[buf].azure_cli_title = "#" .. tostring(it.id or "?")
   end)
+  INNER.retitle(tab, nil, "#" .. tostring(it.id or "?") .. " " .. tostring(it.title or ""))
   -- Neovim's own tab line (plugin mode) names a tab after its buffer, and an
   -- unnamed one is "[Scratch]". (Taken when the same issue is open twice.)
   if vim.api.nvim_buf_is_valid(buf) then
@@ -337,7 +352,11 @@ end
 -- quiet=true keeps the view as it is (no "Loading…") until the answer
 -- replaces it, and a failure leaves it there - a re-read after a comment.
 local function load(id, force, quiet)
-  if tostring(id) ~= ID then current_item = {} end
+  if tostring(id) ~= ID then
+    current_item = {}
+    -- Another item here now (<CR> on a parent/child): the strip follows.
+    INNER.retitle(tab, INNER.item_key(B.host, id), "#" .. (tostring(id):match("~(%d+)$") or tostring(id)))
+  end
   ID = tostring(id)
   -- Register a live-reload hook for this id so a state change committed from the
   -- dashboard refreshes this tab; drop the previous id's hook when navigating.
@@ -378,6 +397,8 @@ end
 local function open_linked()
   local line = vim.api.nvim_win_get_cursor(0)[1]
   local id = row_link[line]
+  -- Open in another inner tab already: go there rather than show it twice.
+  if id and INNER.goto_key(INNER.item_key(B.host, ref_for(id))) then return end
   if id then return load(ref_for(id)) end
   local pr = row_pr[line]
   if pr then LINKED_PRS.open(pr, ID, B) end
@@ -691,6 +712,8 @@ end
 local function leave()
   if S.WI_VIEW_RELOAD then S.WI_VIEW_RELOAD[ID] = nil end
   if #vim.api.nvim_list_tabpages() > 1 then
+    -- An inner tab: back to the one before it (innertabs.lua).
+    pcall(INNER.closing)
     pcall(vim.cmd, "tabclose")
     -- Change-aware dashboard refresh: only redraws if the list actually changed.
     if S.WI_REFRESH then vim.schedule(S.WI_REFRESH) end
@@ -735,7 +758,17 @@ KEYS.bind(buf, "workitem_view", "help", show_help, { desc = "this help" })
 if B.caps.chat then
 -- gq: the chat panel, told which work item this view shows.
 require("azure-cli.chat").bind_toggle(buf, "workitem_view")
-require("azure-cli.chat.view").register(B.item_ft, function()
+-- One describer per filetype, but several of these views open at once
+-- (inner tabs): it asks the one in the window being described.
+S.WI_VIEW_SNAP = S.WI_VIEW_SNAP or {}
+require("azure-cli.chat.view").register(B.item_ft, function(win)
+  local ok, b = pcall(vim.api.nvim_win_get_buf, win or 0)
+  local f = ok and S.WI_VIEW_SNAP[b]
+  if f then return f() end
+end)
+vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, once = true,
+  callback = function() S.WI_VIEW_SNAP[buf] = nil end })
+S.WI_VIEW_SNAP[buf] = function()
   local snap = { screen = B.host == "github" and "issue detail view" or "work item detail view",
     work_item = { id = tonumber(ID) or ID } }
   local c = S.WI_DETAIL_CACHE[ID]
@@ -753,7 +786,7 @@ require("azure-cli.chat.view").register(B.item_ft, function()
     snap.work_item.key = (type(item) == "table" and item.key) or (n and ID) or nil
   end
   return snap
-end)
+end
 end
 
 if ID == "" then

@@ -9,8 +9,8 @@
 -- (plus keys.prefix) at every `keys.bind` call site instead of a UI file
 -- ever hard-coding a key string itself; a value of `false` unbinds that
 -- action entirely, a list of strings binds several keys to the same action
--- (e.g. the work-items dashboard's next_sprint responding to both "]" and
--- "<Tab>", exactly as it always has).
+-- (e.g. the work-items dashboard's toggle_fold responding to both "za" and
+-- "<Space>").
 local M = {}
 
 local DEFAULT_KEYS = {
@@ -84,7 +84,8 @@ local DEFAULT_KEYS = {
   workitems = {
     open = "<CR>", state = "gs", new = "n", assign = "ga", priority = "gp",
     edit_title = "ge", move_sprint = "gi", set_parent = "gU", link_pr = "gl", browser = "o",
-    refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
+    -- Not a bare ] / [: they'd make the inner-tab keys ]r / [r wait.
+    refresh = "r", next_sprint = "<Tab>", prev_sprint = "<S-Tab>",
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P", workitems = "W", issues = "I",
     copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",

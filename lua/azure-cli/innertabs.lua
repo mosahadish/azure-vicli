@@ -14,10 +14,14 @@
 -- an item that's already open goes to its inner tab.
 --
 -- An item goes to its kind's home, wherever it's opened from: a PR to Pull
--- requests. When that home isn't open (plugin mode, only the work items
--- open), it opens as a tab of its own, as before.
+-- requests, an Azure work item to Work items, a GitHub issue to Issues.
+-- When that home isn't open (plugin mode, only the work items open), it
+-- opens as a tab of its own, as before. One opened from outside its home
+-- (gW in a review, the chat) goes back there when it's closed.
 --
 --   M.open(name, key, title, open_fn)  opens an item in home `name`
+--   M.item_key(host, ref), M.item_home(host)  a work item's key and home
+--   M.retitle(tab, key, title)  what the inner tab `tab` shows changed
 --   M.goto_key(key)    goes to the inner tab showing `key`; true if it did
 --   M.home_of(tab)     the home tab `tab` belongs to (itself for a home)
 --   M.is_member(tab)   an inner tab (not a home); M.owns(tab) also for one
@@ -25,12 +29,24 @@
 --   M.cycle(dir), M.pick(n)  switch; M.bar()  the strip, for a winbar
 --   M.closing()        a screen's close key, right before its :tabclose
 --
--- The pure helpers (M.wrap, M.close_target, M.strip_text) take no vim.*
--- and are tested under plain luajit by tests/test-innertabs.lua.
+-- The pure helpers (M.wrap, M.close_target, M.strip_text, M.item_key,
+-- M.item_home) take no vim.* and are tested under plain luajit by
+-- tests/test-innertabs.lua.
 local M = {}
 
 -- The homes whose items open as inner tabs (home.lua's screen names).
-M.ENABLED = { prs = true }
+M.ENABLED = { prs = true, workitems = true, issues = true }
+
+-- A work item's key: "wi:azure:3001", "wi:github:owner~repo~7" - never a
+-- PR's (hosts.lua's key). Pure.
+function M.item_key(host, ref)
+  return "wi:" .. (host == "github" and "github" or "azure") .. ":" .. tostring(ref)
+end
+
+-- The home a work item of board `host` opens in. Pure.
+function M.item_home(host)
+  return host == "github" and "issues" or "workitems"
+end
 
 -- The n-th entry `dir` steps from `cur`, wrapping around (1..n). Pure.
 function M.wrap(cur, dir, n)
@@ -87,7 +103,8 @@ end
 -- Everything below needs Neovim.
 if not vim or not vim.api then return M end
 
--- home tab -> { name, members = { { tab, key, title } } } in opening order.
+-- home tab -> { name, members = { { tab, key, title, from } } } in opening
+-- order; `from` is the tab it was opened from when that's outside its home.
 local groups = {}
 local closed = {}  -- member tabs closed since the last tick (M.owns)
 -- The tab a screen's own close key is closing (M.closing, just before its
@@ -204,8 +221,8 @@ function M.open(name, key, title, open_fn)
   setup()
   if M.goto_key(key) then return end
   local home
+  local cur = vim.api.nvim_get_current_tabpage()
   if M.ENABLED[name] then
-    local cur = vim.api.nvim_get_current_tabpage()
     if home_name(cur) == name then
       home = cur
     else
@@ -220,10 +237,22 @@ function M.open(name, key, title, open_fn)
   vim.cmd("tabnew")
   if home then
     groups[home] = groups[home] or { name = name, members = {} }
-    table.insert(groups[home].members, { tab = vim.api.nvim_get_current_tabpage(), key = key, title = title })
+    -- Opened from outside its home (gW in a review): closing goes back there.
+    local from = (cur ~= home and M.home_of(cur) ~= home) and cur or nil
+    table.insert(groups[home].members, { tab = vim.api.nvim_get_current_tabpage(), key = key, title = title, from = from })
     place(home)
   end
   open_fn()
+  vim.cmd("redrawtabline")
+end
+
+-- Inner tab `tab` shows something else now (a work item's <CR> on its
+-- parent), or the same under its real title: its key and strip label.
+function M.retitle(tab, key, title)
+  local _, _, m = member(tab)
+  if not m then return end
+  m.key = key or m.key
+  m.title = title or m.title
   vim.cmd("redrawtabline")
 end
 
@@ -241,16 +270,19 @@ local function busy()
 end
 
 -- Called by a screen's close key right before it closes the current tab
--- (the reviewer's q): when that's an inner tab, closing it goes to the one
--- before it, the list when there's none.
+-- (the reviewer's q, a work item's q / <BS>): when that's an inner tab,
+-- closing it goes to the one before it, the list when there's none - or
+-- back to where it was opened from, when that's outside its home.
 function M.closing()
   local tab = vim.api.nvim_get_current_tabpage()
-  local home, i = member(tab)
+  local home, i, m = member(tab)
   if not (home and valid(home)) then return end
   -- Worked out now, while the group is whole: by TabClosed something may
   -- already have dropped the closed tab from it.
   local t = M.close_target(i)
-  closing_here = { tab = tab, home = home, target = t == 0 and home or groups[home].members[t].tab }
+  local target = t == 0 and home or groups[home].members[t].tab
+  if valid(m.from) then target = m.from end
+  closing_here = { tab = tab, home = home, target = target }
   -- The close failed (the tab's still there): forget it.
   vim.schedule(function()
     if closing_here and closing_here.tab == tab and valid(tab) then closing_here = nil end

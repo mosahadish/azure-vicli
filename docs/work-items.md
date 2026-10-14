@@ -31,7 +31,8 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `T` | Tree view: everything under each item indented beneath it (remembered) |
 | `za` or `<Space>` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
 | `gR` | Open a pull request linked to the item (a picker when there are several) |
-| `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
+| `<S-Tab>` / `<Tab>` | Previous / next sprint |
+| `[r` / `]r`, `g1`-`g9` | Previous / next inner tab, or the n-th (`g1` is this list) - see below |
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
 | `P` | Back to the PR dashboard |
@@ -43,6 +44,14 @@ row immediately and are reverted with an error if the call fails, the same
 optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
 sprint's list instead.
+
+Work items you open stay inside the Work items tab (GitHub issues inside
+Issues) as inner tabs: the tab line shows the one tab, and its winbar a
+strip like `Work items │ #3001 Throttle … │ [#3002 …]`. `]r` / `[r` and
+`g1`-`g9` move between them, each keeping its cursor; opening an item
+that's already open goes to it. `q` / `<BS>` in an item goes to the one
+before it, or the list - or back to where you opened it from, when that
+was outside its tab (`gW` in a review, the chat).
 
 ### Changing the parent (`gU`)
 

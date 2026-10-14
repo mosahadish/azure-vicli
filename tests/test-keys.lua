@@ -70,18 +70,18 @@ keymap_calls = {}
 keys.bind(1, "dashboard", "vote", function() end)
 check("bind() no-ops for an unbound action", #keymap_calls == 0)
 
--- 4. A list-valued default (workitems.next_sprint responds to both "]" and
--- "<Tab>") resolves and binds every key in the list.
+-- 4. A list-valued default (workitems.toggle_fold responds to both "za" and
+-- "<Space>") resolves and binds every key in the list.
 config.setup({})  -- back to defaults
-local next_sprint = keys.resolve("workitems", "next_sprint")
-check("list default workitems.next_sprint",
-  type(next_sprint) == "table" and next_sprint[1] == "]" and next_sprint[2] == "<Tab>",
-  next_sprint)
+local toggle_fold = keys.resolve("workitems", "toggle_fold")
+check("list default workitems.toggle_fold",
+  type(toggle_fold) == "table" and toggle_fold[1] == "za" and toggle_fold[2] == "<Space>",
+  toggle_fold)
 keymap_calls = {}
-keys.bind(1, "workitems", "next_sprint", function() end, { desc = "next sprint" })
+keys.bind(1, "workitems", "toggle_fold", function() end, { desc = "fold" })
 check("bind() binds every key in a list",
-  #keymap_calls == 2 and keymap_calls[1].key == "]" and keymap_calls[2].key == "<Tab>")
-check("bind() forwards desc", keymap_calls[1].opts.desc == "next sprint")
+  #keymap_calls == 2 and keymap_calls[1].key == "za" and keymap_calls[2].key == "<Space>")
+check("bind() forwards desc", keymap_calls[1].opts.desc == "fold")
 
 -- 5. Per-surface prefix, prepended to every key resolved for that surface.
 config.setup({ keys = { prefix = { dashboard = "<leader>a" } } })
@@ -251,22 +251,30 @@ for _, s in ipairs({ "diff", "list", "workitem_view" }) do
 end
 
 -- 13. Inner tabs (innertabs.lua): ]r / [r, and g1..g9 for the strip's
--- entries. They're bound on the PR dashboard and the reviewer's buffers
--- next to those surfaces' own keys, so none of those may have a bare ] or
--- [ - bound with nowait, it would fire before the r.
+-- entries. They're bound on the PR dashboard, the boards (W, I), the
+-- reviewer's and the work-item view's buffers next to those surfaces' own
+-- keys, so none of those may have a key that starts one of them (a bare ]
+-- or [) - bound with nowait, it would fire before the r.
 check("tabs: ]r / [r", keys.resolve("tabs", "next") == "]r" and keys.resolve("tabs", "prev") == "[r")
+local tab_keys = {}
 do
   local pick = keys.resolve("tabs", "pick")
   check("tabs: pick is g1..g9", type(pick) == "table" and #pick == 9 and pick[1] == "g1" and pick[9] == "g9")
+  for _, a in ipairs({ "next", "prev", "pick" }) do
+    local spec = keys.resolve("tabs", a)
+    for _, k in ipairs(type(spec) == "table" and spec or { spec }) do tab_keys[#tab_keys + 1] = k end
+  end
 end
-for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav" }) do
-  local bare = {}
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view" }) do
+  local bad = {}
   for action, spec in pairs(config.get().keys[s]) do
     for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
-      if k == "]" or k == "[" then bare[#bare + 1] = action end
+      for _, t in ipairs(tab_keys) do
+        if type(k) == "string" and #k < #t and t:sub(1, #k) == k then bad[#bad + 1] = action .. " (" .. k .. ")" end
+      end
     end
   end
-  check("tabs: no bare ] or [ on " .. s, #bare == 0, table.concat(bare, ", "))
+  check("tabs: nothing on " .. s .. " starts an inner-tab key", #bad == 0, table.concat(bad, ", "))
 end
 
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))

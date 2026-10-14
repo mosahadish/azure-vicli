@@ -84,16 +84,23 @@ function M.fetch(pr, env, cb, force)
   })
 end
 
--- Open work item `id` in the detail view, in a new tab. On GitHub's board
--- `B`, the issue view, on `ref` (its owner~repo~n key) when given.
+-- Open work item `id` in the detail view: an inner tab of Work items, or
+-- on GitHub's board `B` the issue view in Issues (innertabs.lua), on `ref`
+-- (its owner~repo~n key) when given. Already open: goes to it. The view
+-- puts the item's title in the strip once it's loaded.
 function M.open_item(id, B, ref)
-  vim.cmd("tabnew")
-  if B and B.host == "github" then
-    require("azure-cli.workitems.view").open(B, ref or tostring(id))
-    return
-  end
-  vim.env.AZVICLI_WI_ID = tostring(id)
-  require("azure-cli.workitems.view").open()
+  local INNER = require("azure-cli.innertabs")
+  local github = B and B.host == "github"
+  local r = github and (ref or tostring(id)) or tostring(id)
+  local host = github and "github" or "azure"
+  INNER.open(INNER.item_home(host), INNER.item_key(host, r), "#" .. tostring(id), function()
+    if github then
+      require("azure-cli.workitems.view").open(B, r)
+      return
+    end
+    vim.env.AZVICLI_WI_ID = r
+    require("azure-cli.workitems.view").open()
+  end)
 end
 
 -- The board a PR's linked items are on: a GitHub PR's are issues.
