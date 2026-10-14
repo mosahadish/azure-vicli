@@ -547,6 +547,13 @@ section: a changed file the plan doesn't list is marked `✗ not in the plan`,
 and the files the plan lists but the change didn't touch are listed under
 the changed ones ("In the plan, not changed"); the winbar counts both (`[1 off plan]`, `[2 untouched]`). The
 agent gets the same list back from `show_fix`, so it can explain or fix it.
+Only the approved revision's Files count, and a file you let the agent
+change on top of it counts until the next revision. In a Files entry, every
+path before its description is a file (`a.lua, b.lua - ...`); code words
+like `M.open(host)`, `B.words` or `#3001` aren't, and a bare or partial
+name (`state_dialog.lua`, `chat/agents_view.lua`) matches the changed path
+that ends in it. The same files decide when an edit asks because it
+isn't in the plan.
 
 **Asking for changes, line by line.** `gc` on a line (or a selection)
 queues what should change there; it shows under the line (`✎ use a
@@ -558,7 +565,10 @@ marked as sent, until you clear them with `dd`.
 **Answering its questions.** The agent puts what it needs you to decide
 under Open questions. `gr` on one of them opens an editor for your answer,
 which shows under the question (`↪ you: no, admins too`); the winbar
-counts the ones still open (`[1 to answer]`). Approving - or asking for
+and the Open questions row in the section list count the ones still open
+(`[1 to answer]`). A lead-in that isn't about questions - a `###` heading,
+a bold line or one ending in `:`, like "Follow-ups, out of scope:" - ends
+them, so the follow-ups under it don't count. Approving - or asking for
 changes - sends your answers along with each question, so the agent goes
 ahead knowing them.
 

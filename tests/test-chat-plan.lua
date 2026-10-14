@@ -46,6 +46,55 @@ do
   check("check_files: partial names don't match", #PLAN.check_files({ "auth.py" }, { "src/oauth.py" }).missing == 1)
 end
 
+-- --- Files entries: only path-like words, every path at an entry's head (#33) ------------
+do
+  local files = PLAN.planned_files({ "## Files",
+    "- `M.open(host)` and `B.words` / `B.caps` - the host's words",
+    "- `#3001`, `--wi-*`, Docs, issues - code words, not files",
+    "- `chat/tools.lua` - the board tools, like `tests/run.sh` does",
+    "- `tests/test_github_issues.py`, `tests/test_github.py` - the provider",
+    "- docs/chat.md, docs/work-items.md, GITHUB_PLAN.md: the docs",
+    "- state_dialog.lua, chat/agents_view.lua - bare and partial names",
+    "- New: `lua/azure-cli/workitems/linked_prs.lua`",
+    "- `README.md` (new) and LICENSE",
+  })
+  check("planned_files: code words aren't files, every head path is, the description's aren't",
+    table.concat(files, "|") == "chat/tools.lua|tests/test_github_issues.py|tests/test_github.py|docs/chat.md"
+      .. "|docs/work-items.md|GITHUB_PLAN.md|state_dialog.lua|chat/agents_view.lua"
+      .. "|lua/azure-cli/workitems/linked_prs.lua|README.md|LICENSE", table.concat(files, "|"))
+  local c = PLAN.check_files(files, { "lua/azure-cli/chat/tools.lua", "tests/test_github.py", "docs/work-items.md",
+    "GITHUB_PLAN.md", "lua/azure-cli/workitems/state_dialog.lua", "lua/azure-cli/chat/agents_view.lua", "tests/run.sh" })
+  check("check_files: a second comma path and bare / partial names match; the description's file doesn't",
+    table.concat(c.unplanned, "|") == "tests/run.sh", vim.inspect(c.unplanned))
+  check("check_files: no code word comes back as planned-not-changed",
+    table.concat(c.missing, "|") == "tests/test_github_issues.py|docs/chat.md|lua/azure-cli/workitems/linked_prs.lua"
+      .. "|README.md|LICENSE", vim.inspect(c.missing))
+  check("is_path_like", PLAN.is_path_like("a/b") and PLAN.is_path_like("x.lua") and PLAN.is_path_like("Makefile")
+    and not PLAN.is_path_like("B.words") and not PLAN.is_path_like("Docs") and not PLAN.is_path_like("ui.choosing()")
+    and not PLAN.is_path_like("--wi-*") and not PLAN.is_path_like("#3001") and not PLAN.is_path_like("..."))
+  local lines = { "## Files", "- `a/one.lua`, `b/two.lua` - x" }
+  check("file_entry_line: the second path on an entry", PLAN.file_entry_line(lines, "two.lua") == 2
+    and PLAN.file_at_line(lines, 2) == "a/one.lua")
+  local al = PLAN.check_files({ "a.lua" }, { "a.lua", "b.lua" }, { "b.lua", "c.lua" })
+  check("check_files: an allowed file isn't off plan, and never planned-not-changed",
+    #al.unplanned == 0 and #al.missing == 0, vim.inspect(al))
+end
+
+-- --- only the approved revision's Files (#45) ------------------------------------------------
+do
+  local rec = { key = "wi-test45", target = { work_item_id = 45 }, status = "approved", approved_rev = 2,
+    revisions = { { by = "agent", markdown = "## Files\n- `src/a.lua` - x\n- `src/b.lua` - y" },
+      { by = "agent", markdown = "## Files\n- `src/c.lua` - z" } },
+    allowed_files = { "tests/old.lua" }, allowed_rev = 1 }
+  local c = PLAN.check_change(rec, { "src/c.lua" })
+  check("check_change: an earlier revision's files and allowances aren't listed as not changed",
+    #c.missing == 0 and #c.unplanned == 0, vim.inspect(c))
+  check("check_change: an earlier revision's allowance doesn't cover a file now",
+    vim.deep_equal(PLAN.check_change(rec, { "src/c.lua", "tests/old.lua" }).unplanned, { "tests/old.lua" }))
+  rec.allowed_rev = 2
+  check("check_change: this revision's allowance does", #PLAN.check_change(rec, { "src/c.lua", "tests/old.lua" }).unplanned == 0)
+end
+
 -- --- step links ------------------------------------------------------------------------
 do
   check("resolve_line: by its text, nearest", PLAN.resolve_line({ "a", "x", "b", "x" }, 3, "x") == 2
@@ -372,6 +421,26 @@ do
   check("counts: an answer is neither a question nor a request", q == 1 and r == 0)
   local vl = TH.virt_lines({ kind = "answer", question = "No.", status = "queued" }, { width = 60 })
   check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("approval", 1, true))
+  check("unanswered: answered questions stop counting", PLAN.unanswered(lines, rec.threads) == 1
+    and PLAN.unanswered(lines, {}) == 3)
+end
+
+-- --- follow-ups under Open questions aren't questions (#49) -------------------------------------
+do
+  -- #41's plan: one question, then a follow-ups list.
+  local lines = { "## Open questions", "- **Branch:** you asked for github-host. Which way?", "",
+    "Follow-ups, out of scope:", "- #42: the commit popup's message.", "- #30: the same popup's keys.", "",
+    "## Risks" }
+  local qs = PLAN.open_questions(lines)
+  check("open_questions: a follow-ups lead-in ends the questions", #qs == 1 and qs[1].line == 2, vim.inspect(qs))
+  check("unanswered: one, then none once answered", PLAN.unanswered(lines, {}) == 1
+    and PLAN.unanswered(lines, { { kind = "answer", line = 2, question = "Yes." } }) == 0)
+  local more = PLAN.open_questions({ "## Open questions", "- Q1?", "### Later", "- not one", "**Notes**", "- nor this",
+    "More questions:", "- Q2?", "- Follow-up: #9", "- Out of scope: #10", "- **Follow-ups:** #11" })
+  local got = {}
+  for _, q in ipairs(more) do got[#got + 1] = q.text end
+  check("open_questions: ###, bold and ':' lead-ins end them, a question lead-in resumes, follow-up entries don't count",
+    table.concat(got, "|") == "Q1?|Q2?", table.concat(got, "|"))
 end
 
 -- --- an agent for a PR's comments ---------------------------------------------------------

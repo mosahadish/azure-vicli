@@ -48,24 +48,71 @@ function M.section_at(sections, line)
   return cur
 end
 
--- The paths the plan's Files section lists: each entry's first `code`
--- span, else its first word (a leading "./" dropped). Pure.
-function M.planned_files(lines)
+-- Extensions that make a word without a "/" a file name (B.words isn't).
+local EXTS = {}
+for e in ([[lua py md json sh bash cmd bat ps1 psm1 txt toml yml yaml ini cfg conf js mjs cjs ts tsx jsx
+  cs csproj sln go rs vim html htm css scss xml svg png jpg gif c h cpp hpp java kt rb php sql
+  lock env log rst adoc tf proto]]):gmatch("%S+") do EXTS[e] = true end
+local BARE = { README = true, LICENSE = true, Makefile = true, Dockerfile = true, CHANGELOG = true }
+
+-- Whether `tok` reads as a file path, not a code word: no call parens,
+-- globs, #refs or --flags, and a "/" in it, a known extension or a known
+-- extensionless name. Pure.
+function M.is_path_like(tok)
+  if tok == "" or tok:find("[()*#<>%[%]{}=\"']") or tok:match("^%-") or tok:match("^%.+$") then return false end
+  if tok:find("/", 1, true) then return tok:match("[%w_]") ~= nil end
+  local ext = tok:match("^[^.].*%.([%w]+)$")
+  return (ext and EXTS[ext:lower()]) or BARE[tok] or false
+end
+
+-- The path-like words of `text`, split on commas and spaces, each with
+-- its backticks, leading "./" and trailing punctuation off. Pure.
+local function path_tokens(text)
+  local out = {}
+  for tok in text:gsub("`", " "):gmatch("[^,%s]+") do
+    tok = tok:gsub("^%./", ""):gsub("[,:;.]+$", "")
+    if M.is_path_like(tok) then out[#out + 1] = tok end
+  end
+  return out
+end
+
+-- The paths one Files entry (a list item's text) names: the path-like
+-- words of its head - the text before its description (" - ", ": ",
+-- " — "). A head that names none ("New: ...") gives the whole entry's
+-- instead. Pure.
+function M.entry_paths(item)
+  local head = item
+  for _, sep in ipairs({ " - ", " \u{2013} ", " \u{2014} ", ": " }) do
+    local at = head:find(sep, 1, true)
+    if at then head = head:sub(1, at - 1) end
+  end
+  local out = path_tokens(head)
+  if #out == 0 and head ~= item then out = path_tokens(item) end
+  return out
+end
+
+-- Each Files entry of the plan: { line, paths } for the list items of a
+-- "## ...file..." section, outside ``` fences. Pure.
+local function file_entries(lines)
   local out, inside, fenced = {}, false, false
-  for _, l in ipairs(lines) do
+  for i, l in ipairs(lines) do
     if l:match("^%s*```") then fenced = not fenced end
     local hashes, title = l:match("^(#+)%s+(.-)%s*$")
     if hashes and not fenced then
       inside = #hashes == 2 and title:lower():find("file", 1, true) ~= nil
     elseif inside and not fenced then
       local item = l:match("^%s*[-*+]%s+(.+)$")
-      if item then
-        local path = item:match("`([^`]+)`") or item:match("^(%S+)")
-        path = path and path:gsub("^%./", ""):gsub("[,:;]$", "")
-        if path and path ~= "" then out[#out + 1] = path end
-      end
+      if item then out[#out + 1] = { line = i, paths = M.entry_paths(item) } end
     end
   end
+  return out
+end
+
+-- The paths the plan's Files section lists: every path-like name at the
+-- head of each entry (entry_paths). Pure.
+function M.planned_files(lines)
+  local out = {}
+  for _, e in ipairs(file_entries(lines)) do vim.list_extend(out, e.paths) end
   return out
 end
 
@@ -87,14 +134,17 @@ function M.paths_planned(planned, paths)
 end
 
 -- The change's files against the plan's: { unplanned = changed paths the
--- plan doesn't list, missing = planned paths the change doesn't touch }.
--- A planned path matches a changed one when either ends with the other
--- (the plan may say `throttle.py` for src/throttle.py). Pure.
-function M.check_files(planned, changed)
+-- plan doesn't list (nor `allowed`, the ones you let the agent change on
+-- top of it), missing = planned paths the change doesn't touch - never an
+-- allowed one, that was a permission, not a promise }. A planned path
+-- matches a changed one when either ends with the other (the plan may
+-- say `throttle.py` for src/throttle.py). Pure.
+function M.check_files(planned, changed, allowed)
   local out = { unplanned = {}, missing = {} }
   for _, c in ipairs(changed) do
     local hit = false
     for _, p in ipairs(planned) do if same_path(c, p) then hit = true end end
+    for _, p in ipairs(allowed or {}) do if same_path(c, p) then hit = true end end
     if not hit then out.unplanned[#out.unplanned + 1] = c end
   end
   for _, p in ipairs(planned) do
@@ -123,26 +173,16 @@ end
 
 -- The Files entry for `path` in the plan: its line, or nil. Pure.
 function M.file_entry_line(lines, path)
-  local inside, fenced = false, false
-  for i, l in ipairs(lines) do
-    if l:match("^%s*```") then fenced = not fenced end
-    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
-    if hashes and not fenced then
-      inside = #hashes == 2 and title:lower():find("file", 1, true) ~= nil
-    elseif inside and not fenced then
-      local item = l:match("^%s*[-*+]%s+(.+)$")
-      local p = item and (item:match("`([^`]+)`") or item:match("^(%S+)"))
-      p = p and p:gsub("^%./", ""):gsub("[,:;]$", "")
-      if p and same_path(p, path) then return i end
-    end
+  for _, e in ipairs(file_entries(lines)) do
+    for _, p in ipairs(e.paths) do if same_path(p, path) then return e.line end end
   end
   return nil
 end
 
--- The path a Files entry on plan line `line` names, or nil. Pure.
+-- The (first) path a Files entry on plan line `line` names, or nil. Pure.
 function M.file_at_line(lines, line)
-  for _, p in ipairs(M.planned_files(lines)) do
-    if M.file_entry_line(lines, p) == line then return p end
+  for _, e in ipairs(file_entries(lines)) do
+    if e.line == line then return e.paths[1] end
   end
   return nil
 end
@@ -389,23 +429,40 @@ local function last_rev(rec) return rec.revisions[#rec.revisions] end
 
 -- The plan's questions for you: the lines of its Open questions section
 -- that ask something (a list entry, or a line ending in "?"), not "None".
--- { { line, text } }. Pure.
+-- A lead-in that isn't about questions - a "###" heading, a line ending
+-- in ":" or one in bold, like "Follow-ups, out of scope:" - ends them (one
+-- that is starts them again), and entries that say they're a follow-up
+-- or out of scope don't count. { { line, text } }. Pure.
 function M.open_questions(lines)
-  local out, inside, fenced = {}, false, false
+  local out, inside, fenced, asking = {}, false, false, true
   for i, l in ipairs(lines) do
     if l:match("^%s*```") then fenced = not fenced end
     local hashes, title = l:match("^(#+)%s+(.-)%s*$")
-    if hashes and not fenced then
-      inside = #hashes == 2 and title:lower():find("question", 1, true) ~= nil
+    if hashes and not fenced and #hashes <= 2 then
+      inside, asking = #hashes == 2 and title:lower():find("question", 1, true) ~= nil, true
     elseif inside and not fenced then
       local item = l:match("^%s*[-*+]%s+(.+)$") or l:match("^%s*%d+[.)]%s+(.+)$")
       local text = vim.trim(item or l)
-      if text ~= "" and not text:lower():match("^none") and (item or text:match("%?%s*$")) then
+      local low = text:lower()
+      if not item and text ~= "" and (hashes or text:match(":%**$") or text:match("^%*%*.*%*%*$")) then
+        asking = low:find("question", 1, true) ~= nil
+      elseif asking and text ~= "" and not low:match("^none") and (item or text:match("%?%s*$"))
+        and not low:gsub("^[%*_]+", ""):match("^follow.?ups?[%s:,]") and not low:gsub("^[%*_]+", ""):match("^out of scope") then
         out[#out + 1] = { line = i, text = text }
       end
     end
   end
   return out
+end
+
+-- How many of the plan's open questions (`lines`) have no answer of yours
+-- (a thread of kind "answer" on their line) in `threads`. Pure.
+function M.unanswered(lines, threads)
+  local answered = {}
+  for _, th in ipairs(threads or {}) do if th.kind == "answer" then answered[th.line] = true end end
+  local n = 0
+  for _, q in ipairs(M.open_questions(lines)) do if not answered[q.line] then n = n + 1 end end
+  return n
 end
 
 -- Your answers (threads of kind "answer") as lines for a message: "- <the

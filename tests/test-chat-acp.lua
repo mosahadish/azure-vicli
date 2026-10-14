@@ -114,6 +114,33 @@ check("and the change check counts it as planned",
   #PLAN.check_change(PLAN.load("wi-3001"), { "src/a.py", "src/b.py" }).unplanned == 0)
 UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
 
+-- A new, approved revision (the next stage): the last one's allowances
+-- don't carry over, and its Files entries count every path they name - a
+-- second one after a comma, a bare file name - and no code word.
+do
+  local r = PLAN.load("wi-3001")
+  PLAN.add_revision(r, "## Goal\nx\n\n## Files\n- `src/a.py`, `src/c.py` - throttle, `M.open(host)`\n"
+    .. "- helper.py: the bare name\n", "agent")
+  r.status, r.approved_rev = "approved", #r.revisions
+  PLAN.save(r)
+  asked = {}
+  local e = send_and_wait("EDITPATH=" .. wt .. "/src/b.py")
+  check("a new revision: the last one's allowance asks again", #asked == 1 and e ~= nil
+    and e.text:find("src/b.py]=no", 1, true) ~= nil, vim.inspect(asked))
+  asked = {}
+  e = send_and_wait("EDITPATH=" .. wt .. "/src/c.py EDITPATH=" .. wt .. "/src/lib/helper.py")
+  check("a second comma path and a bare name are in the plan", #asked == 0 and e ~= nil
+    and e.text:find("src/c.py]=yes", 1, true) ~= nil and e.text:find("helper.py]=yes", 1, true) ~= nil,
+    vim.inspect(asked) .. " " .. tostring(e and e.text))
+  check("and the code word isn't a planned-not-changed file",
+    vim.deep_equal(PLAN.check_change(PLAN.load("wi-3001"), { "src/a.py", "src/c.py", "src/lib/helper.py" }).missing, {}))
+  r = PLAN.load("wi-3001")
+  r.revisions = { r.revisions[1] }
+  r.approved_rev = nil
+  PLAN.save(r)
+  os.remove(PLAN.path("wi-3001"))
+end
+
 -- Building and testing as the approved plan's Test plan says: the agent's
 -- own shell running it (in that plan's conversation) and run_tests
 -- don't ask; another command does.

@@ -247,9 +247,12 @@ local function render_list()
   local per, per_req = {}, {}
   for _, th in ipairs(rec.threads) do
     local s = PLAN().section_at(view.sections, th.line)
-    local into = th.kind == "request" and per_req or per
-    if s and not (th.kind == "request" and th.status == "sent") then into[s.line] = (into[s.line] or 0) + 1 end
+    -- Your answers aren't questions: the header's [?N] skips them too.
+    local into = th.kind == "request" and per_req or th.kind ~= "answer" and per or nil
+    if s and into and not (th.kind == "request" and th.status == "sent") then into[s.line] = (into[s.line] or 0) + 1 end
   end
+  local open_q = unanswered()
+  local decided = rec.status == "approved" or rec.status == "done"
   for _, s in ipairs(view.sections) do
     if s.level >= 2 then
       local badge = ""
@@ -257,6 +260,9 @@ local function render_list()
       if per_req[s.line] then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{270E}" .. per_req[s.line] end
       if section_changed(s) then badge = (badge ~= "" and (badge .. " ") or "") .. "\u{00B1}" end
       if s.items > 0 and s.title:lower():find("file", 1, true) then badge = (badge ~= "" and (badge .. " ") or "") .. s.items end
+      if open_q > 0 and not decided and s.level == 2 and s.title:lower():find("question", 1, true) then
+        badge = (badge ~= "" and (badge .. " ") or "") .. open_q .. " to answer"
+      end
       local indent = string.rep("  ", math.max(0, s.level - 2))
       local name = UI().fit(indent .. s.title, math.max(8, width - 4 - vim.fn.strdisplaywidth(badge)))
       add("   " .. name .. badge, nil)
@@ -266,14 +272,13 @@ local function render_list()
   end
   add("")
   local hints = {}
-  local decided = rec.status == "approved" or rec.status == "done"
   if not decided then
     hints[#hints + 1] = { "plan", "approve", "approve" }
     hints[#hints + 1] = { "plan", "revise", "ask for changes" }
   end
   hints[#hints + 1] = { "plan", "ask", "ask about a line" }
   if not decided then hints[#hints + 1] = { "plan", "request", "ask a change on a line" } end
-  if unanswered() > 0 then hints[#hints + 1] = { "plan", "answer", "answer an open question" } end
+  if open_q > 0 then hints[#hints + 1] = { "plan", "answer", "answer an open question" } end
   if decided then
     hints[#hints + 1] = { "plan", "goto_code", "the code a step became" }
     hints[#hints + 1] = { "plan", "run_log", "what happened so far" }
@@ -423,12 +428,8 @@ end
 
 -- How many of the plan's open questions you haven't answered.
 unanswered = function()
-  local answered = {}
-  for _, th in ipairs(view.rec.threads) do if th.kind == "answer" then answered[th.line] = true end end
-  local n = 0
   local lines = valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
-  for _, q in ipairs(PLAN().open_questions(lines)) do if not answered[q.line] then n = n + 1 end end
-  return n
+  return PLAN().unanswered(lines, view.rec.threads)
 end
 
 -- dd: forget the question or change request under the cursor.

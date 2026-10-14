@@ -147,15 +147,27 @@ end
 -- The plan's Files check for a change: `changed` = its paths.
 function M.check_change(rec, changed)
   if not rec then return nil end
-  return M.check_files(M.planned_paths(rec), changed)
+  return M.check_files(M.files_section(rec), changed, M.allowed_paths(rec))
 end
 
--- The files a plan covers: its Files section, plus the ones you allowed
--- the agent to change on top of it (M.allow_files).
+-- The paths the plan's Files section lists: the approved revision's, so
+-- an earlier revision's (stage's) files don't count; the text as it is
+-- now while none is approved.
+function M.files_section(rec)
+  local rev = rec.approved_rev and rec.revisions[rec.approved_rev]
+  return M.planned_files(rev and vim.split(rev.markdown or "", "\n", { plain = true }) or current_lines(rec))
+end
+
+-- The files you allowed the agent to change on top of the approved
+-- revision (M.allow_files) - none left over from an earlier one.
+function M.allowed_paths(rec)
+  if not rec.allowed_files or rec.allowed_rev ~= rec.approved_rev then return {} end
+  return rec.allowed_files
+end
+
+-- The files a plan covers: its Files section, plus the ones you allowed.
 function M.planned_paths(rec)
-  local out = M.planned_files(current_lines(rec))
-  for _, p in ipairs(rec.allowed_files or {}) do out[#out + 1] = p end
-  return out
+  return vim.list_extend(M.files_section(rec), M.allowed_paths(rec))
 end
 
 -- The agent's permission request to change `paths` (absolute) against
@@ -189,7 +201,8 @@ end
 -- You allowed changing `rels` once: from now on they're part of the plan.
 function M.allow_files(rec, rels)
   rec = M.load(rec.key) or rec
-  rec.allowed_files = rec.allowed_files or {}
+  if rec.allowed_rev ~= rec.approved_rev then rec.allowed_files = nil end
+  rec.allowed_files, rec.allowed_rev = rec.allowed_files or {}, rec.approved_rev
   for _, p in ipairs(rels) do
     if not M.paths_planned(rec.allowed_files, { p }) then rec.allowed_files[#rec.allowed_files + 1] = p end
   end
@@ -213,6 +226,7 @@ function M.add_revision(rec, markdown, by)
   rec.status = "draft"
   rec.approved_rev = nil
   rec.allow_push = nil
+  rec.allowed_files, rec.allowed_rev = nil, nil
 end
 
 -- The labels of the plans waiting for your review (submitted, not yet
