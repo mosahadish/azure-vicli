@@ -73,5 +73,52 @@ check("auto: on without a name", MG.lines({ id = 5, auto_on = true }, ast)[7] ==
 
 check("MERGE_TYPES: four ADO strategies", #MG.MERGE_TYPES == 4 and MG.MERGE_TYPES[1].key == "squash" and MG.MERGE_TYPES[4].key == "rebaseMerge")
 
+-- Rows from the spec: Azure has them all (M.ROW); GitHub has no work-items
+-- row, and a repo without auto-merge no auto row.
+local R = MG.rows({})
+check("rows: azure", R.merge == 4 and R.work_items == 5 and R.delete_branch == 6 and R.auto == 7 and R.last == 7)
+check("rows: M.ROW is azure's", MG.ROW.work_items == 5 and MG.ROW.auto == 7)
+R = MG.rows({ work_items = false })
+check("rows: no work items", R.work_items == nil and R.delete_branch == 5 and R.auto == 6, vim and vim.inspect(R))
+R = MG.rows({ work_items = false, auto = false })
+check("rows: no work items, no auto", R.auto == nil and R.delete_branch == 5 and R.last == 5)
+ts = { merge = 1, work_items = false, delete_branch = true, auto = false }
+check("toggle: spec's rows", MG.toggle(ts, 6, { work_items = false }) and ts.auto == true
+  and MG.toggle(ts, 5, { work_items = false }) and ts.delete_branch == false)
+check("toggle: a row the spec lacks", MG.toggle(ts, 7, { work_items = false }) == false)
+
+-- GitHub: its words, the checks, and what blocks a merge.
+local GH = { { key = "squash", label = "Squash and merge" }, { key = "merge", label = "Create a merge commit" } }
+local gspec = { id = 7, host = "github", ref = "doohickeys#7", title = "Wobble", source = "fix/w", target = "github-host",
+  work_items = false, delete_on_merge = false, build_label = "build \u{2717}", unresolved = 0,
+  blockers = { "required check `ci / test` failed" }, warnings = { "check `docs` failed (not required)" },
+  checks = { { name = "ci / test", state = "failed", required = true }, { name = "lint", state = "pending", required = false } } }
+local gst = { merge = 1, work_items = false, delete_branch = true, auto = false, methods = GH }
+lines = MG.lines(gspec, gst)
+check("github: title", lines[1] == "Merge PR doohickeys#7  Wobble", lines[1])
+check("github: no work items row", lines[5] == "[x] Delete source branch (fix/w)", lines[5])
+check("github: auto row", lines[6] == "[ ] Auto-merge when requirements pass", lines[6])
+check("github: required check", lines[9] == "  \u{2717} ci / test  (required)", lines[9])
+check("github: optional check", lines[10] == "  \u{25CF} lint", lines[10])
+check("github: blocker", lines[11] == "\u{26D4} Can't merge: required check `ci / test` failed", lines[11])
+check("github: warnings, no 'merge anyway' while blocked",
+  lines[12] == "\u{26A0} build \u{2717}, check `docs` failed (not required)", lines[12])
+check("github: hint merges", lines[14] == "<Space>: toggle   m: merge type   <CR>: merge   q: close", lines[14])
+local can, why = MG.confirm_allowed(gspec, gst)
+check("github: blocked <CR> refused", can == false and why == "Can't merge: required check `ci / test` failed", why)
+gst.auto = true
+check("github: auto-merge allowed while blocked", MG.confirm_allowed(gspec, gst) == true)
+lines = MG.lines(gspec, gst)
+check("github: auto deletes by the repo's setting", lines[5] == "[-] Delete source branch: the repo's setting decides (off)", lines[5])
+check("github: auto waits for the blockers", lines[11] == "Auto-merge waits for: required check `ci / test` failed", lines[11])
+check("github: auto hint", lines[14]:find("<CR>: set auto-merge", 1, true) ~= nil, lines[14])
+gspec.conflict = true
+check("github: a conflict blocks auto-merge too", MG.confirm_allowed(gspec, gst) == false)
+check("azure: a conflict doesn't block auto-complete", MG.confirm_allowed({ conflict = true }, { auto = true }) == true)
+check("azure: no blockers, <CR> completes", MG.confirm_allowed({ id = 1 }, { auto = false }) == true)
+lines = MG.lines({ id = 8, host = "github", ref = "r#8", work_items = false, auto = false }, { merge = 1, delete_branch = true, methods = GH })
+check("github: no auto row when the repo disallows it", #lines == 9 and lines[5]:find("Delete source branch", 1, true) ~= nil
+  and lines[6]:find("^\u{2500}") ~= nil, table.concat(lines, "|"))
+
 if fails > 0 then os.exit(1) end
 print("all ok")

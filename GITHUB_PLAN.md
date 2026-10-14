@@ -263,8 +263,18 @@ is simpler.
 3. **Batch as a native review.** `--submit-review` on both hosts;
    `review/batch.lua` sends one call and reads one result list.
 4. **Merge and CI.**
-   - `--complete`, auto-merge, requeue, build log, create PR, add reviewer,
-     set description.
+   - Merging (done, #17): `--complete <squash|merge|rebase> [del]` and
+     `--auto-complete on <method>|off` on GitHub, into any base (not only
+     the default branch). `--get-pr` carries `mergeability` - the merge
+     state, the required checks (`isRequired`), what blocks a merge in
+     words - read fresh, since the list's goes stale. `gm` shows it,
+     refuses `<CR>` while blocked (auto-merge waits it out, except a
+     conflict), hides the work-items row, and says auto-merge deletes the
+     branch only by the repo's own setting. The agent's
+     `complete_pull_request` takes only the repo's methods.
+   - Still to do: requeue (re-run failed jobs), build log, the agent's
+     create PR / add reviewer / set description on GitHub; "update branch"
+     for a PR behind its base, and an admin bypass, if wanted.
    - Agent tools built from caps (enums, descriptions, tools that are
      absent).
    - The chat keys conversations and plans by PR key (`pr-<key>`), not

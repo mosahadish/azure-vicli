@@ -1793,10 +1793,19 @@ local MERGE = require("azure-cli.merge")
 -- it: the same dialog the reviewer's gm opens (lua/azure-cli/merge.lua) -
 -- merge type, work-item/branch/auto-complete toggles, build/threads/votes
 -- with a warning when they argue against merging - fed from the row's own
--- --list record.
-local function complete_pr()
-  local pr = current_pr()
+-- --list record. A GitHub PR's mergeability (required checks, what blocks
+-- it) is read fresh with --get-pr first, `m` (false: that failed): the
+-- list's goes stale.
+local function complete_pr(pr, m)
+  pr = type(pr) == "table" and pr or current_pr()
   if not pr then return end
+  if HOSTS.host(pr) == "github" and m == nil then
+    notify("Checking whether " .. HOSTS.ref(pr) .. " can be merged…")
+    MERGE.fetch_state(CONFIG.provider_argv("--get-pr"), pr_env(pr), function(state)
+      if current_pr() == pr then complete_pr(pr, state or false) end
+    end)
+    return
+  end
   local function set_auto(args, describe, on)
     run_action(args, describe, function(p)
       local was, by = p.autoComplete, p.autoCompleteSetBy
@@ -1804,7 +1813,7 @@ local function complete_pr()
       return function() p.autoComplete, p.autoCompleteSetBy = was, by end
     end)
   end
-  MERGE.dialog({
+  MERGE.dialog(MERGE.host_spec({
     id = pr.id,
     title = pr.title,
     source = pr.source,
@@ -1816,8 +1825,7 @@ local function complete_pr()
     auto_on = pr.autoComplete and true or false,
     auto_by = pr.autoCompleteSetBy,
     on_auto_off = function() set_auto({ "--auto-complete", "off" }, "Cancelling auto-complete on", false) end,
-    methods = HOSTS.caps(pr).merge_methods,
-  }, function(mt, delete_branch, work_items, auto)
+  }, pr, m or nil), function(mt, delete_branch, work_items, auto)
     if auto then
       set_auto({ "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) },
         "Setting auto-complete on", true)

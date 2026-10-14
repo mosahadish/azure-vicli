@@ -60,7 +60,7 @@ GH_OWNER = "demo-gh"
 # The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
-              "--create-pr")
+              "--create-pr", "--complete", "--auto-complete")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -268,6 +268,9 @@ GH_FIXTURES = [
     {
         "id": 7, "repo": "gizmos", "host": "github", "source": "feature/spin-faster", "author": "alice",
         "title": "Gizmo: spin faster", "build": "succeeded",
+        # What github_host.mergeability would make of it: mergeable.
+        "merge": {"status": "CLEAN", "blockers": [], "checks": [{"name": "build", "state": "ok", "required": True}],
+                  "autoMergeAllowed": False},
         "description": "Doubles the spin rate.",
         "reviewers": [("me", 0), ("bob", 0)],
         "commits": [
@@ -282,6 +285,11 @@ GH_FIXTURES = [
     {
         "id": 7, "repo": "doohickeys", "host": "github", "source": "fix/doohickey-wobble", "author": "bob",
         "title": "Doohickey: stop the wobble", "build": "failed",
+        # Blocked by a required check; auto-merge waits it out.
+        "merge": {"status": "BLOCKED", "blockers": ["required check `ci / test` failed"],
+                  "checks": [{"name": "ci / test", "state": "failed", "required": True},
+                             {"name": "lint", "state": "ok", "required": False}],
+                  "autoMergeAllowed": True},
         "description": "Clamps the wobble.",
         "reviewers": [("me", 10)],
         "commits": [
@@ -585,6 +593,7 @@ def cmd_setup(root, fresh=False):
         if pr.get("host"):
             rec["host"] = pr["host"]
             rec["buildUrl"] = "https://github.com/{0}/{1}/pull/{2}/checks".format(GH_OWNER, pr["repo"], pr["id"])
+            rec["merge"] = pr["merge"]
         state["prs"].append(rec)
         threads = [make_thread(state, pr, t) for t in pr["threads"]]
         if pr.get("conversation"):
@@ -723,10 +732,29 @@ def to_record(ws, pr, threads):
     if pr.get("host") == "github":
         rec.update({"host": "github", "key": skey(pr), "org": GH_API, "project": GH_OWNER,
                     "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, pr["repo"], pr["id"]),
-                    "caps": {"merge_methods": [{"key": "squash", "label": "Squash and merge"},
-                                               {"key": "merge", "label": "Create a merge commit"}],
-                             "auto_complete": False}})
+                    "caps": {"merge_methods": GH_MERGE_METHODS,
+                             "auto_complete": bool(gh_merge(pr)["autoMergeAllowed"]),
+                             "delete_branch_on_merge": False}})
     return rec
+
+
+# The fake GitHub repos allow these (not rebase), like github_host.merge_methods.
+GH_MERGE_METHODS = [{"key": "squash", "label": "Squash and merge"}, {"key": "merge", "label": "Create a merge commit"}]
+
+
+def gh_merge(pr):
+    """A GitHub PR's fixture `merge` (mergeable, when a state.json from
+    before it has none)."""
+    return pr.get("merge") or {"status": "CLEAN", "blockers": [], "checks": [], "autoMergeAllowed": False}
+
+
+def gh_mergeability(pr):
+    """--get-pr's `mergeability` for a GitHub PR (github_host.mergeability's
+    shape), from its fixture's `merge`."""
+    m = gh_merge(pr)
+    return {"status": m["status"], "blockers": list(m["blockers"]), "warnings": [], "checks": m["checks"],
+            "conflict": False, "deleteBranchOnMerge": False, "autoMergeAllowed": m["autoMergeAllowed"],
+            "autoMerge": bool(pr.get("autoComplete")), "base": pr["target"], "defaultBranch": "main"}
 
 
 class Fake:
@@ -799,6 +827,8 @@ class Fake:
         rec = to_record(self.ws, pr, self.state["threads"].get(skey(pr), []))
         # As the real --get-pr: `state` is the PR's status, not a dashboard section.
         rec["state"] = "completed" if pr.get("completed") else "active"
+        if self.is_github():
+            rec["mergeability"] = gh_mergeability(pr)
         print(json.dumps(rec, ensure_ascii=False))
         return 0
 
@@ -1092,9 +1122,54 @@ class Fake:
         print("Review submitted ({0} comment{1}).".format(n, "" if n == 1 else "s"))
         return 0
 
+    def gh_complete(self, rest):
+        """--complete on a GitHub PR, as github_host.Actions.complete: only
+        the repo's methods, refused with the blockers' reasons, and the
+        branch deleted when asked."""
+        pr = self.pr()
+        strategy = rest[0] if rest else ""
+        keys = [m["key"] for m in GH_MERGE_METHODS]
+        if strategy not in keys:
+            print("{0} isn't allowed on {1}/{2}: {3}.".format(strategy, GH_OWNER, pr["repo"], ", ".join(keys)),
+                  file=sys.stderr)
+            return 1
+        blockers = gh_merge(pr)["blockers"]
+        if blockers:
+            print("Can't merge PR #{0}: {1}.".format(pr["id"], "; ".join(blockers)), file=sys.stderr)
+            return 1
+        pr["completed"] = True
+        self.ws.save(self.state)
+        delete = (rest[1] if len(rest) > 1 else "true") == "true"
+        print("PR #{0} merged ({1}){2}.".format(pr["id"], strategy,
+                                               "; branch {0} deleted".format(pr["source"]) if delete else ""))
+        return 0
+
+    def gh_auto_merge(self, rest):
+        pr = self.pr()
+        mode = rest[0] if rest else ""
+        if mode == "off":
+            pr["autoComplete"], pr["autoCompleteSetBy"] = False, ""
+            self.ws.save(self.state)
+            print("Auto-merge disabled for PR #{0}.".format(pr["id"]))
+            return 0
+        if not gh_merge(pr)["autoMergeAllowed"]:
+            print("Auto-merge isn't allowed on {0}/{1} (its settings).".format(GH_OWNER, pr["repo"]), file=sys.stderr)
+            return 1
+        strategy = rest[1] if len(rest) > 1 and rest[1] else "squash"
+        if strategy not in [m["key"] for m in GH_MERGE_METHODS]:
+            print("{0} isn't allowed on {1}/{2}.".format(strategy, GH_OWNER, pr["repo"]), file=sys.stderr)
+            return 1
+        pr["autoComplete"], pr["autoCompleteSetBy"] = True, MY_NAME
+        self.ws.save(self.state)
+        print("Auto-merge enabled for PR #{0} ({1}); the branch is deleted on merge only by the repository's own "
+              "setting, which is off.".format(pr["id"], strategy))
+        return 0
+
     def cmd_complete(self, rest):
         if not self.need_pr():
             return 1
+        if self.is_github():
+            return self.gh_complete(rest)
         strategy = rest[0] if rest else ""
         if strategy not in MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
@@ -1111,6 +1186,8 @@ class Fake:
     def cmd_auto_complete(self, rest):
         if not self.need_pr():
             return 1
+        if self.is_github():
+            return self.gh_auto_merge(rest)
         mode = rest[0] if rest else ""
         pr = self.pr()
         if mode == "off":
