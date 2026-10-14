@@ -856,10 +856,11 @@ vim.api.nvim_create_autocmd({ "FocusGained", "FocusLost" }, {
 local asking, waiting_questions = false, {}
 
 -- `extra`: a third button's label (an "always" for this kind of request);
--- picking it calls cb(true, true).
-local function confirm(question, cb, details, extra)
+-- picking it calls cb(true, true). `full`: what o in the popup opens (the
+-- request as it is; default: the details).
+local function confirm(question, cb, details, extra, full)
   if asking then
-    table.insert(waiting_questions, { question, cb, details, extra })
+    table.insert(waiting_questions, { question, cb, details, extra, full })
     MAIN().questions_waiting = #waiting_questions
     M.set_winbars()
     return
@@ -875,8 +876,9 @@ local function confirm(question, cb, details, extra)
   require("azure-cli.ui").choose({ title = "The agent asks", lines = { question },
     buttons = extra and { "Allow", "Deny", extra } or { "Allow", "Deny" },
     default = 2, keys = extra and { y = 1, n = 2, a = 3 } or { y = 1, n = 2 }, cancel = 2, details = details,
-    details_ft = is_diff, arm_ms = 400,
-    hint = extra and "y allow \u{00B7} n deny \u{00B7} a " .. extra:lower() .. " \u{00B7} Esc deny \u{00B7} Tab moves" or nil },
+    details_ft = is_diff, arm_ms = 400, full = full,
+    hint = extra and "y allow \u{00B7} n deny \u{00B7} a " .. extra:lower() .. " \u{00B7} Esc deny \u{00B7} Tab moves"
+      .. ((details and #details > 0) and " \u{00B7} o shows all" or "") or nil },
   function(i)
     local yes = i == 1 or i == 3
     MAIN().question = nil
@@ -885,15 +887,15 @@ local function confirm(question, cb, details, extra)
     local nxt = table.remove(waiting_questions, 1)
     MAIN().questions_waiting = #waiting_questions
     M.set_winbars()
-    if nxt then vim.schedule(function() confirm(nxt[1], nxt[2], nxt[3], nxt[4]) end) end
+    if nxt then vim.schedule(function() confirm(nxt[1], nxt[2], nxt[3], nxt[4], nxt[5]) end) end
   end)
 end
 M.confirm = confirm
 
 -- A question from conversation `conv`'s agent says whose it is: "[#3001] ...".
 local function confirm_for(conv)
-  return function(question, cb, details, extra)
-    confirm(((conv and conv.label) and ("[" .. conv.label .. "] ") or "") .. question, cb, details, extra)
+  return function(question, cb, details, extra, full)
+    confirm(((conv and conv.label) and ("[" .. conv.label .. "] ") or "") .. question, cb, details, extra, full)
   end
 end
 

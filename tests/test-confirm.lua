@@ -40,6 +40,28 @@ check("lines: buttons that don't fit in a row go one per line", srows[1] == 2 an
   and shls[1][3] - shls[1][2] == shls[2][3] - shls[2][2],
   vim.inspect(stacked))
 
+-- The details' rows (issue #30: a long command was one line, wrapped by
+-- Neovim in three rows, and scrolling by line skipped what didn't show).
+local words = {}
+for i = 1, 50 do words[i] = "word" .. i end
+local long_cmd = table.concat(words, " ")
+local drows = UI.wrap_details({ "Command:", "  " .. long_cmd }, 40)
+local within, indented, back = true, true, {}
+for i, l in ipairs(drows) do
+  if vim.fn.strdisplaywidth(l) > 40 then within = false end
+  if i > 1 and not l:match("^  %S") then indented = false end
+  if i > 1 then for w in l:gmatch("%S+") do back[#back + 1] = w end end
+end
+check("wrap_details: rows within the width, indented like their line, the same words", #drows > 5 and within
+  and indented and table.concat(back, " ") == long_cmd, vim.inspect(drows))
+local drows_diff = UI.wrap_details({ "+" .. string.rep("abc ", 30) }, 30, true)
+check("wrap_details: a diff line's later rows keep its +", #drows_diff > 1 and drows_diff[2]:sub(1, 1) == "+",
+  vim.inspect(drows_diff))
+local hard = UI.wrap_details({ string.rep("x", 70) }, 30)
+check("wrap_details: a word longer than a row is cut", #hard == 3 and hard[1] == string.rep("x", 30)
+  and table.concat(hard) == string.rep("x", 70), vim.inspect(hard))
+check("wrap_details: short lines as they are", vim.deep_equal(UI.wrap_details({ "a", "", "  b" }, 30), { "a", "", "  b" }))
+
 -- The popup: opens it, presses `keys` (after `wait` ms), returns its answers.
 local function float_wins()
   local out = {}
@@ -101,6 +123,9 @@ do
   local top = dwin and vim.fn.line("w0", dwin)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
   check("details: <C-d> in the popup scrolls them", dwin and vim.fn.line("w0", dwin) > top)
+  top = dwin and vim.fn.line("w0", dwin)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-e>", true, false, true), "x", false)
+  check("details: <C-e> scrolls one row", dwin and vim.fn.line("w0", dwin) == top + 1)
   vim.api.nvim_feedkeys("y", "x", false)
   vim.wait(100, function() return #got > 0 end, 10)
   check("details: gone with the popup", is(got, 1) and not vim.api.nvim_win_is_valid(dwin), vim.inspect(got))
@@ -229,6 +254,102 @@ do
   for k, v in pairs(real) do rt[k] = v end
   vim.cmd("tabclose!")
   CHAT.hide()
+end
+
+-- Issue #30: a long command shown whole, o opens it to read or yank, and
+-- only y / n / Esc / Tab / CR answer - a stray key neither answers nor
+-- leaves, and typing can't carry over to the next question.
+do
+  local got = {}
+  local details = { "Command:", "  " .. long_cmd }
+  local win = UI.choose({ title = "Run?", lines = { "Run it?" }, buttons = { "Allow", "Deny" }, keys = { y = 1, n = 2 },
+    details = details }, function(i) got[#got + 1] = i end)
+  local dwin
+  for _, w in ipairs(float_wins()) do
+    if vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, 1, false)[1] == "Command:" then dwin = w end
+  end
+  local drawn = dwin and vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(dwin), 0, -1, false) or {}
+  local fit = true
+  for _, l in ipairs(drawn) do if vim.fn.strdisplaywidth(l) > vim.api.nvim_win_get_width(dwin) then fit = false end end
+  check("#30 details: as tall as the wrapped command, every row inside the window", dwin and #drawn > 3
+    and vim.api.nvim_win_get_height(dwin) == #drawn and fit, vim.inspect({ drawn, dwin and vim.api.nvim_win_get_height(dwin) }))
+  feed("o")
+  local fwin = vim.api.nvim_get_current_win()
+  local shown = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  check("#30 o: all of it as it is, in a window of its own", fwin ~= win and vim.deep_equal(shown, details),
+    vim.inspect(shown))
+  feed("jyy")
+  check("#30 o: yy there yanks the command whole", vim.fn.getreg('"') == "  " .. long_cmd .. "\n", vim.fn.getreg('"'))
+  feed("q")
+  vim.wait(50)
+  check("#30 o: q goes back to the popup, still asking", vim.api.nvim_get_current_win() == win and #got == 0
+    and not vim.api.nvim_win_is_valid(fwin))
+  feed("y")
+  vim.wait(100, function() return #got > 0 end, 10)
+  check("#30 o: then y allows", is(got, 1), vim.inspect(got))
+end
+do
+  local got, open = run("q", { arm_ms = 150 }, 250)
+  check("#30 arm_ms: q is a stray key there, not cancel", #got == 0 and open, vim.inspect(got))
+  for _, keys in ipairs({ ":", "q:", "<C-w>w", "<C-w>p", "Z", "ZZ", "@", "x", ":wq<CR>" }) do
+    got, open = run(keys, { arm_ms = 150 }, 250)
+    check("#30 stray " .. keys .. ": no answer, the popup stays", #got == 0 and open, vim.inspect(got))
+  end
+end
+do
+  local got = {}
+  UI.choose({ title = "T", lines = { "x" }, buttons = { "Yes", "No" }, keys = { y = 1, n = 2 }, arm_ms = 150 },
+    function(i) got[#got + 1] = i end)
+  vim.wait(250)
+  feed("xy")
+  vim.wait(50)
+  check("#30 arm_ms: a stray key, then y at once: nothing", #got == 0, vim.inspect(got))
+  vim.wait(250)
+  feed("y")
+  vim.wait(100, function() return #got > 0 end, 10)
+  check("#30 arm_ms: y after a pause answers", is(got, 1), vim.inspect(got))
+end
+do
+  -- The report: keys typed on after one question was denied went on to deny
+  -- the next one (run_tests).
+  local CHAT = require("azure-cli.chat")
+  local a, b
+  CHAT.confirm("First?", function(yes) a = yes end)
+  CHAT.confirm("Second?", function(yes) b = yes end)
+  vim.wait(500)
+  feed("n")
+  vim.wait(20)  -- the second one opens
+  local second = vim.api.nvim_get_current_win()
+  feed("yyy")
+  vim.wait(300)
+  feed("x")
+  vim.wait(150)
+  feed("y")  -- past the second one's first moment, but the typing went on
+  vim.wait(50)
+  check("#30 the first denied, typing on doesn't answer the next", a == false and b == nil
+    and vim.api.nvim_win_is_valid(second), vim.inspect({ a, b }))
+  vim.wait(500)
+  feed("y")
+  vim.wait(100, function() return b ~= nil end, 10)
+  check("#30 after a pause, y allows the next", b == true, tostring(b))
+end
+do
+  -- An agent's long shell command through decide_permission: o shows it
+  -- whole (it used to be cut, and its rows skipped).
+  local RUN = require("azure-cli.chat.run")
+  local long = "make build " .. long_cmd .. " && echo done"
+  local yes
+  RUN.decide_permission(nil, { tools = {}, text = "" }, { kind = "execute", title = "Bash", rawInput = { command = long } },
+    function(y) yes = y end)
+  vim.wait(500)
+  feed("o")
+  local shown = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  check("#30 a long Bash command: o shows it as it is", #shown == 1 and shown[1] == long, vim.inspect(shown))
+  feed("q")
+  vim.wait(50)
+  feed("<Esc>")
+  vim.wait(100, function() return yes ~= nil end, 10)
+  check("#30 a long Bash command: <Esc> denies", yes == false, tostring(yes))
 end
 
 -- Approving a plan: three buttons, p lets it push.

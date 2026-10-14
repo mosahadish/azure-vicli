@@ -152,18 +152,20 @@ local function decide_permission(st, entry, tool, answer)
   if said == "deny" then log_cmd("refused: chat.permissions", true); return answer(false) end
   -- The popup shows what it would run (or the agent's whole input, when
   -- it isn't a command or a diff): the title is the agent's own words.
-  local details = {}
+  -- All of it - the popup wraps it - and `full` as it is, for its o.
+  local details, full = {}, nil
   local diff = raw.diff
   if type(diff) == "string" then
     for l in (diff .. "\n"):gmatch("(.-)\n") do table.insert(details, l) end
   elseif cmd and cmd ~= "" then
     table.insert(details, "Command:")
-    for l in (cmd .. "\n"):gmatch("(.-)\n") do table.insert(details, "  " .. l) end
+    full = {}
+    for l in (cmd .. "\n"):gmatch("(.-)\n") do table.insert(details, "  " .. l) table.insert(full, l) end
   elseif next(raw) and not CORE.FILE_CHANGE_KINDS[tool.kind] then
     local ok, json = pcall(vim.json.encode, raw)
     if ok then
-      table.insert(details, "Input:")
-      for i = 1, math.min(20, math.ceil(#json / 100)) do table.insert(details, "  " .. json:sub(i * 100 - 99, i * 100)) end
+      details = { "Input:", "  " .. json }
+      full = { json }
     end
   end
   local PLAN = require("azure-cli.chat.plan")
@@ -192,14 +194,14 @@ local function decide_permission(st, entry, tool, answer)
       if yes then PLAN.allow_files(rec, rels) end
       remember(always)
       answer(yes)
-    end, details, extra)
+    end, details, extra, full)
   end
   confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
     .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
     remember(always)
     log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
     answer(yes)
-  end, details, extra)
+  end, details, extra, full)
 end
 M.decide_permission = decide_permission
 
