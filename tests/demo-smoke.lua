@@ -2652,6 +2652,71 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   if CHAT.popup_wins() or vim.api.nvim_win_is_valid(pw.log) or STATE.chat.popup_key then
     return fail("q didn't close the agent popup")
   end
+  -- Issue #78: with the chat panel open beside the dashboard, ga's popup
+  -- leaves it alone - its conversation, winbar and what's typed in it -
+  -- and <CR> in the popup goes to the agent only.
+  do
+    CHAT.show(false)
+    local tab = vim.api.nvim_get_current_tabpage()
+    local pwins = STATE.chat.wins[tab]
+    if not (pwins and vim.api.nvim_win_is_valid(pwins.log)) then return fail("#78: the chat panel didn't open") end
+    local plog, pin = vim.api.nvim_win_get_buf(pwins.log), vim.api.nvim_win_get_buf(pwins.input)
+    vim.api.nvim_buf_set_lines(pin, 0, -1, false, { "draft for main" })
+    local function panel()
+      return { log = table.concat(vim.api.nvim_buf_get_lines(plog, 0, -1, false), "\n"),
+        bar = vim.wo[pwins.log].winbar, input = table.concat(vim.api.nvim_buf_get_lines(pin, 0, -1, false), "\n") }
+    end
+    local before = panel()
+    local main_n = #STATE.chat.entries
+    vim.api.nvim_set_current_win(dw)
+    vim.api.nvim_win_set_cursor(dw, { (dash_row(101)), 0 })
+    feed("ga")
+    local pw78 = CHAT.popup_wins()
+    if not (pw78 and vim.api.nvim_get_current_win() == pw78.log) then return fail("#78: ga didn't open the popup") end
+    if pw78.log_buf == plog or pw78.input_buf == pin then return fail("#78: the popup shows the panel's own buffers") end
+    local ptext78 = table.concat(vim.api.nvim_buf_get_lines(pw78.log_buf, 0, -1, false), "\n")
+    if not ptext78:find("planned PR !101", 1, true) then return fail("#78: the popup doesn't show !101's agent:\n" .. ptext78) end
+    local open = panel()
+    if not vim.deep_equal(open, before) or open.bar:find("PR !101", 1, true) or STATE.chat.active then
+      return fail("#78: the panel changed when ga opened the popup: " .. vim.inspect({ before = before, now = open }))
+    end
+    -- i types in the popup's own input box; <CR> there sends to !101's agent.
+    feed("i")
+    if vim.api.nvim_get_current_win() ~= pw78.input then return fail("#78: i in the popup didn't go to its input box") end
+    feed("<Esc>")
+    vim.api.nvim_buf_set_lines(pw78.input_buf, 0, -1, false, { "hello 78" })
+    local p1_n = #p1.entries
+    feed("<CR>")
+    local sent = vim.wait(30000, function()
+      return #p1.entries > p1_n and not p1.running and AGENTS.working() == 0
+    end, 100)
+    local mine = false
+    for i = p1_n + 1, #p1.entries do
+      if p1.entries[i].role == "you" and p1.entries[i].text == "hello 78" then mine = true end
+    end
+    if not (sent and mine) then return fail("#78: <CR> in the popup didn't reach !101's agent: " .. answer(p1)) end
+    if #STATE.chat.entries ~= main_n then return fail("#78: the popup's message went to the main conversation too") end
+    local after_send = panel()
+    if after_send.log ~= before.log or after_send.input ~= before.input then
+      return fail("#78: sending from the popup changed the panel: " .. vim.inspect(after_send))
+    end
+    -- q: the popup and its buffers are gone, the panel is as it was.
+    vim.api.nvim_set_current_win(pw78.log)
+    feed("q")
+    vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+    if CHAT.popup_wins() or STATE.chat.popup_key or vim.api.nvim_buf_is_valid(pw78.log_buf)
+        or vim.api.nvim_buf_is_valid(pw78.input_buf) then
+      return fail("#78: q didn't close the popup and wipe its buffers")
+    end
+    local closed = panel()
+    if closed.log ~= before.log or closed.input ~= before.input or closed.bar ~= before.bar then
+      return fail("#78: the panel isn't as it was after q: " .. vim.inspect({ before = before, now = closed }))
+    end
+    vim.api.nvim_buf_set_lines(pin, 0, -1, false, { "" })
+    vim.api.nvim_set_current_win(pwins.log)
+    CHAT.hide()
+    vim.api.nvim_set_current_win(dw)
+  end
   vim.o.columns = cols
   -- gP in the reviewer, on a commented line: just that thread.
   require("azure-cli").open_review(101)

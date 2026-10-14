@@ -77,9 +77,27 @@ local function MAIN()
   return S.chat
 end
 
-local function STATE()
+-- The agent popup (M.popup): { log, input, key, log_buf, input_buf,
+-- entry_at, role_at } while it's open - buffers of its own, so the panel
+-- beside it keeps its conversation and what's typed in it (issue #78).
+local popup
+
+local function on_popup(b)
+  b = b or vim.api.nvim_get_current_buf()
+  return popup ~= nil and (b == popup.log_buf or b == popup.input_buf)
+end
+
+-- The conversation the panel shows.
+local function panel_state()
   local main = MAIN()
   return (main.active and main.convs[main.active]) or main
+end
+
+-- The conversation the keys pressed now act on: the popup's in the popup,
+-- else the panel's.
+local function STATE()
+  if on_popup() then return MAIN().convs[popup.key] or panel_state() end
+  return panel_state()
 end
 
 -- A plan's own conversation (made the first time): `key` = the plan's key
@@ -261,23 +279,23 @@ local ns = vim.api.nvim_create_namespace("azure_cli_chat")
 local entry_at = {}
 local role_at = {}  -- conversation line -> its role (core.render's)
 
-local function is_chat_buf(b) return b ~= nil and (b == log_buf or b == input_buf) end
+local function is_chat_buf(b) return b ~= nil and (b == log_buf or b == input_buf or on_popup(b)) end
 M.is_chat_buf = is_chat_buf
 
--- The agent popup (M.popup): { log, input, key } while it's open.
-local popup
+-- The input box / line maps of the buffers you're in: the popup's or the panel's.
+local function cur_input_buf() return on_popup() and popup.input_buf or input_buf end
+local function cur_entry_at() return on_popup() and (popup.entry_at or {}) or entry_at end
+local function cur_role_at() return on_popup() and (popup.role_at or {}) or role_at end
 
-local function render()
-  if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
-  local st = STATE()
+-- Conversation `st` into log buffer `buf`: its lines, and which role and
+-- entry each line shows.
+local function draw(buf, st)
   local lines, roles, name_end, at = CORE.render(st.entries, os.time(), agent_label(), st.queue)
-  entry_at = at
-  role_at = roles
-  vim.bo[log_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(log_buf, 0, -1, false, lines)
-  vim.bo[log_buf].modifiable = false
-  vim.api.nvim_buf_clear_namespace(log_buf, ns, 0, -1)
-  local function mark(row, col, opts) pcall(vim.api.nvim_buf_set_extmark, log_buf, ns, row, col, opts) end
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  local function mark(row, col, opts) pcall(vim.api.nvim_buf_set_extmark, buf, ns, row, col, opts) end
   for i = 1, #lines do
     local role = roles[i]
     if role then
@@ -297,13 +315,26 @@ local function render()
       end
     end
   end
+  return lines, roles, at
+end
+
+local function render()
+  local c = popup and MAIN().convs[popup.key]
+  if c and vim.api.nvim_buf_is_valid(popup.log_buf) then
+    local lines
+    lines, popup.role_at, popup.entry_at = draw(popup.log_buf, c)
+    if vim.api.nvim_win_is_valid(popup.log) and vim.api.nvim_get_current_win() ~= popup.log then
+      pcall(vim.api.nvim_win_set_cursor, popup.log, { #lines, 0 })
+    end
+  end
+  if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
+  local st = panel_state()
+  local lines
+  lines, role_at, entry_at = draw(log_buf, st)
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) and vim.api.nvim_get_current_win() ~= w.log then
       pcall(vim.api.nvim_win_set_cursor, w.log, { #lines, 0 })
     end
-  end
-  if popup and vim.api.nvim_win_is_valid(popup.log) and vim.api.nvim_get_current_win() ~= popup.log then
-    pcall(vim.api.nvim_win_set_cursor, popup.log, { #lines, 0 })
   end
   M.set_winbars()
 end
@@ -322,8 +353,8 @@ end
 
 -- A spinner frame while the agent runs (advanced by send's timer), else nil.
 local SPINNER = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
-local function spinner()
-  local run = STATE().running
+local function spinner(st)
+  local run = (st or STATE()).running
   if not run then return nil end
   return SPINNER[(run.tick or 0) % #SPINNER + 1]
 end
@@ -359,10 +390,10 @@ function M.strip()
 end
 
 function M.set_winbars()
-  local st = STATE()
+  local st = panel_state()
   local tags = {}
   local _, agent = M.current_agent()
-  local model = M.current_model(agent)
+  local model = M.current_model(agent, st)
   if model then tags[#tags + 1] = "[" .. model .. "]" end
   -- What this conversation has used: its cost when the agent reports one,
   -- else its premium requests; and how full the agent's context is.
@@ -375,7 +406,7 @@ function M.set_winbars()
   end
   local usage = table.concat(vim.tbl_filter(function(x) return x and x ~= "" end, { used, ctx }), " \u{00B7} ")
   if usage ~= "" then tags[#tags + 1] = "[" .. usage .. "]" end
-  if st.running then tags[#tags + 1] = "[" .. spinner() .. " working]" end
+  if st.running then tags[#tags + 1] = "[" .. spinner(st) .. " working]" end
   if #(st.queue or {}) > 0 then tags[#tags + 1] = "[\u{231B} " .. #st.queue .. " queued]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
@@ -421,8 +452,9 @@ local send, cancel, new_chat, show_help, pick_model, pick_agent, pick_prompt, pi
   use_as_reply, open_ref, history_step, ask_why  -- forward
 
 local function input_text()
-  if not (input_buf and vim.api.nvim_buf_is_valid(input_buf)) then return "" end
-  return vim.trim(table.concat(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), "\n"))
+  local ib = cur_input_buf()
+  if not (ib and vim.api.nvim_buf_is_valid(ib)) then return "" end
+  return vim.trim(table.concat(vim.api.nvim_buf_get_lines(ib, 0, -1, false), "\n"))
 end
 
 -- i / a in the conversation (and cc on a queued message): into the input
@@ -436,19 +468,19 @@ local function focus_input()
   end
 end
 
-local function ensure_bufs()
-  if log_buf and vim.api.nvim_buf_is_valid(log_buf) and input_buf and vim.api.nvim_buf_is_valid(input_buf) then return end
-  restore_once()
+-- A conversation and an input box with the chat's keys, named `name` and
+-- `name`-input: the panel's, or an agent popup's.
+local function make_bufs(name)
   local KEYS = require("azure-cli.keys")
-  log_buf = vim.api.nvim_create_buf(false, true)
+  local log_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[log_buf].buftype = "nofile"
   vim.bo[log_buf].filetype = "markdown"
   vim.bo[log_buf].modifiable = false
-  pcall(vim.api.nvim_buf_set_name, log_buf, "azure-cli://chat")
-  input_buf = vim.api.nvim_create_buf(false, true)
+  pcall(vim.api.nvim_buf_set_name, log_buf, name)
+  local input_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[input_buf].buftype = "nofile"
   vim.bo[input_buf].filetype = "markdown"
-  pcall(vim.api.nvim_buf_set_name, input_buf, "azure-cli://chat-input")
+  pcall(vim.api.nvim_buf_set_name, input_buf, name .. "-input")
   vim.b[log_buf].azure_cli_chat = true
   vim.b[input_buf].azure_cli_chat = true
   require("azure-cli.ui").link_hl(HL)
@@ -490,13 +522,14 @@ local function ensure_bufs()
   KEYS.bind(log_buf, "chat", "expand", function()
     -- <Tab>: all of this turn's tool calls and answer, or folded again.
     local st = STATE()
-    local idx = entry_at[vim.api.nvim_win_get_cursor(0)[1]]
+    local idx = cur_entry_at()[vim.api.nvim_win_get_cursor(0)[1]]
     local e = idx and st.entries[idx]
     if not (e and e.role == "agent") then return end
     e.open = not e.open or nil
     render()
-    for row, i in pairs(entry_at) do
-      if i == idx and role_at[row] == "agent_head" then pcall(vim.api.nvim_win_set_cursor, 0, { row, 0 }) end
+    local roles = cur_role_at()
+    for row, i in pairs(cur_entry_at()) do
+      if i == idx and roles[row] == "agent_head" then pcall(vim.api.nvim_win_set_cursor, 0, { row, 0 }) end
     end
   end, { desc = "unfold / fold this answer and its tool calls" })
   KEYS.bind(input_buf, "chat", "send", function() send() end, { desc = "send the message" })
@@ -543,6 +576,13 @@ local function ensure_bufs()
       if #items > 0 then vim.fn.complete(col - #digits, items) end
     end,
   })
+  return log_buf, input_buf
+end
+
+local function ensure_bufs()
+  if log_buf and vim.api.nvim_buf_is_valid(log_buf) and input_buf and vim.api.nvim_buf_is_valid(input_buf) then return end
+  restore_once()
+  log_buf, input_buf = make_bufs("azure-cli://chat")
   render()
 end
 
@@ -666,7 +706,7 @@ function M.show(focus)
   open_here(focus)
 end
 
--- Closes the agent popup, and the panel shows what its tab calls for again.
+-- Closes the agent popup and wipes its buffers.
 local function close_popup()
   if not popup then return end
   local p = popup
@@ -674,13 +714,16 @@ local function close_popup()
   for _, w in ipairs({ p.log, p.input }) do
     if vim.api.nvim_win_is_valid(w) then pcall(vim.api.nvim_win_close, w, true) end
   end
+  for _, b in ipairs({ p.log_buf, p.input_buf }) do
+    if vim.api.nvim_buf_is_valid(b) then pcall(vim.api.nvim_buf_delete, b, { force = true }) end
+  end
   MAIN().popup_key = nil
-  M.sync_active()
 end
 
 -- A plan's agent's conversation in a popup over the current screen (ga on
--- the PR dashboard): the chat's own buffers, so everything works the same
--- there - i to type, <CR> sends to that agent, q (or leaving it) closes.
+-- the PR dashboard): buffers of its own with the chat's keys - i to type,
+-- <CR> sends to that agent, q (or leaving it) closes - while the panel
+-- keeps showing its own conversation (issue #78).
 function M.popup(key)
   local main = MAIN()
   pcall(M.restore_plans)
@@ -689,7 +732,7 @@ function M.popup(key)
   close_popup()
   ensure_bufs()
   main.popup_key = key
-  main.active = key
+  local plog, pinput = make_bufs("azure-cli://chat-popup")
   local UI = require("azure-cli.ui")
   local width, height = UI.big_dims()
   local ih = math.max(1, config().input_height or 3)
@@ -712,18 +755,18 @@ function M.popup(key)
     UI.float_hl(w)
     return w
   end
-  local log = open(log_buf, true, { row = row, height = height, title = " " .. UI.fit(title, width - 4) .. " ",
+  local log = open(plog, true, { row = row, height = height, title = " " .. UI.fit(title, width - 4) .. " ",
     title_pos = "left" })
   UI.wo(log, "signcolumn", "yes:1")
   UI.wo(log, "conceallevel", 2)
   UI.wo(log, "concealcursor", "")
   local KEYS = require("azure-cli.keys")
-  local input = open(input_buf, false, { row = row + height + 2, height = ih, footer = " " .. KEYS.name("chat", "focus_input")
+  local input = open(pinput, false, { row = row + height + 2, height = ih, footer = " " .. KEYS.name("chat", "focus_input")
     .. " types \u{00B7} " .. KEYS.name("chat", "send") .. " sends \u{00B7} " .. KEYS.name("chat", "hide") .. " closes ",
     footer_pos = "right" })
-  popup = { log = log, input = input, key = key }
+  popup = { log = log, input = input, key = key, log_buf = plog, input_buf = pinput }
   render()
-  pcall(vim.api.nvim_win_set_cursor, log, { vim.api.nvim_buf_line_count(log_buf), 0 })
+  pcall(vim.api.nvim_win_set_cursor, log, { vim.api.nvim_buf_line_count(plog), 0 })
   local function gone(ev)
     if not popup then return true end
     local w = tonumber(ev.match) or vim.api.nvim_get_current_win()
@@ -804,7 +847,7 @@ function M.sync_active()
   local main = MAIN()
   pcall(M.restore_plans)
   local ok, key = pcall(vim.api.nvim_tabpage_get_var, 0, "azure_cli_plan_key")
-  local want = main.popup_key or ((ok and key and main.convs[key]) and key or nil)
+  local want = (ok and key and main.convs[key]) and key or nil
   if want ~= main.active then
     main.active = want
     if log_buf and vim.api.nvim_buf_is_valid(log_buf) then render() end
@@ -1019,7 +1062,9 @@ local function tool_env(entry, conv)
     -- showing another one right now (a plan's agent working in the
     -- background): such a call shouldn't pull you into a tab.
     conv = conv,
-    background = function() return conv ~= nil and STATE() ~= conv end,
+    background = function()
+      return conv ~= nil and STATE() ~= conv and not (popup and MAIN().convs[popup.key] == conv)
+    end,
     main_win = function() return entry.view_win and vim.api.nvim_win_is_valid(entry.view_win) and entry.view_win or M.main_win() end,
     -- What the user was looking at when they sent the message (selection
     -- included) - current_view answers with it.
@@ -1162,9 +1207,9 @@ M._ = {
   ask_questions = M.ask_questions,
   tool_env = tool_env, input_text = input_text, restore_once = restore_once, group = group,
   load_conversation = load_conversation, focus_input = focus_input,
-  input_buf = function() return input_buf end,
-  entry_at = function() return entry_at end,
-  role_at = function() return role_at end,
+  input_buf = cur_input_buf,
+  entry_at = cur_entry_at,
+  role_at = cur_role_at,
 }
 
 return M
