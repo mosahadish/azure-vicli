@@ -899,6 +899,59 @@ end) then return end
 smoke_ok("LINK")
 end)
 
+-- gU on the work-items dashboard (#80): #3014, a Task under the Task #3012,
+-- moves under the Bug #3002 through the picker (a level up: #3012 itself
+-- isn't offered), the tree shows it there and the fake has it; then back
+-- under #3012 by typing its id, so the sections after this one see the
+-- tree they always did. A section of its own, away from the reviewer's
+-- gd/<BS> steps and the home screens' keys.
+section("PARENT", { needs = { "TREE" } }, function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+if not require("azure-cli.state").wi_tree then feed("T") end
+local function parent_of(id)
+  local s = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, w in ipairs(s.workitems) do if w.id == id then return w.parentId end end
+end
+-- Whether the tree's row after `parent`'s is `id`'s, as a child of it.
+local function shown_under(parent, id)
+  local ls = vim.api.nvim_buf_get_lines(wis, 0, -1, false)
+  for i, l in ipairs(ls) do
+    if l:find("#" .. parent .. " ", 1, true) and ls[i + 1] then
+      return ls[i + 1]:find("\u{2514} #" .. id .. " ", 1, true) ~= nil
+    end
+  end
+  return false
+end
+ok = vim.wait(15000, function() return shown_under(3012, 3014) end, 100)
+if not ok then return fail("the tree doesn't show #3014 under #3012 to start with", wis) end
+goto_row(3014)
+feed("gU")
+ok = vim.wait(10000, function() return (float_text() or ""):find("#3002  Bug", 1, true) ~= nil end, 50)
+local offered = float_text() or ""
+if not (ok and offered:find("(no parent)", 1, true) and offered:find("(type an id", 1, true)
+    and not offered:find("#3012  Task", 1, true) and not offered:find("#3014  ", 1, true)) then
+  return fail("gU on #3014 should offer the items above a Task, type an id and no parent:\n" .. offered)
+end
+if not choose_popup("#3002  Bug") then return end
+ok = vim.wait(15000, function() return parent_of(3014) == 3002 and shown_under(3002, 3014) end, 100)
+if not ok then
+  return fail("gU didn't move #3014 under #3002 (the fake has it under #" .. tostring(parent_of(3014)) .. ")", wis)
+end
+print("== work items, #3014 moved under #3002 ==")
+print(text(wis))
+goto_row(3014)
+feed("gU")
+local real_input = vim.ui.input
+vim.ui.input = function(_, cb) cb("3012") end
+local chosen = choose_popup("(type an id")
+vim.ui.input = real_input
+if not chosen then return end
+ok = vim.wait(15000, function() return parent_of(3014) == 3012 and shown_under(3012, 3014) end, 100)
+if not ok then return fail("typing 3012 into gU didn't put #3014 back under #3012", wis) end
+smoke_ok("PARENT")
+end)
+
 -- I: the Issues tab - the same screens on the fake's GitHub project (the
 -- demo config's GitHub account has issues:), next to W. #3001 is an issue
 -- there too, on purpose: neither tab may ever show the other's.

@@ -305,6 +305,7 @@ paste the output here after changing a default.
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `set_parent` | `gU` |
 | `state` | `gs` |
 | `toggle_fold` | `za` / `<Space>` |
 | `tree` | `T` |
@@ -332,6 +333,7 @@ paste the output here after changing a default.
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `set_parent` | `gU` |
 | `state` | `gs` |
 | `unlink_pr` | `gL` |
 

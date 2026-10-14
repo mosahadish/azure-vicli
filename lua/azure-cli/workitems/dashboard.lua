@@ -17,6 +17,7 @@
 --   gp     set the item's priority
 --   ge     edit the item's title
 --   gi     move the item to another sprint of the quarter
+--   gU     move the item under another parent, or off its own (a picker)
 --   gl     link a pull request to the item under the cursor
 --   gR     open a linked pull request (in the reviewer, else the browser)
 --   [ ]    jump to the previous / next sprint in the quarter (also <S-Tab>/<Tab>)
@@ -926,6 +927,39 @@ function S.WI_ITEM_CHANGED(id, fields)
   if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
 
+-- gU (workitems/parent.lua) moved `ref` (id `id`) from parent `old` to
+-- `new` (nil: none): its parentId and the parents' childIds change in every
+-- cached list, the tree regroups, and what's under the listed items is
+-- fetched again.
+function S.WI_PARENT_CHANGED(ref_, id, old, new)
+  local key, n = tostring(ref_), tonumber(id) or id
+  local function patch(rec)
+    if is_item(rec, key) then rec.parentId = new end
+    local kids = rec.childIds
+    if type(kids) == "table" then
+      if old ~= nil and tostring(rec.id) == tostring(old) then
+        rec.childIds = vim.tbl_filter(function(c) return tostring(c) ~= tostring(id) end, kids)
+      end
+      if new ~= nil and tostring(rec.id) == tostring(new) then
+        rec.childIds = vim.tbl_filter(function(c) return tostring(c) ~= tostring(id) end, rec.childIds)
+        table.insert(rec.childIds, n)
+      end
+    end
+  end
+  for _, it in ipairs(items) do patch(it) end
+  for _, c in pairs(WI_SPRINT_ITEMS or {}) do
+    if c.items ~= items then for _, it in ipairs(c.items or {}) do patch(it) end end
+  end
+  for _, by_id in pairs(tree_kids) do
+    for _, rec in pairs(by_id) do patch(rec) end
+  end
+  focus_id = n
+  if vim.api.nvim_buf_is_valid(buf) then
+    pcall(render)
+    load_children(true)
+  end
+end
+
 -- Backward-compatible alias for the one field the dashboard's own 'gs' uses.
 function S.WI_STATE_CHANGED(id, new)
   S.WI_ITEM_CHANGED(id, { state = new })
@@ -1613,6 +1647,13 @@ local function fold_all(fold)
   render()
 end
 
+-- gU: move the item under the cursor under another parent, or off its
+-- own (workitems/parent.lua, shared with the item view).
+local function set_parent_item()
+  local it = current_item()
+  if it then require("azure-cli.workitems.parent").choose(B, it) end
+end
+
 -- gR: open a pull request linked to the item under the cursor.
 local function open_linked_pr()
   local it = current_item()
@@ -1652,6 +1693,7 @@ local WORKITEMS_HELP = {
   { "priority", "set the " .. WORDS.item .. "'s priority" },
   { "edit_title", "edit the " .. WORDS.item .. "'s title" },
   { "move_sprint", "move the " .. WORDS.item .. " to another " .. SPRINT .. " of the " .. QUARTER },
+  { "set_parent", "move the " .. WORDS.item .. " under another parent, or off its own (a picker)" },
   { "link_pr", "link a pull request to the " .. WORDS.item .. " under the cursor" },
   { "open_pr", "open a linked pull request (reviewer, or browser if it isn't in your PR list)" },
   { "unlink_pr", "unlink a pull request from the " .. WORDS.item .. " under the cursor" },
@@ -1711,6 +1753,7 @@ KEYS.bind(buf, "workitems", "assign", assign_item, { desc = "assign the " .. WOR
 KEYS.bind(buf, "workitems", "priority", set_priority, { desc = "set the " .. WORDS.item .. "'s priority" })
 KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the " .. WORDS.item .. "'s title" })
 KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the " .. WORDS.item .. " to another " .. SPRINT })
+KEYS.bind(buf, "workitems", "set_parent", set_parent_item, { desc = "move the " .. WORDS.item .. " under another parent" })
 if B.caps.links then
   KEYS.bind(buf, "workitems", "link_pr", link_pr_item, { desc = "link a pull request to the " .. WORDS.item .. " under the cursor" })
   KEYS.bind(buf, "workitems", "unlink_pr", unlink_pr_item, { desc = "unlink a pull request from the " .. WORDS.item .. " under the cursor" })

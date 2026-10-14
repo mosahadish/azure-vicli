@@ -867,6 +867,18 @@ M.undoers = {
       cb(ok, ok and ("#" .. u.id .. "'s " .. u.field .. " is back to " .. tostring(u.value) .. ".") or err)
     end)
   end,
+  set_parent = function(u, cb)
+    local B = undo_board(u)
+    M.provider({ "--wi-edit", "set-parent", u.ref or tostring(u.id), u.parent or "none" }, B.env, function(ok, out, err)
+      if ok then
+        local okd, d = pcall(vim.json.decode, out, { luanil = { object = true, array = true } })
+        d = okd and type(d) == "table" and d or {}
+        pcall(require("azure-cli.workitems.parent").changed, B, u.ref or tostring(u.id), u.id, d.previous, d.parent)
+      end
+      cb(ok, ok and ("#" .. u.id .. (u.parent == "none" and " has no parent again." or (" is under #" .. u.parent
+        .. " again."))) or err)
+    end)
+  end,
   thread_status = function(u, cb)
     local pr = M.pr_record(u.pr_id)
     if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end

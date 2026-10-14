@@ -168,9 +168,9 @@ M.WRITES = {
   overview = { comment = true, reply = true, status = true, edit_comment = true, delete_comment = true, vote = true,
     complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
   workitems = { assign = true, edit_title = true, link_pr = true, unlink_pr = true, move_sprint = true, new = true,
-    priority = true, state = true },
+    priority = true, state = true, set_parent = true },
   workitem_view = { assign = true, comment = true, edit_title = true, description = true, link_pr = true,
-    unlink_pr = true, move_sprint = true, priority = true, state = true },
+    unlink_pr = true, move_sprint = true, priority = true, state = true, set_parent = true },
 }
 local WRITE_MARK = "\u{2191}"
 

@@ -3147,9 +3147,9 @@ class WorkItemActions:
         return out
 
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select),
-                  file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+                  .format(select), file=sys.stderr)
             return 1
         if select == "items" and not item_path:
             print("ERROR: 'items' needs an iteration path", file=sys.stderr)
@@ -3158,6 +3158,8 @@ class WorkItemActions:
             return self._wi_list_ids(item_path)
         if select == "tree":
             return self._wi_list_tree(item_path)
+        if select == "parents":
+            return self._wi_list_parents(item_path)
 
         if select == "sprints":
             return self._wi_list_sprints()
@@ -3305,6 +3307,89 @@ class WorkItemActions:
         if not ids:
             return 0
         return self._wi_print_records(ids)
+
+    def _wi_levels(self):
+        """{type name: backlog level} from the team's process configuration:
+        tasks 0, requirements 1, the portfolio backlogs 2 and up by rank -
+        bugs where the team's bugsBehavior puts them (asTasks: with the
+        tasks, else with the requirements). None when the server doesn't
+        answer it (an old TFS)."""
+        team_q = urllib.parse.quote(self.team, safe="")
+        try:
+            pc = self._get("{0}/{1}/{2}/_apis/work/processconfiguration".format(self.collection, self.project, team_q))
+        except AdoHttpError:
+            return None
+        levels = {}
+
+        def put(backlog, level):
+            for t in ((backlog or {}).get("workItemTypes") or []):
+                if t.get("name") and t["name"] not in levels:
+                    levels[t["name"]] = level
+        put(pc.get("taskBacklog"), 0)
+        put(pc.get("requirementBacklog"), 1)
+        for i, b in enumerate(sorted(pc.get("portfolioBacklogs") or [], key=lambda b: b.get("rank") or 0)):
+            put(b, 2 + i)
+        if not levels:
+            return None
+        if (pc.get("bugWorkItems") or {}).get("workItemTypes"):
+            try:
+                url = "{0}/{1}/{2}/_apis/work/teamsettings".format(self.collection, self.project, team_q)
+                behavior = (self._get(url) or {}).get("bugsBehavior") or ""
+            except AdoHttpError:
+                behavior = ""
+            put(pc.get("bugWorkItems"), 0 if behavior == "asTasks" else 1)
+        return levels
+
+    def _wi_list_parents(self, wid):
+        """--wi-list parents <id>: who could be `wid`'s parent - the
+        project's open items on a higher backlog level than its type (the
+        200 changed last), as list records after a {"_parents"} line saying
+        whether the levels were known. Without them (no process
+        configuration): open items of any other type."""
+        wid = str(wid or "").lstrip("#")
+        if not wid.isdigit():
+            print("ERROR: 'parents' needs a work item id", file=sys.stderr)
+            return 1
+        try:
+            me = self._get("{0}/_apis/wit/workitems/{1}".format(self.collection, wid))
+        except AdoHttpError as e:
+            return self._list_style_error(e, "GET")
+        wtype = str((me.get("fields") or {}).get("System.WorkItemType", ""))
+        levels = self._wi_levels()
+        known = levels is not None and wtype in levels
+        if known:
+            types = sorted(t for t, lvl in levels.items() if lvl > levels[wtype])
+            print(json.dumps({"_parents": True, "type": wtype, "levels": True}, ensure_ascii=False))
+            if not types:
+                return 0  # the top level: nothing above it
+            type_clause = " AND [System.WorkItemType] IN (" + ",".join(
+                "'{0}'".format(_wi_sql_esc(t)) for t in types) + ")"
+        else:
+            types = []
+            print(json.dumps({"_parents": True, "type": wtype, "levels": False}, ensure_ascii=False))
+            type_clause = " AND [System.WorkItemType] <> '{0}'".format(_wi_sql_esc(wtype))
+        closed = []
+        for t in types:
+            try:
+                closed += [n for n, cat in self._wi_type_states(t) if cat in ("Completed", "Removed") and n not in closed]
+            except AdoHttpError:
+                continue
+        if not known:
+            closed = self._wi_closed_states()
+        if closed:
+            type_clause += " AND [System.State] NOT IN (" + ",".join(
+                "'{0}'".format(_wi_sql_esc(s)) for s in closed) + ")"
+        wiql = {"query": (
+            "SELECT [System.Id] FROM WorkItems "
+            "WHERE [System.TeamProject] = '{0}' AND [System.Id] <> {1}{2} "
+            "ORDER BY [System.ChangedDate] DESC"
+        ).format(_wi_sql_esc(self.project), wid, type_clause)}
+        try:
+            resp = self._post("{0}/{1}/_apis/wit/wiql?$top=200".format(self.collection, self.project), wiql)
+        except AdoHttpError as e:
+            return self._list_style_error(e, "POST")
+        ids = [w["id"] for w in ((resp or {}).get("workItems") or [])]
+        return self._wi_print_records(ids) if ids else 0
 
     def _wi_print_records(self, ids):
         batch_url = "{0}/_apis/wit/workitemsbatch".format(self.collection)
@@ -3659,6 +3744,8 @@ class WorkItemActions:
             return self._wi_link_pr(a2, a3, a4, a5, a6)
         if cmd == "unlink-pr":
             return self._wi_unlink_pr(a2, a3)
+        if cmd == "set-parent":
+            return self._wi_set_parent(a2, a3)
         if cmd == "create-branch":
             return self._wi_create_branch(a2, a3, a4, a5, a6, a7)
         if cmd == "delete-branch":
@@ -3666,7 +3753,7 @@ class WorkItemActions:
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | "
               "set <id> <field> <value> | comment <id> <text> | "
               "link-pr <wiId> <orgUrl> <project> <repoName> <prId> | "
-              "unlink-pr <wiId> <prId> | "
+              "unlink-pr <wiId> <prId> | set-parent <id> <parentId|none> | "
               "create-branch <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch> | "
               "delete-branch <orgUrl> <project> <repoName> <branch> [sha]", file=sys.stderr)
         return 1
@@ -3955,6 +4042,68 @@ class WorkItemActions:
             print("ERROR: unexpected response: " + json.dumps(d2)[:400], file=sys.stderr)
             return 2
         print(json.dumps({"unlinked": int(pr_id) if pr_id.isdigit() else pr_id}, ensure_ascii=False))
+        return 0
+
+    def _wi_set_parent(self, wid, parent):
+        """Moves `wid` under `parent`, or ("none") off its parent, in ONE
+        JSON patch: test /rev (so the index below still points at the parent
+        link), remove the Hierarchy-Reverse relation by its index, add the
+        new one. A patch is applied whole or not at all, so the item never
+        has two parents, or none by accident. Prints {"id", "parent",
+        "previous"} (+ "unchanged" when there was nothing to do)."""
+        wid, parent = str(wid or "").lstrip("#"), str(parent or "").strip()
+        if not wid.isdigit() or not parent:
+            print("ERROR: set-parent needs <id> <parentId|none>", file=sys.stderr)
+            return 1
+        new = None
+        if parent.lower() != "none":
+            if not parent.lstrip("#").isdigit():
+                print("ERROR: '{0}' isn't a work item id - #{1}'s parent wasn't changed".format(parent, wid),
+                      file=sys.stderr)
+                return 1
+            new = int(parent.lstrip("#"))
+            if new == int(wid):
+                print("ERROR: #{0} can't be its own parent".format(wid), file=sys.stderr)
+                return 1
+        url = "{0}/_apis/wit/workitems/{1}".format(self.collection, wid)
+        try:
+            d = self._get(url + "?$expand=relations")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        idx, old = None, None
+        for i, rel in enumerate(d.get("relations") or []):
+            m = re.search(r"/workItems/(\d+)$", rel.get("url", ""), re.I)
+            if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse" and m:
+                idx, old = i, int(m.group(1))
+                break
+        if old == new:
+            print(json.dumps({"id": int(wid), "parent": new, "previous": old, "unchanged": True}))
+            return 0
+        patch = []
+        if d.get("rev") is not None:
+            patch.append({"op": "test", "path": "/rev", "value": d.get("rev")})
+        if idx is not None:
+            patch.append({"op": "remove", "path": "/relations/{0}".format(idx)})
+        if new is not None:
+            patch.append({"op": "add", "path": "/relations/-", "value": {
+                "rel": "System.LinkTypes.Hierarchy-Reverse",
+                "url": "{0}/_apis/wit/workItems/{1}".format(self.collection, new)}})
+        try:
+            d2 = self._patch(url, patch, content_type="application/json-patch+json")
+        except AdoHttpError as e:
+            msg = self._json_message(e, 400)
+            still = "it is still under #{0}".format(old) if old else "it still has no parent"
+            if e.status in (409, 412) or "test operation" in msg.lower() or "TF401289" in msg:
+                print("ERROR: #{0} changed meanwhile - its parent wasn't changed ({1}); try again".format(wid, still),
+                      file=sys.stderr)
+            else:
+                print("ERROR: #{0}'s parent wasn't changed ({1}): HTTP {2}: {3}".format(wid, still, e.status, msg),
+                      file=sys.stderr)
+            return 2
+        if not isinstance(d2.get("fields"), dict):
+            print("ERROR: unexpected response: " + json.dumps(d2)[:400], file=sys.stderr)
+            return 2
+        print(json.dumps({"id": int(wid), "parent": new, "previous": old}))
         return 0
 
 

@@ -26,6 +26,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gp` | Set the item's priority (1-4) |
 | `ge` | Edit the item's title |
 | `gi` | Move the item to another sprint of the quarter |
+| `gU` | Move the item under another parent, or off its own (see below) |
 | `gl` | Link a pull request to the item under the cursor |
 | `T` | Tree view: everything under each item indented beneath it (remembered) |
 | `za` or `<Space>` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
@@ -42,6 +43,30 @@ row immediately and are reverted with an error if the call fails, the same
 optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
 sprint's list instead.
+
+### Changing the parent (`gU`)
+
+`gU` on a row, or in the item view, opens a picker of who could be the
+item's parent: the project's open items on a higher backlog level than its
+type (a Task gets the stories, bugs, features and epics; a Feature the
+epics), read from the team's process configuration - the 200 changed last.
+A server that won't say what its levels are (an old TFS) gets the open items
+of any other type, and the picker's title says so. Then "(type an id…)" for
+an item that isn't listed, and "(no parent)" to take it off its parent. The
+current parent is marked "(current)".
+
+The move is one update on Azure DevOps: the old parent link is removed and
+the new one added together, so the item is never under two parents, or left
+with none by accident. If someone changed the item in between, nothing is
+changed and you're asked to try again. Afterwards the tree regroups, and the
+item view and both parents' views refresh. When it fails, the message says
+the parent wasn't changed and what it still is.
+
+On GitHub the issue becomes a sub-issue of the one you pick (GitHub moves it
+off its old parent in the same call); "(no parent)" removes it from its
+parent. Issue types have no levels, so every open issue in the project is
+offered but the issue itself and what's under it. A GitHub Enterprise Server
+without sub-issues says so instead.
 
 ### Tree view (`T`)
 
@@ -148,6 +173,7 @@ is still listed, by its id alone.
 Linking works from either side, each through a popup picker (`<CR>` picks, `q` closes): `gl`/`gL` here link and unlink a PR on the item, and `gl`/`gL` on the PR dashboard or in the reviewer link and unlink a work item on the PR. Either way both dashboards, and an open detail view, show the change straight away.
 
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
+`gU` changes the parent (see above),
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
 detail on success), `o` opens the browser, `<BS>` returns to the list, and
 `?` shows its keys. It also shows the item's discussion and linked pull

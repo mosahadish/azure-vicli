@@ -681,9 +681,11 @@ class IssueActions(object):
         return self._types
 
     def cmd_wi_list(self, select, arg=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
-            _error("selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select))
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            _error("selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'".format(select))
             return 1
+        if select == "parents":
+            return self._parents(arg)
         if select == "items" and not arg:
             _error("'items' needs an iteration path")
             return 1
@@ -797,6 +799,42 @@ class IssueActions(object):
                 if cnode:
                     print(json.dumps(board.record(cnode, board.item_values(cnode)[1]), ensure_ascii=False))
                     queue.append(k)
+        return 0
+
+    def _parents(self, arg):
+        """Who could be the issue's parent: the project's open issues but
+        itself and what's under it (GitHub refuses a cycle). Issue types
+        have no levels, so none is left out for its type. After a
+        {"_parents"} line; none at all on a server without sub-issues."""
+        if not arg:
+            raise IssueError("'parents' needs an issue")
+        me = self.resolve(arg)
+        board = self.board()
+        items = self.items()
+        print(json.dumps({"_parents": True, "type": "", "levels": False, "subIssues": self._full}))
+        if not self._full:
+            return 0
+
+        def key(issue, beside=None):
+            o, r = _repo_of(issue)
+            if not r and beside:
+                o, r = beside
+            return (o.lower(), r.lower(), issue.get("number"))
+        up = {}
+        for issue, _ in items:
+            if issue.get("parent"):
+                up[key(issue)] = key(issue["parent"], _repo_of(issue))
+        mine = (me[0].lower(), me[1].lower(), me[2])
+        for issue, values in items:
+            k = key(issue)
+            if issue.get("state") == "CLOSED" or k == mine:
+                continue
+            seen, p = set(), up.get(k)
+            while p is not None and p != mine and p not in seen:
+                seen.add(p)
+                p = up.get(p)
+            if p != mine:
+                print(json.dumps(board.record(issue, values), ensure_ascii=False))
         return 0
 
     # -- detail -------------------------------------------------------------
@@ -925,13 +963,15 @@ class IssueActions(object):
             return self._link_pr(a[0], a[2], a[3], a[4])
         if cmd == "unlink-pr":
             return self._unlink_pr(a[0], a[1], a[2])
+        if cmd == "set-parent":
+            return self._set_parent(a[0], a[1])
         if cmd == "create-branch":
             return self._create_branch(a[0], a[2], a[3], a[4], a[5])
         if cmd == "delete-branch":
             return self._delete_branch(a[1], a[2], a[3], a[4])
         _error("usage: --wi-edit create <type> <title> [parentId] [iteration] | set <id> <field> <value> | "
                "comment <id> <text> | link-pr <id> <apiUrl> <owner> <repo> <prNumber> | "
-               "unlink-pr <id> <prNumber> [owner/repo] | "
+               "unlink-pr <id> <prNumber> [owner/repo] | set-parent <id> <parent|none> | "
                "create-branch <id|0> <apiUrl> <owner> <repo> <fromBranch> <newBranch> | "
                "delete-branch <apiUrl> <owner> <repo> <branch> [sha]")
         return 1
@@ -1041,6 +1081,59 @@ class IssueActions(object):
         if kept != body:
             self.client.rest("PATCH", self._rest_repo(po, pr, "/pulls/" + str(number)), {"body": kept})
         print(json.dumps({"unlinked": inum, "pr": int(number), "changed": kept != body}, ensure_ascii=False))
+        return 0
+
+    def _set_parent(self, ref, parent):
+        """Moves issue `ref` under `parent` (one sub_issues POST with
+        replace_parent, so it is never under two) or, with "none", off its
+        parent (DELETE .../sub_issue on that parent). Prints {"id",
+        "parent", "previous"} (+ "unchanged")."""
+        if not ref or not parent:
+            _error("set-parent needs <id> <parent|none>")
+            return 1
+        issue = self.issue(ref)
+        owner, repo = _repo_of(issue)
+        number = issue.get("number")
+        name = "{0}/{1}#{2}".format(owner, repo, number)
+        if not self._full:
+            raise IssueError("this GitHub server has no sub-issues, so issues can't have a parent here - "
+                             "{0}'s parent wasn't changed".format(name))
+        cur = issue.get("parent") or None
+        co, cr = _repo_of(cur) if cur else ("", "")
+        if cur and not cr:
+            co, cr = owner, repo
+        cur_key = (co.lower(), cr.lower(), cur.get("number")) if cur else None
+        still = "it is still under {0}/{1}#{2}".format(co, cr, cur.get("number")) if cur else "it still has no parent"
+        out = {"id": number, "parent": None, "previous": cur.get("number") if cur else None}
+
+        def call(method, path, data, what):
+            try:
+                self.client.rest(method, path, data)
+            except host.GitHubHttpError as e:
+                if e.status == 404:
+                    raise IssueError("{0}'s parent wasn't changed ({1}): HTTP 404 - {2} doesn't exist, or this "
+                                     "GitHub server has no sub-issues".format(name, still, what))
+                raise IssueError("{0}'s parent wasn't changed ({1}): {2}".format(name, still, _scope_hint(e)))
+        if parent.strip().lower() == "none":
+            if cur is None:
+                out["unchanged"] = True
+            else:
+                call("DELETE", self._rest_repo(co, cr, "/issues/{0}/sub_issue".format(cur.get("number"))),
+                     {"sub_issue_id": issue.get("databaseId")}, "{0}/{1}#{2}".format(co, cr, cur.get("number")))
+        else:
+            po, pr, pn = self.resolve(parent)
+            if (po.lower(), pr.lower(), pn) == (owner.lower(), repo.lower(), number):
+                raise IssueError("{0} can't be its own parent".format(name))
+            out["parent"] = pn
+            if (po.lower(), pr.lower()) != (owner.lower(), repo.lower()):
+                out["parentKey"] = host.pr_key(po, pr, pn)
+            if cur_key == (po.lower(), pr.lower(), pn):
+                out["unchanged"] = True
+            else:
+                call("POST", self._rest_repo(po, pr, "/issues/{0}/sub_issues".format(pn)),
+                     {"sub_issue_id": issue.get("databaseId"), "replace_parent": True},
+                     "{0}/{1}#{2}".format(po, pr, pn))
+        print(json.dumps(out, ensure_ascii=False))
         return 0
 
     def _create(self, wtype, title, parent, iteration):

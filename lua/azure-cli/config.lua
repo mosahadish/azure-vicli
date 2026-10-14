@@ -83,7 +83,7 @@ local DEFAULT_KEYS = {
   -- one, issues (I) on the work-items one.
   workitems = {
     open = "<CR>", state = "gs", new = "n", assign = "ga", priority = "gp",
-    edit_title = "ge", move_sprint = "gi", link_pr = "gl", browser = "o",
+    edit_title = "ge", move_sprint = "gi", set_parent = "gU", link_pr = "gl", browser = "o",
     refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P", workitems = "W", issues = "I",
     copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
@@ -94,7 +94,7 @@ local DEFAULT_KEYS = {
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
-    edit_title = "ge", description = "gE", move_sprint = "gi", comment = "gc", link_pr = "gl",
+    edit_title = "ge", description = "gE", move_sprint = "gi", set_parent = "gU", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?", palette = "g.", chat = "gq",
   },

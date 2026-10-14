@@ -104,8 +104,11 @@ WI_STATES = {
     None: [("New", "Proposed"), ("Active", "InProgress"), ("Implemented", "InProgress"),
            ("Resolved", "Resolved"), ("Closed", "Completed"), ("Removed", "Removed")],
 }
+# Backlog levels (the real one reads them from processconfiguration): a
+# parent is on a higher one.
+WI_LEVELS = {"Task": 0, "User Story": 1, "Bug": 1, "Feature": 2, "Epic": 3}
 WI_REASONS = {
-    "Active": ["Implementation started", "Work started"],
+    "Active":["Implementation started", "Work started"],
     "Resolved": ["Code complete and unit tests pass", "Fixed"],
     "Closed": ["Acceptance tests pass", "Verified"],
     "Removed": ["Removed from the backlog"],
@@ -1301,9 +1304,22 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'".format(select), file=sys.stderr)
             return 1
+        if select == "parents":
+            # Like the real one: open items on a higher backlog level.
+            w = self.wi(item_path)
+            if w is None:
+                print("ERROR: HTTP 404 GET: work item {0} does not exist".format(item_path), file=sys.stderr)
+                return 2
+            print(json.dumps({"_parents": True, "type": w["type"], "levels": True}))
+            mine = WI_LEVELS.get(w["type"], 1)
+            for x in sorted(self.state["workitems"], key=lambda x: x.get("changedDate") or "", reverse=True):
+                cat = dict(WI_STATES.get(x["type"]) or WI_STATES[None]).get(x["state"])
+                if x["id"] != w["id"] and WI_LEVELS.get(x["type"], 1) > mine and cat not in ("Completed", "Removed"):
+                    print(json.dumps(self.wi_list_record(x), ensure_ascii=False))
+            return 0
         if select == "tree":
             roots = [int(x) for x in item_path.split(",") if x.strip().isdigit()]
             if not roots:
@@ -1551,8 +1567,28 @@ class Fake:
             self.ws.save(self.state)
             print(json.dumps({"unlinked": pid}))
             return 0
+        if cmd == "set-parent":
+            w = self.wi(a2)
+            if w is None or not a3:
+                print("ERROR: set-parent needs <id> <parentId|none>", file=sys.stderr)
+                return 1
+            new = None if a3.lower() == "none" else (int(a3.lstrip("#")) if a3.lstrip("#").isdigit() else "")
+            if new == "" or (new is not None and (self.wi(str(new)) is None or new == w["id"])):
+                print("ERROR: #{0}'s parent wasn't changed: no work item {1} to put it under".format(a2, a3),
+                      file=sys.stderr)
+                return 2
+            old = w.get("parentId")
+            out = {"id": w["id"], "parent": new, "previous": old}
+            if old == new:
+                out["unchanged"] = True
+            else:
+                w["parentId"], w["changedDate"] = new, now_iso()
+                self.ws.save(self.state)
+            print(json.dumps(out))
+            return 0
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | set <id> <field> <value> | "
-              "comment <id> <text> | link-pr <wiId> <orgUrl> <project> <repoName> <prId> | unlink-pr <wiId> <prId>",
+              "comment <id> <text> | link-pr <wiId> <orgUrl> <project> <repoName> <prId> | unlink-pr <wiId> <prId> | "
+              "set-parent <id> <parentId|none>",
               file=sys.stderr)
         return 1
 
@@ -1617,9 +1653,29 @@ class Fake:
     def gh_wi_list(self, rest):
         select = rest[0] if rest else "current"
         arg = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
-            raise ValueError("selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select))
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            raise ValueError("selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+                             .format(select))
         states = GH_STATUS + ["Closed"]
+        if select == "parents":
+            # Open issues but itself and what's under it (no levels on GitHub).
+            n = self.gh_issue(arg)
+            if n is None:
+                raise ValueError("no issue {0}".format(arg))
+            print(json.dumps({"_parents": True, "type": "", "levels": False, "subIssues": True}))
+            for c in self.state["issues"]:
+                p, under = c, False
+                for _ in range(20):
+                    if p is None or p.get("parent") is None:
+                        break
+                    if p["parent"] == n["number"] and p["repo"] == n["repo"]:
+                        under = True
+                        break
+                    p = next((x for x in self.state["issues"] if x["number"] == p["parent"] and x["repo"] == p["repo"]),
+                             None)
+                if c["state"] != "CLOSED" and c is not n and not under:
+                    print(json.dumps(self.gh_record(c), ensure_ascii=False))
+            return 0
         if select == "sprints":
             sprints, cur = self.gh_sprints()
             print(json.dumps({"_sprints": True, "quarter": GH_PROJECT, "currentIndex": cur + 1, "sprints": sprints,
@@ -1850,8 +1906,27 @@ class Fake:
             self.gh_touch(n)
             print(json.dumps({"unlinked": n["number"], "pr": pr["id"], "changed": True}))
             return 0
+        if cmd == "set-parent":
+            # <id> <parent|none>: a sub-issue of the parent, in its repository.
+            n = self.gh_issue(a[0])
+            if n is None or not a[1]:
+                raise ValueError("set-parent needs <id> <parent|none>")
+            p = None if a[1].lower() == "none" else self.gh_issue(a[1])
+            if a[1].lower() != "none" and (p is None or p is n):
+                raise ValueError("{0}'s parent wasn't changed: no issue {1} to put it under".format(self.gh_key(n), a[1]))
+            if p is not None and p["repo"] != n["repo"]:
+                raise ValueError("the fake keeps sub-issues in their parent's repository")
+            old = n.get("parent")
+            out = {"id": n["number"], "parent": p["number"] if p else None, "previous": old}
+            if old == out["parent"]:
+                out["unchanged"] = True
+            else:
+                n["parent"] = out["parent"]
+                self.gh_touch(n)
+            print(json.dumps(out))
+            return 0
         raise ValueError("usage: --wi-edit create <type> <title> [parentId] [iteration] | set <id> <field> <value> | "
-                         "comment <id> <text> | link-pr | unlink-pr | create-branch | delete-branch")
+                         "comment <id> <text> | link-pr | unlink-pr | set-parent | create-branch | delete-branch")
 
     def gh_pr(self, repo, number):
         return next((p for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == repo

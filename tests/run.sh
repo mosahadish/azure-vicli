@@ -734,6 +734,7 @@ $out"
   smoke_check "smoke: the dashboard marks linked PRs and the item view lists them with title and status" PRS
   smoke_check "smoke: gs on a visual selection maps the other items onto the first one's state" SELECTION
   smoke_check "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" GS
+  smoke_check "smoke: gU moves a work item under another parent (picked, then typed) and the tree regroups" PARENT
   smoke_check "smoke: W's No sprint tab lists my open backlog/root items, and gi files one there" NOSPRINT
   smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
   # Every check above got its own result only if the script ran to its end:

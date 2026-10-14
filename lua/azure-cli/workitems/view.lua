@@ -15,7 +15,8 @@
 --   ge     edit this work item's title
 --   gE     write or edit its description (GitHub issues only)
 --   gi     move this work item to another sprint
---   gc     add a discussion comment
+--   gU     move this work item under another parent, or off its own (a picker)
+--   gc    add a discussion comment
 --   gl     link a pull request
 --   gL     unlink a pull request
 --   o      open this work item in the browser
@@ -662,6 +663,7 @@ local WORKITEM_VIEW_HELP = {
   { "edit_title", "edit this " .. ITEM .. "'s title" },
   { "description", "write or edit this " .. ITEM .. "'s description" },
   { "move_sprint", "move this " .. ITEM .. " to another " .. SPRINT },
+  { "set_parent", "move this " .. ITEM .. " under another parent, or off its own (a picker)" },
   { "comment", B.host == "github" and "add a comment" or "add a discussion comment" },
   { "link_pr", "link a pull request" },
   { "unlink_pr", "unlink a pull request" },
@@ -707,6 +709,14 @@ if B.caps.description then
     { desc = "write or edit this " .. ITEM .. "'s description" })
 end
 KEYS.bind(buf, "workitem_view", "move_sprint", move_sprint_item, { desc = "move this " .. ITEM .. " to another " .. SPRINT })
+-- gU: workitems/parent.lua, shared with the dashboard; its move reloads
+-- this view through S.WI_VIEW_RELOAD.
+KEYS.bind(buf, "workitem_view", "set_parent", function()
+  if ID == "" then return end
+  local parent = current_data and current_data.parent
+  require("azure-cli.workitems.parent").choose(B, { id = current_item.id or shown(), key = ID,
+    parentId = parent and parent.id or nil })
+end, { desc = "move this " .. ITEM .. " under another parent" })
 KEYS.bind(buf, "workitem_view", "comment", add_comment,
   { desc = B.host == "github" and "add a comment" or "add a discussion comment" })
 if B.caps.links then

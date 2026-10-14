@@ -147,7 +147,8 @@ do
   table.sort(asks)
   check("tools: what asks first - everything others see or that leaves the machine",
     table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
-      .. "complete_pull_request,create_pull_request,create_work_item,run_tests,set_thread_status,set_work_item_state,update_pr_description,vote",
+      .. "complete_pull_request,create_pull_request,create_work_item,run_tests,set_thread_status,set_work_item_parent,"
+      .. "set_work_item_state,update_pr_description,vote",
     table.concat(asks, ","))
   check("tools: links, branches, drafts, tasks and sprints don't",
     TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
@@ -187,7 +188,7 @@ do
   ST.BOARDS = saved_boards
   for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
       "create_branch", "list_sprints", "create_child_task", "create_work_item", "assign_work_item", "move_to_sprint",
-      "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents" }) do
+      "set_work_item_parent", "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents" }) do
     local props = TOOLS.by_name[name].schema.properties
     check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
       and props.board.enum[1] == "azure" and props.board.enum[2] == "github")
@@ -233,6 +234,54 @@ do
     and got[1].board == "github" and got[2].title == "Gh" and got[2].repo == "gizmos", vim.inspect(got))
   AGS.start_for_items, ST.BOARDS = real_start, saved_boards
   AZ.state.WI_LIST_CACHE, GH.state.WI_LIST_CACHE = saved_caches.az, saved_caches.gh
+
+  -- set_work_item_parent: --wi-edit set-parent on the board's ref, what it
+  -- says, the undo that puts the old parent back, and the item's screens
+  -- told (workitems/parent.lua's changed: the dashboard's hook).
+  do
+    local real_provider, calls, answer = TOOLS.provider, {}, nil
+    local moved
+    local real_hook = GH.state.WI_PARENT_CHANGED
+    GH.state.WI_PARENT_CHANGED = function(ref, id, old, new) moved = { ref, id, old, new } end
+    TOOLS.provider = function(argv, _, cb)
+      calls[#calls + 1] = argv
+      if argv[4] == "none" then return cb(true, '{"id": 7, "parent": null, "previous": 3}', "") end
+      if argv[4] == "9" then return cb(true, '{"id": 7, "parent": 9, "previous": 9, "unchanged": true}', "") end
+      if argv[4] == "5" then return cb(false, "", "#7's parent wasn't changed (it is still under #3): HTTP 400: no") end
+      cb(true, '{"id": 7, "parent": 12, "previous": 3}', "")
+    end
+    ST.BOARDS = { workItems = true, issues = { { owner = "o", project = "3" } } }
+    local res, err, undo
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = 12, board = "github", repo = "o/web" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: set-parent on the issue's ref", calls[1] and calls[1][1] == "--wi-edit"
+      and calls[1][2] == "set-parent" and calls[1][3] == "o/web#7" and calls[1][4] == "12", vim.inspect(calls))
+    check("set_work_item_parent: says where it was", res == "Moved #7 under #12 (it was under #3)." and not err,
+      tostring(res))
+    check("set_work_item_parent: the screens are told", moved and moved[1] == "o/web#7" and moved[3] == 3
+      and moved[4] == 12, vim.inspect(moved))
+    check("set_work_item_parent: the undo puts #3 back", undo and undo.op == "set_parent" and undo.parent == "3"
+      and undo.ref == "o/web#7" and undo.board == "github", vim.inspect(undo))
+    TOOLS.undoers.set_parent(undo, function(ok, msg) answer = { ok, msg } end)
+    check("set_work_item_parent: undoing runs set-parent back", calls[2] and calls[2][3] == "o/web#7"
+      and calls[2][4] == "3" and answer[1] == true and answer[2] == "#7 is under #3 again.", vim.inspect(answer))
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = "none", board = "azure" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: none takes it off, undo puts it back under #3", calls[3][3] == "7"
+      and res == "#7 has no parent now (it was under #3)." and undo.parent == "3", tostring(res))
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = 9, board = "azure" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: unchanged says so, no undo", res == "#7 is already under #9 - nothing changed."
+      and undo == nil, tostring(res))
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = 5, board = "azure" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: a failure says what didn't take", res == nil
+      and err:find("still under #3", 1, true) ~= nil, tostring(err))
+    check("set_work_item_parent: asks first, naming the move",
+      TOOLS.by_name.set_work_item_parent.confirm({ id = 7, parent_id = 12 }) == "move #7 under #12"
+        and TOOLS.by_name.set_work_item_parent.confirm({ id = 7, parent_id = "none" }) == "take #7 off its parent")
+    TOOLS.provider, GH.state.WI_PARENT_CHANGED, ST.BOARDS = real_provider, real_hook, saved_boards
+  end
 
   -- An "ask" tool: declined -> the agent hears so, run never called.
   local ran, logged, answer = false, {}, nil
@@ -635,7 +684,7 @@ do
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log and TOOLS.by_name.get_test_results
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
-    and TOOLS.undoers.set_field and TOOLS.undoers.thread_status)
+    and TOOLS.undoers.set_field and TOOLS.undoers.set_parent and TOOLS.undoers.thread_status)
 end
 
 -- --- store (in a scratch directory) --------------------------------------------------

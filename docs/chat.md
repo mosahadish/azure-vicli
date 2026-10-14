@@ -819,6 +819,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items; its description from the approved plan unless it writes one); merges one | **yes** |
 | `vote` | Votes on a PR | **yes** |
 | `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
+| `set_work_item_parent` | Moves a work item under another parent, or off its own (`"none"`) - on GitHub, makes the issue a sub-issue of the parent. Undoable: the undo puts the old parent back | **yes** |
 
 When a tool asks, a popup comes up in the middle of the screen ("The agent
 wants to vote "Approve" on PR #101."), with the diff or text it would send

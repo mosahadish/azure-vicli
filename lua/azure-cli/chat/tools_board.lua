@@ -161,6 +161,43 @@ return function(T)
       end,
     },
     {
+      name = "set_work_item_parent",
+      description = "Moves a work item under another parent work item (parent_id), or off its parent (parent_id "
+        .. "\"none\"). On Azure DevOps the old parent link is swapped for the new one in one update; on GitHub "
+        .. "(board = \"github\") the issue becomes a sub-issue of the parent issue (parent_id may be owner/repo#n "
+        .. "for another repository). Asks first.",
+      schema = { type = "object", properties = T.with_board({ id = { type = "integer" },
+        parent_id = { type = { "integer", "string" }, description = "the new parent's id, or \"none\"" } }),
+        required = { "id", "parent_id" } },
+      risk = "ask",
+      confirm = function(a)
+        local p = tostring(a.parent_id or "")
+        if p:lower() == "none" then return "take #" .. tostring(a.id) .. " off its parent" end
+        return "move #" .. tostring(a.id) .. " under " .. (p:find("#", 1, true) and p or ("#" .. p))
+      end,
+      run = function(args, env, done)
+        local B = T.board_for(args, env)
+        local ref = T.wi_ref(B, args.id, args.repo)
+        local p = tostring(args.parent_id or "")
+        if p == "" then return done(nil, "parent_id is empty: give the parent's id, or \"none\"") end
+        T.provider({ "--wi-edit", "set-parent", ref, p }, B.env, function(ok, out, err)
+          if not ok then return done(nil, "moving #" .. args.id .. " failed: " .. err) end
+          local okd, d = pcall(vim.json.decode, out, { luanil = { object = true, array = true } })
+          d = okd and type(d) == "table" and d or {}
+          if d.unchanged then
+            return done("#" .. args.id .. (d.parent and (" is already under #" .. tostring(d.parent))
+              or " has no parent already") .. " - nothing changed.")
+          end
+          pcall(require("azure-cli.workitems.parent").changed, B, ref, args.id, d.previous, d.parent)
+          done((d.parent and ("Moved #" .. args.id .. " under #" .. tostring(d.parent))
+              or ("#" .. args.id .. " has no parent now"))
+            .. (d.previous and (" (it was under #" .. tostring(d.previous) .. ").") or "."), nil,
+            { op = "set_parent", id = args.id, ref = ref, board = B.host,
+              parent = d.previous and tostring(d.previous) or "none" })
+        end)
+      end,
+    },
+    {
       name = "move_to_sprint",
       description = "Moves a work item to a sprint, by the sprint's name (\"Sprint 42\") or iteration path; "
         .. "\"none\" is the team's backlog iteration. On GitHub, an iteration (or milestone) of the project, by "

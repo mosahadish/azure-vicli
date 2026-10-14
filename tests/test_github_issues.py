@@ -115,6 +115,8 @@ class Fake(gh.Client):
                 raise AssertionError("unexpected query: " + data["query"][:120])
             for (m, prefix), ans in rest.items():
                 if m == method and path.startswith(prefix):
+                    if isinstance(ans, Exception):
+                        raise ans
                     return ans
             return {}
         self.fetch = fetch
@@ -630,6 +632,79 @@ class BranchAndLinkTests(Base):
         c = Fake(rest={("GET", "/repos/o/web/pulls/9"): pull("Closes #4")})
         run(c, "--wi-edit", "unlink-pr", "o/r#4", "9", "o/web")
         self.assertEqual(c.rest_calls("PATCH"), [])
+
+    # set-parent: one sub_issues POST with replace_parent (never under two
+    # parents), DELETE .../sub_issue on the parent for none.
+    R = {"name": "r", "owner": {"login": "o"}}
+
+    def test_set_parent_replaces_in_one_call(self):
+        c = Fake({"issue(number": {"repository": {"issue": issue(4, parent={"number": 2, "repository": self.R})}}},
+                 rest={("POST", "/repos/o/r/issues/7/sub_issues"): {}})
+        code, out, _ = run(c, "--wi-edit", "set-parent", "o/r#4", "o/r#7")
+        self.assertEqual((code, json.loads(out)), (0, {"id": 4, "parent": 7, "previous": 2}))
+        self.assertEqual(c.rest_calls(), [("POST", "/repos/o/r/issues/7/sub_issues",
+                                           {"sub_issue_id": 1004, "replace_parent": True})])
+
+    def test_set_parent_in_another_repository_names_it(self):
+        c = Fake({"issue(number": {"repository": {"issue": issue(4)}}})
+        out = json.loads(run(c, "--wi-edit", "set-parent", "o/r#4", "o/web#7")[1])
+        self.assertEqual((out["parent"], out["parentKey"]), (7, "o~web~7"))
+        self.assertEqual(c.rest_calls()[0][1], "/repos/o/web/issues/7/sub_issues")
+
+    def test_set_parent_none_removes_it_from_its_parent(self):
+        c = Fake({"issue(number": {"repository": {"issue": issue(4, parent={"number": 2, "repository": self.R})}}})
+        code, out, _ = run(c, "--wi-edit", "set-parent", "o/r#4", "none")
+        self.assertEqual((code, json.loads(out)), (0, {"id": 4, "parent": None, "previous": 2}))
+        self.assertEqual(c.rest_calls(), [("DELETE", "/repos/o/r/issues/2/sub_issue", {"sub_issue_id": 1004})])
+
+    def test_set_parent_with_nothing_to_do_calls_nothing(self):
+        c = Fake({"issue(number": {"repository": {"issue": issue(4)}}})
+        self.assertEqual(json.loads(run(c, "--wi-edit", "set-parent", "o/r#4", "none")[1])["unchanged"], True)
+        c2 = Fake({"issue(number": {"repository": {"issue": issue(4, parent={"number": 2, "repository": self.R})}}})
+        self.assertEqual(json.loads(run(c2, "--wi-edit", "set-parent", "o/r#4", "o/r#2")[1])["unchanged"], True)
+        code, _, err = run(c2, "--wi-edit", "set-parent", "o/r#4", "o/r#4")
+        self.assertEqual(code, 1)
+        self.assertIn("can't be its own parent", err)
+        self.assertEqual(c.rest_calls() + c2.rest_calls(), [])
+
+    def test_set_parent_on_a_server_without_sub_issues(self):
+        c = Fake({"subIssues": RuntimeError("GitHub GraphQL: Field 'subIssues' doesn't exist on type 'Issue'"),
+                  "issue(number": {"repository": {"issue": issue(4)}}})
+        code, _, err = run(c, "--wi-edit", "set-parent", "o/r#4", "o/r#7")
+        self.assertEqual(code, 1)
+        self.assertIn("this GitHub server has no sub-issues", err)
+        self.assertIn("o/r#4's parent wasn't changed", err)
+        self.assertEqual(c.rest_calls(), [])
+
+    def test_set_parent_failing_says_what_didnt_take(self):
+        c = Fake({"issue(number": {"repository": {"issue": issue(4, parent={"number": 2, "repository": self.R})}}},
+                 rest={("POST", "/repos/o/r/issues/7/sub_issues"): gh.GitHubHttpError(404, "u", b'{"message": "Not Found"}')})
+        code, _, err = run(c, "--wi-edit", "set-parent", "o/r#4", "o/r#7")
+        self.assertEqual(code, 1)
+        self.assertIn("o/r#4's parent wasn't changed (it is still under o/r#2): HTTP 404 - o/r#7 doesn't exist, "
+                      "or this GitHub server has no sub-issues", err)
+        c = Fake({"issue(number": {"repository": {"issue": issue(4)}}},
+                 rest={("POST", "/repos/o/r/issues/7/sub_issues"): gh.GitHubHttpError(422, "u", b'{"message": "Cycle"}')})
+        code, _, err = run(c, "--wi-edit", "set-parent", "o/r#4", "o/r#7")
+        self.assertIn("o/r#4's parent wasn't changed (it still has no parent): HTTP 422: Cycle", err)
+
+    def test_parents_are_open_issues_but_itself_and_whats_under_it(self):
+        under = lambda n: {"number": n, "repository": self.R}  # noqa: E731
+        c = Fake({"items(first": items_answer(item(issue(1), values("Todo")),
+                                              item(issue(2, parent=under(1)), values("Todo")),
+                                              item(issue(3, parent=under(2)), values("Todo")),
+                                              item(issue(4, state="CLOSED"), values("Todo")),
+                                              item(issue(5), values("Todo")))})
+        out = lines(run(c, "--wi-list", "parents", "o/r#1")[1])
+        self.assertEqual(out[0], {"_parents": True, "type": "", "levels": False, "subIssues": True})
+        self.assertEqual([r["id"] for r in out[1:]], [5])
+        self.assertEqual([r["id"] for r in lines(run(c, "--wi-list", "parents", "o/r#3")[1])[1:]], [1, 2, 5])
+
+    def test_parents_on_a_server_without_sub_issues(self):
+        c = Fake({"subIssues": RuntimeError("GitHub GraphQL: Field 'subIssues' doesn't exist on type 'Issue'"),
+                  "items(first": items_answer(item(issue(1), values("Todo")))})
+        out = lines(run(c, "--wi-list", "parents", "o/r#1")[1])
+        self.assertEqual(out, [{"_parents": True, "type": "", "levels": False, "subIssues": False}])
 
     def test_detail_lists_linked_branches(self):
         node = in_project(issue(4, linkedBranches={"nodes": [{"ref": {
