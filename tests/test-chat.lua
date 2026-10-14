@@ -821,6 +821,51 @@ do
   pcall(vim.fn.delete, PL.root() .. "/wi-91.json")
 end
 
+-- --- max_agents counts plan agents only: the main chat's turn takes no slot (#83) -----
+do
+  local AG = require("azure-cli.chat.agents")
+  local CH = require("azure-cli.chat")
+  local main = require("azure-cli.state").chat
+  local orig = { send = CH.send, agent = CH.current_agent }
+  local sent = {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.send = function(_, o)
+    o.conv.running = { entry = {} }
+    sent[#sent + 1] = o.conv.plan_key
+    return {}
+  end
+  require("azure-cli").setup({ chat = { max_agents = 3 } })
+  AG.reset()
+  local function item(id) return { id = id, title = "T" .. id } end
+  main.running = { entry = { started = os.time() } }  -- the main chat mid-turn, calling start_agents
+  AG.start_for_items({ item(901), item(902) })
+  local msg = AG.start_for_items({ item(903) })
+  check("max_agents: with two plan agents working and the main chat mid-turn, a third starts at once",
+    #sent == 3 and sent[3] == "wi-903" and #AG.queued() == 0 and AG.working() == 3 and not msg:find("waiting", 1, true),
+    vim.inspect({ sent, msg, AG.working() }))
+  msg = AG.start_for_items({ item(904) })
+  check("max_agents: a fourth queues", #sent == 3 and #AG.queued() == 1 and msg:find("1 waiting", 1, true) ~= nil, msg)
+  main.running = nil
+  AG.pump()
+  check("max_agents: the main chat's turn ending starts nothing by itself", #sent == 3 and #AG.queued() == 1)
+  main.running = { entry = { started = os.time() } }
+  AG.pump()
+  check("max_agents: the main chat starting a turn changes nothing", #sent == 3 and #AG.queued() == 1 and AG.working() == 3)
+  CH.find_conversation("wi-901").running = nil
+  AG.pump()
+  check("max_agents: a plan agent finishing starts the queued one", #sent == 4 and sent[4] == "wi-904"
+    and #AG.queued() == 0 and AG.working() == 3, vim.inspect(sent))
+  main.running = nil
+  for _, k in ipairs({ "wi-901", "wi-902", "wi-903", "wi-904" }) do
+    local c = CH.find_conversation(k)
+    if c then c.running = nil end
+    main.convs[k] = nil
+  end
+  CH.send, CH.current_agent = orig.send, orig.agent
+  AG.reset()
+  require("azure-cli").setup({})
+end
+
 -- --- chat/notes.lua: annotate_code's notes, kept across restarts ----------------------
 do
   local NOTES = require("azure-cli.chat.notes")

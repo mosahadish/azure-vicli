@@ -689,10 +689,11 @@ questions).
 `gP` on the work-items board hands the work item under the cursor - or,
 in visual mode, every one in the selected rows - to an agent of its own,
 which writes that item's plan in a conversation of its own while you
-carry on. At most `chat.max_agents` (default 3) work at the same time;
-the rest wait and start as the others finish. An agent working in the
-background doesn't pull you into its plan when it's done: the status
-strip counts the plans waiting for you.
+carry on. At most `chat.max_agents` (default 3) work at the same time
+(only plan agents count, not the main chat); the rest wait and start
+as the others finish. An agent working in the background doesn't pull
+you into its plan when it's done: the status strip counts the plans
+waiting for you.
 
 ### The main chat coordinates
 

@@ -4,10 +4,10 @@
 -- rows) hands each work item to an agent of its own: a conversation of
 -- its own (chat/init.lua's CHAT.conversation, keyed by the item's plan
 -- key) that starts with /plan, so each writes its plan while you carry on.
--- At most chat.max_agents (default 3) work at once; the rest wait here and
--- start as others finish. Once a plan is in, you review it as usual - its
--- tab's chat is that agent's conversation, so approving it there sets that
--- agent going.
+-- At most chat.max_agents (default 3) work at once (the main chat doesn't
+-- count); the rest wait here and start as others finish. Once a plan is
+-- in, you review it as usual - its tab's chat is that agent's
+-- conversation, so approving it there sets that agent going.
 --
 --   M.start_for_items(items, extra)  queues { id, title, type, state } work
 --                             items; `extra` = what the user added, passed on
@@ -42,10 +42,12 @@ function M.queued()
   return out
 end
 
--- How many conversations have a message in flight.
+-- How many plan agents have a message in flight: only conversations with a
+-- plan key take a slot - the main chat's own turn (it's mid-turn whenever
+-- it calls start_agents) never does (#83).
 function M.working()
   local n = 0
-  for _, c in ipairs(CHAT().conversations()) do if c.running then n = n + 1 end end
+  for _, c in ipairs(CHAT().conversations()) do if c.plan_key and c.running then n = n + 1 end end
   return n
 end
 
