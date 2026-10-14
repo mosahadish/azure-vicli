@@ -182,11 +182,86 @@ local function bad_flag(words, from, flags)
   end
 end
 
-local function look_only_part(part)
-  local words = vim.split(vim.trim(part), "%s+")
-  -- What a backslash escapes is that character (a Windows path's
-  -- backslashes go too, which doesn't matter for matching).
-  for k, w in ipairs(words) do words[k] = w:gsub("\\", "") end
+-- Whether sed script `s` only prints: addresses (N, $, /re/, N~M, ranges,
+-- !), the commands that print or move lines, and s/// and y/// - s's
+-- flags only g p i I m M and a count. w W r R e write files, read them or
+-- run commands; they (and anything not listed) don't count.
+local function sed_reads(s)
+  local i, n = 1, #s
+  local function at(k) return s:sub(k or i, k or i) end
+  -- Past a part closed by `d`, from just inside it.
+  local function past(d)
+    while i <= n and at() ~= d do i = i + (at() == "\\" and 2 or 1) end
+    if i > n then return false end
+    i = i + 1
+    return true
+  end
+  local function space() while at():match("^%s$") do i = i + 1 end end
+  local function digits() i = s:find("%D", i) or n + 1 end
+  -- true, false when there's no address here, nil when it's malformed.
+  local function address()
+    local c = at()
+    if c:match("^%d$") then
+      digits()
+      if at() == "~" then
+        i = i + 1
+        if not at():match("^%d$") then return nil end
+        digits()
+      end
+      return true
+    elseif c == "$" then
+      i = i + 1
+      return true
+    elseif c == "/" or c == "\\" then
+      local d = c == "/" and "/" or at(i + 1)
+      i = i + (c == "/" and 1 or 2)
+      if d == "" or d == "\\" or d == "\n" or not past(d) then return nil end
+      while at() == "I" or at() == "M" do i = i + 1 end
+      return true
+    end
+    return false
+  end
+  while true do
+    while at():match("^[%s;]$") do i = i + 1 end
+    if i > n then return true end
+    local a = address()
+    if a == nil then return false end
+    if a then
+      space()
+      if at() == "," then
+        i = i + 1
+        space()
+        if at() == "+" or at() == "~" then
+          i = i + 1
+          if not at():match("^%d$") then return false end
+          digits()
+        elseif address() ~= true then
+          return false
+        end
+      end
+    end
+    space()
+    if at() == "!" then i = i + 1; space() end
+    local c = at()
+    i = i + 1
+    if c == "s" or c == "y" then
+      local d = at()
+      i = i + 1
+      if d == "" or d:match("[%s\\]") or not past(d) or not past(d) then return false end
+      if c == "s" then while at():match("^[gpiImM%d]$") do i = i + 1 end end
+    elseif c == "q" or c == "Q" or c == "l" then
+      space()
+      while at():match("^%d$") do i = i + 1 end
+    elseif not c:match("^[pdDnNPgGhHxz={}]$") then
+      return false
+    end
+    space()
+    if i <= n and not at():match("^[;}]$") then return false end
+  end
+end
+
+-- `words`: one command, after the shell's quoting and expansion.
+local function look_only_part(words)
   local name = (words[1] or ""):lower():gsub("%.exe$", "")
   if name == "git" then
     -- Only these before the subcommand: -c / --config-env would set a pager.
@@ -196,62 +271,269 @@ local function look_only_part(part)
     return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
   end
   if name == "sed" then
-    -- Printing lines by number only (sed -n 7,30p f, sed -n '$p'): no
-    -- -i, no script file, no command but p/q - sed's w and e write and run.
-    local script
-    for k = 2, #words do
+    -- Scripts that only print (sed_reads), given first or with -e; no -i,
+    -- no -f script file.
+    local script, given = nil, false
+    local k = 2
+    while k <= #words do
       local w = words[k]
-      if w == "-n" or w == "--quiet" or w == "--silent" or w == "-E" or w == "-r" or w == "-s" then
+      if w == "--expression" or w:match("^%-[nErsz]*e$") then
+        k = k + 1
+        if not words[k] or not sed_reads(words[k]) then return false end
+        given = true
+      elseif w:sub(1, 13) == "--expression=" then
+        if not sed_reads(w:sub(14)) then return false end
+        given = true
+      elseif w == "--quiet" or w == "--silent" or w == "--regexp-extended" or w:match("^%-[nErsz]+$") then
         -- reading flags
       elseif w:match("^%-") then
         return false
       elseif not script then
         script = w
       end
+      k = k + 1
     end
-    return script ~= nil and script:match("^[%d%$]+,?[%d%$]*[pq]$") ~= nil
+    return given or (script ~= nil and sed_reads(script))
   end
   local flags = LOOK_ONLY[name]
   return flags ~= nil and not bad_flag(words, 2, flags)
 end
 
--- Whether shell command `cmd` (a string, or an argv list) only reads:
--- every part of it - split on |, &&, || and ; - is one of the commands
--- above without a flag that writes, and nothing in it redirects, runs a
--- subcommand or a script block (outside quotes: > < & ( ) { } `; inside
--- double quotes: $( and `). Pure.
-function M.look_only_command(cmd)
-  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
-  if type(cmd) ~= "string" or not cmd:match("%S") then return false end
-  local bare, bad = {}, false
+-- `cmd` split the way the shell would: statements (split on |, &&, ||,
+-- ; and newlines), each a list of words, each word a list of pieces -
+-- { text, quoted } or { var = NAME, quoted } for $NAME / ${NAME}. nil
+-- when it has anything else that runs or writes: outside quotes > < &
+-- ( ) { } ` and other $ forms; inside double quotes $( and `. Throwing
+-- errors away, or merging them, writes nothing: 2>/dev/null, 2>$null,
+-- *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file).
+local function shell_words(cmd)
+  local stmts, words, word = {}, {}, nil
+  local function add(text, quoted)
+    word = word or {}
+    local last = word[#word]
+    if last and last.text and last.quoted == quoted then last.text = last.text .. text
+    else word[#word + 1] = { text = text, quoted = quoted } end
+  end
+  local function end_word() if word then words[#words + 1] = word; word = nil end end
+  local function end_stmt()
+    end_word()
+    if #words > 0 then stmts[#stmts + 1] = words end
+    words = {}
+  end
+  local function ref(i)
+    local name = cmd:match("^%$([%a_][%w_]*)", i)
+    if name then return name, i + 1 + #name end
+    name = cmd:match("^%${([%a_][%w_]*)}", i)
+    if name then return name, i + 3 + #name end
+  end
   local i, n = 1, #cmd
   while i <= n do
     local c = cmd:sub(i, i)
-    if c == "'" or c == '"' then
-      local close = cmd:find(c, i + 1, true)
-      if not close then return false end
-      local inner = cmd:sub(i + 1, close - 1)
-      if c == '"' and (inner:find("$(", 1, true) or inner:find("`", 1, true)) then bad = true end
-      -- Kept as part of its word (find . "-delete" is still -delete), its
-      -- spaces and shell characters made harmless.
-      bare[#bare + 1] = inner:gsub("[%s|;&<>(){}`$\\]", "_")
+    if c == "'" then
+      local close = cmd:find("'", i + 1, true)
+      if not close then return nil end
+      add(cmd:sub(i + 1, close - 1), true)
       i = close + 1
+    elseif c == '"' then
+      add("", true)
+      i = i + 1
+      while true do
+        local d = cmd:sub(i, i)
+        if d == "" or d == "`" then return nil end
+        if d == '"' then i = i + 1; break end
+        if d == "\\" and cmd:sub(i + 1, i + 1):match('^[%$`"\\]$') then
+          add(cmd:sub(i + 1, i + 1), true)
+          i = i + 2
+        elseif d == "$" then
+          local name, j = ref(i)
+          if name then
+            word[#word + 1] = { var = name, quoted = true }
+            i = j
+          elseif cmd:sub(i + 1, i + 1):match("^[%w_{(@*#?!%$%-]$") then
+            return nil
+          else
+            add("$", true)
+            i = i + 1
+          end
+        else
+          add(d, true)
+          i = i + 1
+        end
+      end
+    elseif c == "\\" then
+      -- What a backslash escapes is that character (a Windows path's
+      -- backslashes go too, which doesn't matter for matching).
+      if cmd:sub(i + 1, i + 1) ~= "\n" then add(cmd:sub(i + 1, i + 1), false) end
+      i = i + 2
+    elseif c == "$" then
+      local name, j = ref(i)
+      if not name then return nil end
+      word = word or {}
+      word[#word + 1] = { var = name, quoted = false }
+      i = j
+    elseif c == "|" or c == ";" or c == "\n" then
+      end_stmt()
+      i = i + (cmd:sub(i, i + 1) == "||" and 2 or 1)
+    elseif c == "&" then
+      if cmd:sub(i + 1, i + 1) ~= "&" then return nil end
+      end_stmt()
+      i = i + 2
+    elseif c == ">" then
+      local fd = ""
+      if word and #word == 1 and not word[1].quoted and (word[1].text or ""):match("^[12*]$") then
+        fd, word = word[1].text, nil
+      else
+        end_word()
+      end
+      local after = cmd:match("^>%s*/dev/null()", i) or cmd:match("^>%s*%$null()", i)
+        or (fd == "2" and cmd:match("^>&1()", i))
+      if not after or not cmd:sub(after, after):match("^%s?$") then return nil end
+      i = after
+    elseif c:match("[<(){}`]") then
+      return nil
+    elseif c:match("%s") then
+      end_word()
+      i = i + 1
     else
-      bare[#bare + 1] = c
+      add(c, false)
       i = i + 1
     end
   end
-  if bad then return false end
-  -- Throwing errors away, or merging them, writes nothing: 2>/dev/null,
-  -- 2>$null, *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file).
-  local s = (table.concat(bare) .. " "):gsub("[12*]?>%s*/dev/null(%s)", "%1"):gsub("[12*]?>%s*%$null(%s)", "%1")
-    :gsub("2>&1(%s)", "%1")
-  s = s:gsub("&&", "\n"):gsub("||", "\n"):gsub("[|;]", "\n")
-  if s:find("[<>&(){}`$]") then return false end
-  for part in (s .. "\n"):gmatch("(.-)\n") do
-    if part:match("%S") and not look_only_part(part) then return false end
+  end_stmt()
+  return stmts
+end
+
+-- Shell variables that change what other commands do even when not
+-- exported; assigning those (or anything already in the environment,
+-- which commands inherit) isn't looking.
+local SHELL_VARS = {
+  PATH = true, IFS = true, CDPATH = true, HOME = true, GLOBIGNORE = true, PS4 = true, PWD = true, OLDPWD = true,
+  POSIXLY_CORRECT = true, TIMEFORMAT = true, TMOUT = true, OPTIND = true, OPTERR = true,
+}
+local function settable(name)
+  return not SHELL_VARS[name] and not name:match("^BASH") and os.getenv(name) == nil
+end
+
+-- What word `w` becomes with `vars` filled in: unquoted, a value splits
+-- on spaces (so B='--output x' can't hide a flag), quoted it doesn't.
+-- nil when a name isn't set by the command itself.
+local function expand(w, vars)
+  local out, cur, any = {}, "", false
+  for _, p in ipairs(w) do
+    local v = p.text or vars[p.var]
+    if v == nil then return nil end
+    if p.text or p.quoted then
+      cur, any = cur .. v, true
+    else
+      local chunks = vim.split(v, "%s+")
+      cur = cur .. chunks[1]
+      any = any or chunks[1] ~= ""
+      for k = 2, #chunks do
+        if any then out[#out + 1] = cur end
+        cur, any = chunks[k], chunks[k] ~= ""
+      end
+    end
+  end
+  if any then out[#out + 1] = cur end
+  return out
+end
+
+-- NAME and its value when word `w` is an assignment (B=origin/main).
+local function assignment(w, vars)
+  local first = w[1]
+  if not (first and first.text and not first.quoted) then return nil end
+  local name, value = first.text:match("^([%a_][%w_]*)=(.*)$")
+  if not name then return nil end
+  for k = 2, #w do
+    local v = w[k].text or vars[w[k].var]
+    if v == nil then return nil end
+    value = value .. v
+  end
+  return name, value
+end
+
+local function keyword(w, kw) return w and #w == 1 and w[1].text == kw and not w[1].quoted end
+
+-- shell_words' statements from i on as commands and for loops, up to the
+-- `done` that closes the loop they're in (`inside`), and where they end.
+-- nil when they don't parse.
+local function shell_tree(stmts, i, inside)
+  local nodes = {}
+  while i <= #stmts do
+    local s = stmts[i]
+    if keyword(s[1], "done") then
+      if not inside or #s > 1 then return nil end
+      return nodes, i + 1
+    elseif keyword(s[1], "for") then
+      -- for NAME in WORDS; do BODY; done (do may share a line with BODY).
+      local name = s[2] and #s[2] == 1 and not s[2][1].quoted and s[2][1].text
+      if not (name and name:match("^[%a_][%w_]*$") and keyword(s[3], "in")) then return nil end
+      local d = stmts[i + 1]
+      if not (d and keyword(d[1], "do")) then return nil end
+      stmts[i + 1] = vim.list_slice(d, 2)
+      local body, j = shell_tree(stmts, i + 1, true)
+      if not body then return nil end
+      nodes[#nodes + 1] = { var = name, list = vim.list_slice(s, 4), body = body }
+      i = j
+    else
+      if s[1] then nodes[#nodes + 1] = { words = s } end
+      i = i + 1
+    end
+  end
+  if inside then return nil end
+  return nodes, i
+end
+
+-- Whether every command in shell_tree's `nodes` only looks, with
+-- `vars` the variables set so far. A loop's body is checked once per
+-- value of its list (once with "" when it's empty).
+local function look_only_tree(nodes, vars)
+  for _, node in ipairs(nodes) do
+    if node.body then
+      if not settable(node.var) then return false end
+      local values = {}
+      for _, w in ipairs(node.list) do
+        local ws = expand(w, vars)
+        if not ws then return false end
+        vim.list_extend(values, ws)
+      end
+      if #values == 0 then values[1] = "" end
+      for _, v in ipairs(values) do
+        if not look_only_tree(node.body, setmetatable({ [node.var] = v }, { __index = vars })) then return false end
+      end
+    elseif assignment(node.words[1], vars) then
+      -- Only on its own (B=x; ...): FOO=1 cmd puts FOO in cmd's environment.
+      for _, w in ipairs(node.words) do
+        local name, value = assignment(w, vars)
+        if not name or not settable(name) then return false end
+        vars[name] = value
+      end
+    else
+      local words = {}
+      for _, w in ipairs(node.words) do
+        local ws = expand(w, vars)
+        if not ws then return false end
+        vim.list_extend(words, ws)
+      end
+      if not look_only_part(words) then return false end
+    end
   end
   return true
+end
+
+-- Whether shell command `cmd` (a string, or an argv list) only reads:
+-- every command in it - split on |, &&, || and ;, inside for loops too -
+-- is one of the commands above without a flag that writes, once the
+-- variables the command sets itself (B=x; ... $B) and its loop variables
+-- are filled in; and nothing in it redirects, runs a subcommand or a
+-- script block (shell_words). Reads the environment only to refuse
+-- assigning a variable that's already in it.
+function M.look_only_command(cmd)
+  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
+  if type(cmd) ~= "string" or not cmd:match("%S") then return false end
+  local stmts = shell_words(cmd)
+  local tree = stmts and shell_tree(stmts, 1, false)
+  return tree ~= nil and #tree > 0 and look_only_tree(tree, {})
 end
 
 -- The agent's reason for what it's about to do: the last paragraph it

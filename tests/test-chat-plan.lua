@@ -598,16 +598,40 @@ do
     { "rg", "-n", "Config" }, "git -C ../repo grep -n Foo", "findstr /s /n Config *.cs",
     "Get-ChildItem -Recurse -Filter *.cs -ErrorAction SilentlyContinue 2>$null | Select-Object -First 20",
     "grep -rn x src 2>/dev/null | head", "git log -5 2>&1", "Get-ChildItem src | Where-Object Name -like '*Test*'",
-    "Get-Content a.cs *>$null", "sed -n 7,30p a.lua", "grep -n x f | sed -n 1,20p | cut -c1-90; echo ----; grep -n y g" },
+    "Get-Content a.cs *>$null", "sed -n 7,30p a.lua", "grep -n x f | sed -n 1,20p | cut -c1-90; echo ----; grep -n y g",
+    "sed s/a/b/ f" },
     true)
   check("look_only_command: searching and listing", wrong == nil, wrong)
+  -- #56: git on a ref, piped to filters; a variable set on its own first.
+  wrong = all({ "B=origin/github-host; git show $B:lua/a.lua | sed -n 1,80p", "B=x; git show ${B}:f",
+    "B=x; git show \"$B:f\" | head -5", "B=x && C=$B/y; git log --oneline $C", "git show origin/x:lua/a.lua | sed -n '1,80p'",
+    "git grep -n Foo origin/x -- lua | head -20", "git log --oneline origin/x | grep fix",
+    "sed -n '/^function/,/^end/p' f", "sed -e 's/a b/c/g;p' -n f", "sed -ne '$p' f", "sed -n '0~4p;5,+2p;/x/I!d' f",
+    "sed 'y/abc/xyz/' f", "sed -E -n 's|/a/|b|gp' f", "git show x:f | sed -n '3q'" }, true)
+  check("look_only_command: refs piped to filters, a variable set first", wrong == nil, wrong)
+  -- #32: for loops whose bodies only look.
+  wrong = all({ "for d in */; do git -C \"$d\" status --short; done",
+    "for n in 1 5 9; do sed -n \"${n}p\" f; done | head", "for a in x y; do for b in 1 2; do grep -n $a$b f; done; done",
+    "B=x; for f in a b; do git show $B:$f | grep y; done", "for f in a b\ndo\n  wc -l $f\ndone" }, true)
+  check("look_only_command: a for loop of look-only commands", wrong == nil, wrong)
+  wrong = all({ "FOO=1 grep x", "GIT_PAGER=evil git log", "B=x git show $B:f", "B=--output=x; git log $B",
+    "B='--output x'; git log $B", "git show $UNSET:f", "git show ${B:-x}:f", "B=x; git show \"${B:-y}\"", "B=$(rm x); ls",
+    "git show $1", "PATH=.; ls", "HOME=/tmp; cd ~", "C=rm; $C x", "grep \"$_\" f",
+    "sed -n '1,5w out' f", "sed 's/a/b/w out' f", "sed 's/a/b/e' f", "sed --in-place s/a/b/ f", "sed -ni 1p f",
+    "sed -n 'r x' f", "sed -n 1p -e 'w x' f", "sed --expression=1e f", "sed '1!G;h;$!d' -f x f",
+    "git show x:f > out", "git show x:f | sed -n 1p > out", "git grep x origin/y | tee out",
+    "for f in $(ls); do cat $f; done", "for f in a; do rm $f; done", "for f in a; do cat $f; done > out",
+    "for ((i=0;i<3;i++)); do ls; done", "for f in a; do git checkout $f; done", "for f in a; do ls",
+    "for f in a; ls; done", "done", "for PATH in .; do ls; done", "for f in a; do cat $f; done && rm x",
+    "while read l; do echo $l; done < f", "for f in a; do echo `rm x`; done" }, false)
+  check("look_only_command: near misses that still ask", wrong == nil, wrong)
   wrong = all({ "rm -rf x", "grep x > out.txt", "find . -delete", "find . \"-delete\"", "find . -exec rm {} ;",
     "rg --pre=./evil x", "sort -ro out x", "git -c core.pager=evil log", "git push", "git branch -D x",
     "cat $(rm x)", "echo \"$(rm x)\"", "ls `rm x`", "grep x & rm y", "Remove-Item x",
     "Get-ChildItem | ForEach-Object { Remove-Item $_ }", "git diff --output=x", "git log --ext-diff",
     "grep x 'unterminated", "fd . -x rm", "(rm x)", "r\\m -rf x", "", "dotnet build", "FOO=1 grep x",
     "grep x 2>/dev/nullx", "grep x 2>out.txt", "grep x >$nullx", "ls 2>$env:TEMP/x", "Get-ChildItem | Where-Object { $_.Delete() }",
-    "grep x 2>&1 > out.txt", "sed -i s/a/b/ f", "sed s/a/b/ f", "sed -n 1w out f", "sed -n 1e f", "sed -f s.sed f" }, false)
+    "grep x 2>&1 > out.txt", "sed -i s/a/b/ f", "sed -n 1w out f", "sed -n 1e f", "sed -f s.sed f" }, false)
   check("look_only_command: anything that writes or runs something else", wrong == nil, wrong)
 end
 
