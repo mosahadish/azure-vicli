@@ -418,6 +418,18 @@ do
       and FIX.inside(wt, "/c/wt/App-wi10/a.cs") == nil and FIX.inside(wt, "/etc/passwd") == nil
       and FIX.inside(wt, "x/../../a") == nil and FIX.inside(wt, ".git/config") == nil and FIX.inside(wt, ".") == nil
       and FIX.inside(wt, "") == nil)
+    -- show_fix / commit_and_push_fix: the PR's CI (#51).
+    local S = require("azure-cli.state")
+    local saved = S.PR_LIST_CACHE
+    S.PR_LIST_CACHE = { prs = { { id = 120, source = "feature/x", buildStatus = "failed" },
+      { id = 121, source = "github-host", buildStatus = "" } } }
+    local by_id, by_branch = FIX.ci(120, "whatever"), FIX.ci(nil, "github-host")
+    check("ci: a fix's PR by id, with its build", by_id and by_id.pr == 120 and by_id.build == "failed"
+      and by_id.note:find("get_build_log", 1, true) ~= nil, vim.inspect(by_id))
+    check("ci: a story's PR by its branch, no build reads none", by_branch and by_branch.pr == 121
+      and by_branch.build == "none", vim.inspect(by_branch))
+    check("ci: nothing without a PR", FIX.ci(nil, "feature/none") == nil and FIX.ci(nil, nil) == nil)
+    S.PR_LIST_CACHE = saved
   end
   do
     -- find_implementations / find_definition's patterns against real git grep.

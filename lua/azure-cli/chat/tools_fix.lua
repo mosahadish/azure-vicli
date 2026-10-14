@@ -84,6 +84,23 @@ function M.find_story(id)
   return nil
 end
 
+-- The CI of the pull request behind a change (#51): PR `pr_id` for a fix,
+-- else the dashboard's PR from `branch` (a story's). { pr, build, note }, or
+-- nil when there's no such PR. Only reported, never waited on.
+function M.ci(pr_id, branch)
+  local pr = pr_id and require("azure-cli.chat.tools").pr_record(pr_id)
+  if not pr and branch then
+    for _, p in ipairs((require("azure-cli.state").PR_LIST_CACHE or {}).prs or {}) do
+      if p.source == branch then pr = p break end
+    end
+  end
+  if not pr then return nil end
+  local build = pr.buildStatus
+  return { pr = pr.id, build = (build and build ~= "") and build or "none",
+    note = "The PR's CI as the dashboard last saw it. The change isn't done until it passes: get_pull_request "
+      .. "reads it fresh, get_build_log says why it failed." }
+end
+
 -- The worktree's change: `git add -A -N` first so new files show, then the
 -- diff against its base. cb(ok, diff, stat).
 function M.diff(wt, cb, git)
@@ -364,7 +381,7 @@ setmetatable(M, { __call = function(_, T)
           end
           if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
           done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked,
-            shown = not hidden,
+            shown = not hidden, ci = M.ci(args.pr_id, t.branch),
             note = hidden and ("The user is looking at something else: the change isn't on screen, but it waits for "
               .. "them on the Agents screen - say it's ready, not that you opened it.") or nil })
         end, T.git)
@@ -436,7 +453,13 @@ setmetatable(M, { __call = function(_, T)
                 elseif t.wi and not (rec and rec.pr) then
                   next_step = " Offer to open a pull request for it (create_pull_request, linking the work item)."
                 end
-                done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")." .. next_step)
+                -- CI runs on what was just pushed: not done until it passes.
+                local ci = M.ci(args.pr_id, t.branch)
+                local ci_step = ci and (" CI on PR !" .. tostring(ci.pr) .. " now runs on " .. vim.trim(sha)
+                  .. " (it was " .. ci.build .. " before this push): it isn't done until that passes - check "
+                  .. "get_pull_request, and get_build_log if it fails, before calling it done.")
+                  or " If this branch has a pull request, its CI now runs on it: check it passes before calling it done."
+                done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")." .. ci_step .. next_step)
               end)
             end)
           end)

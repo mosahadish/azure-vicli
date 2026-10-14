@@ -631,10 +631,19 @@ do
   local before_i = #log_lines()
   local tabs_before = {}
   for _, tp in ipairs(vim.api.nvim_list_tabpages()) do tabs_before[tp] = true end
+  -- `argv` run to the end with `env` added, its stdout as one string. Not
+  -- vim.system: that's 0.10+, and CI runs apt's Neovim 0.9 (#51).
+  local function run_sync(argv, env)
+    local out = {}
+    local job = vim.fn.jobstart(argv, { env = env, stdout_buffered = true,
+      on_stdout = function(_, data) out = data end })
+    if job <= 0 then return "" end
+    vim.fn.jobwait({ job }, 10000)
+    return table.concat(out, "\n")
+  end
   local function gh_detail(ref)
-    local r = vim.system(require("azure-cli.config").provider_argv("--wi-detail", ref),
-      { env = { AZVICLI_WI_HOST = "github" }, text = true }):wait()
-    local okj, data = pcall(vim.json.decode, r.stdout or "")
+    local out = run_sync(require("azure-cli.config").provider_argv("--wi-detail", ref), { AZVICLI_WI_HOST = "github" })
+    local okj, data = pcall(vim.json.decode, out)
     return okj and type(data) == "table" and data.item or {}
   end
   local has
@@ -703,9 +712,8 @@ do
   vim.cmd("stopinsert")
   feed("ZZ")
   ok = vim.wait(15000, function()
-    local r = vim.system(require("azure-cli.config").provider_argv("--wi-detail", "demo-gh~gizmos~3001"),
-      { env = { AZVICLI_WI_HOST = "github" }, text = true }):wait()
-    return (r.stdout or ""):find("Spins at 4000 rpm here.", 1, true) ~= nil
+    return run_sync(require("azure-cli.config").provider_argv("--wi-detail", "demo-gh~gizmos~3001"),
+      { AZVICLI_WI_HOST = "github" }):find("Spins at 4000 rpm here.", 1, true) ~= nil
   end, 200)
   if not ok then return fail("gc never commented on the issue", iview) end
   -- Read back: the comment with its real author and a date, not "Me".

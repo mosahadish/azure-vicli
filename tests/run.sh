@@ -14,7 +14,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The twenty-nine Lua unit tests below it in this directory, against a
+#   4. The thirty-one Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed provider --threads.
 #   5. `python3 -m unittest` over tests/test_*.py - unit tests for
 #      azure-cli.py (the YAML-subset config parser, PR classification,
@@ -248,6 +248,7 @@ PROMPT_LUA="$TMP/lua/lua/azure-cli/prompt.lua"
 PRS_LUA="$TMP/lua/lua/azure-cli/prs.lua"
 MERGE_LUA="$TMP/lua/lua/azure-cli/merge.lua"
 HOSTS_LUA="$TMP/lua/lua/azure-cli/hosts.lua"
+SHELL_LUA="$TMP/lua/lua/azure-cli/shell.lua"
 PANE_LUA="$TMP/lua/lua/azure-cli/review/pane.lua"
 VIEWED_LUA="$TMP/lua/lua/azure-cli/review/viewed.lua"
 FILELIST_LUA="$TMP/lua/lua/azure-cli/review/filelist.lua"
@@ -314,6 +315,7 @@ run_lua_test test-prompt.lua "$REPO_ROOT" "$PROMPT_LUA"
 run_lua_test test-prs.lua "$REPO_ROOT" "$PRS_LUA"
 run_lua_test test-merge.lua "$REPO_ROOT" "$MERGE_LUA"
 run_lua_test test-hosts.lua "$REPO_ROOT" "$HOSTS_LUA"
+run_lua_test test-shell.lua "$REPO_ROOT" "$SHELL_LUA"
 run_lua_test test-state-dialog.lua "$REPO_ROOT" "$STATE_DIALOG_LUA"
 run_lua_test test-linked-prs.lua "$REPO_ROOT" "$LINKED_PRS_LUA"
 run_lua_test test-pr-workitems.lua "$REPO_ROOT" "$PR_WORKITEMS_LUA"
