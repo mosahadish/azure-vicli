@@ -22,7 +22,7 @@ local DEFAULT_KEYS = {
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
-    agent_chat = "ga",
+    agent_chat = "ga", chat_input = "i",
   },
   -- Reviewer file list.
   list = {
@@ -89,7 +89,7 @@ local DEFAULT_KEYS = {
     copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
-    plan_agents = "gP", agents = "A",
+    plan_agents = "gP", agents = "A", chat_input = "i",
   },
   -- Work-item detail view.
   workitem_view = {
@@ -114,7 +114,7 @@ local DEFAULT_KEYS = {
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
-    show_finished = "gF",
+    show_finished = "gF", chat_input = "i",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {

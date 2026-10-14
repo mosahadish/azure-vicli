@@ -241,6 +241,8 @@ local function render()
     if waiting > 0 then hints[#hints + 1] = { "agents", "approve", "approve (" .. waiting .. " waiting)" } end
     hints[#hints + 1] = { "agents", "changes", "its change" }
     hints[#hints + 1] = { "agents", "run_log", "what happened" }
+    hints[#hints + 1] = { "agents", "chat", "its conversation" }
+    hints[#hints + 1] = { "agents", "chat_input", "type in the chat" }
     hints[#hints + 1] = { "agents", "help", "all keys" }
     local text, hhls = require("azure-cli.keys").hint_line(hints, "  ")
     lines[#lines + 1] = ""
@@ -321,6 +323,7 @@ local HELP = {
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
   "Window",
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
   { "issues", "the issues board (GitHub)" },
   { "show_finished", "show (or hide again) the agents finished over " .. M.FINISHED_DAYS .. " days ago" },
@@ -351,6 +354,9 @@ local function setup(buf)
       notify((r.label or "") .. " hasn't written its plan yet - its conversation shows in the plan's tab once it has.")
     end
   end, { desc = "its conversation" })
+  -- i: straight into the chat's input box, the panel opened if it's hidden.
+  K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
+    { desc = "type in the chat (opens the panel; a draft stays)" })
   K.bind(buf, "agents", "cancel", function()
     local r = row_here()
     if not (r and r.conv and r.conv.running) then return notify("That agent isn't doing anything.") end

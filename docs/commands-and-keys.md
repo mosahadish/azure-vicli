@@ -100,6 +100,7 @@ paste the output here after changing a default.
 | `agents` | `A` |
 | `browser` | `o` |
 | `chat` | `gq` |
+| `chat_input` | `i` |
 | `collapse_all` | `zM` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -280,6 +281,7 @@ paste the output here after changing a default.
 | `assign` | `ga` |
 | `browser` | `o` |
 | `chat` | `gq` |
+| `chat_input` | `i` |
 | `click` | `<LeftMouse>` |
 | `collapse_all` | `zM` |
 | `config` | `gO` |
@@ -403,6 +405,7 @@ paste the output here after changing a default.
 | `cancel` | `<C-c>` |
 | `changes` | `gd` |
 | `chat` | `gq` |
+| `chat_input` | `i` |
 | `help` | `?` |
 | `issues` | `I` |
 | `open` | `<CR>` |

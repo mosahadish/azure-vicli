@@ -241,5 +241,13 @@ do
   config.setup({})
 end
 
+-- 12. i types in the chat on the home screens only (the PR dashboard, the
+-- boards, Agents); everywhere else it's still Vim's own i.
+check("chat_input is i on the home screens", keys.resolve("dashboard", "chat_input") == "i"
+  and keys.resolve("workitems", "chat_input") == "i" and keys.resolve("agents", "chat_input") == "i")
+for _, s in ipairs({ "diff", "list", "workitem_view" }) do
+  check("no chat_input on " .. s, config.get().keys[s].chat_input == nil)
+end
+
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

@@ -1661,6 +1661,7 @@ local WORKITEMS_HELP = {
   { "plan_agents", "an agent plans this " .. WORDS.item .. " (in visual mode: one agent per selected item)" },
   { "agents", "every plan's agent: what each is doing (the Agents screen)" },
   { "chat", "the chat, about the " .. WORDS.item .. " under the cursor" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   "Session",
   { "new", "new " .. WORDS.item .. ": type, title, and parent (if the cursor is on one)" },
   { "refresh", "refresh" },
@@ -1675,7 +1676,7 @@ local WORKITEMS_HELP = {
 -- key for the screen you're on, and I until --boards says there are issues.
 local UNBOUND = {
   link_pr = not B.caps.links, unlink_pr = not B.caps.links,
-  chat = not B.caps.chat, plan_agents = not B.caps.plan_agents,
+  chat = not B.caps.chat, chat_input = not B.caps.chat, plan_agents = not B.caps.plan_agents,
   workitems = B.host == "azure", issues = B.host == "github" or not BOARD.has_issues(),
 }
 local function show_help()
@@ -1752,6 +1753,9 @@ KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.home").go("a
 if B.caps.chat then
 -- gq: the chat panel, told about the work item under the cursor.
 require("azure-cli.chat").bind_toggle(buf, "workitems")
+-- i: straight into the chat's input box, the panel opened if it's hidden.
+KEYS.bind(buf, "workitems", "chat_input", function() require("azure-cli.chat").show(true) end,
+  { desc = "type in the chat (opens the panel; a draft stays)" })
 end
 if B.caps.plan_agents then
 -- gP: an agent per work item - the one under the cursor, or every one in

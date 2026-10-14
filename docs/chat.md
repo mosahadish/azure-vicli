@@ -40,7 +40,10 @@ it opens the panel, or jumps into it if it's already showing, and puts you
 in its input box. `gq` (or `q`) inside the panel hides it, and `<BS>` goes
 back to the screen next to it while leaving it open. Once shown, the panel
 appears in every azure-vicli tab you visit (dashboard, reviewer, work items)
-until you hide it. The conversation is the same in every tab.
+until you hide it. The conversation is the same in every tab. On the PR
+dashboard, the Work items / Issues boards and the Agents screen, `i` goes
+straight into the input box too (opening the panel if it's hidden), keeping
+whatever you had typed there.
 
 | Key (in the panel) | Action |
 |---|---|

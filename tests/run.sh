@@ -728,6 +728,7 @@ $out"
   smoke_check "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" AGENTS
   smoke_check "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" BATCHQ
   smoke_check "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" CHAT
+  smoke_check "smoke: i on the PR dashboard, Issues and Agents types in the chat, keeping a draft" CHATI
   smoke_check "smoke: both dashboards number their rows relatively inside the box, following the cursor" ROWNUM
   smoke_check "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them" TREE
   smoke_check "smoke: the dashboard marks linked PRs and the item view lists them with title and status" PRS

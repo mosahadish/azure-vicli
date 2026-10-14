@@ -201,6 +201,8 @@ local DASHBOARD_ACTIONS = {
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
   { "agent_chat", "its agent's chat, in a popup" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
+  "Chat",
+  { "chat", "the chat panel" }, { "chat_input", "type in the chat" },
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "issues", "issues (GitHub)" },
   { "agents", "every plan's agent (the Agents screen)" },
@@ -1007,6 +1009,8 @@ local DASHBOARD_HELP_DESCS = {
   refresh = "refresh",
   workitems = "switch to the work-items dashboard",
   issues = "switch to the issues dashboard (a GitHub account's issues: project)",
+  chat = "go to the chat panel, opening or closing it",
+  chat_input = "type in the chat (opens the panel; a draft stays)",
   quit = "quit",
   help = "this help",
 }
@@ -1952,6 +1956,9 @@ KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 -- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
 -- the PR under the cursor (chat/view.lua).
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
+-- i: straight into the chat's input box, the panel opened if it's hidden.
+KEYS.bind(buf, "dashboard", "chat_input", function() require("azure-cli.chat").show(true) end,
+  { desc = "type in the chat (opens the panel; a draft stays)" })
 KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
 -- ga: the agent working on the PR under the cursor, its conversation in a

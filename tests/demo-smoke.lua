@@ -1426,6 +1426,64 @@ section("CHAT", function()
   vim.ui.select = real_select
   smoke_ok("CHAT")
 end)
+-- i on the PR dashboard, the work-items board (and Issues when there are
+-- some) and the Agents screen: into the chat's input box in insert mode,
+-- opening the panel when it's hidden and keeping a draft when it shows.
+section("CHATI", function()
+  local CHAT = require("azure-cli.chat")
+  -- The mode and buffer `i` leaves you in, read by a <Cmd> right after it
+  -- (feedkeys' "x" leaves insert mode once the keys run out; "x!" would
+  -- wait for more input forever in a headless nvim).
+  local function insert_i()
+    _G.__chati = nil
+    feed("i<Cmd>lua _G.__chati = { vim.api.nvim_get_mode().mode, vim.api.nvim_buf_get_name(0) }<CR>")
+    pcall(vim.cmd, "stopinsert")
+    local got = _G.__chati or { "?", "?" }
+    _G.__chati = nil
+    return got[1], got[2]
+  end
+  local function check(what, buf)
+    local w = buf and vim.fn.win_findbuf(buf)[1]
+    if not w then return fail(what .. " isn't showing") end
+    vim.fn.win_gotoid(w)
+    CHAT.hide()
+    vim.api.nvim_set_current_win(w)
+    local tab = vim.api.nvim_get_current_tabpage()
+    local mode, name = insert_i()
+    if vim.api.nvim_get_current_tabpage() ~= tab then return fail("i on " .. what .. " left its tab") end
+    if not vim.endswith(name, "azure-cli://chat-input") then return fail("i on " .. what .. " didn't go into the chat's input box: " .. name) end
+    if mode ~= "i" then return fail("i on " .. what .. " left the mode " .. mode .. ", not insert") end
+    local input = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(input, 0, -1, false, { "draft 79" })
+    vim.api.nvim_set_current_win(w)
+    mode, name = insert_i()
+    if not vim.endswith(name, "azure-cli://chat-input") then return fail("i on " .. what .. " with the panel showing didn't go into its input: " .. name) end
+    if mode ~= "i" then return fail("i on " .. what .. " with the panel showing left the mode " .. mode) end
+    local lines = vim.api.nvim_buf_get_lines(input, 0, -1, false)
+    if #lines ~= 1 or lines[1] ~= "draft 79" then return fail("i on " .. what .. " lost the draft: " .. vim.inspect(lines)) end
+    vim.api.nvim_buf_set_lines(input, 0, -1, false, {})
+    CHAT.hide()
+  end
+  check("the PR dashboard", ensure_dashboard())
+  check("the work-items board", ensure_workitems())
+  if require("azure-cli.workitems.board").has_issues() then
+    require("azure-cli.home").go("issues")
+    local ib = shown_buf("azurecli-issues")
+    if ib then check("the issues board", ib) end
+  end
+  local AV = require("azure-cli.chat.agents_view")
+  local had_agents = AV.current() ~= nil
+  require("azure-cli.home").go("agents")
+  local av = AV.current()
+  if not av then return fail("the Agents screen didn't open") end
+  check("the Agents screen", av.buf)
+  if not had_agents then
+    vim.api.nvim_set_current_tabpage(av.tab)
+    vim.cmd("tabclose")
+  end
+  goto_buf(dash)
+  smoke_ok("CHATI")
+end)
 -- The chat, part two: streamed answers (stream-json), a visual selection
 -- and !refs in the message, a saved prompt (/build) reading a build log,
 -- open_in_ui, annotate_code, the fix flow (worktree -> diff -> commit and
