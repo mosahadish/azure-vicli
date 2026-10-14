@@ -352,6 +352,34 @@ do
   vim.wait(100, function() return yes ~= nil end, 10)
   check("#30 a long Bash command: <Esc> denies", yes == false, tostring(yes))
 end
+do
+  -- #62: the #29 agent's command, the way Claude Code asks for it, again
+  -- and again: allowed without a popup every time, once LuaJIT has
+  -- compiled the look-only check too. One that writes still asks.
+  local RUN = require("azure-cli.chat.run")
+  local cmd = "R=origin/github-host; git grep -nE \"choosing|function M\\.(input|choose|text)\" $R -- "
+    .. "lua/azure-cli/ui.lua lua/azure-cli/prompt.lua | sed 's/^origin\\/github-host://'; "
+    .. "git show $R:lua/azure-cli/prompt.lua | sed -n 1,30p"
+  local entry, asked = { tools = {}, text = "" }, nil
+  for k = 1, 200 do
+    local yes
+    RUN.decide_permission(nil, entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) yes = y end)
+    if yes ~= true then asked = k; break end
+  end
+  if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+  check("#62 a look-only command with s/a\\/b// is allowed every time", asked == nil
+    and (entry.tools[#entry.tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+    asked and ("asked on call " .. asked) or entry.tools[#entry.tools])
+  local yes
+  RUN.decide_permission(nil, entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd .. " > out" } }),
+    function(y) yes = y end)
+  vim.wait(500)
+  local popup = yes == nil
+  feed("<Esc>")
+  vim.wait(100, function() return yes ~= nil end, 10)
+  check("#62 the same command writing to a file still asks", popup and yes == false, tostring(yes))
+end
 
 -- Approving a plan: three buttons, p lets it push.
 do

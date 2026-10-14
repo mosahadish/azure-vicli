@@ -189,12 +189,17 @@ end
 local function sed_reads(s)
   local i, n = 1, #s
   local function at(k) return s:sub(k or i, k or i) end
-  -- Past a part closed by `d`, from just inside it.
+  -- Past a part closed by `d`, from just inside it. Jumps with find: a
+  -- loop stepping over \x one character at a time went wrong once
+  -- LuaJIT compiled it, refusing s/a\/b// after a few commands (#62).
   local function past(d)
-    while i <= n and at() ~= d do i = i + (at() == "\\" and 2 or 1) end
-    if i > n then return false end
-    i = i + 1
-    return true
+    local stop = "[\\" .. d:gsub("%W", "%%%0") .. "]"
+    while true do
+      local k = s:find(stop, i)
+      if not k then i = n + 1; return false end
+      if s:sub(k, k) == d then i = k + 1; return true end
+      i = k + 2
+    end
   end
   local function space() while at():match("^%s$") do i = i + 1 end end
   local function digits() i = s:find("%D", i) or n + 1 end

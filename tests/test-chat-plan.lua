@@ -675,6 +675,24 @@ do
     "grep x 2>/dev/nullx", "grep x 2>out.txt", "grep x >$nullx", "ls 2>$env:TEMP/x", "Get-ChildItem | Where-Object { $_.Delete() }",
     "grep x 2>&1 > out.txt", "sed -i s/a/b/ f", "sed -n 1w out f", "sed -n 1e f", "sed -f s.sed f" }, false)
   check("look_only_command: anything that writes or runs something else", wrong == nil, wrong)
+  -- #62: the #29 agent's commands, as its popup got them. Fine at first,
+  -- refused from the 4th call once LuaJIT compiled sed_reads' loop.
+  local function again(list, want)
+    for k = 1, 200 do
+      local c = all(list, want)
+      if c then return k .. ": " .. c end
+    end
+  end
+  wrong = again({ "R=origin/github-host; git grep -nE \"choosing|function M\\.(input|choose|text)\" $R -- "
+      .. "lua/azure-cli/ui.lua lua/azure-cli/prompt.lua | sed 's/^origin\\/github-host://'; "
+      .. "git show $R:lua/azure-cli/prompt.lua | sed -n 1,30p",
+    "R=origin/github-host; git grep -nE \"send_insert|focus_input\" $R -- lua | sed 's/^origin\\/github-host://' | head; "
+      .. "git show $R:docs/commands-and-keys.md | sed -n 340,380p",
+    "sed 's/^origin\\/github-host://'", "sed -n 's|a\\|b|c|p' f" }, true)
+  check("look_only_command: s/// with an escaped delimiter, called again and again (#62)", wrong == nil, wrong)
+  wrong = again({ "sed 's/a\\/b/c/w out' f", "git grep x origin/y | sed 's/^origin\\/y://' > out",
+    "sed 's/a\\/b/c/e' f", "sed 's/a\\/b' f" }, false)
+  check("look_only_command: writes still ask, called again and again (#62)", wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------
