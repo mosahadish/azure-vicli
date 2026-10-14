@@ -1342,3 +1342,32 @@ class AccountsFromSetupTests(unittest.TestCase):
             checks = ac.doctor_checks()
         self.assertEqual([c["check"] for c in checks], ["config source", "config parses"])
         self.assertFalse(checks[1]["ok"])
+
+
+class BoardsTests(unittest.TestCase):
+    """--boards: which work-item boards the config has, for the I tab."""
+
+    def test_azure_only_has_no_issues(self):
+        cfg = ac.Config.from_dict({"accounts": [
+            {"project_name": "P", "org_url": "https://dev.azure.com/x", "pat": "t", "work_items": {"team": "T"}},
+            {"host": "github", "owner": "o"}]})
+        self.assertEqual(ac.boards(cfg), {"workItems": True, "issues": []})
+
+    def test_github_accounts_with_issues(self):
+        cfg = ac.Config.from_string("accounts:\n  - host: github\n    owner: o\n    issues: { project: 3, scope: all }\n"
+                                    "  - host: github\n    owner: p\n    issues:\n      project: Road Map\n")
+        self.assertEqual(ac.boards(cfg), {"workItems": False, "issues": [
+            {"owner": "o", "project": "3", "scope": "all"}, {"owner": "p", "project": "Road Map", "scope": "mine"}]})
+
+    def test_the_flag_reads_the_config_only(self):
+        with mock.patch.object(ac, "get_cached_config", return_value=ac.Config.from_dict(
+                {"accounts": [{"host": "github", "issues": {"project": 1}}]})), \
+                mock.patch.object(ac.Config, "is_configured", return_value=True):
+            code, out, _ = ac.dispatch(["--boards"], {})
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["issues"][0]["project"], "1")
+
+    def test_no_config_yet_is_no_boards(self):
+        with mock.patch.object(ac.Config, "is_configured", return_value=False):
+            code, out, _ = ac.dispatch(["--boards"], {})
+        self.assertEqual((code, json.loads(out)), (0, {"workItems": False, "issues": []}))

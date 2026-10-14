@@ -66,6 +66,7 @@ accounts:
     clones_dir: ~/src
     # api_url: https://ghe.example.com/api/v3   # GitHub Enterprise Server (default: github.com)
     # pat_file: ~/.config/azure-cli/gh-token    # optional: without one, `gh auth token` is used
+    # issues: { project: 3 }                    # optional: the Issues tab (I) on this Projects v2 project
 ```
 
 | Field | Meaning |
@@ -75,9 +76,33 @@ accounts:
 | `api_url` | Optional. The REST root of a GitHub Enterprise Server (`https://<host>/api/v3`); default `https://api.github.com`. |
 | `pat` / `pat_file` | Optional. A token with the `repo` scope. Without one, the provider asks the GitHub CLI (`gh auth token`, for the account's host) - so after `gh auth login` nothing else is needed. |
 | `clones_dir`, `hide_ancient` | As for an Azure account. |
+| `issues` | Optional. Turns on the [Issues tab](work-items.md#issues-github) (`I`) for a GitHub Projects v2 project; see below. |
 
-`project_name`, `org_url` and `work_items` don't apply (the work-item screens
-stay Azure DevOps'). `:AzureCli doctor` checks the sign-in.
+`project_name`, `org_url` and `work_items` don't apply. `:AzureCli doctor`
+checks the sign-in, and with `issues:` that the project can be read.
+
+**`issues:`** shows the issues in one of the owner's Projects v2 projects on
+the work-items screens, as a tab of their own (`I`), next to the Azure work
+items (`W`):
+
+```yaml
+    issues:
+      project: 3          # the project's number (from its URL) or its title
+      repo: gizmos        # optional: where `n` creates issues
+      scope: all          # optional: mine (default) or all
+```
+
+| Field | Meaning |
+|---|---|
+| `project` | Required. The project, by its number (`github.com/orgs/<owner>/projects/<number>`) or its title. |
+| `repo` | Optional. The repository new issues go into. It defaults to the project's only linked repository; with several linked and none set, `n` says to set it. |
+| `scope` | Optional. `mine` (default) lists the issues assigned to you in each iteration; `all` lists everyone's. |
+
+The short form `issues: { project: 3 }` works too, and `issues:` goes in
+`setup({ accounts = ... })` the same way. On an Azure account it's an error.
+Reading and changing a project needs the token's `project` scope; with the
+GitHub CLI, add it with `gh auth refresh -s project`. Without a GitHub
+account that has `issues:`, there's no `I` key and no Issues tab.
 
 On the dashboard a GitHub PR sits in the same sections (asked to review,
 waiting, signed off, drafts, created by me). The reviewer shows its files,

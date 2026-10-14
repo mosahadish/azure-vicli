@@ -11,6 +11,7 @@ Installed as a plugin, everything goes through one user command:
 | `:AzureCli` / `:AzureCli dashboard` | Open the [pull request dashboard](dashboard.md#pull-request-dashboard), in a new tab. |
 | `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, in a new tab - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
 | `:AzureCli workitems` | Open the [work-items dashboard](work-items.md#work-items), in a new tab. |
+| `:AzureCli issues` | Open the [issues dashboard](work-items.md#issues-github), in a new tab: a GitHub account's `issues:` project. With no such account it says so instead. |
 | `:AzureCli chat` | Show or hide the [chat panel](chat.md) - the same as `gq` on any azure-vicli screen. |
 | `:AzureCli agents` | Every plan's agent - what each is doing ([Chat](chat.md#several-agents-at-once)) |
 | `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
@@ -108,6 +109,7 @@ paste the output here after changing a default.
 | `filter` | `/` |
 | `first_pr` | `gg` |
 | `help` | `?` |
+| `issues` | `I` |
 | `last_pr` | `G` |
 | `link_workitem` | `gl` |
 | `open` | `<CR>` |
@@ -287,6 +289,7 @@ paste the output here after changing a default.
 | `filter` | `/` |
 | `goto_sprint_n` | `gt` |
 | `help` | `?` |
+| `issues` | `I` |
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
 | `new` | `n` |
@@ -304,6 +307,7 @@ paste the output here after changing a default.
 | `toggle_fold` | `za` / `<Space>` |
 | `tree` | `T` |
 | `unlink_pr` | `gL` |
+| `workitems` | `W` |
 
 #### workitem_view
 
@@ -396,6 +400,7 @@ paste the output here after changing a default.
 | `changes` | `gd` |
 | `chat` | `gq` |
 | `help` | `?` |
+| `issues` | `I` |
 | `open` | `<CR>` |
 | `palette` | `g.` |
 | `pr_list` | `P` |

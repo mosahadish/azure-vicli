@@ -189,7 +189,9 @@ your dotfiles repo instead:
   and replies that appear instantly, batch review, "since my last review"
   and follow-up views, per-commit diffs and no-LSP code navigation.
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
-  assignee, priority, sprint moves, discussion and PR links.
+  assignee, priority, sprint moves, discussion and PR links. With a GitHub
+  account's `issues:` block, an [Issues tab](docs/work-items.md#issues-github)
+  (`I`) does the same for a GitHub Projects v2 project.
 - **[Chat](docs/chat.md)** - an AI agent (Claude Code, the Copilot CLI, ...)
   in a panel next to every screen (`gq`). It sees the PR, work item, file
   or comment under your cursor, so "triage this PR's comments" or "create
@@ -225,8 +227,9 @@ azure-cli.cmd         # Windows cmd.exe / PowerShell
 
 `azure-cli`/`azure-cli.cmd` are thin launchers that run `azure-cli.py`
 under `python3`/`python`. With no arguments they launch Neovim with the
-three home screens - Pull requests, Work items and Agents - each in its own
-tab (`P` / `W` / `A` switch between them). Headless flags exist for scripting (and work identically whether
+home screens - Pull requests, Work items and Agents, plus Issues when a
+GitHub account has `issues:` - each in its own tab (`P` / `W` / `A`, and
+`I`, switch between them). Headless flags exist for scripting (and work identically whether
 you invoke `./azure-cli`, `azure-cli.cmd`, or `python3 azure-cli.py`
 directly):
 

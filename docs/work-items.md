@@ -200,3 +200,50 @@ still focused. The tab bar shows a window of tabs around the active one
 (with `‹`/`›` markers) whenever there are more than fit the window width, so
 `all` scope's usually-longer list is handled the same way a wide `parent`
 group already was.
+
+## Issues (GitHub)
+
+Press `I` (or run `:AzureCli issues`) for the issues dashboard: the same
+screens as the work-items dashboard, showing the GitHub Projects v2 project
+in a GitHub account's `issues:` block (see
+[GitHub accounts](configuration.md#github-accounts)). `I` and the Issues tab
+exist only when an account has that block. On an Azure-only setup there's no
+`I` key, no tab and no help line. `W` and `I` are separate tabs that share
+nothing, so `#7` on one never refreshes or replaces `#7` on the other. `W`
+from the Issues tab goes back to the work items.
+
+What's different on GitHub:
+
+- **Tabs** are the project's iterations (its Iteration field): the current
+  one, the ones after it, and the last 3 finished ones. A project with no
+  Iteration field uses the repository's open milestones, and one with
+  neither gets a single tab for the whole project.
+- **The list** shows the issues assigned to you in that iteration, or
+  everyone's with `issues: { scope: all }`. Issues are grouped by their
+  issue type, or under Issues when the repository has no types.
+- **State** is the project's Status field, plus Closed. In the `gs` popup,
+  Closed has the reasons completed and not planned. Setting a Status such as
+  Done doesn't close the issue; the project's own workflow does that if it's
+  set up to. Setting a Status on a closed issue reopens it. An open issue
+  with no Status shows as "No Status".
+- **`n`** creates an issue in the open iteration, assigned to you and added
+  to the project. On the whole-project tab no iteration is set. With the
+  cursor on an issue, it offers to make the new one a sub-issue of it. The
+  type prompt is skipped when the repository has no issue types. If GitHub
+  makes the issue but a later step fails (adding it to the project, its
+  iteration or its parent), it says which, and the issue stays created.
+- **`T`** shows sub-issues under their parent.
+- **The detail view** shows the body as written, in Markdown, under
+  "Description"; the repository as "Repository"; and comments under
+  "Comments". `gc` adds a comment.
+- **`ga`, `gp`, `ge`, `gi`** set the assignees (GitHub logins), the
+  project's Priority field (when it has one), the title and the iteration.
+- **Linked pull requests** are the ones GitHub lists as closing the issue,
+  shown as `repo#7`. `gR` opens one.
+- **Not on GitHub yet:** linking and unlinking PRs (`gl`/`gL`), the chat
+  panel (`gq`) and planning agents (`gP`) aren't bound on the Issues tab.
+  They come with the agent's GitHub board tools
+  ([GITHUB_PLAN.md](../GITHUB_PLAN.md), phase 6, stage 3).
+
+Your key overrides for the `workitems` and `workitem_view` surfaces apply
+to both tabs.

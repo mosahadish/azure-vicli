@@ -318,6 +318,7 @@ local HELP = {
   { "cancel", "stop what that agent is doing" },
   "Window",
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
+  { "issues", "the issues board (GitHub)" },
   { "show_finished", "show (or hide again) the agents finished over " .. M.FINISHED_DAYS .. " days ago" },
   { "refresh", "redraw" }, { "quit", "close" }, { "help", "this help" },
 }
@@ -385,6 +386,13 @@ local function setup(buf)
     { desc = "the pull-request dashboard" })
   K.bind(buf, "agents", "workitems", function() require("azure-cli.home").go("workitems") end,
     { desc = "the work-items board" })
+  -- I once --boards says a GitHub account has issues: (never on Azure only).
+  require("azure-cli.workitems.board").enabled(function()
+    if vim.api.nvim_buf_is_valid(buf) then
+      K.bind(buf, "agents", "issues", function() require("azure-cli.home").go("issues") end,
+        { desc = "the issues board" })
+    end
+  end)
   K.bind(buf, "agents", "show_finished", function()
     view.all = not view.all
     render()
@@ -396,7 +404,9 @@ local function setup(buf)
     end
   end, { desc = "close" })
   K.bind(buf, "agents", "help", function()
-    require("azure-cli.ui").open_float(K.help_lines("agents", "Agents keys", HELP, {}), { title = "Keys" })
+    local issues = require("azure-cli.workitems.board").has_issues()
+    local help = vim.tbl_filter(function(a) return issues or type(a) == "string" or a[1] ~= "issues" end, HELP)
+    require("azure-cli.ui").open_float(K.help_lines("agents", "Agents keys", help, {}), { title = "Keys" })
   end, { desc = "keys" })
 end
 

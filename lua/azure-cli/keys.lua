@@ -249,7 +249,7 @@ function M.help_lines(surface, title, table_, opts)
   end
   if marked then
     lines[#lines + 1] = ""
-    lines[#lines + 1] = WRITE_MARK .. " changes Azure DevOps"
+    lines[#lines + 1] = WRITE_MARK .. " changes " .. (opts.service or "Azure DevOps")
   end
   local pal = M.first(surface, "palette")
   if pal then

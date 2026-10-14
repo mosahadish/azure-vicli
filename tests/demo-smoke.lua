@@ -617,6 +617,231 @@ if not both("gl on PR #104 didn't show #3001 on both dashboards", function()
 end) then return end
 print("LINK-SMOKE-OK")
 
+-- I: the Issues tab - the same screens on the fake's GitHub project (the
+-- demo config's GitHub account has issues:), next to W. #3001 is an issue
+-- there too, on purpose: neither tab may ever show the other's.
+do
+  local BOARD = require("azure-cli.workitems.board")
+  local log_path = vim.env.AZVICLI_FAKE_WS .. "/calls.log"
+  local function log_lines()
+    local out = {}
+    for l in io.open(log_path):read("*a"):gmatch("[^\n]+") do out[#out + 1] = l end
+    return out
+  end
+  local before_i = #log_lines()
+  local tabs_before = {}
+  for _, tp in ipairs(vim.api.nvim_list_tabpages()) do tabs_before[tp] = true end
+  local function gh_detail(ref)
+    local r = vim.system(require("azure-cli.config").provider_argv("--wi-detail", ref),
+      { env = { AZVICLI_WI_HOST = "github" }, text = true }):wait()
+    local okj, data = pcall(vim.json.decode, r.stdout or "")
+    return okj and type(data) == "table" and data.item or {}
+  end
+  local has
+  ok = vim.wait(10000, function() has = BOARD.has_issues() return has ~= nil end, 50)
+  if not has then return fail("--boards never reported the demo's GitHub project: " .. vim.inspect(require("azure-cli.state").BOARDS)) end
+
+  at_row(wis, 3001)
+  feed("I")
+  local iss
+  ok = vim.wait(15000, function()
+    iss = find_buf("azurecli-issues")
+    return iss ~= nil and text(iss):find("#3001 ", 1, true) ~= nil and text(iss):find("#12 ", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("I never listed the GitHub project's issues", iss) end
+  local issues_tab = vim.api.nvim_get_current_tabpage()
+  local it = text(iss)
+  if not (it:find("Iteration 1", 1, true) and it:find("Iteration 2", 1, true) and it:find("Iteration 3", 1, true)) then
+    return fail("the Issues tab doesn't show the project's iterations as tabs", iss)
+  end
+  if it:find("Throttle repeated login failures", 1, true) or not row_text(iss, 3001):find("Spin faster", 1, true) then
+    return fail("the Issues tab shows Azure's #3001", iss)
+  end
+  local ibar = vim.wo[vim.fn.bufwinid(iss)].winbar
+  if not (ibar:find("Issues", 1, true) and ibar:find("Iteration 2", 1, true)) then
+    return fail("the Issues winbar should say Issues and the iteration: " .. ibar)
+  end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iss))
+  feed("T")
+  ok = vim.wait(15000, function()
+    local t2 = text(iss)
+    return t2:find("\u{25BE}#12", 1, true) ~= nil and t2:find("\u{2514} #13 +%[Todo%]") ~= nil
+  end, 100)
+  if not ok then return fail("T on the Issues tab never put #13 under #12", iss) end
+  print("== issues, tree view ==")
+  print(text(iss))
+
+  -- <CR>: the issue's Markdown body, "Comments" and its repository.
+  at_row(iss, 3001)
+  feed("<CR>")
+  local iview
+  ok = vim.wait(15000, function()
+    iview = find_buf("azurecli-issue")
+    return iview ~= nil and text(iview):find("Comments (1)", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("<CR> on #3001 never opened the issue with its comments", iview) end
+  local ivt = text(iview)
+  if not (ivt:find("The gizmo should **spin faster** when asked.", 1, true) and ivt:find("Started on it in gizmos#7.", 1, true))
+      or ivt:find("Discussion", 1, true) or vim.bo[iview].syntax ~= "markdown" then
+    return fail("the issue view should show the Markdown body under Comments wording (syntax "
+      .. vim.bo[iview].syntax .. ")", iview)
+  end
+  if not ivt:find("Repository: demo-gh/gizmos", 1, true) or ivt:find("\nC[a-z]+ed: [^\n]*%dT%d%d:%d%d") then
+    return fail("the issue's Details: Repository needs its space and dates their local format", iview)
+  end
+  local function tail(b) return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":t") end
+  if tail(iss) ~= "Issues" or tail(iview) ~= "Issue #3001" then
+    return fail("Neovim's own tab line would say " .. tail(iss) .. " / " .. tail(iview) .. ", not Issues / Issue #3001")
+  end
+  print("== issue view ==")
+  print(ivt)
+
+  -- gc: a comment, posted to the issue.
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
+  feed("gc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Spins at 4000 rpm here." })
+  vim.cmd("stopinsert")
+  feed("ZZ")
+  ok = vim.wait(15000, function()
+    local r = vim.system(require("azure-cli.config").provider_argv("--wi-detail", "demo-gh~gizmos~3001"),
+      { env = { AZVICLI_WI_HOST = "github" }, text = true }):wait()
+    return (r.stdout or ""):find("Spins at 4000 rpm here.", 1, true) ~= nil
+  end, 200)
+  if not ok then return fail("gc never commented on the issue", iview) end
+  -- Read back: the comment with its real author and a date, not "Me".
+  ok = vim.wait(10000, function()
+    return text(iview):find("demo%-user  %d+ %a%a%a %d%d%d%d %d%d:%d%d\n  Spins at 4000 rpm here%.") ~= nil
+  end, 100)
+  if not ok then return fail("the new comment didn't come back with its author and date", iview) end
+  -- ?: GitHub's words, and what the ↑ keys change.
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
+  feed("?")
+  local ihelp = float_text() or ""
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  if not (ihelp:find("change this issue's state", 1, true) and ihelp:find("changes GitHub", 1, true))
+      or ihelp:find("Azure DevOps", 1, true) then
+    return fail("the issue view's ? should speak of issues and GitHub:\n" .. ihelp)
+  end
+
+  -- gs -> Done: a Status, the issue stays open.
+  local function pick_state(row_id, state, reason)
+    at_row(iss, row_id)
+    feed("gs")
+    local p
+    if not vim.wait(15000, function() p = float_text() return p ~= nil and p:find("State:", 1, true) ~= nil end, 100) then
+      return fail("gs on #" .. row_id .. " never opened the state popup")
+    end
+    local function to(kind, want)
+      local pb = vim.api.nvim_get_current_buf()
+      for i, l in ipairs(vim.api.nvim_buf_get_lines(pb, 0, -1, false)) do
+        if l:find("^" .. kind .. ":") then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+      end
+      for _ = 1, 6 do
+        if vim.wait(2000, function() return (float_text() or ""):find(kind .. ":%s+\u{2039} " .. vim.pesc(want) .. " \u{203A}") ~= nil end, 50) then
+          return true
+        end
+        feed("l")
+      end
+      return fail("couldn't cycle " .. kind .. " to " .. want .. "\n" .. tostring(float_text()))
+    end
+    if not to("State", state) then return end
+    if reason and not to("Reason", reason) then return end
+    print("== issues gs popup ==")
+    print(float_text())
+    feed("<CR>")
+    return true
+  end
+  if not pick_state(3001, "Done") then return end
+  ok = vim.wait(15000, function() local d = gh_detail("demo-gh~gizmos~3001") return d.state == "Done" end, 200)
+  if not ok then return fail("gs didn't set #3001's Status to Done: " .. vim.inspect(gh_detail("demo-gh~gizmos~3001"))) end
+  -- gs -> Closed, not planned.
+  if not pick_state(13, "Closed", "not planned") then return end
+  ok = vim.wait(15000, function()
+    local d = gh_detail("13")
+    return d.state == "Closed" and d.reason == "not planned"
+  end, 200)
+  if not ok then return fail("gs didn't close #13 as not planned: " .. vim.inspect(gh_detail("13"))) end
+  ok = vim.wait(10000, function() return row_text(iss, 13):find("[Closed]", 1, true) ~= nil end, 100)
+  if not ok then return fail("the Issues tab still shows #13 open", iss) end
+
+  -- n on #12: a new issue in the open iteration, as #12's sub-issue.
+  local real_input = vim.ui.input
+  vim.ui.input = function(_, cb) cb("Wobble at 4000 rpm") end
+  at_row(iss, 12)
+  feed("n")
+  vim.ui.input = real_input
+  if not choose_popup("child of #12") then return end
+  ok = vim.wait(15000, function()
+    return text(iss):find("\u{2514} #3002 +%[Todo%] +Wobble at 4000 rpm") ~= nil
+      or (row_text(iss, 3002):find("Wobble at 4000 rpm", 1, true) ~= nil)
+  end, 100)
+  -- In the iteration's own list, not only under #12 by the tree's sub-issue
+  -- fetch: the fake's listing has it only 2 minutes after the create.
+  ok = vim.wait(10000, function()
+    local c = require("azure-cli.state").ISSUES.WI_SPRINT_ITEMS["it2"]
+    for _, x in ipairs(c and c.items or {}) do if x.id == 3002 then return true end end
+    return false
+  end, 100)
+  if not ok then return fail("n never listed the new issue #3002 (the fake's listing lags, like GitHub's)", iss) end
+
+  -- /: "#13" filters by id like "13".
+  local UIM = require("azure-cli.ui")
+  local real_filter = UIM.filter_prompt
+  local function filter(q)
+    UIM.filter_prompt = function(o) o.on_submit(q) end
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(iss))
+    feed("/")
+    UIM.filter_prompt = real_filter
+  end
+  filter("#13")
+  local ft13 = text(iss)
+  filter("")
+  if not (ft13:find("#13 ", 1, true) and not ft13:find("#3001 ", 1, true)) then
+    return fail("/ #13 didn't filter to #13", iss)
+  end
+  local made = gh_detail("demo-gh~gizmos~3002")
+  if made.iterationPath ~= "Iteration 2" then return fail("the new issue isn't in Iteration 2: " .. vim.inspect(made)) end
+  print("ISSUES-SMOKE-OK")
+
+  -- Back on W: #3001 is still the Azure item, in the list and its cache.
+  at_row(wis, 3001)
+  feed("r")
+  ok = vim.wait(15000, function() return row_text(wis, 3001):find("Throttle repeated login failures", 1, true) ~= nil end, 100)
+  if not ok then return fail("W's #3001 isn't the Azure item after I", wis) end
+  local S = require("azure-cli.state")
+  local wcache, icache = S.WI_DETAIL_CACHE["3001"], S.ISSUES.WI_DETAIL_CACHE["demo-gh~gizmos~3001"]
+  if (wcache and wcache.body and not wcache.body:find("Throttle repeated login failures", 1, true))
+      or (icache and icache.body and not icache.body:find("Spin faster on demand", 1, true)) then
+    return fail("the two boards' #3001 caches got mixed up")
+  end
+
+  -- The host switch rode on the I tab's calls only: never before I opened,
+  -- only on --wi-* calls, and on every one that names a GitHub issue or
+  -- iteration.
+  local lines, switched = log_lines(), 0
+  for i, l in ipairs(lines) do
+    local on = l:find("AZVICLI_WI_HOST=github", 1, true) ~= nil
+    if on then switched = switched + 1 end
+    if on and (i <= before_i or not l:find('%["%-%-wi%-')) then
+      return fail("AZVICLI_WI_HOST leaked into a call: " .. l)
+    end
+    if not on and l:find('%["%-%-wi%-') and (l:find("demo-gh~", 1, true) or l:find('"it%d"')) then
+      return fail("an Issues call went without AZVICLI_WI_HOST: " .. l)
+    end
+  end
+  if switched < 5 then return fail("only " .. switched .. " calls carried AZVICLI_WI_HOST=github") end
+  -- Leave the tabs as the rest of the smoke expects them: only the Issues
+  -- tab I opened stays, not the ones at_row added.
+  for _, tp in ipairs(vim.api.nvim_list_tabpages()) do
+    if not tabs_before[tp] and tp ~= issues_tab and vim.api.nvim_tabpage_is_valid(tp) then
+      vim.cmd("tabclose! " .. vim.api.nvim_tabpage_get_number(tp))
+    end
+  end
+  print("BOARDS-SMOKE-OK")
+end
+
 -- The chat panel (lua/azure-cli/chat/): tests/fake-chat-agent.py stands in
 -- for Claude Code and speaks real MCP to `azure-cli.py --mcp`, which relays
 -- to the panel's bridge. From auth.py's diff, on bob's thread: gq opens the

@@ -347,6 +347,25 @@ WI_FIXTURES = [
      "description": "", "prs": [], "comments": []},
 ]
 
+# The GitHub account's issues: project (github_issues.py's shapes), answered
+# for --wi-* calls carrying AZVICLI_WI_HOST=github - the I tab. #3001 is
+# also an Azure work item on purpose: the two boards must never mix them up.
+GH_PROJECT = "Demo board"
+GH_STATUS = ["Todo", "In Progress", "Done"]
+GH_ITERATIONS = [("it1", "Iteration 1", -14, 14), ("it2", "Iteration 2", 0, 14), ("it3", "Iteration 3", 14, 14)]
+GH_ISSUES = [
+    {"number": 3001, "repo": "gizmos", "title": "Spin faster on demand", "status": "In Progress", "iteration": "it2",
+     "assignees": ["demo-user"], "labels": ["perf"], "parent": None, "prs": [7],
+     "body": "## Why\n\nThe gizmo should **spin faster** when asked.\n\n- `--fast` flag\n- no restart",
+     "comments": [("alice", "Started on it in gizmos#7.")]},
+    {"number": 12, "repo": "gizmos", "title": "Doohickey wobbles at speed", "status": "Todo", "iteration": "it2",
+     "assignees": [], "labels": ["bug"], "parent": None, "prs": [], "body": "Seen above 3000 rpm.", "comments": []},
+    {"number": 13, "repo": "gizmos", "title": "Measure the wobble", "status": "Todo", "iteration": "it2",
+     "assignees": ["bob"], "labels": [], "parent": 12, "prs": [], "body": "", "comments": []},
+    {"number": 14, "repo": "gizmos", "title": "Gizmo docs", "status": "Todo", "iteration": "it3",
+     "assignees": ["demo-user"], "labels": ["docs"], "parent": None, "prs": [], "body": "", "comments": []},
+]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -597,6 +616,17 @@ def cmd_setup(root, fresh=False):
                            for who, text in wi["comments"]]
         rec.pop("sprint", None)
         state["workitems"].append(rec)
+    state["gh_iterations"] = [{"id": i, "title": t, "start": iso(day0 + timedelta(days=s)),
+                               "finish": iso(day0 + timedelta(days=s + d - 1)),
+                               "timeframe": "past" if s < 0 else ("current" if s == 0 else "future")}
+                              for i, t, s, d in GH_ITERATIONS]
+    state["issues"] = []
+    for n in GH_ISSUES:
+        rec = dict(n)
+        rec["state"] = "OPEN"
+        rec["updated"] = iso(day0 - timedelta(hours=n["number"] % 30))
+        rec["comments"] = [{"author": who, "date": rec["updated"], "text": text} for who, text in n["comments"]]
+        state["issues"].append(rec)
     ws.save(state)
 
     with open(os.path.join(ws.root, "config", "azure-cli.yml"), "w", encoding="utf-8", newline="\n") as fh:
@@ -608,7 +638,11 @@ def cmd_setup(root, fresh=False):
                  "    pat: not-a-real-token\n"
                  "    clones_dir: {2}\n"
                  "    work_items:\n"
-                 "      team: {3}\n".format(PROJECT, ORG, ws.clones, TEAM))
+                 "      team: {3}\n"
+                 "  - host: github\n"
+                 "    owner: {4}\n"
+                 "    clones_dir: {2}\n"
+                 "    issues: {{ project: 1, scope: all }}\n".format(PROJECT, ORG, ws.clones, TEAM, GH_OWNER))
     exe = os.path.join(ws.root, "azure-cli")
     with open(exe, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("#!/usr/bin/env bash\n# Stands in for the repo's azure-cli launcher (AZVICLI_EXE).\n"
@@ -1400,6 +1434,257 @@ class Fake:
               file=sys.stderr)
         return 1
 
+    # -- the GitHub project (AZVICLI_WI_HOST=github: github_issues.py) --------
+
+    def gh_issue(self, ref):
+        """An issue by key (owner~repo~n), owner/repo#n, #n or n; None when
+        there's none, and an error when a bare number names two."""
+        ref = str(ref or "").strip()
+        m = re.match(r"^(?:([^~/#]+)[~/]([^~/#]+)[~#])?#?(\d+)$", ref)
+        if not m:
+            return None
+        hits = [n for n in self.state.setdefault("issues", []) if n["number"] == int(m.group(3))
+                and (not m.group(2) or n["repo"] == m.group(2))]
+        if len(hits) > 1:
+            raise ValueError("#{0} is an issue in {1}; say which, as owner/repo#{0}".format(
+                m.group(3), " and ".join(sorted(n["repo"] for n in hits))))
+        return hits[0] if hits else None
+
+    def gh_key(self, n):
+        return "{0}~{1}~{2}".format(GH_OWNER, n["repo"], n["number"])
+
+    def gh_state(self, n):
+        return "Closed" if n["state"] == "CLOSED" else (n.get("status") or "No Status")
+
+    def gh_record(self, n):
+        kids = [c["number"] for c in self.state["issues"] if c.get("parent") == n["number"] and c["repo"] == n["repo"]]
+        return {"id": n["number"], "type": "Issue", "state": self.gh_state(n), "title": n["title"],
+                "assignedTo": ", ".join(n["assignees"]), "priority": n.get("priority"),
+                "tags": "; ".join(n["labels"]), "parentId": n.get("parent"),
+                "pullRequests": [{"id": p, "repo": n["repo"]} for p in n.get("prs", [])], "childIds": kids,
+                "changedIso": n["updated"], "changedHuman": humanize(n["updated"]),
+                "url": "https://github.com/{0}/{1}/issues/{2}".format(GH_OWNER, n["repo"], n["number"]),
+                "repo": n["repo"], "key": self.gh_key(n)}
+
+    def gh_summary(self, n):
+        return {"id": n["number"], "type": "Issue", "state": self.gh_state(n), "title": n["title"],
+                "assignedTo": ", ".join(n["assignees"])}
+
+    def gh_sprints(self):
+        its = self.state.get("gh_iterations") or []
+        cur = next((i for i, s in enumerate(its) if s["timeframe"] == "current"), 0)
+        return [{"name": s["title"], "label": s["title"], "path": s["id"], "start": s["start"], "finish": s["finish"],
+                 "timeframe": s["timeframe"], "current": i == cur} for i, s in enumerate(its)], cur
+
+    def gh_touch(self, n):
+        n["updated"] = now_iso()
+        self.ws.save(self.state)
+
+    def gh_wi(self, flag, rest):
+        try:
+            return {"--wi-list": self.gh_wi_list, "--wi-detail": self.gh_wi_detail,
+                    "--wi-state": self.gh_wi_state, "--wi-edit": self.gh_wi_edit}[flag](rest)
+        except ValueError as e:
+            print("ERROR: {0}".format(e), file=sys.stderr)
+            return 1
+
+    def gh_wi_list(self, rest):
+        select = rest[0] if rest else "current"
+        arg = rest[1] if len(rest) > 1 else ""
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
+            raise ValueError("selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select))
+        states = GH_STATUS + ["Closed"]
+        if select == "sprints":
+            sprints, cur = self.gh_sprints()
+            print(json.dumps({"_sprints": True, "quarter": GH_PROJECT, "currentIndex": cur + 1, "sprints": sprints,
+                              "states": states, "types": ["Issue"]}, ensure_ascii=False))
+            return 0
+        if select == "members":
+            for login in ("demo-user", "alice", "bob"):
+                print(json.dumps({"name": login, "email": ""}))
+            return 0
+        if select in ("ids", "tree"):
+            refs = [x.strip() for x in arg.split(",") if x.strip()]
+            if not refs:
+                raise ValueError("'{0}' needs a comma-separated list of issues".format(select))
+            found = [self.gh_issue(r) for r in refs]
+            if select == "ids":
+                for n in found:
+                    if n is None:
+                        raise ValueError("no such issue")
+                    print(json.dumps(self.gh_record(n), ensure_ascii=False))
+                return 0
+            queue = [n for n in found if n is not None]
+            seen = set(self.gh_key(n) for n in queue)
+            while queue:
+                p = queue.pop(0)
+                for c in self.state["issues"]:
+                    if c.get("parent") == p["number"] and c["repo"] == p["repo"] and self.gh_key(c) not in seen:
+                        seen.add(self.gh_key(c))
+                        queue.append(c)
+                        print(json.dumps(self.gh_record(c), ensure_ascii=False))
+            return 0
+        if select == "items":
+            if not arg:
+                raise ValueError("'items' needs an iteration path")
+            path = arg
+        else:
+            sprints, cur = self.gh_sprints()
+            nxt = sprints[cur + 1] if cur + 1 < len(sprints) else None
+            if select == "next":
+                if nxt is None:
+                    raise ValueError("could not determine next sprint")
+                target = nxt
+                meta = {"_meta": True, "timeframe": "next", "sprintName": nxt["name"], "sprintPath": nxt["path"],
+                        "sprintStart": nxt["start"], "sprintFinish": nxt["finish"]}
+            else:
+                target = sprints[cur]
+                meta = {"_meta": True, "timeframe": "current", "sprintName": target["name"],
+                        "sprintPath": target["path"], "sprintStart": target["start"], "sprintFinish": target["finish"],
+                        "nextSprintName": (nxt or {}).get("name", ""), "nextSprintPath": (nxt or {}).get("path", ""),
+                        "nextStart": (nxt or {}).get("start", ""), "nextFinish": (nxt or {}).get("finish", "")}
+            meta["states"] = states
+            path = target["path"]
+            print(json.dumps(meta, ensure_ascii=False))
+        # The demo config's issues: has scope: all - everyone's issues. Like
+        # GitHub's, the project listing shows a new issue only a while after
+        # its create (ids/tree/detail read the issue itself, at once).
+        for n in self.state["issues"]:
+            if time.time() < n.get("listed_from", 0):
+                continue
+            if (n["state"] != "CLOSED") if path == "*" else n.get("iteration") == path:
+                print(json.dumps(self.gh_record(n), ensure_ascii=False))
+        return 0
+
+    def gh_linked_pr(self, n, pid):
+        pr = next((p for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == n["repo"]
+                   and str(p["id"]) == str(pid)), None)
+        if pr is None:
+            return {"id": pid, "repo": n["repo"]}
+        return {"id": pr["id"], "title": pr["title"], "status": "completed" if pr.get("completed") else "active",
+                "isDraft": pr["isDraft"], "repo": pr["repo"], "source": pr["source"], "target": pr["target"],
+                "author": pr["author"], "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, pr["repo"], pr["id"])}
+
+    def gh_wi_detail(self, rest):
+        n = self.gh_issue(rest[0] if rest else "")
+        if n is None:
+            raise ValueError("issue {0} not found".format(rest[0] if rest else ""))
+        item = self.gh_record(n)
+        it = next((s for s in self.state.get("gh_iterations") or [] if s["id"] == n.get("iteration")), {})
+        item.update({"createdBy": "alice", "createdDate": n["updated"], "changedDate": n["updated"],
+                     "areaPath": "{0}/{1}".format(GH_OWNER, n["repo"]), "iterationPath": it.get("title", ""),
+                     "reason": n.get("reason", ""), "description": n.get("body", ""), "acceptanceCriteria": "",
+                     "reproSteps": "", "pullRequests": [self.gh_linked_pr(n, p) for p in n.get("prs", [])]})
+        for k in ("changedIso", "changedHuman", "childIds", "parentId"):
+            item.pop(k, None)
+        parent = self.gh_issue("{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["parent"])) if n.get("parent") else None
+        kids = [c for c in self.state["issues"] if c.get("parent") == n["number"] and c["repo"] == n["repo"]]
+        print(json.dumps({"item": item, "parent": self.gh_summary(parent) if parent else None,
+                          "children": [self.gh_summary(c) for c in kids],
+                          "comments": [dict(c, id=i + 1) for i, c in enumerate(n.get("comments", []))],
+                          "commentsUnsupported": False}, ensure_ascii=False))
+        return 0
+
+    def gh_wi_state(self, rest):
+        cmd = rest[0] if rest else ""
+        a = list(rest[1:]) + ["", "", ""]
+        if cmd == "states":
+            for i, name in enumerate(GH_STATUS):
+                print(name + "\t" + ("Proposed" if i == 0 else ("Completed" if i == len(GH_STATUS) - 1 else "InProgress")))
+            print("Closed\tCompleted")
+            return 0
+        if cmd == "transitions":
+            for s in GH_STATUS + ["Closed"]:
+                if s != a[1]:
+                    print(s)
+            return 0
+        if cmd == "reasons":
+            if a[1] == "Closed":
+                print("completed")
+                print("not planned")
+            return 0
+        if cmd == "set":
+            n = self.gh_issue(a[0])
+            if n is None or not a[1]:
+                raise ValueError("set needs <id> <newState>")
+            if a[1] == "Closed":
+                why = (a[2] or "completed").strip().lower()
+                if why not in ("completed", "not planned"):
+                    raise ValueError("a closed issue is completed or not planned, not '{0}'".format(a[2]))
+                n["state"], n["reason"] = "CLOSED", why
+            elif a[1] in GH_STATUS:
+                # Like the real one: Done is a Status, not a close.
+                n["status"], n["state"], n["reason"] = a[1], "OPEN", ""
+            else:
+                raise ValueError("'{0}' isn't a state here (one of: {1})".format(a[1], ", ".join(GH_STATUS + ["Closed"])))
+            self.gh_touch(n)
+            print(a[1])
+            return 0
+        raise ValueError("usage: --wi-state transitions <type> <currentState> | reasons <type> <toState> | "
+                         "states <type> | set <id> <newState> [reason]")
+
+    def gh_wi_edit(self, rest):
+        cmd = rest[0] if rest else ""
+        a = list(rest[1:]) + ["", "", "", ""]
+        if cmd == "create":
+            if not a[0] or not a[1]:
+                raise ValueError("create needs <type> <title>")
+            parent = self.gh_issue(a[2]) if a[2] else None
+            number = max([n["number"] for n in self.state["issues"] if n["repo"] == "gizmos"] or [0]) + 1
+            n = {"number": number, "repo": "gizmos", "title": a[1], "status": GH_STATUS[0],
+                 "iteration": a[3] if a[3] and a[3] != "*" else None, "assignees": ["demo-user"], "labels": [],
+                 "parent": parent["number"] if parent else None, "prs": [], "body": "", "comments": [],
+                 "state": "OPEN", "updated": now_iso(), "listed_from": time.time() + 120}
+            self.state["issues"].append(n)
+            self.ws.save(self.state)
+            print(json.dumps({"id": number, "title": a[1], "key": self.gh_key(n)}, ensure_ascii=False))
+            return 0
+        if cmd == "set":
+            n = self.gh_issue(a[0])
+            fields = ("title", "assignedTo", "priority", "iteration", "tags", "description")
+            if a[1] not in fields:
+                raise ValueError("unknown field '{0}', expected one of: {1}".format(a[1], ", ".join(sorted(fields))))
+            if n is None:
+                raise ValueError("issue {0} not found".format(a[0]))
+            value = a[2]
+            if a[1] == "title":
+                n["title"] = value
+            elif a[1] == "description":
+                n["body"] = value
+            elif a[1] == "assignedTo":
+                n["assignees"] = [x.strip().lstrip("@") for x in (value or "demo-user").split(",") if x.strip()]
+                value = ", ".join(n["assignees"])
+            elif a[1] == "tags":
+                n["labels"] = [x.strip() for x in re.split(r"[;,]", value) if x.strip()]
+                value = "; ".join(n["labels"])
+            elif a[1] == "priority":
+                n["priority"] = value = int(value)
+            else:
+                n["iteration"] = value if value and value != "*" else None
+            self.gh_touch(n)
+            print(json.dumps({"id": n["number"], "field": a[1], "value": value}, ensure_ascii=False))
+            return 0
+        if cmd == "comment":
+            n = self.gh_issue(a[0])
+            if n is None or not a[1]:
+                raise ValueError("comment needs <id> <text>")
+            n.setdefault("comments", []).append({"author": "demo-user", "date": now_iso(), "text": a[1]})
+            self.gh_touch(n)
+            print(json.dumps({"id": len(n["comments"])}))
+            return 0
+        if cmd in ("link-pr", "unlink-pr", "create-branch", "delete-branch"):
+            raise ValueError("{0} isn't supported for GitHub issues yet".format(cmd))
+        raise ValueError("usage: --wi-edit create <type> <title> [parentId] [iteration] | set <id> <field> <value> | "
+                         "comment <id> <text>")
+
+    def cmd_boards(self):
+        """--boards, from the workspace's config like azure-cli.py's boards()."""
+        with open(os.path.join(self.ws.root, "config", "azure-cli.yml"), encoding="utf-8") as fh:
+            text = fh.read()
+        issues = [{"owner": GH_OWNER, "project": "1", "scope": "all"}] if "issues:" in text else []
+        print(json.dumps({"workItems": "work_items:" in text, "issues": issues}))
+        return 0
+
 
 # The flags azure-cli.py routes to a PR (cmd_pr_action's PR_ACTION_FLAGS).
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
@@ -1424,7 +1709,10 @@ def dispatch(ws, argv, env):
         print("pong")
         return 0
     f = Fake(ws, env)
+    if env.get("AZVICLI_WI_HOST") == "github" and flag in ("--wi-list", "--wi-detail", "--wi-state", "--wi-edit"):
+        return f.gh_wi(flag, rest)
     table = {
+        "--boards": lambda: f.cmd_boards(),
         "--list": lambda: f.cmd_list(),
         "--whoami": lambda: f.cmd_whoami(rest),
         "--print-pat": lambda: (sys.stdout.write("not-a-real-token"), 0)[1],

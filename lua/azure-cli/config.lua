@@ -18,7 +18,7 @@ local DEFAULT_KEYS = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
     filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
-    workitems = "W", toasts = "gN", help = "?", palette = "g.", quit = "q",
+    workitems = "W", issues = "I", toasts = "gN", help = "?", palette = "g.", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
@@ -78,12 +78,14 @@ local DEFAULT_KEYS = {
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
     resize_more = ">", help = "?", palette = "g.", chat = "gq",
   },
-  -- Work-items dashboard.
+  -- Work-items dashboard - and the issues dashboard (I), the same screen
+  -- on a GitHub account's project. workitems (W) is bound on the issues
+  -- one, issues (I) on the work-items one.
   workitems = {
     open = "<CR>", state = "gs", new = "n", assign = "ga", priority = "gp",
     edit_title = "ge", move_sprint = "gi", link_pr = "gl", browser = "o",
     refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
-    goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
+    goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P", workitems = "W", issues = "I",
     copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
@@ -109,7 +111,7 @@ local DEFAULT_KEYS = {
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
-    quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W",
+    quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.

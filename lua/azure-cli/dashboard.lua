@@ -202,7 +202,8 @@ local DASHBOARD_ACTIONS = {
   { "agent_chat", "its agent's chat, in a popup" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
   "Session",
-  { "refresh", "refresh" }, { "workitems", "work items" }, { "agents", "every plan's agent (the Agents screen)" },
+  { "refresh", "refresh" }, { "workitems", "work items" }, { "issues", "issues (GitHub)" },
+  { "agents", "every plan's agent (the Agents screen)" },
   { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
 }
@@ -1005,14 +1006,19 @@ local DASHBOARD_HELP_DESCS = {
   config = "open a config file",
   refresh = "refresh",
   workitems = "switch to the work-items dashboard",
+  issues = "switch to the issues dashboard (a GitHub account's issues: project)",
   quit = "quit",
   help = "this help",
 }
 local function show_help()
   local table_ = {}
+  -- I is there only once --boards says a GitHub account has issues:.
+  local issues = require("azure-cli.workitems.board").has_issues()
   for _, a in ipairs(DASHBOARD_ACTIONS) do
     if type(a) == "string" then
       table_[#table_ + 1] = a
+    elseif a[1] == "issues" and not issues then
+      -- left out
     else
       table_[#table_ + 1] = { a[1], DASHBOARD_HELP_DESCS[a[1]] or a[2] }
     end
@@ -1926,6 +1932,14 @@ KEYS.bind(buf, "dashboard", "unlink_workitem", unlink_workitem, { desc = "unlink
 KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.home").go("workitems")
 end, { desc = "switch to the work-items dashboard (its own tab)" })
+-- I: the issues dashboard, bound once --boards says a GitHub account has
+-- issues: - never on an Azure-only setup.
+require("azure-cli.workitems.board").enabled(function()
+  if vim.api.nvim_buf_is_valid(buf) then
+    KEYS.bind(buf, "dashboard", "issues", function() require("azure-cli.home").go("issues") end,
+      { desc = "switch to the issues dashboard (its own tab)" })
+  end
+end)
 KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 -- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
 -- the PR under the cursor (chat/view.lua).

@@ -47,7 +47,7 @@ end
 -- sorted), at most `max_w` cells wide and `max_h` lines tall: "↑ gA  desc",
 -- keys in a column, a "…" line (and g. to see the rest) when they don't
 -- all fit, the ↑ legend when one is marked. Pure.
-function M.lines(entries, max_w, max_h)
+function M.lines(entries, max_w, max_h, service)
   local kw = 0
   for _, e in ipairs(entries) do kw = math.max(kw, vim.fn.strdisplaywidth(e.key)) end
   local lines, hls, marked = {}, {}, false
@@ -69,7 +69,7 @@ function M.lines(entries, max_w, max_h)
     hls[#hls + 1] = { #lines - 1, #mark + 1, #mark + 1 + #e.key, "AzureCliKeyHint" }
   end
   if marked then
-    lines[#lines + 1] = "\u{2191} changes Azure DevOps"
+    lines[#lines + 1] = "\u{2191} changes " .. (service or "Azure DevOps")
     hls[#hls + 1] = { #lines - 1, 0, -1, "AzureCliMuted" }
   end
   return lines, hls
@@ -108,7 +108,8 @@ local function show(buf)
   UI.theme()
   local max_w = math.max(20, math.min(70, vim.o.columns - 6))
   local max_h = math.max(3, vim.o.lines - vim.o.cmdheight - 6)
-  local lines, hls = M.lines(entries, max_w, max_h)
+  -- vim.b.azure_cli_service: what a screen's ↑ keys change ("GitHub" on the Issues tab).
+  local lines, hls = M.lines(entries, max_w, max_h, vim.b[buf].azure_cli_service)
   local width = 0
   for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l)) end
   local fbuf = vim.api.nvim_create_buf(false, true)

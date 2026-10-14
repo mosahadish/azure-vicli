@@ -184,7 +184,7 @@ end
 -- filetype, else the buffer's own name. nil for a buffer that isn't ours.
 local FT_TITLE = {
   ["azurecli-dashboard"] = "Pull requests", ["azurecli-workitems"] = "Work items",
-  ["azurecli-workitem"] = "Work item", ["azurecli-changes"] = "Change", ["azurecli-plan"] = "Plan",
+  ["azurecli-workitem"] = "Work item", ["azurecli-issues"] = "Issues", ["azurecli-issue"] = "Issue", ["azurecli-changes"] = "Change", ["azurecli-plan"] = "Plan",
   ["azurecli-agents"] = "Agents",
 }
 function M.buf_title(buf)

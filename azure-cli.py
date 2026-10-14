@@ -3912,6 +3912,30 @@ def _fail_action(flag, ex, env=None):
         print(traceback.format_exc(), file=sys.stderr)
 
 
+def boards(config):
+    """--boards' answer for `config`: which work-item boards it has - the
+    Azure one (an account with work_items:) and each GitHub account's
+    issues: project. From the config alone, no network: the Lua side asks
+    once at start-up whether to offer I (workitems/board.lua)."""
+    issues = []
+    for a in config.github_accounts():
+        if a.issues:
+            p = a.issues.get("project")
+            issues.append({"owner": a.owner or "", "project": "" if p is None else str(p),
+                           "scope": str(a.issues.get("scope") or "mine").strip().lower()})
+    return {"workItems": any(a.work_items for a in config.accounts if not a.is_github()), "issues": issues}
+
+
+def cmd_boards():
+    """--boards: boards() as one JSON line. No config yet (a first run) is
+    no boards rather than an error."""
+    if not Config.is_configured():
+        print(json.dumps({"workItems": False, "issues": []}))
+        return 0
+    print(json.dumps(boards(get_cached_config()), ensure_ascii=False))
+    return 0
+
+
 def cmd_wi_action(flag, rest, env=None):
     """Dispatches one of WI_ACTION_FLAGS: loads the config, confirms the
     work-item screens are actually configured, and resolves the PAT
@@ -4568,6 +4592,8 @@ def _run_dispatch(argv, env):
         return cmd_wi_action(argv[0], argv[1:], env=env)
     if not argv and env.get("AZVICLI_PREFETCH"):
         return cmd_prefetch(env=env)
+    if argv[:1] == ["--boards"]:
+        return cmd_boards()
 
     args = parse_args(argv)
     if args.doctor:

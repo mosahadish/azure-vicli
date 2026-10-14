@@ -556,6 +556,27 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-acp.lua (headless nvim)" "$out"
   fi
 
+  # tests/test-boards.lua: I (the Issues tab) only when --boards lists a
+  # GitHub account with issues: - once on the demo config, once on it
+  # trimmed to its Azure account. Each on its own fake workspace, wired up
+  # the way tests/demo.sh does.
+  for expect in issues azure; do
+    ws="$TMP/boards-$expect"
+    python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
+    printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
+    out="$(BOARDS_EXPECT=$expect AZVICLI_FAKE_WS="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
+      AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" \
+      XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
+      AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \
+      timeout 120 nvim --headless -u "$ws/init.lua" \
+      -c "lua local ok, err = pcall(dofile, [[$REPO_ROOT/tests/test-boards.lua]]); if not ok then print('BOARDS-TEST-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')" 2>&1)"
+    if [[ "$out" == *BOARDS-TEST-OK* ]]; then
+      pass "test-boards.lua ($expect): I only when a GitHub account has issues:"
+    else
+      fail "test-boards.lua ($expect): I only when a GitHub account has issues:" "$out"
+    fi
+  done
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua
@@ -595,6 +616,16 @@ if command -v nvim >/dev/null 2>&1; then
     pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
   else
     fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
+  fi
+  if [[ "$out" == *ISSUES-SMOKE-OK* ]]; then
+    pass "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues"
+  else
+    fail "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues" "$out"
+  fi
+  if [[ "$out" == *BOARDS-SMOKE-OK* ]]; then
+    pass "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github"
+  else
+    fail "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github" "$out"
   fi
   if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
     pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"

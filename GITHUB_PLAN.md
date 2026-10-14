@@ -314,9 +314,19 @@ is simpler.
         - Ids: the issue number; every `<id>` also takes `owner/repo#n`,
           and a number two of the project's issues share is refused.
         - `link-pr`/`unlink-pr`/`create-branch`/`delete-branch`: stage 3.
-     2. **The `I` tab**: the work-items screens with the env above, GitHub's
-        words, `key`-based ids and a Markdown body; the fake provider gains
-        a GitHub project.
+     2. **The `I` tab** (done): the work-items screens with the env above,
+        GitHub's words, `key`-based ids and a Markdown body; the fake
+        provider gains a GitHub project.
+        - `workitems/board.lua` describes a board (filetypes, caches,
+          provider calls, words, what it can do); the dashboard and detail
+          view take one. `W` keeps `STATE`'s caches; `I` has
+          `STATE.ISSUES`. `AZVICLI_WI_HOST=github` rides only in the
+          Issues tab's own calls, never in `vim.env`.
+        - `--boards` reads the config alone and says whether a GitHub
+          account has `issues:`; `I` (and the launcher's Issues tab) exist
+          only then. With several such accounts, the first one's.
+        - `gl`/`gL`, `gq` and `gP` aren't bound on the Issues tab until
+          stage 3.
      3. **The agent's board tools on GitHub**: `get_work_item`,
         `list_work_items`, `start_story` (and branches linked to issues),
         `#n` in chat, `Closes #n` from `create_pull_request`.
