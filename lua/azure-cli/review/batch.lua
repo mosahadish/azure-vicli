@@ -306,8 +306,13 @@ local function setup(ctx)
     if item.kind == "thread" then
       if item.pending then ctx.drop_pending_thread(item.pending) end
     elseif item.kind == "reply" then
-      if item.thread and item.comment then
-        ctx.remove_entry(item.thread.comments, item.comment)
+      if item.comment then
+        -- A refresh since it was queued rebuilt the thread and carried the
+        -- comment into the new copy (reapply_pending): drop it from that
+        -- one too, not only from the copy it was queued on.
+        local live = ctx.find_thread(item.thread_id)
+        if live then ctx.remove_entry(live.comments, item.comment) end
+        if item.thread then ctx.remove_entry(item.thread.comments, item.comment) end
       end
       local reps = ctx.pending_replies()
       for i = #reps, 1, -1 do
