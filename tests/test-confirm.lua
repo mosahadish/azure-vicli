@@ -585,6 +585,99 @@ do
   vim.cmd("tabclose!")
 end
 
+-- Issue #72: a popup asked for while another is open waits for it to be
+-- answered - opening on top took the focus, which answered the open one's
+-- cancel (an agent's question cancelled the plan's Approve). Each answer
+-- goes to who asked.
+do
+  local function shown(word)
+    for _, w in ipairs(float_wins()) do
+      local t = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false), "\n")
+      if t:find(word, 1, true) then return w end
+    end
+  end
+  local function asking(word)
+    return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):find(word, 1, true) ~= nil
+  end
+
+  -- The issue's sequence: Approve open, an agent asks from a timer.
+  local PLAN = require("azure-cli.chat.plan")
+  local real_load = PLAN.load
+  PLAN.load = function(k) return { key = k, target = { work_item_id = 9 }, revisions = {}, threads = {} } end
+  local screen = screen55("azurecli-agents")
+  local approved, allowed = {}, {}
+  PLAN.ask_approval({ "wi-9" }, function(allow) approved[#approved + 1] = allow end)
+  local approve_win = vim.api.nvim_get_current_win()
+  local asked = false
+  vim.defer_fn(function()
+    asked = true
+    CHAT55.confirm("The agent wants to run `git status`.", function(yes) allowed[#allowed + 1] = yes end)
+  end, 50)
+  vim.wait(500, function() return asked end, 10)
+  vim.wait(500)  -- past the agent's arm_ms: on top, its keys would count by now
+  check("#72 an agent asking over Approve: Approve still asks, the agent's question waits",
+    vim.api.nvim_win_is_valid(approve_win) and vim.api.nvim_get_current_win() == approve_win
+      and not shown("Deny") and #approved == 0 and #allowed == 0 and UI.choosing(),
+    vim.inspect({ approved, allowed, shown("Deny") }))
+  feed("p")
+  vim.wait(200, function() return #approved > 0 end, 10)
+  check("#72 p: approved and let push - not cancelled", #approved == 1 and approved[1] == true, vim.inspect(approved))
+  vim.wait(500, function() return asking("git status") end, 10)
+  check("#72 then the agent's question opens", asking("git status") and #allowed == 0)
+  vim.wait(450)
+  feed("y")
+  vim.wait(200, function() return #allowed > 0 end, 10)
+  vim.wait(50)
+  local at = where55(screen)
+  check("#72 y: the agent's answer to the agent, the plan's left alone; back on the screen in normal mode",
+    #allowed == 1 and allowed[1] == true and #approved == 1 and at.same and at.mode == "n" and not UI.choosing(),
+    vim.inspect({ approved, allowed, at }))
+  PLAN.load = real_load
+  vim.cmd("tabclose!")
+
+  -- Plain UI.choose, answered the other way round: each to its own cb, and
+  -- after_choose only once both are.
+  screen = screen55("azurecli-agents")
+  local a, b, after, gap = {}, {}, {}, nil
+  local yn = { buttons = { "Yes", "No" }, keys = { y = 1, n = 2 } }
+  local wa = UI.choose(vim.tbl_extend("force", yn, { lines = { "Question A?" } }),
+    function(i) a[#a + 1] = i gap = UI.choosing() end)
+  local wb = UI.choose(vim.tbl_extend("force", yn, { lines = { "Question B?" } }), function(i) b[#b + 1] = i end)
+  UI.after_choose(function() after[#after + 1] = { #a, #b } end)
+  check("#72 B waits: no window, A still asks", wb == nil and wa and vim.api.nvim_get_current_win() == wa
+    and not shown("Question B?") and #after == 0)
+  feed("n")
+  vim.wait(200, function() return asking("Question B?") end, 10)
+  check("#72 n answers A only; still choosing between the two; then B opens", vim.deep_equal(a, { 2 }) and #b == 0
+    and gap == true and asking("Question B?") and #after == 0, vim.inspect({ a, b, gap, after }))
+  feed("y")
+  vim.wait(200, function() return #after > 0 end, 10)
+  at = where55(screen)
+  check("#72 y answers B only; after_choose runs once both are", vim.deep_equal(a, { 2 }) and vim.deep_equal(b, { 1 })
+    and vim.deep_equal(after, { { 1, 1 } }), vim.inspect({ a, b, after }))
+  check("#72 #55: both answered, back where A was opened from, in normal mode", at.same and at.mode == "n",
+    vim.inspect(at))
+  vim.cmd("tabclose!")
+
+  -- One opened from an answered one's cb goes before the one waiting.
+  local order = {}
+  UI.choose(vim.tbl_extend("force", yn, { lines = { "First?" } }), function()
+    order[#order + 1] = "first"
+    UI.choose(vim.tbl_extend("force", yn, { lines = { "Its follow-up?" } }), function() order[#order + 1] = "follow-up" end)
+  end)
+  UI.choose(vim.tbl_extend("force", yn, { lines = { "Waiting?" } }), function() order[#order + 1] = "waiting" end)
+  feed("y")
+  vim.wait(100, function() return asking("Its follow-up?") end, 10)
+  vim.wait(50)
+  check("#72 a follow-up from the cb asks first", asking("Its follow-up?") and not shown("Waiting?"), vim.inspect(order))
+  feed("y")
+  vim.wait(200, function() return asking("Waiting?") end, 10)
+  feed("y")
+  vim.wait(200, function() return #order == 3 end, 10)
+  check("#72 then the one waiting", vim.deep_equal(order, { "first", "follow-up", "waiting" }) and not UI.choosing(),
+    vim.inspect(order))
+end
+
 -- Last, once this script has returned to the main loop - startinsert only
 -- takes effect there: from insert mode, out of it while the popup asks,
 -- back in after, in the same buffer.

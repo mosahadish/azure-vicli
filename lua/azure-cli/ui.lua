@@ -787,11 +787,33 @@ end
 -- (M.after_choose): a view that would move the cursor while one asks - the
 -- chat panel following into a tab, a viewer taking the focus - and with it
 -- close the popup, answering its cancel button.
-local choosing, after_choose = 0, {}
-function M.choosing() return choosing > 0 end
+-- One asked while another is open waits in `queued` (issue #72): opening
+-- on top would take the focus, and that answers the open one's cancel - an
+-- agent's question used to cancel the plan's Approve that way. Each keeps
+-- its own cb, so each answer goes to who asked.
+local choosing, after_choose, queued = 0, {}, {}
+function M.choosing() return choosing > 0 or #queued > 0 end
 function M.after_choose(fn)
-  if choosing == 0 then return fn() end
+  if not M.choosing() then return fn() end
   after_choose[#after_choose + 1] = fn
+end
+-- None open any more: the next one waiting, else what waits for them all.
+-- Scheduled, so one opened from the answered one's cb (the next of an
+-- agent's questions, a menu's next step) goes first; the one waiting stays
+-- first in line for when that's answered.
+local function settle()
+  if choosing > 0 then return end
+  if #queued > 0 then
+    vim.schedule(function()
+      if choosing > 0 or #queued == 0 then return end
+      local nxt = table.remove(queued, 1)
+      M.choose(nxt[1], nxt[2])
+    end)
+  elseif #after_choose > 0 then
+    local waiting = after_choose
+    after_choose = {}
+    vim.schedule(function() for _, fn in ipairs(waiting) do pcall(fn) end end)
+  end
 end
 
 -- Where the popup gives the focus back once answered (issue #55): the
@@ -843,14 +865,8 @@ function M.choose(opts, cb)
     for _, w in ipairs({ details_win, full_win }) do
       if type(w) == "number" and vim.api.nvim_win_is_valid(w) then pcall(vim.api.nvim_win_close, w, true) end
     end
-    if counted then
-      choosing = choosing - 1
-      if choosing == 0 and #after_choose > 0 then
-        local waiting = after_choose
-        after_choose = {}
-        vim.schedule(function() for _, fn in ipairs(waiting) do pcall(fn) end end)
-      end
-    end
+    if counted then choosing = choosing - 1 end
+    settle()
     cb(i, checks)
   end
   local function details_float(focus_row)
@@ -869,6 +885,11 @@ function M.choose(opts, cb)
     end)
   end
   if style == "select" then return as_select() end
+  -- Another one open: this one waits for it (no window yet - nil).
+  if choosing > 0 then
+    queued[#queued + 1] = { opts, cb }
+    return nil
+  end
 
   local was_insert = vim.api.nvim_get_mode().mode:sub(1, 1) == "i"
   local prev_win = vim.api.nvim_get_current_win()
