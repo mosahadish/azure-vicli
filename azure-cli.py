@@ -2841,6 +2841,7 @@ def _wi_list_record(wi, collection, project):
         "assignedTo": _wi_assigned_str(f.get("System.AssignedTo", "")),
         "priority": f.get("Microsoft.VSTS.Common.Priority"),
         "tags": str(f.get("System.Tags", "") or ""),
+        "iterationPath": str(f.get("System.IterationPath", "")),
         "parentId": parent if isinstance(parent, int) else None,
         "pullRequests": _wi_pr_ids_from_relations(wi.get("relations")),
         # The dashboard's tree view (T) fetches these with --wi-list ids.

@@ -661,6 +661,9 @@ changes to agents rather than doing them itself:
   `message_agent` (the message shows in that agent's own chat, as coming
   from the main chat, and it answers there; while that agent is mid-turn the
   message is queued, like one you type there, and goes when the turn ends).
+  `start_agents` takes `board` like the other work-item tools, and each
+  agent reads its item from that board; without it, the board a list showed
+  the item on, else the one you're looking at.
 - It's a strong default, not a lock: ask the main chat to do something
   itself and it will.
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
@@ -746,7 +749,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 
 | Tool | What it does | Asks you first? |
 |---|---|---|
-| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
+| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item (on `board`) or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
 | `submit_plan`, `get_plan` | Shows you its plan for a PR or work item (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions | - |
 | `current_view` | What you're looking at when you sent the message (see above) | - |
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details - any PR in the project by id, not only your dashboard's (after it, the other PR tools work for that PR too) | - |
@@ -754,7 +757,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
 | `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
-| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints. These and the other work-item tools also work on GitHub issues (see [Issues on GitHub](#issues-on-github)) | - |
+| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items (each with its iteration: the path on Azure; on GitHub the name, and `iteration_id` for `move_to_sprint`); one item in full; the team's sprints. These and the other work-item tools also work on GitHub issues (see [Issues on GitHub](#issues-on-github)) | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
 | `link_pr_to_work_item` | Links a PR and a work item | no (**yes** on GitHub, where it edits the PR's description) |

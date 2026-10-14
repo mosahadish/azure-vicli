@@ -259,6 +259,7 @@ class ListTests(Base):
         self.assertEqual(rec["pullRequests"], [{"id": 30, "repo": "r"}])
         self.assertEqual((rec["repo"], rec["key"]), ("r", "o~r~7"))
         self.assertEqual(rec["assignedTo"], "me")
+        self.assertEqual((rec["iteration"], rec["iterationPath"]), ("it2", "Sprint"))
 
     def test_milestone_items(self):
         c = Fake({"projectV2(number": {"repositoryOwner": {"projectV2": project(fields=(STATUS,))}},
@@ -266,6 +267,7 @@ class ListTests(Base):
                                               item(issue(2), values("Todo")))})
         recs = lines(run(c, "--wi-list", "items", "milestone/4")[1])
         self.assertEqual([r["id"] for r in recs], [1])
+        self.assertEqual((recs[0]["iteration"], recs[0]["iterationPath"]), ("milestone/4", "v1"))
 
     def test_items_are_paged(self):
         pages = [{"node": {"items": {"pageInfo": {"hasNextPage": True, "endCursor": "c1"},

@@ -427,9 +427,10 @@ M.list = {
   },
   {
     name = "list_work_items",
-    description = "The work items in the user's current sprint view: id, type, title, state, assignee, linked PRs. "
-      .. "board = \"github\" lists the GitHub project's issues in its current iteration instead (each with its "
-      .. "repo); the board the user is looking at by default.",
+    description = "The work items in the user's current sprint view: id, type, title, state, assignee, iteration "
+      .. "(its path), linked PRs. board = \"github\" lists the GitHub project's issues in its current iteration "
+      .. "instead (each with its repo, its iteration's name, and iteration_id - what move_to_sprint takes); the "
+      .. "board the user is looking at by default.",
     schema = { type = "object", properties = { board = M.board_props.board } },
     risk = "read",
     run = function(args, env, done)
@@ -440,9 +441,11 @@ M.list = {
           if type(it) == "table" and it.id then
             local prs = {}
             for _, p in ipairs(type(it.pullRequests) == "table" and it.pullRequests or {}) do prs[#prs + 1] = p.id or p end
+            local gh = B.host == "github"
             out[#out + 1] = { id = it.id, type = it.type, title = it.title, state = it.state,
               assigned_to = it.assignedTo, parent = it.parentId, pull_requests = prs,
-              board = B.host == "github" and "github" or nil, repo = it.repo }
+              iteration = it.iterationPath, iteration_id = gh and it.iteration ~= "" and it.iteration or nil,
+              board = gh and "github" or nil, repo = it.repo }
           end
         end
         return out

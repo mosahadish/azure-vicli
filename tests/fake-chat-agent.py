@@ -168,6 +168,7 @@ def answer_turn(mcp, init, message, turn, model, session):
         # because the view says so; the rest name it.
         out.append("view board: {0}, item {1}".format(view.get("board"), (view.get("work_item") or {}).get("id")))
         call("list_work_items")
+        call("list_work_items", {"board": "azure"})
         call("get_work_item", {"id": 12, "board": "github"})
         call("set_work_item_state", {"id": 12, "state": "In Progress"})
         call("comment_on_work_item", {"id": 12, "text": "Picking this up.", "board": "github"})

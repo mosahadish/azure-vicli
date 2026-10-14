@@ -155,11 +155,52 @@ do
   ST.BOARDS = saved_boards
   for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
       "create_branch", "list_sprints", "create_child_task", "create_work_item", "assign_work_item", "move_to_sprint",
-      "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui" }) do
+      "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents" }) do
     local props = TOOLS.by_name[name].schema.properties
     check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
       and props.board.enum[1] == "azure" and props.board.enum[2] == "github")
   end
+
+  -- list_work_items: each row's iteration (Azure: its path; GitHub: its
+  -- name, and iteration_id for move_to_sprint).
+  local function run_tool(name, args, env)
+    local res, err
+    TOOLS.by_name[name].run(args, env or {}, function(r, e) res, err = r, e end)
+    return res, err
+  end
+  local saved_caches = { az = AZ.state.WI_LIST_CACHE, gh = GH.state.WI_LIST_CACHE }
+  AZ.state.WI_LIST_CACHE = { items = { { id = 5, title = "Az", iterationPath = "Demo\\Sprint 42" } } }
+  GH.state.WI_LIST_CACHE = { items = { { id = 12, title = "Gh", repo = "gizmos", iteration = "it2",
+    iterationPath = "Iteration 2" }, { id = 13, title = "None", repo = "gizmos", iteration = "", iterationPath = "" } } }
+  local az_rows = run_tool("list_work_items", { board = "azure" })
+  check("list_work_items: an Azure row's iteration is its path", az_rows and az_rows[1].iteration == "Demo\\Sprint 42"
+    and az_rows[1].iteration_id == nil, vim.inspect(az_rows))
+  local gh_rows = run_tool("list_work_items", { board = "github" })
+  check("list_work_items: a GitHub row's is its iteration's name, with its id", gh_rows
+    and gh_rows[1].iteration == "Iteration 2" and gh_rows[1].iteration_id == "it2" and gh_rows[2].iteration == ""
+    and gh_rows[2].iteration_id == nil, vim.inspect(gh_rows))
+
+  -- start_agents: each item goes to its agent with its board - board= first,
+  -- else the board a list has it on, else board_for's default.
+  local AGS = require("azure-cli.chat.agents")
+  local real_start, got = AGS.start_for_items, nil
+  AGS.start_for_items = function(items) got = items return "ok", {} end
+  ST.BOARDS = { workItems = true, issues = {} }
+  run_tool("start_agents", { work_item_ids = { 48 }, board = "github" })
+  check("start_agents: board = github reaches the agent", got and got[1].id == 48 and got[1].board == "github",
+    vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 48 } }, { view = function() return { board = "github" } end })
+  check("start_agents: without board, the view's", got and got[1].board == "github", vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 48 } })
+  check("start_agents: else Azure's", got and got[1].id == 48 and got[1].board == nil, vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 5 } }, { view = function() return { board = "github" } end })
+  check("start_agents: an item the Azure list has stays Azure's", got and got[1].title == "Az" and got[1].board == nil,
+    vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 5, 12 }, board = "github" })
+  check("start_agents: board = github doesn't take the Azure item with that id", got and got[1].title == nil
+    and got[1].board == "github" and got[2].title == "Gh" and got[2].repo == "gizmos", vim.inspect(got))
+  AGS.start_for_items, ST.BOARDS = real_start, saved_boards
+  AZ.state.WI_LIST_CACHE, GH.state.WI_LIST_CACHE = saved_caches.az, saved_caches.gh
 
   -- An "ask" tool: declined -> the agent hears so, run never called.
   local ran, logged, answer = false, {}, nil

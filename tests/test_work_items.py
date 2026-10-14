@@ -445,7 +445,8 @@ class WiListTests(unittest.TestCase):
         batch_resp = {"value": [{
             "id": 7,
             "fields": {"System.WorkItemType": "Task", "System.State": "To Do", "System.Title": "t",
-                       "System.AssignedTo": {"displayName": "Alice"}, "System.ChangedDate": ""},
+                       "System.AssignedTo": {"displayName": "Alice"}, "System.ChangedDate": "",
+                       "System.IterationPath": "Proj\\Sprint 5"},
             "relations": [
                 {"rel": "System.LinkTypes.Hierarchy-Reverse", "url": "x/_apis/wit/workItems/3"},
                 {"rel": "System.LinkTypes.Hierarchy-Forward", "url": "x/_apis/wit/workItems/8"},
@@ -462,6 +463,7 @@ class WiListTests(unittest.TestCase):
         rec = json.loads(buf.getvalue().splitlines()[0])
         self.assertEqual((rec["id"], rec["parentId"], rec["childIds"]), (7, 3, [8, 9]))
         self.assertEqual(rec["pullRequests"], [{"id": 1}])
+        self.assertEqual(rec["iterationPath"], "Proj\\Sprint 5")
         # No WIQL, no assignee or sprint filter: just the ids asked for.
         self.assertEqual([c["url"] for c in fetch.calls], [BATCH_URL])
         self.assertEqual(fetch.calls[0]["data"], {"ids": [7, 8], "$expand": "relations"})

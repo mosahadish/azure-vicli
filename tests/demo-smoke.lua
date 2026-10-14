@@ -1475,6 +1475,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     answer = "Allow"
     e, why = ask("work the issue")
     if not need(e, why, "view board: github, item 12", "list_work_items: [", "\"board\":\"github\"",
+        "\"iteration\":\"Iteration 2\"", "\"iteration_id\":\"it2\"", "\"iteration\":\"Demo\\\\Sprint 42\"",
         "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
         "create_child_task: Created issue #", "create_work_item: Created issue #", "start_story: {",
         "create_pull_request: Opened PR !",

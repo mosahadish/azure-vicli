@@ -382,6 +382,8 @@ class Board(object):
             # child's iteration): the iteration's id, else milestone/<n>.
             "iteration": self.iteration(values).get("iterationId") or (
                 MILESTONE + str(issue["milestone"]["number"]) if (issue.get("milestone") or {}).get("number") else ""),
+            # Its name, for people and the chat's list_work_items.
+            "iterationPath": self.iteration(values).get("title") or ((issue.get("milestone") or {}).get("title")) or "",
         }
 
     def summary(self, issue):
@@ -790,7 +792,6 @@ class IssueActions(object):
             "createdDate": issue.get("createdAt") or "",
             "changedDate": issue.get("updatedAt") or "",
             "areaPath": "{0}/{1}".format(owner, repo),
-            "iterationPath": board.iteration(values).get("title") or ((issue.get("milestone") or {}).get("title")) or "",
             "reason": (issue.get("stateReason") or "").lower().replace("_", " "),
             # Markdown, shown as written: no html_to_text.
             "description": issue.get("body") or "",

@@ -1258,7 +1258,8 @@ class Fake:
     def wi_list_record(self, w):
         return {"id": w["id"], "type": w["type"], "state": w["state"], "title": w["title"],
                 "assignedTo": w["assignedTo"], "priority": w.get("priority"), "tags": w.get("tags", ""),
-                "parentId": w.get("parentId"), "pullRequests": [{"id": p} for p in w.get("prs", [])],
+                "iterationPath": w.get("iterationPath", ""), "parentId": w.get("parentId"),
+                "pullRequests": [{"id": p} for p in w.get("prs", [])],
                 "childIds": [x["id"] for x in self.state["workitems"] if x.get("parentId") == w["id"]],
                 "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
                 "url": "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])}
@@ -1554,7 +1555,9 @@ class Fake:
                 "pullRequests": [{"id": p, "repo": n["repo"]} for p in n.get("prs", [])], "childIds": kids,
                 "changedIso": n["updated"], "changedHuman": humanize(n["updated"]),
                 "url": "https://github.com/{0}/{1}/issues/{2}".format(GH_OWNER, n["repo"], n["number"]),
-                "repo": n["repo"], "key": self.gh_key(n), "iteration": n.get("iteration") or ""}
+                "repo": n["repo"], "key": self.gh_key(n), "iteration": n.get("iteration") or "",
+                "iterationPath": next((s["title"] for s in self.state.get("gh_iterations") or []
+                                       if s["id"] == n.get("iteration")), "")}
 
     def gh_summary(self, n):
         return {"id": n["number"], "type": "Issue", "state": self.gh_state(n), "title": n["title"],
@@ -1660,9 +1663,8 @@ class Fake:
         if n is None:
             raise ValueError("issue {0} not found".format(rest[0] if rest else ""))
         item = self.gh_record(n)
-        it = next((s for s in self.state.get("gh_iterations") or [] if s["id"] == n.get("iteration")), {})
         item.update({"createdBy": "alice", "createdDate": n["updated"], "changedDate": n["updated"],
-                     "areaPath": "{0}/{1}".format(GH_OWNER, n["repo"]), "iterationPath": it.get("title", ""),
+                     "areaPath": "{0}/{1}".format(GH_OWNER, n["repo"]),
                      "reason": n.get("reason", ""), "description": n.get("body", ""), "acceptanceCriteria": "",
                      "reproSteps": "", "pullRequests": [self.gh_linked_pr(n, p) for p in n.get("prs", [])],
                      "branches": n.get("branches", [])})

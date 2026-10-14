@@ -26,6 +26,29 @@ return function(T)
     if args.pr_id then return { pr_id = args.pr_id } end
   end
 
+  -- Work item `id` for start_agents, with the board its agent reads it
+  -- from: args.board when given, else the board a list showed it on (a
+  -- "#n" refs.resolve finds), else T.board_for's default. An item another
+  -- board's list has under the same id isn't taken for it.
+  local function item_on_board(id, args, env)
+    local ref = require("azure-cli.chat.refs").resolve({ kind = "any", id = id })
+    local item, board = ref.kind == "wi" and ref.item or nil, ref.kind == "wi" and ref.board or nil
+    if args.board == "azure" or args.board == "github" then
+      if item and (board or "azure") ~= args.board then item = nil end
+      board = args.board
+    elseif not item then
+      board = T.board_for(args, env).host
+    end
+    if not item then
+      for _, it in ipairs((require("azure-cli.workitems.board").get(board).state.WI_LIST_CACHE or {}).items or {}) do
+        if type(it) == "table" and tostring(it.id) == tostring(id) then item = it break end
+      end
+    end
+    item = vim.tbl_extend("force", {}, item or { id = id })
+    item.board = board == "github" and "github" or nil
+    return item
+  end
+
   local target_props = {
     work_item_id = { type = "integer", description = "the agent's work item" },
     pr_id = { type = "integer", description = "the agent's pull request" },
@@ -37,12 +60,15 @@ return function(T)
       description = "Starts an agent of its own for each work item in work_item_ids (it reads the item, writes a "
         .. "plan for the user to approve, then implements it), and/or one for pull request pr_id's review comments "
         .. "(thread_ids, default every active one). At most chat.max_agents work at once; the rest queue. They show "
-        .. "on the Agents screen. `instructions` (optional) goes to each of them with its first message.",
+        .. "on the Agents screen. `instructions` (optional) goes to each of them with its first message. `board` "
+        .. "says which board the work items are on, and each agent reads its item from there; without it, the "
+        .. "board a list showed the item on, else the board the user is looking at.",
       schema = { type = "object", properties = {
         work_item_ids = { type = "array", items = { type = "integer" } },
         pr_id = { type = "integer" },
         thread_ids = { type = "array", items = { type = "integer" } },
         instructions = { type = "string" },
+        board = T.board_props.board,
       } },
       risk = "write",
       run = function(args, env, done)
@@ -51,8 +77,7 @@ return function(T)
         local said = {}
         local items = {}
         for _, id in ipairs(type(args.work_item_ids) == "table" and args.work_item_ids or {}) do
-          local ref = require("azure-cli.chat.refs").resolve({ kind = "any", id = id })
-          items[#items + 1] = (ref.kind == "wi" and ref.item) or { id = id }
+          items[#items + 1] = item_on_board(id, args, env)
         end
         if #items > 0 then said[#said + 1] = (AGENTS().start_for_items(items, args.instructions)) end
         if args.pr_id then
