@@ -665,8 +665,28 @@ do
     "for f in $(ls); do cat $f; done", "for f in a; do rm $f; done", "for f in a; do cat $f; done > out",
     "for ((i=0;i<3;i++)); do ls; done", "for f in a; do git checkout $f; done", "for f in a; do ls",
     "for f in a; ls; done", "done", "for PATH in .; do ls; done", "for f in a; do cat $f; done && rm x",
-    "while read l; do echo $l; done < f", "for f in a; do echo `rm x`; done" }, false)
+    "for f in a; do echo `rm x`; done" }, false)
   check("look_only_command: near misses that still ask", wrong == nil, wrong)
+  -- #58: while read loops whose bodies only look, reading a file or a pipe.
+  wrong = all({ "while read l; do echo $l; done < f", "while IFS= read -r l; do grep -n \"$l\" src; done < pats",
+    "git ls-files | while read f; do wc -l \"$f\"; done | sort", "while read a b; do git show \"x:$a\" | head; done < f",
+    "for d in a b; do while read l; do cat $d/$l; done < $d/list; done", "while read -r l\ndo\n  echo $l\ndone < f",
+    "while read -r -d '' f; do ls -la \"$f\"; done < list 2>/dev/null", "while read; do echo $REPLY; done < /dev/null",
+    "while read l; do B=$l; for w in $B; do grep -n $w f; done; done < f" }, true)
+  check("look_only_command: a while read loop of look-only commands (#58)", wrong == nil, wrong)
+  wrong = all({ "while read l; do echo $l; done < f > out", "while read l; do echo $l; done < f >> out",
+    "while read l; do echo $l; done < f 2> err", "cat f | while read l; do echo $l; done | tee out",
+    "while read l; do rm $l; done < f", "while read l; do sed -i s/a/b/ $l; done < f",
+    "while read l; do $l; done < f", "while read l; do \"$l\" x; done < f", "while read l; do git log $l; done < f",
+    "while read l; do git show \"$l\"; done < f", "while read l; do sed -n \"$l\" f; done < f",
+    "while read l; do sed -n \"1,${l}p\" f; done < f", "while read l; do find . $l; done < f",
+    "while read l; do sort $l x; done < f", "while read l; do B=$l; git log $B; done < f",
+    "while read l; do cat $l; done <<< x", "while read l; do cat $l; done < <(ls)", "while read l; do cat $l; done < /dev/tcp/h/80",
+    "while read l; do cat $l; done < $UNSET", "while true; do ls; done", "while read -u 3 l; do ls; done",
+    "while read -p x l; do ls; done", "while read l; do ls; done < f && rm x", "grep x < f", "for f in a; do ls; done < f",
+    "while read PATH; do ls; done < f", "while IFS= read l; do ls; done < f; IFS=x", "while read l; do ls",
+    "while read l < f; do ls; done", "while read l; do ls; done < f g" }, false)
+  check("look_only_command: while read loops that still ask (#58)", wrong == nil, wrong)
   wrong = all({ "rm -rf x", "grep x > out.txt", "find . -delete", "find . \"-delete\"", "find . -exec rm {} ;",
     "rg --pre=./evil x", "sort -ro out x", "git -c core.pager=evil log", "git push", "git branch -D x",
     "cat $(rm x)", "echo \"$(rm x)\"", "ls `rm x`", "grep x & rm y", "Remove-Item x",

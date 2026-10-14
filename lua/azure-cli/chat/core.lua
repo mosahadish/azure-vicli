@@ -266,9 +266,18 @@ local function sed_reads(s)
 end
 
 -- `words`: one command, after the shell's quoting and expansion.
-local function look_only_part(words)
+-- `unknown` (expand's): the words with a value read from a file in them -
+-- "free" when it could make them anything, a flag included. Those can't
+-- name the command, go to sed (they'd be its script) or be a free word
+-- for a command that a flag makes write.
+local function look_only_part(words, unknown)
+  unknown = unknown or {}
+  if unknown[1] then return false end
+  local free = false
+  for _, u in pairs(unknown) do free = free or u == "free" end
   local name = (words[1] or ""):lower():gsub("%.exe$", "")
   if name == "git" then
+    if free then return false end
     -- Only these before the subcommand: -c / --config-env would set a pager.
     local i = 2
     while words[i] == "--no-pager" or words[i] == "-C" or words[i] == "-P" do i = i + (words[i] == "-C" and 2 or 1) end
@@ -298,10 +307,10 @@ local function look_only_part(words)
       end
       k = k + 1
     end
-    return given or (script ~= nil and sed_reads(script))
+    return next(unknown) == nil and (given or (script ~= nil and sed_reads(script)))
   end
   local flags = LOOK_ONLY[name]
-  return flags ~= nil and not bad_flag(words, 2, flags)
+  return flags ~= nil and not (free and #flags > 0) and not bad_flag(words, 2, flags)
 end
 
 -- `cmd` split the way the shell would: statements (split on |, &&, ||,
@@ -310,7 +319,9 @@ end
 -- when it has anything else that runs or writes: outside quotes > < &
 -- ( ) { } ` and other $ forms; inside double quotes $( and `. Throwing
 -- errors away, or merging them, writes nothing: 2>/dev/null, 2>$null,
--- *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file).
+-- *>$null, 2>&1 (a whole word each - 2>/dev/nullx is a file). A plain
+-- < (not <<, <( <& <>) is a word of its own, { { redirect = "<" } },
+-- which shell_tree allows only after a while loop's done.
 local function shell_words(cmd)
   local stmts, words, word = {}, {}, nil
   local function add(text, quoted)
@@ -394,6 +405,11 @@ local function shell_words(cmd)
         or (fd == "2" and cmd:match("^>&1()", i))
       if not after or not cmd:sub(after, after):match("^%s?$") then return nil end
       i = after
+    elseif c == "<" then
+      if cmd:sub(i + 1, i + 1):match("^[<(&>]$") then return nil end
+      end_word()
+      words[#words + 1] = { { redirect = "<" } }
+      i = i + 1
     elseif c:match("[<(){}`]") then
       return nil
     elseif c:match("%s") then
@@ -419,28 +435,37 @@ local function settable(name)
   return not SHELL_VARS[name] and not name:match("^BASH") and os.getenv(name) == nil
 end
 
+-- The value of a variable `while read` sets: whatever the file holds.
+local UNKNOWN = {}
+
 -- What word `w` becomes with `vars` filled in: unquoted, a value splits
 -- on spaces (so B='--output x' can't hide a flag), quoted it doesn't.
--- nil when a name isn't set by the command itself.
+-- nil when a name isn't set by the command itself. Second, which of the
+-- words an UNKNOWN value is in: "free" when it starts the word or isn't
+-- quoted (it could be any word, or several), else "inside".
 local function expand(w, vars)
-  local out, cur, any = {}, "", false
+  local out, unknown, cur, any, unk = {}, {}, "", false, nil
+  local function push() out[#out + 1] = cur; unknown[#out] = unk end
   for _, p in ipairs(w) do
     local v = p.text or vars[p.var]
     if v == nil then return nil end
-    if p.text or p.quoted then
+    if v == UNKNOWN then
+      unk = (not p.quoted or cur == "") and "free" or unk or "inside"
+      any = true
+    elseif p.text or p.quoted then
       cur, any = cur .. v, true
     else
       local chunks = vim.split(v, "%s+")
       cur = cur .. chunks[1]
       any = any or chunks[1] ~= ""
       for k = 2, #chunks do
-        if any then out[#out + 1] = cur end
-        cur, any = chunks[k], chunks[k] ~= ""
+        if any then push() end
+        cur, any, unk = chunks[k], chunks[k] ~= "", nil
       end
     end
   end
-  if any then out[#out + 1] = cur end
-  return out
+  if any then push() end
+  return out, unknown
 end
 
 -- NAME and its value when word `w` is an assignment (B=origin/main).
@@ -452,33 +477,84 @@ local function assignment(w, vars)
   for k = 2, #w do
     local v = w[k].text or vars[w[k].var]
     if v == nil then return nil end
-    value = value .. v
+    value = (v == UNKNOWN or value == UNKNOWN) and UNKNOWN or value .. v
   end
   return name, value
 end
 
 local function keyword(w, kw) return w and #w == 1 and w[1].text == kw and not w[1].quoted end
+local function literal(w) return w and #w == 1 and not w[1].quoted and w[1].text end
+local function name_word(w)
+  local name = literal(w)
+  return name and name:match("^[%a_][%w_]*$") and name
+end
+local function all_text(w)
+  for _, p in ipairs(w) do if not p.text then return false end end
+  return true
+end
 
--- shell_words' statements from i on as commands and for loops, up to the
--- `done` that closes the loop they're in (`inside`), and where they end.
--- nil when they don't parse.
+-- The names `while [IFS=...] read [-r -s, -d -n -N -t X] [NAME...]`
+-- reads into (REPLY when none), nil for any other while condition.
+-- IFS= only changes how this read splits. -u FD, -p, -a, -e and -i
+-- don't count.
+local function read_names(s)
+  local k = 2
+  local first = s[k] and s[k][1]
+  if first and first.text and not first.quoted and first.text:match("^IFS=") and all_text(s[k]) then k = k + 1 end
+  if not keyword(s[k], "read") then return nil end
+  k = k + 1
+  while (literal(s[k]) or ""):match("^%-") do
+    local o = literal(s[k])
+    if o:match("^%-[dnNt]$") then
+      if not (s[k + 1] and all_text(s[k + 1])) then return nil end
+      k = k + 1
+    elseif not o:match("^%-[rs]+$") then
+      return nil
+    end
+    k = k + 1
+  end
+  local names = {}
+  for m = k, #s do
+    local name = name_word(s[m])
+    if not name then return nil end
+    names[#names + 1] = name
+  end
+  if #names == 0 then names[1] = "REPLY" end
+  return names
+end
+
+-- shell_words' statements from i on as commands, for loops and while
+-- read loops, up to the `done` that closes the loop they're in (`inside`:
+-- "for" or "while"); where they end, and the word a while loop reads
+-- from (done < FILE). nil when they don't parse.
 local function shell_tree(stmts, i, inside)
   local nodes = {}
   while i <= #stmts do
     local s = stmts[i]
     if keyword(s[1], "done") then
-      if not inside or #s > 1 then return nil end
-      return nodes, i + 1
-    elseif keyword(s[1], "for") then
-      -- for NAME in WORDS; do BODY; done (do may share a line with BODY).
-      local name = s[2] and #s[2] == 1 and not s[2][1].quoted and s[2][1].text
-      if not (name and name:match("^[%a_][%w_]*$") and keyword(s[3], "in")) then return nil end
+      if not inside then return nil end
+      if #s == 1 then return nodes, i + 1 end
+      if inside == "while" and #s == 3 and s[2][1].redirect then return nodes, i + 1, s[3] end
+      return nil
+    elseif keyword(s[1], "for") or keyword(s[1], "while") then
+      -- for NAME in WORDS / while read NAME...; do BODY; done (do may share
+      -- a line with BODY).
+      local node = {}
+      if keyword(s[1], "for") then
+        local name = name_word(s[2])
+        if not (name and keyword(s[3], "in")) then return nil end
+        node.names, node.list = { name }, vim.list_slice(s, 4)
+      else
+        node.names, node.read = read_names(s), true
+        if not node.names then return nil end
+      end
       local d = stmts[i + 1]
       if not (d and keyword(d[1], "do")) then return nil end
       stmts[i + 1] = vim.list_slice(d, 2)
-      local body, j = shell_tree(stmts, i + 1, true)
+      local body, j, from = shell_tree(stmts, i + 1, node.read and "while" or "for")
       if not body then return nil end
-      nodes[#nodes + 1] = { var = name, list = vim.list_slice(s, 4), body = body }
+      node.body, node.from = body, from
+      nodes[#nodes + 1] = node
       i = j
     else
       if s[1] then nodes[#nodes + 1] = { words = s } end
@@ -489,22 +565,39 @@ local function shell_tree(stmts, i, inside)
   return nodes, i
 end
 
+-- Whether a while loop may read file `path`: not bash's /dev/tcp,
+-- /dev/udp or another device, but /dev/null and /dev/stdin.
+local function readable(path)
+  return path ~= "" and (not path:match("^/+dev/") or path == "/dev/null" or path == "/dev/stdin")
+end
+
 -- Whether every command in shell_tree's `nodes` only looks, with
--- `vars` the variables set so far. A loop's body is checked once per
--- value of its list (once with "" when it's empty).
+-- `vars` the variables set so far. A for loop's body is checked once per
+-- value of its list (once with "" when it's empty), a while read loop's
+-- once with UNKNOWN.
 local function look_only_tree(nodes, vars)
   for _, node in ipairs(nodes) do
     if node.body then
-      if not settable(node.var) then return false end
+      for _, name in ipairs(node.names) do if not settable(name) then return false end end
       local values = {}
-      for _, w in ipairs(node.list) do
-        local ws = expand(w, vars)
-        if not ws then return false end
-        vim.list_extend(values, ws)
+      if node.read then
+        if node.from then
+          local ws, unknown = expand(node.from, vars)
+          if not ws or #ws ~= 1 or unknown[1] or not readable(ws[1]) then return false end
+        end
+        values[1] = UNKNOWN
+      else
+        for _, w in ipairs(node.list) do
+          local ws, unknown = expand(w, vars)
+          if not ws then return false end
+          for k, v in ipairs(ws) do values[#values + 1] = unknown[k] and UNKNOWN or v end
+        end
       end
       if #values == 0 then values[1] = "" end
       for _, v in ipairs(values) do
-        if not look_only_tree(node.body, setmetatable({ [node.var] = v }, { __index = vars })) then return false end
+        local scope = setmetatable({}, { __index = vars })
+        for _, name in ipairs(node.names) do scope[name] = v end
+        if not look_only_tree(node.body, scope) then return false end
       end
     elseif assignment(node.words[1], vars) then
       -- Only on its own (B=x; ...): FOO=1 cmd puts FOO in cmd's environment.
@@ -514,25 +607,30 @@ local function look_only_tree(nodes, vars)
         vars[name] = value
       end
     else
-      local words = {}
+      local words, unknown = {}, {}
       for _, w in ipairs(node.words) do
-        local ws = expand(w, vars)
+        local ws, u = expand(w, vars)
         if not ws then return false end
-        vim.list_extend(words, ws)
+        for k, v in ipairs(ws) do
+          words[#words + 1] = v
+          unknown[#words] = u[k]
+        end
       end
-      if not look_only_part(words) then return false end
+      if not look_only_part(words, unknown) then return false end
     end
   end
   return true
 end
 
 -- Whether shell command `cmd` (a string, or an argv list) only reads:
--- every command in it - split on |, &&, || and ;, inside for loops too -
--- is one of the commands above without a flag that writes, once the
--- variables the command sets itself (B=x; ... $B) and its loop variables
--- are filled in; and nothing in it redirects, runs a subcommand or a
--- script block (shell_words). Reads the environment only to refuse
--- assigning a variable that's already in it.
+-- every command in it - split on |, &&, || and ;, inside for loops and
+-- while read loops too - is one of the commands above without a flag
+-- that writes, once the variables the command sets itself (B=x; ... $B)
+-- and its loop variables are filled in (what read reads could be
+-- anything: look_only_part); and nothing in it redirects - but a while
+-- loop's done < FILE - runs a subcommand or a script block
+-- (shell_words). Reads the environment only to refuse assigning a
+-- variable that's already in it.
 function M.look_only_command(cmd)
   if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
   if type(cmd) ~= "string" or not cmd:match("%S") then return false end

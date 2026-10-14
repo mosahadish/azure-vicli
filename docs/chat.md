@@ -257,8 +257,10 @@ picks goes through `session/set_config_option`.
   `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
   `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
   of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
-  `2>&1`). **Skills you allow** don't ask either: while an answer uses one
-  of the agent's skills (a `SKILL.md` in the repository's `.github/skills`,
+  `2>&1`), and `for` / `while read` loops of them (`while read l; do
+  grep -n "$l" src; done < file`). **Skills you allow** don't ask
+  either: while an answer uses one of the agent's skills (a `SKILL.md`
+  in the repository's `.github/skills`,
   `.claude/skills`, `.agents/skills` or `.copilot/skills`, or yours in your
   home folder) - your message names it (`/triage-pr-comments`, "use the
   triage-pr-comments skill") or the agent reports loading it - its
