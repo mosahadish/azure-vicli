@@ -72,7 +72,7 @@ _Part of the [azure-vicli](../README.md) docs._
   `AZVICLI_CONFIG` (see [setup() options](configuration.md#setup-options)/[Environment
   variables](configuration.md#environment-variables)) - a `setup({config=...})` call
   overrides the config path outright.
-- **Where are prefetch markers/the `.userid` cache?**: under
+- **Where are prefetch markers?**: under
   `AZVICLI_PREFETCH_DIR` (see [Environment variables](configuration.md#environment-variables))
   - Neovim's own cache directory's `azure-cli/` subfolder by default (a
   plain `stdpath("cache")`, printable with `:lua print(vim.fn.stdpath("cache"))`),

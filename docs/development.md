@@ -190,9 +190,8 @@ python3.
 Most files use CRLF line endings; edit them byte-wise. The Lua files can be
 syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
 `bash -n`. `azure-cli.py` and `tests/test_*.py` are plain LF. Build outputs
-(`__pycache__/`) are ignored by git; prefetch markers and the `.userid`
-cache live under Neovim's/the platform's cache directory (see
-`AZVICLI_PREFETCH_DIR` in [Environment variables](configuration.md#environment-variables)),
+(`__pycache__/`) are ignored by git; prefetch markers live under
+Neovim's/the platform's cache directory (see `AZVICLI_PREFETCH_DIR` in [Environment variables](configuration.md#environment-variables)),
 not inside the repo.
 
 `tests/run.sh` is the whole test suite (bash, git, luajit and python3; a

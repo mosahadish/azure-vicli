@@ -323,56 +323,44 @@ class ConfigReadOnceTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# .userid cache: atomic write (temp + rename)
+# The current user's id under --serve: no .userid file any more (#100)
 # ---------------------------------------------------------------------------
 
 
-class UserIdCacheAtomicWriteTests(unittest.TestCase):
-    def test_current_user_id_writes_the_cache_with_no_leftover_temp_file(self):
+class UserIdNotOnDiskTests(unittest.TestCase):
+    def setUp(self):
+        ac._conn_data_cache.clear()
+        ac._config_cache["serving"] = True
+
+    def tearDown(self):
+        ac._config_cache["serving"] = False
+        ac._conn_data_cache.clear()
+
+    def _actions(self, td, org, pat, uid):
+        cfg = ac.Config()
+        cfg.accounts = [ac.AccountConfig(project="p", org_url=org, pat=pat)]
+        a = ac.PrActions(cfg, {
+            "AZVICLI_ORG": org, "AZVICLI_PROJECT": "p",
+            "AZVICLI_REPO": "r", "AZVICLI_PR": "1", "AZVICLI_PREFETCH_DIR": td,
+        })
+        a.pat = pat
+        a.fetch = lambda *args, **kw: {"authenticatedUser": {"id": uid}}
+        return a
+
+    def test_current_user_id_writes_nothing_to_the_prefetch_dir(self):
         with tempfile.TemporaryDirectory() as td:
-            cfg = ac.Config()
-            cfg.accounts = [ac.AccountConfig(project="p", org_url="https://x", pat="tok")]
-            actions = ac.PrActions(cfg, {
-                "AZVICLI_ORG": "https://x", "AZVICLI_PROJECT": "p",
-                "AZVICLI_REPO": "r", "AZVICLI_PR": "1", "AZVICLI_PREFETCH_DIR": td,
-            })
-            actions.pat = "tok"
-            actions.fetch = lambda *a, **k: {"authenticatedUser": {"id": "abc-123"}}
+            self.assertEqual(self._actions(td, "https://x", "tok", "abc-123").current_user_id(), "abc-123")
+            self.assertEqual(os.listdir(td), [])
 
-            uid = actions.current_user_id()
-
-            self.assertEqual(uid, "abc-123")
-            written = os.listdir(td)
-            self.assertEqual(len(written), 1, "no leftover .userid.<tmp> file")
-            # Keyed by org, not a bare ".userid" - see _userid_cache_path.
-            self.assertTrue(written[0].startswith(".userid-"), written)
-            self.assertEqual(written[0], os.path.basename(actions._userid_cache_path()))
-            with open(os.path.join(td, written[0]), encoding="utf-8") as f:
-                self.assertEqual(f.read(), "abc-123")
-
-    def test_the_userid_cache_is_per_org(self):
-        """Two accounts in different orgs must not share one cached id: the
-        file name carries a digest of the org, so the second org resolves
-        (and caches) its own rather than reusing the first org's.
-        """
+    def test_the_id_is_kept_per_org_and_per_pat(self):
+        """Two orgs, or two accounts on one org, never share an id."""
         with tempfile.TemporaryDirectory() as td:
-            cfg = ac.Config()
-            cfg.accounts = [ac.AccountConfig(project="p", org_url="https://x", pat="tok")]
-
-            def actions_for(org, uid):
-                a = ac.PrActions(cfg, {
-                    "AZVICLI_ORG": org, "AZVICLI_PROJECT": "p",
-                    "AZVICLI_REPO": "r", "AZVICLI_PR": "1", "AZVICLI_PREFETCH_DIR": td,
-                })
-                a.pat = "tok"
-                a.fetch = lambda *args, **kw: {"authenticatedUser": {"id": uid}}
-                return a
-
-            self.assertEqual(actions_for("https://x", "abc-123").current_user_id(), "abc-123")
-            self.assertEqual(actions_for("https://other", "zzz-999").current_user_id(), "zzz-999")
-            # And each one still reads back its own from the cache.
-            self.assertEqual(actions_for("https://x", "wrong").current_user_id(), "abc-123")
-            self.assertEqual(len(os.listdir(td)), 2)
+            self.assertEqual(self._actions(td, "https://x", "tok", "abc-123").current_user_id(), "abc-123")
+            self.assertEqual(self._actions(td, "https://other", "tok", "zzz-999").current_user_id(), "zzz-999")
+            self.assertEqual(self._actions(td, "https://x", "tok-2", "def-456").current_user_id(), "def-456")
+            # Each one still reads back its own from the cache.
+            self.assertEqual(self._actions(td, "https://x", "tok", "wrong").current_user_id(), "abc-123")
+            self.assertEqual(self._actions(td, "https://x", "tok-2", "wrong").current_user_id(), "def-456")
 
 
 if __name__ == "__main__":

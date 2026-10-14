@@ -38,7 +38,6 @@ import select
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -2270,8 +2269,8 @@ def default_prefetch_dir():
     on Windows, $XDG_CACHE_HOME/azure-cli (default ~/.cache/azure-cli)
     elsewhere - rather than a .prefetch/ directory next to this script, so a
     packaged or read-only install (this repo cloned somewhere the running
-    user can't write to) still has somewhere to write prefetch markers and
-    the .userid cache. lua/azure-cli/config.lua's provider_cmd() sets
+    user can't write to) still has somewhere to write prefetch markers.
+    lua/azure-cli/config.lua's provider_cmd() sets
     AZVICLI_PREFETCH_DIR to Neovim's own stdpath("cache") .. "/azure-cli"
     for every provider call it builds, which is this same idea from the Lua
     side rather than a literal shared constant - the two independently land
@@ -2283,6 +2282,11 @@ def default_prefetch_dir():
         return os.path.join(base, "azure-cli", "cache")
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "azure-cli")
+
+
+# Whether PrActions has already removed the old .userid cache files (see
+# its current_user_id section) in this process.
+_legacy_userid_files_removed = False
 
 
 def resolve_account_pat(config, org, project):
@@ -2351,67 +2355,79 @@ class PrActions:
         return base + path if path else base
 
     # -- current_user_id -------------------------------------------------
+    #
+    # The id used to be file-cached under PREFETCH_DIR (.userid, later
+    # .userid-<sha256(org)[:12]>) and never expired. The key had no PAT in
+    # it, so after switching the PAT to another account a vote or
+    # auto-complete still went out with the previous user's id (#100). It
+    # now goes through connection_data() (#94): kept per (org, PAT digest)
+    # under --serve with a TTL, fetched every time in a one-shot run, and
+    # never written to disk. The old files are removed on first use.
 
-    def _userid_cache_path(self):
-        """Where this org's authenticated-user id is cached.
-
-        The id is per organization/collection, but this used to be a single
-        PREFETCH_DIR/.userid with nothing in the name to say which org it
-        came from - while self.org is per request (AZVICLI_ORG, set by the
-        dashboard from each PR's own record). With two configured accounts
-        the first org's id was therefore reused to vote and set
-        auto-complete on the second org's PRs, where it identifies nobody.
-        The org's digest is part of the filename now, so each gets its own;
-        a .userid left over from before is simply never read again.
-        """
-        key = (self.org or "").rstrip("/").lower().encode("utf-8")
-        return os.path.join(self.prefetch_dir, ".userid-{0}".format(hashlib.sha256(key).hexdigest()[:12]))
-
-    def current_user_id(self):
-        """Resolves (and file-caches per org under PREFETCH_DIR, since it
-        never changes) the authenticated user's id via the bare (no
-        api-version - some on-prem TFS 400s on it) ConnectionData endpoint.
-        Needed to cast a vote or set auto-complete, both keyed by reviewer
-        id. Returns None on any failure - mirrors current_user_id's `|| return 1`.
-        """
-        cache_path = self._userid_cache_path()
+    def _remove_legacy_userid_files(self):
+        """Best-effort, once per process: deletes the old .userid,
+        .userid-<org digest> and leftover .userid.<tmp> files."""
+        global _legacy_userid_files_removed
+        if _legacy_userid_files_removed:
+            return
+        _legacy_userid_files_removed = True
         try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                cached = f.read().strip()
-            if cached:
-                return cached
+            names = os.listdir(self.prefetch_dir)
         except OSError:
-            pass
-        if not self.pat:
-            return None
-        try:
-            resp = self.fetch(connection_data_url(self.org), pat=self.pat, api_version=None)
-        except Exception:
-            return None
-        uid = authenticated_user(resp)[0]
-        if not uid:
-            return None
-        try:
-            os.makedirs(self.prefetch_dir, exist_ok=True)
-            # Write-to-temp-then-rename: under --serve, several requests can
-            # resolve current_user_id() concurrently (a vote and an
-            # auto-complete landing at the same time, say) before any of
-            # them has written the cache yet - os.replace is atomic, so a
-            # concurrent reader above either sees the old (missing) file or
-            # a complete uid, never a torn/partial write.
-            fd, tmp_path = tempfile.mkstemp(prefix=".userid.", dir=self.prefetch_dir)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(uid)
-                os.replace(tmp_path, cache_path)
-            except OSError:
+            return
+        for name in names:
+            if name == ".userid" or name.startswith(".userid-") or name.startswith(".userid."):
                 try:
-                    os.unlink(tmp_path)
+                    os.unlink(os.path.join(self.prefetch_dir, name))
                 except OSError:
                     pass
-        except OSError:
-            pass
-        return uid
+
+    def current_user_id(self):
+        """The authenticated user's id via the bare (no api-version - some
+        on-prem TFS 400s on it) ConnectionData endpoint, through #94's
+        cache. Needed to cast a vote or set auto-complete,
+        both keyed by reviewer id. Returns None on any failure - mirrors
+        current_user_id's `|| return 1`. Sets self._uid_from_cache for
+        _with_user_id's retry-once.
+        """
+        self._remove_legacy_userid_files()
+        self._uid_from_cache = False
+        if not self.pat:
+            return None
+        _conn_data_take_hit()
+        try:
+            resp = connection_data(self.org, self.pat,
+                                   lambda: self.fetch(connection_data_url(self.org), pat=self.pat, api_version=None))
+        except Exception:
+            _conn_data_take_hit()
+            return None
+        self._uid_from_cache = _conn_data_take_hit()
+        return authenticated_user(resp)[0] or None
+
+    def _with_user_id(self, send):
+        """send(uid) with the current user's id. When it is rejected with
+        401/403/203 and the id came from the cache, the entry goes, the id
+        is looked up afresh and send runs once more - only the vote PUT and
+        the auto-complete PATCH use this: an auth rejection means ADO
+        applied nothing, and both set a value, so a second send is safe.
+        A second failure is raised to the caller, which reports it. Returns
+        False when no id could be resolved.
+        """
+        uid = self.current_user_id()
+        if not uid:
+            return False
+        try:
+            send(uid)
+        except AdoHttpError as e:
+            if not (self._uid_from_cache and e.status in CONN_DATA_AUTH_STATUSES):
+                raise
+            # With the entry gone this is a miss: fetched afresh, and kept.
+            conn_data_invalidate(self.org, self.pat)
+            uid = self.current_user_id()
+            if not uid:
+                raise
+            send(uid)
+        return True
 
     # -- threads / iterations (raw passthrough for the nvim UI) ---------
 
@@ -2664,13 +2680,13 @@ class PrActions:
         if vote not in _VOTES:
             print("Invalid vote: '{0}'".format(vote))
             return 1
-        uid = self.current_user_id()
-        if not uid:
-            print("Could not resolve your user id (connectionData); cannot vote.")
-            return 1
-        try:
+        def send(uid):
             self.fetch(self._pr_url("/reviewers/{0}".format(uid)),
                        method="PUT", data={"vote": int(vote)}, pat=self.pat, api_version="6.0")
+        try:
+            if not self._with_user_id(send):
+                print("Could not resolve your user id (connectionData); cannot vote.")
+                return 1
         except AdoHttpError as e:
             print("REST vote failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
@@ -2921,20 +2937,20 @@ class PrActions:
         if strategy not in _MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
             return 1
-        uid = self.current_user_id()
-        if not uid:
-            print("Could not resolve your user id (connectionData); cannot set auto-complete.")
-            return 1
-        data = {
-            "autoCompleteSetBy": {"id": uid},
-            "completionOptions": {
-                "mergeStrategy": strategy,
-                "deleteSourceBranch": _to_bool(del_branch),
-                "transitionWorkItems": _to_bool(transition),
-            },
-        }
-        try:
+        def send(uid):
+            data = {
+                "autoCompleteSetBy": {"id": uid},
+                "completionOptions": {
+                    "mergeStrategy": strategy,
+                    "deleteSourceBranch": _to_bool(del_branch),
+                    "transitionWorkItems": _to_bool(transition),
+                },
+            }
             self.fetch(self._pr_url(), method="PATCH", data=data, pat=self.pat, api_version="6.0")
+        try:
+            if not self._with_user_id(send):
+                print("Could not resolve your user id (connectionData); cannot set auto-complete.")
+                return 1
         except AdoHttpError as e:
             print("REST auto-complete failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
