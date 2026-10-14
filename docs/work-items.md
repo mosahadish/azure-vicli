@@ -7,7 +7,10 @@ _Part of the [azure-vicli](../README.md) docs._
 Press `W` in the PR dashboard. The work-items dashboard shows the user stories
 and bugs assigned to you in the current sprint, with tabs for the other
 sprints of the quarter (or, with `work_items.sprint_scope: all`, every sprint
-the team has - see below). Its winbar is `Work items · Sprint 42 (Sep 1–14) ·
+the team has - see below). The last tab, **No sprint**, lists your open
+items whose iteration is the team's backlog iteration (from the team's
+settings) or the project root, which no sprint's tab shows; `gi` to it, or
+`n` on it, files an item there. Its winbar is `Work items · Sprint 42 (Sep 1–14) ·
 N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 
 ![The work-items dashboard: sprint tabs, items grouped by type](images/workitems.png)

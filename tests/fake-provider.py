@@ -52,6 +52,8 @@ MY_ID = "11111111-1111-1111-1111-111111111111"
 MY_NAME = "Demo User"
 ORG = "https://dev.azure.com/demo-org"
 PROJECT = "Demo"
+# The team's backlog iteration (teamsettings' backlogIteration).
+BACKLOG = PROJECT + "\\Team"
 # The GitHub account (github_host.py): PRs whose AZVICLI_ORG is this API
 # root are GitHub's, keyed "owner~repo~number" - two repos below share a
 # PR number on purpose.
@@ -354,6 +356,20 @@ WI_FIXTURES = [
     {"id": 3014, "type": "Task", "state": "To Do", "title": "Cover the sixth attempt",
      "assignedTo": "bob", "priority": 3, "tags": "", "parentId": 3012, "sprint": 1,
      "description": "", "prs": [], "comments": []},
+    # In no sprint: only W's last tab, No sprint, lists the open ones of mine
+    # (the team's backlog iteration, "backlog", and the project root, None).
+    {"id": 3021, "type": "User Story", "state": "New", "title": "Export the audit log",
+     "assignedTo": "me", "priority": 3, "tags": "", "parentId": None, "sprint": "backlog",
+     "description": "", "prs": [], "comments": []},
+    {"id": 3022, "type": "Bug", "state": "Active", "title": "Crash on an empty config",
+     "assignedTo": "me", "priority": 2, "tags": "", "parentId": None, "sprint": None,
+     "description": "", "prs": [], "comments": []},
+    {"id": 3023, "type": "Bug", "state": "Closed", "title": "Flaky clock test",
+     "assignedTo": "me", "priority": 3, "tags": "", "parentId": None, "sprint": "backlog",
+     "description": "", "prs": [], "comments": []},
+    {"id": 3024, "type": "User Story", "state": "New", "title": "Dark mode",
+     "assignedTo": "alice", "priority": 4, "tags": "", "parentId": None, "sprint": "backlog",
+     "description": "", "prs": [], "comments": []},
 ]
 
 # The GitHub account's issues: project (github_issues.py's shapes), answered
@@ -622,7 +638,8 @@ def cmd_setup(root, fresh=False):
         rec["createdBy"] = PEOPLE["alice"]["displayName"]
         rec["createdDate"] = iso(changed - timedelta(days=10))
         rec["changedDate"] = iso(changed)
-        rec["iterationPath"] = state["sprints"][wi["sprint"]]["path"] if wi["sprint"] is not None else PROJECT
+        rec["iterationPath"] = BACKLOG if wi["sprint"] == "backlog" else \
+            state["sprints"][wi["sprint"]]["path"] if wi["sprint"] is not None else PROJECT
         rec["areaPath"] = PROJECT + "\\Core"
         rec["reason"] = "New" if wi["state"] == "New" else "Work started"
         rec["comments"] = [{"author": PEOPLE[who]["displayName"], "date": iso(changed), "text": text}
@@ -1317,7 +1334,9 @@ class Fake:
             out = {"_sprints": True, "quarter": PROJECT, "currentIndex": ci, "types": ["User Story", "Bug"],
                    "sprints": [{"name": s["name"], "label": s["name"], "path": s["path"], "start": s["start"],
                                 "finish": s["finish"], "timeframe": s["timeframe"], "current": s["timeframe"] == "current"}
-                               for s in sprints]}
+                               for s in sprints] + [
+                       {"name": "No sprint", "label": "No sprint", "path": "-", "start": "", "finish": "",
+                        "timeframe": "", "current": False}]}
             print(json.dumps(out, ensure_ascii=False))
             return 0
         if select == "members":
@@ -1335,9 +1354,15 @@ class Fake:
                 print("ERROR: could not determine {0} sprint".format(select), file=sys.stderr)
                 return 1
             print(json.dumps(meta, ensure_ascii=False))
-        # Like the real WIQL: the configured assignee's (= my) items in that sprint.
+        # Like the real WIQL: the configured assignee's (= my) items in that
+        # sprint; for No sprint ("-"), the open ones in the backlog or root.
         for w in self.state["workitems"]:
-            if w["iterationPath"] == path and w["assignedTo"] == MY_NAME:
+            if path == "-":
+                cat = dict(WI_STATES.get(w["type"]) or WI_STATES[None]).get(w["state"])
+                listed = w["iterationPath"] in (BACKLOG, PROJECT) and cat not in ("Completed", "Removed")
+            else:
+                listed = w["iterationPath"] == path
+            if listed and w["assignedTo"] == MY_NAME:
                 print(json.dumps(self.wi_list_record(w), ensure_ascii=False))
         return 0
 
@@ -1452,7 +1477,8 @@ class Fake:
             self.state["workitems"].append({
                 "id": wid, "type": a2, "state": "New", "title": a3, "assignedTo": MY_NAME, "createdBy": MY_NAME,
                 "createdDate": now_iso(), "changedDate": now_iso(), "priority": 2, "areaPath": PROJECT + "\\Core",
-                "iterationPath": sprint["path"] if sprint else PROJECT, "tags": "", "reason": "New",
+                "iterationPath": BACKLOG if a5 == "-" else sprint["path"] if sprint else PROJECT, "tags": "",
+                "reason": "New",
                 "description": "", "acceptanceCriteria": "", "reproSteps": "",
                 "parentId": int(a4) if a4.isdigit() else None, "prs": [], "comments": [],
             })
@@ -1473,6 +1499,8 @@ class Fake:
                 return 1
             key, caster = WI_FIELDS[a3]
             value = a4 if a4 or a3 != "assignedTo" else MY_NAME
+            if a3 == "iteration" and value == "-":
+                value = BACKLOG
             try:
                 value = caster(value)
             except (TypeError, ValueError):

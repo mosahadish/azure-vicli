@@ -26,8 +26,8 @@ return function(T)
   end
 
   -- The sprint in `list` named or pathed `s`: its path and name, or `s`
-  -- itself as the path when none matches. "none" is a GitHub board's No
-  -- iteration (or No milestone) tab, path "-".
+  -- itself as the path when none matches. "none" is the last tab, path "-":
+  -- Azure's No sprint, GitHub's No iteration (or No milestone).
   local function find_sprint(list, s)
     for _, sp in ipairs(list) do
       if s:lower() == "none" and sp.path == "-" then return sp.path, sp.name end
@@ -89,7 +89,8 @@ return function(T)
         .. "parent, assigned to the user. On GitHub (board = \"github\"): a new issue in the project's default "
         .. "repository (type is the issue type, when the repository has them). body is its description; "
         .. "iteration (optional) a sprint's name or path; on GitHub it defaults to the current iteration, "
-        .. "and \"none\" files the issue in no iteration. For one under a parent, use create_child_task. Asks first.",
+        .. "and \"none\" files the issue in no iteration; on Azure \"none\" is the team's backlog iteration. For one "
+        .. "under a parent, use create_child_task. Asks first.",
       schema = { type = "object", properties = T.with_board({ title = { type = "string" },
         body = { type = "string" }, type = { type = "string" }, iteration = { type = "string" } }),
         required = { "title" } },
@@ -161,8 +162,9 @@ return function(T)
     },
     {
       name = "move_to_sprint",
-      description = "Moves a work item to a sprint, by the sprint's name (\"Sprint 42\") or iteration path. "
-        .. "On GitHub, an iteration (or milestone) of the project, by name. Runs without asking.",
+      description = "Moves a work item to a sprint, by the sprint's name (\"Sprint 42\") or iteration path; "
+        .. "\"none\" is the team's backlog iteration. On GitHub, an iteration (or milestone) of the project, by "
+        .. "name, or \"none\". Runs without asking.",
       schema = { type = "object", properties = T.with_board({ id = { type = "integer" },
         sprint = { type = "string" } }), required = { "id", "sprint" } },
       risk = "write",
@@ -171,8 +173,8 @@ return function(T)
         local ref = T.wi_ref(B, args.id, args.repo)
         sprints(B, function(list)
           local path, name = find_sprint(list, args.sprint)
-          -- GitHub's iteration paths are ids: say the name.
-          local shown = B.host == "github" and (name or args.sprint) or path
+          -- GitHub's iteration paths are ids, and "-" means nothing: say the name.
+          local shown = (B.host == "github" or path == "-") and (name or args.sprint) or path
           T.work_item_field(args.id, B.host == "github" and "iteration" or "iterationPath", function(before)
             T.provider({ "--wi-edit", "set", ref, "iteration", path }, B.env, function(ok, _, err)
               if not ok then return done(nil, "moving it failed: " .. err) end

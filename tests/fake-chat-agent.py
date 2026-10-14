@@ -177,6 +177,8 @@ def answer_turn(mcp, init, message, turn, model, session):
         call("create_work_item", {"title": "Wobble at high speed", "body": "Seen on the test rig.", "board": "github"})
         call("create_work_item", {"title": "Document the wobble", "iteration": "Iteration 3", "board": "github"})
         call("list_work_items", {"board": "github", "sprint": "none"})
+        # Azure's No sprint: the team's backlog iteration and the root.
+        call("list_work_items", {"board": "azure", "sprint": "none"})
         res, err = call("start_story", {"work_item_id": 12, "repo": "gizmos", "from": "main",
                                         "name": "feature/12-wobble", "board": "github"})
         if not err:

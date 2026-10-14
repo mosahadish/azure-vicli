@@ -740,6 +740,49 @@ if not ok then return fail("visual gs set " .. wi_state("3003") .. ", " .. wi_st
 smoke_ok("SELECTION")
 end)
 
+-- W's last tab, after Sprint 43: my open items in the team's backlog
+-- iteration (#3021) or the project root (#3022), not the closed #3023 or
+-- alice's #3024. gi moves #3004 there from Sprint 43.
+section("NOSPRINT", function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+feed("<Tab>")
+ok = vim.wait(15000, function() return text(wis):find("#3004 ", 1, true) ~= nil end, 100)
+if not ok then return fail("<Tab> never showed Sprint 43's #3004", wis) end
+if text(wis):find("#3021 ", 1, true) then return fail("Sprint 43 lists the backlog's #3021", wis) end
+goto_row(3004)
+feed("gi")
+local picked
+ok = vim.wait(5000, function()
+  picked = (float_text() or ""):match("(%d+)  No sprint")
+  return picked ~= nil
+end, 50)
+if not ok then return fail("gi never offered No sprint\n" .. tostring(float_text())) end
+feed(picked)
+ok = vim.wait(15000, function()
+  local okj, d = pcall(vim.json.decode, vim.fn.system(require("azure-cli.config").provider_argv("--wi-detail", "3004")))
+  return okj and type(d) == "table" and d.item and d.item.iterationPath == "Demo\\Team"
+end, 200)
+if not ok then return fail("gi to No sprint didn't put #3004 in the backlog iteration") end
+feed("<Tab>")
+ok = vim.wait(15000, function()
+  local t = text(wis)
+  return t:find("No sprint", 1, true) ~= nil and t:find("#3021 ", 1, true) ~= nil
+    and t:find("#3022 ", 1, true) ~= nil and t:find("#3004 ", 1, true) ~= nil
+end, 100)
+if not ok then return fail("the No sprint tab never listed #3021, #3022 and #3004", wis) end
+print("== work items, No sprint ==")
+print(text(wis))
+for _, id in ipairs({ 3023, 3024, 3001 }) do
+  if text(wis):find("#" .. id .. " ", 1, true) then return fail("the No sprint tab lists #" .. id, wis) end
+end
+feed("<S-Tab>")
+feed("<S-Tab>")
+ok = vim.wait(15000, function() return text(wis):find("#3001 ", 1, true) ~= nil end, 100)
+if not ok then return fail("<S-Tab> never went back to Sprint 42", wis) end
+smoke_ok("NOSPRINT")
+end)
+
 -- Linked PRs: #3001's row carries !101, and its detail view lists the PR
 -- with its title, status and branches.
 section("PRS", function()
@@ -1772,7 +1815,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
         "\"iteration\":\"Iteration 2\"", "\"iteration_id\":\"it2\"", "\"iteration\":\"Demo\\\\Sprint 42\"",
         "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
         "create_child_task: Created issue #", "create_work_item: Created issue #", "\"title\":\"Orphaned issue\"",
-        "start_story: {",
+        "\"title\":\"Export the audit log\"", "start_story: {",
         "create_pull_request: Opened PR !",
         "link_pr_to_work_item: Linked PR #7 to issue #13 (\"Closes #13\" in its description).") then return end
     local s = fake_state()

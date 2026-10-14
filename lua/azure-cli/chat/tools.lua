@@ -431,7 +431,8 @@ M.list = {
       .. "(its path), linked PRs. board = \"github\" lists the GitHub project's issues in its current iteration "
       .. "instead (each with its repo, its iteration's name, and iteration_id - what move_to_sprint takes); the "
       .. "board the user is looking at by default. sprint (optional): another sprint's name or path instead of the "
-      .. "current one; on GitHub \"none\" lists the open issues in no iteration.",
+      .. "current one; \"none\" lists the open ones in no sprint (on Azure, the team's backlog iteration or the project "
+      .. "root; on GitHub, no iteration).",
     schema = { type = "object", properties = { board = M.board_props.board, sprint = { type = "string" } } },
     risk = "read",
     run = function(args, env, done)

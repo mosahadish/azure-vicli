@@ -2634,6 +2634,12 @@ def cmd_pr_action(flag, rest, env=None):
 # of this that's still a plain constant, since it isn't personal.
 WI_TYPES_DEFAULT = "User Story,Bug"
 
+# The W tab's last tab's path, after the team's sprints: the open work items
+# in the team's backlog iteration or the project root, which no sprint's tab
+# lists. `--wi-edit set <id> iteration -` and `create ... -` file into the
+# backlog iteration.
+WI_NO_SPRINT = "-"
+
 WI_ACTION_FLAGS = ("--wi-list", "--wi-detail", "--wi-state", "--wi-edit")
 
 
@@ -2781,6 +2787,21 @@ def _wi_human(iso):
         return "{0}h ago".format(int(secs // 3600))
     d = int(secs // 86400)
     return "{0}d ago".format(d) if d < 30 else "{0}mo ago".format(d // 30)
+
+
+def _wi_backlog_path(project, backlog):
+    """teamsettings' backlogIteration as a WIQL [System.IterationPath]: no
+    path is the project root; a classification-node path
+    ("\\Project\\Iteration\\X") loses its leading "\\" and "Iteration"
+    segment; one without the project gets it."""
+    parts = [p for p in ((backlog or {}).get("path") or "").split("\\") if p]
+    if not parts:
+        return project
+    if parts[0].lower() != project.lower():
+        return "\\".join([project] + parts)
+    if len(parts) > 1 and parts[1] == "Iteration":
+        del parts[1]
+    return "\\".join([project] + parts[1:])
 
 
 def _wi_sprint_name(it):
@@ -3103,6 +3124,28 @@ class WorkItemActions:
         url = "{0}/{1}/{2}/_apis/work/teamsettings/teamfieldvalues".format(self.collection, self.project, team_q)
         return self._get(url)
 
+    def _wi_backlog_iteration(self):
+        """The team's backlog iteration's path, from teamsettings'
+        backlogIteration; the project root when the server doesn't say."""
+        team_q = urllib.parse.quote(self.team, safe="")
+        url = "{0}/{1}/{2}/_apis/work/teamsettings".format(self.collection, self.project, team_q)
+        return _wi_backlog_path(self.project, (self._get(url) or {}).get("backlogIteration"))
+
+    def _wi_closed_states(self):
+        """The configured types' states in the Completed or Removed category
+        (_wi_type_states) - what gs and the "2/3 done" column count as done.
+        Empty when the server doesn't report categories."""
+        out = []
+        for t in [t.strip() for t in self.types.split(",") if t.strip()]:
+            try:
+                states = self._wi_type_states(t)
+            except AdoHttpError:
+                continue
+            for name, cat in states:
+                if cat in ("Completed", "Removed") and name not in out:
+                    out.append(name)
+        return out
+
     def cmd_wi_list(self, select, item_path=""):
         if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
             print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select),
@@ -3178,15 +3221,31 @@ class WorkItemActions:
             type_clause = " AND [System.WorkItemType] IN (" + ",".join(
                 "'{0}'".format(_wi_sql_esc(t)) for t in type_list) + ")"
 
+        iteration_clause = "[System.IterationPath] = '{0}'".format(_wi_sql_esc(sprint_path))
+        if sprint_path == WI_NO_SPRINT:
+            # The backlog iteration and the root, open items only: closed
+            # ones never moved into a sprint would pile up here.
+            try:
+                backlog = self._wi_backlog_iteration()
+            except AdoHttpError as e:
+                return self._list_style_error(e, "GET")
+            paths = [backlog] + ([self.project] if backlog.lower() != self.project.lower() else [])
+            iteration_clause = "[System.IterationPath] IN (" + ",".join(
+                "'{0}'".format(_wi_sql_esc(p)) for p in paths) + ")"
+            closed = self._wi_closed_states()
+            if closed:
+                type_clause += " AND [System.State] NOT IN (" + ",".join(
+                    "'{0}'".format(_wi_sql_esc(s)) for s in closed) + ")"
+
         wiql = (
             "SELECT [System.Id] FROM WorkItems\n"
             "WHERE [System.TeamProject] = '{0}'\n"
-            "  AND [System.IterationPath] = '{1}'\n"
+            "  AND {1}\n"
             "  AND ( {2} )\n"
             "  {3}\n"
             "  AND [System.AssignedTo] = '{4}'\n"
             "ORDER BY [System.Id]"
-        ).format(_wi_sql_esc(self.project), _wi_sql_esc(sprint_path), area_clause, type_clause,
+        ).format(_wi_sql_esc(self.project), iteration_clause, area_clause, type_clause,
                  _wi_sql_esc(self.assignee))
 
         wiql_url = "{0}/{1}/_apis/wit/wiql".format(self.collection, self.project)
@@ -3303,6 +3362,8 @@ class WorkItemActions:
                 "timeframe": a.get("timeFrame", "") or "",
                 "current": is_cur,
             })
+        out_sprints.append({"name": "No sprint", "label": "No sprint", "path": WI_NO_SPRINT, "start": "",
+                            "finish": "", "timeframe": "", "current": False})
         out = {"_sprints": True, "quarter": quarter, "currentIndex": current_index, "sprints": out_sprints}
         if self.states:
             out["states"] = self.states
@@ -3493,6 +3554,14 @@ class WorkItemActions:
                 print(to)
         return 0
 
+    def _wi_type_states(self, wtype):
+        """[(name, category)] for `wtype`'s states, in workflow order; the
+        category is "" from a server too old to report it."""
+        url = "{0}/{1}/_apis/wit/workitemtypes/{2}".format(self.collection, self.project, urllib.parse.quote(wtype))
+        d = self._get(url)
+        return [(st["name"], st.get("category") or "") for st in (d.get("states") or [])
+                if isinstance(st, dict) and st.get("name")]
+
     def _wi_states(self, wtype):
         """One "name<TAB>category" line per state of `wtype`, in workflow
         order. The category (Proposed/InProgress/Resolved/Completed/Removed)
@@ -3502,16 +3571,11 @@ class WorkItemActions:
         if not wtype:
             print("ERROR: states needs <type>", file=sys.stderr)
             return 1
-        url = "{0}/{1}/_apis/wit/workitemtypes/{2}".format(self.collection, self.project, urllib.parse.quote(wtype))
         try:
-            d = self._get(url)
+            states = self._wi_type_states(wtype)
         except AdoHttpError as e:
             return self._state_style_error(e, "GET")
-        for st in (d.get("states") or []):
-            name = st.get("name") if isinstance(st, dict) else None
-            if not name:
-                continue
-            cat = st.get("category") or ""
+        for name, cat in states:
             print(name + ("\t" + cat if cat else ""))
         return 0
 
@@ -3741,6 +3805,11 @@ class WorkItemActions:
         if area_path:
             patch.append({"op": "add", "path": "/fields/System.AreaPath", "value": area_path})
 
+        if iteration_path == WI_NO_SPRINT:
+            try:
+                iteration_path = self._wi_backlog_iteration()
+            except AdoHttpError as e:
+                return self._edit_style_error(e, "GET")
         if iteration_path:
             patch.append({"op": "add", "path": "/fields/System.IterationPath", "value": iteration_path})
 
@@ -3776,6 +3845,11 @@ class WorkItemActions:
             # key's own prompt: "empty = me") - resolved the same way the
             # default `assignee` is: config, else the authenticated user.
             value = self.assignee
+        if field == "iteration" and value == WI_NO_SPRINT:
+            try:
+                value = self._wi_backlog_iteration()
+            except AdoHttpError as e:
+                return self._edit_style_error(e, "GET")
         mapping = self._FIELD_MAP.get(field)
         if not mapping:
             print("ERROR: unknown field '" + field + "', expected one of: "

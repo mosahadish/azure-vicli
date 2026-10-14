@@ -625,9 +625,11 @@ class WiListTests(unittest.TestCase):
         d = json.loads(buf.getvalue().strip())
         self.assertTrue(d["_sprints"])
         self.assertEqual(d["quarter"], "2026\\Q3")
-        self.assertEqual(len(d["sprints"]), 3)  # Q4 excluded
+        self.assertEqual(len(d["sprints"]), 4)  # Q4 excluded; No sprint last
         self.assertEqual(d["currentIndex"], 2)  # 1-based, Sprint 2
         self.assertTrue(d["sprints"][1]["current"])
+        self.assertEqual(d["sprints"][-1], {"name": "No sprint", "label": "No sprint", "path": "-", "start": "",
+                                            "finish": "", "timeframe": "", "current": False})
         self.assertNotIn("states", d)  # no work_items.states: configured
         # The configured types ride along so the dashboard's sections and
         # its "new item" picker follow work_items.types:.
@@ -680,9 +682,9 @@ class WiListTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         d = json.loads(buf.getvalue().strip())
         self.assertEqual(d["quarter"], "")  # no single parent node in "all" scope
-        self.assertEqual(len(d["sprints"]), 3)  # Q4 sprint included this time
+        self.assertEqual(len(d["sprints"]), 4)  # Q4 sprint included this time
         self.assertEqual([s["path"] for s in d["sprints"]],
-                          ["2026\\Q3\\S1", "2026\\Q3\\S2", "2026\\Q4\\S1"])  # ordered by start date
+                          ["2026\\Q3\\S1", "2026\\Q3\\S2", "2026\\Q4\\S1", "-"])  # by start date, No sprint last
         self.assertEqual(d["currentIndex"], 2)
         self.assertTrue(d["sprints"][1]["current"])
 
@@ -707,7 +709,7 @@ class WiListTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         d = json.loads(buf.getvalue().strip())
         self.assertEqual([s["path"] for s in d["sprints"]],
-                          ["2026\\Q3\\S1", "2026\\Q3\\S2", "Backlog"])
+                          ["2026\\Q3\\S1", "2026\\Q3\\S2", "Backlog", "-"])
         self.assertEqual(d["currentIndex"], 2)
 
     def test_sprints_includes_states_when_configured(self):
@@ -756,6 +758,70 @@ class WiListTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         meta = json.loads(buf.getvalue().strip())
         self.assertNotIn("states", meta)
+
+
+TEAM_SETTINGS_URL = "https://dev.azure.com/example-org/ExampleProject/Example%20Team/_apis/work/teamsettings"
+TYPE_URL = "https://dev.azure.com/example-org/ExampleProject/_apis/wit/workitemtypes/"
+
+
+class NoSprintTests(unittest.TestCase):
+    """The W tab's No sprint tab (path "-"): the team's backlog iteration
+    and the project root, open items only."""
+
+    def no_sprint_query(self, settings, types=None):
+        actions = make_actions()
+        responses = {AREAS_URL: {"values": [{"value": "ExampleProject"}]}, WIQL_URL: {"workItems": []},
+                     TEAM_SETTINGS_URL: settings}
+        for t, states in (types or {}).items():
+            responses[TYPE_URL + t.replace(" ", "%20")] = {"states": [{"name": n, "category": c} for n, c in states]}
+        fetch = FakeFetch(responses=responses)
+        actions.fetch = fetch
+        with mock.patch("sys.stdout", StringIO()):
+            rc = actions.cmd_wi_list("items", "-")
+        self.assertEqual(rc, 0)
+        return next(c for c in fetch.calls if c["url"] == WIQL_URL)["data"]["query"]
+
+    def test_lists_the_backlog_iteration_and_the_root_without_done_states(self):
+        q = self.no_sprint_query({"backlogIteration": {"name": "Team", "path": "\\ExampleProject\\Iteration\\Team"}},
+                                 {"User Story": [("New", "Proposed"), ("Active", "InProgress"),
+                                                 ("Closed", "Completed"), ("Removed", "Removed")],
+                                  "Bug": [("Active", "InProgress"), ("Closed", "Completed")]})
+        self.assertIn("[System.IterationPath] IN ('ExampleProject\\Team','ExampleProject')", q)
+        self.assertIn("[System.State] NOT IN ('Closed','Removed')", q)
+        self.assertIn("[System.AssignedTo] = 'Jordan Doe'", q)
+        self.assertIn("[System.WorkItemType] IN ('User Story','Bug')", q)
+
+    def test_a_root_backlog_iteration_is_listed_once(self):
+        q = self.no_sprint_query({"backlogIteration": {"name": "ExampleProject", "path": ""}})
+        self.assertIn("[System.IterationPath] IN ('ExampleProject')", q)
+
+    def test_no_state_categories_means_no_state_filter(self):
+        q = self.no_sprint_query({}, {"User Story": [("New", ""), ("Closed", "")]})
+        self.assertIn("[System.IterationPath] IN ('ExampleProject')", q)
+        self.assertNotIn("[System.State]", q)
+
+    def test_backlog_path_shapes(self):
+        for path, want in [(None, "Proj"), ("", "Proj"), ("\\Proj", "Proj"), ("Proj\\Team", "Proj\\Team"),
+                           ("\\Proj\\Iteration\\Team", "Proj\\Team"), ("Team", "Proj\\Team"),
+                           ("\\proj\\Iteration\\A\\B", "Proj\\A\\B")]:
+            self.assertEqual(ac._wi_backlog_path("Proj", {"path": path} if path is not None else None), want, path)
+
+    def test_set_and_create_file_into_the_backlog_iteration(self):
+        actions = make_actions()
+        wi_url = "https://dev.azure.com/example-org/_apis/wit/workitems/5"
+        create_url = "https://dev.azure.com/example-org/ExampleProject/_apis/wit/workitems/$Bug"
+        fetch = FakeFetch(responses={
+            TEAM_SETTINGS_URL: {"backlogIteration": {"path": "\\ExampleProject\\Iteration\\Team"}},
+            wi_url: {"id": 5, "fields": {"System.IterationPath": "ExampleProject\\Team"}},
+            AREAS_URL: {"defaultValue": "ExampleProject"}, create_url: {"id": 9, "fields": {}},
+        })
+        actions.fetch = fetch
+        with mock.patch("sys.stdout", StringIO()):
+            self.assertEqual(actions.cmd_wi_edit(["set", "5", "iteration", "-"]), 0)
+            self.assertEqual(actions.cmd_wi_edit(["create", "Bug", "T", "", "-"]), 0)
+        want = {"op": "add", "path": "/fields/System.IterationPath", "value": "ExampleProject\\Team"}
+        self.assertEqual(next(c for c in fetch.calls if c["url"] == wi_url)["data"], [want])
+        self.assertIn(want, next(c for c in fetch.calls if c["url"] == create_url)["data"])
 
 
 # ---------------------------------------------------------------------------
