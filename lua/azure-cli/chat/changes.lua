@@ -30,6 +30,10 @@
 --                             follow (pure)
 --   M.files(raw)              the changed files in diff order: { path,
 --                             status = "A"|"D"|"R"|"M" } (pure)
+--   M.why_load(dir) / M.why_save(dir, threads) / M.row_of(map, th)
+--                             the questions' store and the diff row a
+--                             question sits under - shared with the plan
+--                             view's Changes section (chat/plan_changes.lua)
 local M = {}
 
 local DIFFBUF = require("azure-cli.diffbuf")
@@ -281,26 +285,31 @@ local function why_path(dir)
   return require("azure-cli.chat.store").root() .. "/why/" .. vim.fn.fnamemodify(dir, ":t"):gsub("[^%w%._%-]", "_") .. ".json"
 end
 
-local function why_load(dir)
+-- Also the plan view's Changes section's (chat/plan_changes.lua): one
+-- store, so a question asked there shows here too.
+function M.why_load(dir)
   local ok, lines = pcall(vim.fn.readfile, why_path(dir))
   local okd, list = pcall(vim.json.decode, ok and table.concat(lines, "\n") or "")
   return okd and type(list) == "table" and list or {}
 end
+local why_load = M.why_load
 
-local function why_save()
-  if not view then return end
-  local path = why_path(view.dir)
+function M.why_save(dir, threads)
+  local path = why_path(dir)
   vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-  pcall(vim.fn.writefile, { vim.json.encode(view.threads) }, path)
+  pcall(vim.fn.writefile, { vim.json.encode(threads) }, path)
 end
 
--- The diff row thread `th` sits under in file `idx`'s buffer, or nil.
-local function thread_row(idx, th)
-  local f = view.files[idx]
-  local cur = f and view.bufs[f.path] and view.maps[view.bufs[f.path]]
-  if not (cur and th.file == f.path) then return nil end
+local function why_save()
+  if view then M.why_save(view.dir, view.threads) end
+end
+
+-- The row of a diff buffer (cache.parse_diff's `map`) thread `th` sits
+-- under: its line on its side, the nearest new-side line for an outdated
+-- one, else nil. Pure.
+function M.row_of(map, th)
   local near, near_d
-  for row, m in ipairs(cur.map) do
+  for row, m in ipairs(map) do
     if m.lineno == th.line and m.side == (th.side or "R") then return row end
     if th.outdated and m.side == "R" and m.lineno then
       local d = math.abs(m.lineno - th.line)
@@ -308,6 +317,14 @@ local function thread_row(idx, th)
     end
   end
   return near
+end
+
+-- The diff row thread `th` sits under in file `idx`'s buffer, or nil.
+local function thread_row(idx, th)
+  local f = view.files[idx]
+  local cur = f and view.bufs[f.path] and view.maps[view.bufs[f.path]]
+  if not (cur and th.file == f.path) then return nil end
+  return M.row_of(cur.map, th)
 end
 
 -- "◂ plan:7" at the end of each line a step of the plan starts at

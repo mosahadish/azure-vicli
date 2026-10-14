@@ -262,6 +262,8 @@ function M.event_for_worktree(dir, kind, text)
   if not rec then return end
   M.add_event(rec, kind, text)
   VIEW().changed(rec)
+  -- A push, a hunk taken out: the plan view's Changes section reads it again.
+  pcall(function() require("azure-cli.chat.plan_changes").poke() end)
 end
 
 -- gH: the run log, written to <plans>/<key>.log.md and opened in a tab.

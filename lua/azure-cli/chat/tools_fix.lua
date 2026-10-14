@@ -678,6 +678,7 @@ setmetatable(M, { __call = function(_, T)
         T.git({ "git", "-C", t.dir, "ls-files", "--error-unmatch", "--", rel }, function(tracked)
           local function finish(ok, err)
             if not ok then return done(nil, "deleting " .. rel .. " failed: " .. tostring(err)) end
+            pcall(function() require("azure-cli.chat.plan_changes").poke() end)
             done("Deleted " .. rel .. " (" .. t.label .. ").")
           end
           if tracked then

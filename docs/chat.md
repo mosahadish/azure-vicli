@@ -599,7 +599,7 @@ their line when the text around them changes.
 | `gd` | The code this line became (in the change viewer; `gp` there comes back) |
 | `gH` | The run log: everything that happened to the plan and its change, as one page |
 | `gf` | Edit the plan's file yourself; saving it makes your version the one the agent gets (and it needs approving again) |
-| `<CR>` (section list) | Go to the section; moving through the list scrolls the plan |
+| `<CR>` (section list) | Go to the section; moving through the list scrolls the plan (a file under Changes: its diff in the plan pane) |
 | `<BS>` | Back to the section list |
 | `r` / `gq` / `<` `>` / `q` / `?` | Reload / the chat / resize / close / keys |
 
@@ -616,6 +616,20 @@ like `M.open(host)`, `B.words` or `#3001` aren't, and a bare or partial
 name (`state_dialog.lua`, `chat/agents_view.lua`) matches the changed path
 that ends in it. The same files decide when an edit asks because it
 isn't in the plan.
+
+**The change inside the plan.** Once the agent has changed files, the
+section list ends with `Changes (N files)` and each file under it (`A
+b.lua  +3 −0`, `D` for a deleted one, `✗ not in the plan` as above).
+Moving onto a file - or `<CR>` on it - shows its diff in the plan pane,
+drawn as the change viewer draws it; a plan section puts the plan back,
+and `<BS>` goes to the list. On a diff line `ga` asks about it and `gc`
+queues a change to the code (both kept with the change viewer's, so `gd`
+shows them too); `dd` / `cc` drop or edit one, `]c` / `[c` go from
+change to change, and `gR` there sends the queued code changes - the
+winbar says `gR sends N code changes`, it isn't a plan revision. The
+section follows the agent's edits; after it pushes it shows the pushed
+commit (`Changes (2 files, pushed abc1234)`), and it's gone while nothing
+changed.
 
 **Asking for changes, line by line.** `gc` on a line (or a selection)
 queues what should change there; it shows under the line (`✎ use a

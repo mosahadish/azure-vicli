@@ -3,6 +3,8 @@
 -- on the left with the keys that matter now, the plan as rendered markdown
 -- with the questions and requested changes under its lines, the chat
 -- alongside. Saving a plan's file by hand makes it a revision by you.
+-- Once the agent has changed files, the list's Changes section shows its
+-- diff, file by file, in the plan pane (chat/plan_changes.lua).
 --
 -- plan.lua loads it on its own load and reaches into it through M.changed
 -- (save + redraw), M.plan_win and M.show; it reaches plan.lua lazily
@@ -13,6 +15,8 @@ local function PLAN() return require("azure-cli.chat.plan") end
 local function UI() return require("azure-cli.ui") end
 local function KEYS() return require("azure-cli.keys") end
 local function THREADS() return require("azure-cli.chat.threads") end
+-- The Changes section (the agent's diff): its own module, see its top.
+local function PC() return require("azure-cli.chat.plan_changes") end
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
 local function last_rev(rec) return rec.revisions[#rec.revisions] end
 
@@ -33,7 +37,7 @@ local function key_of(surface, action) return KEYS().first(surface, action) end
 
 local LIST_HELP = {
   "Navigate",
-  { "open", "go to the section" },
+  { "open", "go to the section - a file under Changes: its diff in the plan pane" },
   { "next_thread", "move the plan to the next open question or thread, in line order (answered ones too)" },
   { "prev_thread", "move the plan to the previous open question or thread" },
   "Decide",
@@ -218,7 +222,9 @@ local function set_winbars()
     tags[#tags + 1] = "[" .. not_sent .. " answer" .. (not_sent == 1 and "" or "s") .. " unsent]"
   end
   if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. (#rec.revisions - 1) .. "]" end
-  if valid_win(view.plan_win) then
+  if PC().showing(view) then
+    PC().winbar(view)  -- a file of the Changes section is in the plan pane
+  elseif valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. PLAN().target_label(rec.target),
       #rec.revisions > 1 and ("rev " .. #rec.revisions) or nil }, tags))
   end
@@ -295,6 +301,17 @@ local function render_list()
       rows[#lines] = s
     end
   end
+  -- The agent's change, when there is one (chat/plan_changes.lua).
+  local cl, chls, crows = PC().list_rows(view.key, width)
+  if #cl > 0 then
+    add("")
+    local from = #lines
+    for i, l in ipairs(cl) do
+      lines[#lines + 1] = l
+      rows[#lines] = crows[i]
+    end
+    for _, h in ipairs(chls) do hls[#hls + 1] = { from + h[1], h[2], h[4], h[3] } end
+  end
   add("")
   local hints = {}
   if not decided then
@@ -339,11 +356,50 @@ local function render_plan()
   draw_threads()
 end
 
+-- The plan pane's options for the plan's text (a diff of the Changes
+-- section sets its own).
+local function plan_window(win)
+  UI().plain_window(win, {})
+  UI().wo(win, "wrap", true)
+  UI().wo(win, "linebreak", true)
+  UI().wo(win, "breakindent", true)
+  UI().wo(win, "conceallevel", 2)
+  UI().wo(win, "concealcursor", "")
+  UI().wo(win, "signcolumn", "yes:2")
+  pcall(UI().wo, win, "statuscolumn", "")
+  pcall(UI().wo, win, "foldmethod", "manual")
+end
+
+-- The plan's text back in the plan pane, when a diff was there.
+local function back_to_plan()
+  if view and PC().back(view) then
+    plan_window(view.plan_win)
+    set_winbars()
+    draw_threads()
+  end
+end
+
+-- Reads the agent's change for the Changes section (async); redraws the
+-- list - and the diff in the plan pane, if one is there - when it changed.
+local function load_changes()
+  local v = view
+  PC().load(v.key, v.rec, function()
+    if not alive(v) then return end
+    with_view(v, function()
+      local shown = PC().showing(view)
+      if shown and not PC().show(view, shown, false) then back_to_plan() end
+      render_list()
+      set_winbars()
+    end)
+  end)
+end
+
 local function render()
   render_plan()
   draw_since()
   render_list()
   set_winbars()
+  load_changes()
 end
 
 -- Saves the plan and redraws the viewer if it shows it.
@@ -584,6 +640,7 @@ end
 -- the plan back to the section).
 local function jump_thread(dir)
   if not valid_win(view.plan_win) then return end
+  back_to_plan()
   local row = vim.api.nvim_win_get_cursor(view.plan_win)[1]
   local stops = PLAN().jump_stops(vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false), view.rec.threads)
   local best
@@ -653,16 +710,32 @@ local function bind_common(buf)
 end
 
 local function goto_section(s, focus)
-  if not (s and valid_win(view.plan_win)) then return end
+  if not (s and s.line and valid_win(view.plan_win)) then return end
+  back_to_plan()
   pcall(vim.api.nvim_win_set_cursor, view.plan_win, { s.line, 0 })
   vim.api.nvim_win_call(view.plan_win, function() vim.cmd("normal! zt") end)
   if focus then vim.api.nvim_set_current_win(view.plan_win) end
 end
 
+-- A row of the section list: a section scrolls the plan to it, a file of
+-- the Changes section shows its diff in the plan pane (the Changes row
+-- itself its first file, on Enter).
+local function goto_row(r, focus)
+  if r and r.changes and focus then
+    local st = PC().state(view.key)
+    r = st and { file = st.files[1].path }
+  end
+  if r and r.file then
+    if PC().show(view, r.file, focus) then set_winbars() end
+  elseif r and r.line then
+    goto_section(r, focus)
+  end
+end
+
 local function setup_list(buf)
   bind(buf, "open", function()
-    goto_section(view.rows[vim.api.nvim_win_get_cursor(0)[1]], true)
-  end, { desc = "go to the section" })
+    goto_row(view.rows[vim.api.nvim_win_get_cursor(0)[1]], true)
+  end, { desc = "go to the section (a changed file: its diff)" })
   bind(buf, "next_thread", function() jump_thread(1) end, { desc = "move the plan to the next open question or thread" })
   bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "move the plan to the previous open question or thread" })
   bind(buf, "help", function() help(LIST_HELP) end, { desc = "keys" })
@@ -673,7 +746,7 @@ local function setup_list(buf)
     callback = function()
       use_buf(buf)
       local s = view and view.rows and view.rows[vim.api.nvim_win_get_cursor(0)[1]]
-      if s then goto_section(s, false) end
+      if s then goto_row(s, false) end
     end,
   })
 end
@@ -726,6 +799,29 @@ local function setup_plan(buf)
   bind_common(buf)
 end
 
+-- What the Changes section needs from the plan view (plan_changes.lua's
+-- M.hooks): the plan's keys on a diff buffer (it binds the diff's own on
+-- top), sending to the plan's agent, redrawing the list.
+PC().hooks = {
+  bind = function(v, buf)
+    by_buf[buf] = v
+    vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, once = true, callback = function() by_buf[buf] = nil end })
+    bind(buf, "back", function()
+      if valid_win(view.list_win) then vim.api.nvim_set_current_win(view.list_win) end
+    end, { desc = "back to the section list" })
+    bind(buf, "help", function() help(PLAN_HELP) end, { desc = "keys" })
+    bind_common(buf)
+  end,
+  send = function(v, text, display)
+    local ok = false
+    with_view(v, function() ok = send(text, display) end)
+    return ok
+  end,
+  redraw = function(v)
+    if alive(v) then with_view(v, function() render_list() set_winbars() end) end
+  end,
+}
+
 -- Opens (or brings to the front, reloaded) the plan `key`, at plan line
 -- `line` when given.
 function M.open(key, line)
@@ -764,13 +860,7 @@ function M.open(key, line)
     pcall(vim.treesitter.start, view.plan_buf, "markdown")
     setup_plan(view.plan_buf)
     UI().plain_window(view.list_win, { cursorline = true })
-    UI().plain_window(view.plan_win, {})
-    UI().wo(view.plan_win, "wrap", true)
-    UI().wo(view.plan_win, "linebreak", true)
-    UI().wo(view.plan_win, "breakindent", true)
-    UI().wo(view.plan_win, "conceallevel", 2)
-    UI().wo(view.plan_win, "concealcursor", "")
-    UI().wo(view.plan_win, "signcolumn", "yes:2")
+    plan_window(view.plan_win)
     pcall(vim.api.nvim_win_set_width, view.list_win, width)
     local v = view
     vim.api.nvim_create_autocmd("WinResized", {
@@ -784,6 +874,9 @@ function M.open(key, line)
       vim.api.nvim_create_autocmd("BufWipeout", { buffer = b, once = true, callback = function()
         by_buf[b] = nil
         if views[key] == v then views[key] = nil end
+        -- The Changes section's diff buffers (and the plan's text, kept
+        -- loaded while a diff was in its window).
+        if b == v.list_buf then PC().forget(key, v) end
       end })
     end
   end
@@ -844,7 +937,14 @@ function M.describe_view(win)
   end
   snap.note = "Looking at your plan for " .. PLAN().target_label(rec.target) .. " \"" .. tostring(rec.title) .. "\" ("
     .. (PLAN().status_label(rec)):gsub("^%S+ ", "") .. ", revision " .. #rec.revisions .. ", file " .. snap.plan.file .. ")"
-  if win == view.plan_win and valid_win(win) then
+  local diff = win == view.plan_win and PC().describe(view, win)
+  if diff then
+    -- A file of the Changes section: the line of the change under the cursor.
+    snap.file, snap.line, snap.side, snap.code_line, snap.worktree = diff.file, diff.line, diff.side, diff.code_line,
+      diff.worktree
+    snap.note = snap.note .. " - its Changes section, your change to " .. diff.file
+      .. (diff.line and (" line " .. diff.line) or "")
+  elseif win == view.plan_win and valid_win(win) then
     local row = vim.api.nvim_win_get_cursor(win)[1]
     local sec = PLAN().section_at(view.sections, row)
     snap.plan_line, snap.plan_section = row, sec and sec.title

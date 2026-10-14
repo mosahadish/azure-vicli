@@ -474,6 +474,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   -- them stopped it, if one did.
   local w = WD.new(WD.limits(agent), now())
   local timed_out
+  local file_calls = {}  -- this turn's tool calls that change files (by id)
   local function finish(status, extra_text)
     if done then return end
     done = true
@@ -512,6 +513,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       -- their arguments.
       local title = tostring(u.title or u.name or "tool")
       entry.skill = entry.skill or require("azure-cli.chat.skills").in_tool_call(u, entry.skill_names)
+      if CORE.FILE_CHANGE_KINDS[u.kind] and u.toolCallId then file_calls[u.toolCallId] = true end
       if not title:find("azure%-vicli") then
         table.insert(entry.tools, "\u{00B7} " .. title)
         render_soon()
@@ -519,6 +521,10 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     elseif u.sessionUpdate == "tool_call_update" and u.status == "failed" then
       table.insert(entry.tools, "\u{2717} " .. (u.title or "tool failed"))
       render_soon()
+    elseif u.sessionUpdate == "tool_call_update" and u.status == "completed"
+        and (CORE.FILE_CHANGE_KINDS[u.kind] or file_calls[u.toolCallId]) then
+      -- The agent changed a file: an open plan's Changes section reads it again.
+      pcall(function() require("azure-cli.chat.plan_changes").poke() end)
     elseif u.sessionUpdate == "usage_update" then
       -- How full its context is, and - when it says - the session's cost
       -- so far (cumulative: this answer's is what it grew by).

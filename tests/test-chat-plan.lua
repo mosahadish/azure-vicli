@@ -1171,6 +1171,144 @@ do
   for _, f in ipairs(moved) do vim.fn.delete(f) end
 end
 
+-- --- #89: the plan view's Changes section -----------------------------------------------------
+do
+  local PC = require("azure-cli.chat.plan_changes")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local function feed(k) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "x", false) end
+
+  -- Pure: the files with their counts, the pushed commit.
+  local raw = table.concat({
+    "diff --git a/a.lua b/a.lua", "index 1..2 100644", "--- a/a.lua", "+++ b/a.lua", "@@ -1,2 +1,2 @@",
+    " keep", "-old", "+new", "+more",
+    "diff --git a/b.lua b/b.lua", "new file mode 100644", "index 0..3", "--- /dev/null", "+++ b/b.lua", "@@ -0,0 +1 @@",
+    "+fresh",
+    "diff --git a/c.lua b/c.lua", "deleted file mode 100644", "index 4..0", "--- a/c.lua", "+++ /dev/null",
+    "@@ -1 +0,0 @@", "-gone" }, "\n")
+  local files = PC.summarize(raw)
+  check("#89 summarize: files in diff order with +/- counts, A / D marked",
+    #files == 3 and files[1].path == "a.lua" and files[1].add == 2 and files[1].del == 1 and files[1].status == "M"
+      and files[2].status == "A" and files[2].add == 1 and files[3].path == "c.lua" and files[3].status == "D"
+      and files[3].del == 1, vim.inspect(files))
+  check("#89 pushed_sha: the latest push's commit, only once the plan is done",
+    PC.pushed_sha({ status = "done", events = { { kind = "pushed", text = "Pushed 1111111 to x: a" },
+      { kind = "pushed", text = "Pushed abc1234 to x: b" } } }) == "abc1234"
+      and PC.pushed_sha({ status = "approved", events = { { kind = "pushed", text = "Pushed abc1234 to x" } } }) == nil
+      and PC.pushed_sha({ status = "done", events = {} }) == nil)
+  check("#89 title", PC.title({ files = { {}, {} } }) == "Changes (2 files)"
+    and PC.title({ files = { {} }, pushed = "abc1234" }) == "Changes (1 file, pushed abc1234)")
+
+  -- In the plan view: a story worktree (<root>/<repo>-wi9089, its .branch).
+  local wt = FIX.root() .. "/azure-vicli-wi9089"
+  vim.fn.delete(wt, "rf")
+  vim.fn.mkdir(wt, "p")
+  vim.fn.writefile({ "feature/9089-x", "main" }, wt .. ".branch")
+  local function sh(args) return vim.fn.system(vim.list_extend({ "git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t" }, args)) end
+  sh({ "init", "-q" })
+  vim.fn.writefile({ "local a = 1", "return a" }, wt .. "/a.lua")
+  sh({ "add", "-A" })
+  sh({ "commit", "-q", "-m", "base" })
+
+  local key = "wi-9089"
+  local md = "# Changes\n\n## Goal\nx\n\n## Files\n- `a.lua:2` - the change\n\n## Risks\nnone\n\n## Open questions\n- Which way?"
+  PLAN.save({ key = key, target = { work_item_id = 9089 }, title = "Changes", status = "approved", approved_rev = 1,
+    revisions = { { by = "agent", markdown = md } }, threads = {} })
+  local function list(v) return vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false) end
+  local function row_of(v, pat)
+    for i, l in ipairs(list(v)) do if l:find(pat, 1, true) then return i, l end end
+  end
+  local function settle(v, pat)
+    vim.wait(5000, function() return row_of(v, pat) ~= nil end, 20)
+    return row_of(v, pat)
+  end
+
+  -- Nothing changed: no Changes section.
+  PLAN.open(key)
+  local v = PLAN.current()
+  vim.wait(300, function() return false end, 20)
+  check("#89 no Changes section while nothing changed", row_of(v, "Changes (") == nil, table.concat(list(v), "\n"))
+
+  -- Two changed files (one the plan doesn't list).
+  vim.fn.writefile({ "local a = 2", "return a" }, wt .. "/a.lua")
+  vim.fn.writefile({ "return 'b'" }, wt .. "/b.lua")
+  PLAN.refresh()
+  local head = settle(v, "Changes (2 files)")
+  local ra, la = row_of(v, " a.lua")
+  local rb, lb = row_of(v, " b.lua")
+  check("#89 two changed files: 'Changes (2 files)', each file under it with its counts",
+    head and ra and rb and ra > head and la:find("+1 \u{2212}1", 1, true) and lb:find("A b.lua", 1, true),
+    table.concat(list(v), "\n"))
+  check("#89 the file the plan doesn't list is marked, the planned one (a Files entry with a line ref) isn't",
+    lb and lb:find("not in the plan", 1, true) and not la:find("not in the plan", 1, true), vim.inspect({ la, lb }))
+
+  -- Selecting a file: its diff in the plan pane, rendered as the change viewer renders it.
+  vim.api.nvim_set_current_win(v.list_win)
+  vim.api.nvim_win_set_cursor(v.list_win, { ra, 0 })
+  feed("<CR>")
+  local buf = vim.api.nvim_win_get_buf(v.plan_win)
+  local want = require("azure-cli.cache").parse_diff(require("azure-cli.cache").split_diff(
+    -- system()'s trailing newline isn't a line of the diff (tools.git's output has none).
+    vim.split((vim.fn.system({ "git", "-C", wt, "diff", "HEAD", "--", "a.lua" }):gsub("\n$", "")), "\n", { plain = true }))["a.lua"] or {})
+  check("#89 Enter on a file: its diff in the plan pane (parse_diff's lines, the file's filetype), focus there",
+    buf ~= v.plan_buf and table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n") == table.concat(want, "\n")
+      and vim.bo[buf].filetype == "lua" and vim.api.nvim_get_current_win() == v.plan_win
+      and PC.showing(v) == "a.lua", vim.inspect({ shown = vim.api.nvim_buf_get_lines(buf, 0, -1, false), want = want,
+        ft = vim.bo[buf].filetype, focus = vim.api.nvim_get_current_win() == v.plan_win, showing = PC.showing(v) }))
+  check("#89 the diff's winbar names the file", (vim.wo[v.plan_win].winbar or ""):find("a.lua", 1, true) ~= nil,
+    vim.wo[v.plan_win].winbar)
+  local snap = PLAN.describe(v.plan_win)
+  check("#89 the chat sees the file and line under the cursor", snap and snap.file == "a.lua" and snap.line ~= nil,
+    vim.inspect(snap))
+
+  -- <BS> back to the list; moving onto a plan section puts the plan back.
+  feed("<BS>")
+  check("#89 <BS> in the diff: back to the section list", vim.api.nvim_get_current_win() == v.list_win)
+  local rg = row_of(v, "Goal")
+  vim.api.nvim_win_set_cursor(v.list_win, { rg, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = v.list_buf })
+  check("#89 a plan section again: the plan's text back in the plan pane",
+    vim.api.nvim_win_get_buf(v.plan_win) == v.plan_buf and vim.wo[v.plan_win].wrap == true and PC.showing(v) == nil)
+
+  -- #81 still: ]t from the list while a diff is shown lands on the plan's open question.
+  vim.api.nvim_win_set_cursor(v.list_win, { rb, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = v.list_buf })
+  local showed_b = PC.showing(v) == "b.lua"
+  vim.api.nvim_set_current_win(v.list_win)
+  feed(require("azure-cli.keys").first("plan", "next_thread"))
+  local q = vim.api.nvim_win_get_cursor(v.plan_win)[1]
+  check("#89 ]t from the list with a diff shown: the plan's text, at its open question (#81)",
+    showed_b and vim.api.nvim_win_get_buf(v.plan_win) == v.plan_buf
+      and vim.api.nvim_buf_get_lines(v.plan_buf, q - 1, q, false)[1] == "- Which way?", vim.inspect({ showed_b, q }))
+
+  -- gc on a diff line queues a code change; gR there names it.
+  vim.api.nvim_win_set_cursor(v.list_win, { ra, 0 })
+  feed("<CR>")
+  local st = PC.state(key)
+  table.insert(st.threads, { id = "t1", kind = "request", file = "a.lua", line = 1, side = "R", anchor = "local a = 2",
+    question = "use 3", status = "queued", at = 1 })
+  require("azure-cli.chat.plan_view").changed(v.rec)
+  PC.winbar(v)
+  check("#89 a queued code change: the winbar says gR sends it as a code change",
+    (vim.wo[v.plan_win].winbar or ""):find("gR sends 1 code change", 1, true) ~= nil, vim.wo[v.plan_win].winbar)
+  check("#89 ... and the list says so too", row_of(v, "gR in a diff sends 1 code change") ~= nil, table.concat(list(v), "\n"))
+
+  -- After a change the count updates (the agent's edit pokes it).
+  vim.fn.writefile({ "return 'c'" }, wt .. "/c.lua")
+  PC.poke()
+  check("#89 after another change: 'Changes (3 files)'", settle(v, "Changes (3 files)") ~= nil, table.concat(list(v), "\n"))
+  check("#89 the diff shown stays (rebuilt, same file)", PC.showing(v) == "a.lua", PC.showing(v))
+
+  -- Closing the tab: the diff buffers and the plan's text go.
+  local plan_buf = v.plan_buf
+  pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(v.tab))
+  check("#89 closing the tab: its buffers go", not vim.api.nvim_buf_is_valid(buf) and not vim.api.nvim_buf_is_valid(plan_buf)
+    and PC.state(key) == nil)
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
+  vim.fn.delete(wt, "rf")
+  vim.fn.delete(wt .. ".branch")
+end
+
 -- --- the azure-vicli palette in plugin mode ----------------------------------------------------
 do
   require("azure-cli").setup({ ui = { palette = "azure-vicli" } })
