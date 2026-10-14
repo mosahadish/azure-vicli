@@ -103,11 +103,25 @@ def http(method, url, token, data=None):
         req.add_header("Authorization", "Bearer " + token)
     if body is not None:
         req.add_header("Content-Type", "application/json")
+    # The perf log (AZVICLI_DEBUG): one line per request - azure-cli.py's
+    # perf_record, given the method, the URL and numbers, never the headers.
+    perf = core is not None and core._perf_current() is not None
+    t0 = time.monotonic() if perf else 0.0
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read()
+            status = getattr(resp, "status", None) or 200
     except urllib.error.HTTPError as e:
-        raise GitHubHttpError(e.code, url, e.read().decode("utf-8", "replace"))
+        err_body = e.read()
+        if perf:
+            core.perf_record(method, url, e.code, len(err_body or b""), t0)
+        raise GitHubHttpError(e.code, url, err_body.decode("utf-8", "replace"))
+    except (urllib.error.URLError, ValueError):
+        if perf:
+            core.perf_record(method, url, 0, 0, t0)
+        raise
+    if perf:
+        core.perf_record(method, url, status, len(raw or b""), t0)
     if not raw:
         return {}
     return json.loads(raw.decode("utf-8"))

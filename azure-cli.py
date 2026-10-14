@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -1266,6 +1267,9 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
         body = json.dumps(data).encode("utf-8")
         headers["Content-Type"] = content_type
 
+    # The perf log (AZVICLI_DEBUG): one line per request, see perf_record.
+    perf = _perf_current() is not None
+    t0 = time.monotonic() if perf else 0.0
     try:
         req = urllib.request.Request(full_url, data=body, method=method, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1273,17 +1277,26 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
             status = getattr(resp, "status", None) or resp.getcode()
             ctype = (resp.headers.get("Content-Type") or "") if getattr(resp, "headers", None) else ""
     except urllib.error.HTTPError as e:
+        err_body = e.read()
+        if perf:
+            perf_record(method, full_url, e.code, len(err_body or b""), t0)
         if e.code == 400 and not _retried and api_version not in (None, "6.0"):
             return http_request(url, method=method, data=data, pat=pat, api_version="6.0", _retried=True, raw=raw,
                                  content_type=content_type)
-        raise AdoHttpError(e.code, full_url, e.read()) from e
+        raise AdoHttpError(e.code, full_url, err_body) from e
     except urllib.error.URLError as e:
+        if perf:
+            perf_record(method, full_url, 0, 0, t0)
         host = urllib.parse.urlsplit(full_url).netloc or full_url
         raise AdoTransportError("could not reach {0}: {1} - check org_url in azure-cli.yml and your network/proxy"
                                 .format(host, getattr(e, "reason", e))) from e
     except ValueError as e:
+        if perf:
+            perf_record(method, full_url, 0, 0, t0)
         # "unknown url type" - an org_url with no scheme.
         raise AdoTransportError("{0} - org_url must be a full URL starting with https://".format(e)) from e
+    if perf:
+        perf_record(method, full_url, status, len(raw_bytes or b""), t0)
 
     # dev.azure.com answers a rejected PAT with "203 Non-Authoritative
     # Information" and an HTML sign-in page, not a 401; without this it
@@ -1707,13 +1720,17 @@ class AzureDevOpsPullRequestSource:
                     created = self._list_prs(org, pat, account.project, creator_id=user_id)
 
                     futures = []
+                    # _perf_bind: the perf log's run (AZVICLI_DEBUG) follows the
+                    # work onto the pool; with it off, the methods themselves.
                     for pr in assigned:
                         futures.append(
-                            executor.submit(self._process_assigned, org, pat, account, pr, user_id, user_name, repo_cache)
+                            executor.submit(_perf_bind(self._process_assigned), org, pat, account, pr, user_id,
+                                            user_name, repo_cache)
                         )
                     for pr in created:
                         futures.append(
-                            executor.submit(self._process_created, org, pat, account, pr, user_id, user_name)
+                            executor.submit(_perf_bind(self._process_created), org, pat, account, pr, user_id,
+                                            user_name)
                         )
 
                     for fut in futures:
@@ -4136,6 +4153,143 @@ def _fail_action(flag, ex, env=None):
         print(traceback.format_exc(), file=sys.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Perf log - per-request timing with AZVICLI_DEBUG on (#91)
+# ---------------------------------------------------------------------------
+#
+# With AZVICLI_DEBUG on, dispatch() starts a _PerfRun for its command and
+# every provider HTTP request made while it runs (http_request here,
+# github_host.http) appends one JSON line to <AZVICLI_PREFETCH_DIR>/perf.log:
+#   {"ts", "kind": "req", "cmd", "method", "host", "path", "status", "bytes",
+#    "ms", "conn"}
+# and the run itself one "total" line when it ends:
+#   {"ts", "kind": "total", "cmd", "board", "requests", "req_ms", "wall_ms"}
+# :AzureCli perf (lua/azure-cli/perf.lua) summarises the file.
+#
+# perf_record is only ever given the method, the URL and numbers - never a
+# Request or its headers - and keeps the URL's host and path plus the query's
+# parameter NAMES, so no Authorization header, PAT or token can reach the
+# file. Off (no run on this thread), the HTTP functions do one getattr on a
+# thread-local and nothing else. The run lives in a threading.local because
+# the daemon runs 8 commands at once; a pool a command fans out on (--list's)
+# carries it over with _perf_bind.
+
+_perf_local = threading.local()
+_perf_write_lock = threading.Lock()
+PERF_LOG_MAX_BYTES = 1024 * 1024
+
+
+class _PerfRun(object):
+    def __init__(self, cmd, board, path):
+        self.cmd = cmd
+        self.board = board
+        self.path = path
+        self.requests = 0
+        self.req_ms = 0.0
+        self.started = time.monotonic()
+        self._lock = threading.Lock()
+
+    def add(self, ms):
+        with self._lock:
+            self.requests += 1
+            self.req_ms += ms
+
+
+def perf_log_path(env=None):
+    env = env if env is not None else os.environ
+    return os.path.join(env.get("AZVICLI_PREFETCH_DIR") or default_prefetch_dir(), "perf.log")
+
+
+def _perf_current():
+    return getattr(_perf_local, "run", None)
+
+
+def _perf_start(cmd, env):
+    """The run dispatch() hands this thread's requests to, or None with
+    AZVICLI_DEBUG off."""
+    if not _debug_enabled(env):
+        return None
+    run = _PerfRun(cmd, "github" if env.get("AZVICLI_WI_HOST") == "github" else "", perf_log_path(env))
+    _perf_local.run = run
+    return run
+
+
+def _perf_finish(run):
+    if run is None:
+        return
+    if getattr(_perf_local, "run", None) is run:
+        del _perf_local.run
+    _perf_write(run.path, {"ts": round(time.time(), 3), "kind": "total", "cmd": run.cmd, "board": run.board,
+                           "requests": run.requests, "req_ms": round(run.req_ms, 1),
+                           "wall_ms": round((time.monotonic() - run.started) * 1000.0, 1)})
+
+
+def _perf_bind(fn):
+    """fn, run on another thread with this thread's run (if any) - for a
+    pool a command fans out on. With no run, fn itself."""
+    run = _perf_current()
+    if run is None:
+        return fn
+
+    def bound(*args, **kwargs):
+        prev = getattr(_perf_local, "run", None)
+        _perf_local.run = run
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if prev is None:
+                del _perf_local.run
+            else:
+                _perf_local.run = prev
+    return bound
+
+
+def _perf_safe_url(url):
+    """(host, path) with the query reduced to its parameter names - the
+    values (api-version aside, anything a caller put there) never logged."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "", ""
+    path = parts.path or "/"
+    if parts.query:
+        names = [kv.split("=", 1)[0] for kv in parts.query.split("&") if kv]
+        path += "?" + "&".join(names)
+    return parts.hostname or "", path
+
+
+def perf_record(method, url, status, nbytes, t0, conn="new"):
+    """One request's line, when this thread has a run. t0 is the
+    time.monotonic() taken before the request went out."""
+    run = _perf_current()
+    if run is None:
+        return
+    ms = (time.monotonic() - t0) * 1000.0
+    run.add(ms)
+    host, path = _perf_safe_url(url)
+    _perf_write(run.path, {"ts": round(time.time(), 3), "kind": "req", "cmd": run.cmd, "method": method,
+                           "host": host, "path": path, "status": status, "bytes": nbytes,
+                           "ms": round(ms, 1), "conn": conn})
+
+
+def _perf_write(path, entry):
+    """Appends one line; past PERF_LOG_MAX_BYTES the file moves to
+    perf.log.1 first. Never raises - logging must not fail a request."""
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    try:
+        with _perf_write_lock:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            try:
+                if os.path.getsize(path) > PERF_LOG_MAX_BYTES:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError:
+        pass
+
+
 def boards(config):
     """--boards' answer for `config`: which work-item boards it has - the
     Azure one (an account with work_items:) and each GitHub account's
@@ -4803,6 +4957,11 @@ def dispatch(argv, env):
     (see its own comment) for every headless flag.
     """
     out, err = io.StringIO(), io.StringIO()
+    # The perf log's run for this command (None with AZVICLI_DEBUG off, and
+    # for --ping, which never touches the network).
+    run = None
+    if argv[:1] != ["--ping"]:
+        run = _perf_start(argv[0] if argv else ("--prefetch" if env.get("AZVICLI_PREFETCH") else "<no flag>"), env)
     with _captured_output(out, err):
         try:
             code = _run_dispatch(argv, env)
@@ -4814,6 +4973,8 @@ def dispatch(argv, env):
             # exception and called _fail_action before this ever runs.
             _fail_action(argv[0] if argv else "<no flag>", ex, env)
             code = 1
+        finally:
+            _perf_finish(run)
     return code, out.getvalue(), err.getvalue()
 
 

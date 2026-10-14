@@ -18,6 +18,15 @@ _Part of the [azure-vicli](../README.md) docs._
   always ends with `(:AzureCli log)` as a reminder. Set `AZVICLI_DEBUG=1`
   (see [Environment variables](configuration.md#environment-variables)) to also have
   `azure-cli.py` print a full traceback when run directly from a terminal.
+- **Measuring requests (slow dashboards)**: start Neovim with
+  `AZVICLI_DEBUG=1`, use the dashboard, a review and the board for a poll
+  tick or two, then `:AzureCli perf`. The provider logs every HTTP request
+  (method, host, path with the query's values dropped, status, bytes, ms,
+  new or reused connection) and each command's totals to `perf.log` in the
+  plugin's cache dir (`stdpath("cache")/azure-cli`, rotated at 1 MB). It never
+  logs headers, PATs or tokens. `:AzureCli perf` shows requests and wall ms per poll
+  tick for each screen, the slowest requests and the most-called endpoints;
+  `r` there reads the log again. With `AZVICLI_DEBUG` off nothing is logged.
 - **"Configuration does not exist"**: open the dashboard (`./azure-cli` or
   `:AzureCli`) - it writes a template at the path printed and opens it - or
   run `azure-cli --init-config` from a terminal.

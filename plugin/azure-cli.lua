@@ -10,7 +10,7 @@ end
 vim.g.loaded_azure_cli = true
 
 local SUBCOMMANDS = { "dashboard", "review", "workitems", "issues", "chat", "agents", "doctor", "toasts", "status", "log",
-  "options", "help" }
+  "perf", "options", "help" }
 
 local function show_help()
   local lines = {
@@ -26,6 +26,7 @@ local function show_help()
     "  :AzureCli toasts      toggle desktop notifications for this session",
     "  :AzureCli status      show the provider daemon's status",
     "  :AzureCli log         show this session's error log",
+    "  :AzureCli perf        request timings logged with AZVICLI_DEBUG=1: per screen, slowest, per endpoint",
     "  :AzureCli options     every option at its default: azure-cli.lua (standalone), or a list to copy into setup()",
     "  :AzureCli help        this message",
   }
@@ -67,6 +68,8 @@ local function dispatch(opts)
     azure_cli.status()
   elseif sub == "log" then
     require("azure-cli.log").open()
+  elseif sub == "perf" then
+    require("azure-cli.perf").open()
   elseif sub == "options" then
     require("azure-cli.shell").open_options_file()
   elseif sub == "help" then
@@ -78,7 +81,7 @@ end
 
 vim.api.nvim_create_user_command("AzureCli", dispatch, {
   nargs = "*",
-  desc = "Azure DevOps dashboard (dashboard | review <id> | workitems | chat | agents | doctor | toasts | status | log | options | help)",
+  desc = "Azure DevOps dashboard (dashboard | review <id> | workitems | chat | agents | doctor | toasts | status | log | perf | options | help)",
   complete = function(arg_lead, cmd_line, _)
     local parts = vim.split(vim.trim(cmd_line), "%s+")
     -- parts[1] is "AzureCli" itself; completing the subcommand while only
