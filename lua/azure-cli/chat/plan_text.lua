@@ -66,11 +66,14 @@ function M.is_path_like(tok)
 end
 
 -- The path-like words of `text`, split on commas and spaces, each with
--- its backticks, leading "./" and trailing punctuation off. Pure.
+-- its backticks, leading "./", trailing punctuation and a trailing line
+-- ref (:12, :10-20, :3:5, #L7, #L7-L9) off. A ref's ":" needs digits after
+-- it, so a drive letter (C:\x.lua) stays. Pure.
 local function path_tokens(text)
   local out = {}
   for tok in text:gsub("`", " "):gmatch("[^,%s]+") do
     tok = tok:gsub("^%./", ""):gsub("[,:;.]+$", "")
+    tok = tok:gsub("#L%d+%-?L?%d*$", ""):gsub(":%d+[-:]%d+$", ""):gsub(":%d+$", "")
     if M.is_path_like(tok) then out[#out + 1] = tok end
   end
   return out
@@ -79,7 +82,8 @@ end
 -- The paths one Files entry (a list item's text) names: the path-like
 -- words of its head - the text before its description (" - ", ": ",
 -- " — "). A head that names none ("New: ...") gives the whole entry's
--- instead. Pure.
+-- instead. A line ref on a path (docs/chat.md:692, b.lua#L7) is dropped,
+-- so the entry names the file. Pure.
 function M.entry_paths(item)
   local head = item
   for _, sep in ipairs({ " - ", " \u{2013} ", " \u{2014} ", ": " }) do

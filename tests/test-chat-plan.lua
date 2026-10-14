@@ -81,6 +81,22 @@ do
     #al.unplanned == 0 and #al.missing == 0, vim.inspect(al))
 end
 
+-- --- Files entries with a line ref name the file (#85) ----------------------------------------
+do
+  local files = PLAN.planned_files({ "## Files",
+    "- docs/chat.md:692 - the docs", "- `lua/x.lua:10-20`", "- a.lua:3:5", "- b.lua#L7", "- docs/y.md (l.12) - y",
+  })
+  check("planned_files: a line ref (:N, :N-M, :N:M, #LN, (l.N)) is dropped",
+    table.concat(files, "|") == "docs/chat.md|lua/x.lua|a.lua|b.lua|docs/y.md", table.concat(files, "|"))
+  check("paths_planned: docs/chat.md:692 plans docs/chat.md", PLAN.paths_planned(files, { "docs/chat.md" }))
+  local c = PLAN.check_files(files, { "docs/chat.md", "lua/x.lua", "a.lua", "b.lua", "docs/y.md" })
+  check("check_files: nothing missing when the line-ref'd files changed",
+    #c.missing == 0 and #c.unplanned == 0, vim.inspect(c))
+  local win = PLAN.planned_files({ "## Files", "- C:\\src\\a.lua - x", "- C:\\src\\b.lua:12 - y" })
+  check("planned_files: a drive letter stays",
+    table.concat(win, "|") == "C:\\src\\a.lua|C:\\src\\b.lua", table.concat(win, "|"))
+end
+
 -- --- only the approved revision's Files (#45) ------------------------------------------------
 do
   local rec = { key = "wi-test45", target = { work_item_id = 45 }, status = "approved", approved_rev = 2,
