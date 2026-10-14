@@ -48,7 +48,8 @@ until you hide it. The conversation is the same in every tab.
 | `<S-CR>` / `<C-j>` (while typing) | A new line in the message (`<S-CR>` where the terminal reports it, `<C-j>` everywhere) |
 | `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
-| `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |
+| `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor; on a queued message, send it |
+| `dd` / `cc` (conversation, on a queued message) | Cancel it / edit it in the input box (sending it again puts it back in its place in the queue) |
 | `<Tab>` (conversation) | Unfold a long answer, or the list of tool calls folded into one line ("· 6 lookups, 2 changes"); again folds it |
 | `ga` (conversation) | Ask the agent why it did the step under the cursor (one of its tool calls, `✎ create_branch (...)`) or wrote that line |
 | `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
@@ -58,7 +59,7 @@ until you hide it. The conversation is the same in every tab.
 | `gh` | Open an earlier conversation |
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `gM` / `gm` | Choose the agent / the model |
-| `<C-c>` | Stop the agent |
+| `<C-c>` | Stop the agent (what you queued is held until you send it) |
 | `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
 | `<BS>` | Back to the screen next to the panel |
 | `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
@@ -80,6 +81,16 @@ seconds. With the panel hidden, put it in your statusline:
 `require("azure-cli.chat").status()` is `⠹ Copilot 42s` while the agent
 works and `""` otherwise (lualine: `{ function() return
 require("azure-cli.chat").status() end }`).
+
+**Sending while it works.** A message you send while the agent is still
+answering is queued: it shows under the conversation as `You · queued (1 of
+2)` (and `[⌛ 2 queued]` in the title bar), with what you were looking at
+when you sent it. When the answer is done, the queued messages go out in
+order, each as a turn of its own. On a queued message, `dd` cancels it and
+`cc` puts it back in the input box to change; sending it again keeps its
+place. Stopping the agent with `<C-c>` holds the queue: nothing more goes
+out until you press `<CR>` on a queued message. This is the same in a plan's
+agent's conversation and its popup.
 
 **The status strip.** One line says what needs you, from any tab: the
 agent working (`⠹ Copilot 42s`), a question waiting for your yes or no

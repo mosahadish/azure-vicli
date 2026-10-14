@@ -49,7 +49,7 @@ end
 local CONV_FIELDS = {
   entries = true, session_id = true, conv_id = true, created = true, running = true, persistent_job = true,
   plan_key = true, agent_id = true, label = true, bridge_entry = true, mcp_path = true, target = true, title = true,
-  model = true, model_agent = true,
+  model = true, model_agent = true, queue = true, queue_editing = true,
 }
 
 local function MAIN()
@@ -63,6 +63,8 @@ local function MAIN()
     main_win = {},       -- tabpage -> the last non-chat window
     running = nil,       -- { job, turn, timer, tick, cancelled } - the message in flight
     persistent_job = nil, -- { job, agent_name, conv_id, turn, stale } - the agent's running process
+    queue = nil,         -- { { text, snap, view_win, at, held, editing } } sent while it ran (chat/run.lua)
+    queue_editing = nil, -- the queued message in the input box (cc), until sent again
     models = {},         -- agent name -> model picked with gm
     agent_name = nil,    -- picked with gM
     sent = {},           -- what was sent, for <Up>/<Down> in the input box
@@ -242,6 +244,7 @@ local BAR = {
   tool_read = "AzureCliChatAgent", tool_write = "AzureCliChatAgent", tool_err = "AzureCliChatAgent",
   agent_log = "AzureCliChatAgent",
   note = "AzureCliChatNote", intro = "AzureCliChatAgent", fold = "AzureCliChatAgent",
+  queued_head = "AzureCliChatMeta", queued = "AzureCliChatMeta",
 }
 local LINE_HL = {
   -- Your messages in your colour, the agent's own step log dimmed, so its
@@ -249,6 +252,8 @@ local LINE_HL = {
   you = "AzureCliChatYouText", agent_log = "AzureCliChatToolRead",
   tool_read = "AzureCliChatToolRead", tool_write = "AzureCliChatToolWrite", tool_err = "AzureCliChatToolErr",
   note = "AzureCliChatNote", intro = "AzureCliChatMeta", fold = "AzureCliChatMeta",
+  -- A message queued while the agent answers: dimmed until it goes out.
+  queued = "AzureCliChatMeta",
 }
 
 local log_buf, input_buf
@@ -265,7 +270,7 @@ local popup
 local function render()
   if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
   local st = STATE()
-  local lines, roles, name_end, at = CORE.render(st.entries, os.time(), agent_label())
+  local lines, roles, name_end, at = CORE.render(st.entries, os.time(), agent_label(), st.queue)
   entry_at = at
   role_at = roles
   vim.bo[log_buf].modifiable = true
@@ -277,9 +282,9 @@ local function render()
     local role = roles[i]
     if role then
       mark(i - 1, 0, { sign_text = "\u{258E}", sign_hl_group = BAR[role] or "AzureCliChatAgent", priority = 10 })
-      if role == "you_head" or role == "agent_head" then
+      if role == "you_head" or role == "agent_head" or role == "queued_head" then
         local cut = name_end[i] or #lines[i]
-        mark(i - 1, 0, { end_col = cut, hl_group = role == "you_head" and "AzureCliChatYou" or "AzureCliChatAgent", priority = 200 })
+        mark(i - 1, 0, { end_col = cut, hl_group = role == "agent_head" and "AzureCliChatAgent" or "AzureCliChatYou", priority = 200 })
         mark(i - 1, 0, { end_col = cut, hl_group = "AzureCliChatName", priority = 201 })
         if cut < #lines[i] then mark(i - 1, cut, { end_col = #lines[i], hl_group = "AzureCliChatMeta", priority = 200 }) end
       elseif LINE_HL[role] then
@@ -371,6 +376,7 @@ function M.set_winbars()
   local usage = table.concat(vim.tbl_filter(function(x) return x and x ~= "" end, { used, ctx }), " \u{00B7} ")
   if usage ~= "" then tags[#tags + 1] = "[" .. usage .. "]" end
   if st.running then tags[#tags + 1] = "[" .. spinner() .. " working]" end
+  if #(st.queue or {}) > 0 then tags[#tags + 1] = "[\u{231B} " .. #st.queue .. " queued]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
   for _, w in pairs(st.wins) do
@@ -419,6 +425,17 @@ local function input_text()
   return vim.trim(table.concat(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), "\n"))
 end
 
+-- i / a in the conversation (and cc on a queued message): into the input
+-- box next to it - the popup's, from the popup - typing.
+local function focus_input()
+  local w = (STATE().wins[vim.api.nvim_get_current_tabpage()] or {}).input
+  if popup and vim.api.nvim_get_current_win() == popup.log then w = popup.input end
+  if w and vim.api.nvim_win_is_valid(w) then
+    vim.api.nvim_set_current_win(w)
+    vim.cmd("startinsert!")
+  end
+end
+
 local function ensure_bufs()
   if log_buf and vim.api.nvim_buf_is_valid(log_buf) and input_buf and vim.api.nvim_buf_is_valid(input_buf) then return end
   restore_once()
@@ -439,14 +456,6 @@ local function ensure_bufs()
   -- The agent answers in markdown: render it with Neovim's bundled parser.
   pcall(vim.treesitter.start, log_buf, "markdown")
 
-  local function focus_input()
-    local w = (STATE().wins[vim.api.nvim_get_current_tabpage()] or {}).input
-    if popup and vim.api.nvim_get_current_win() == popup.log then w = popup.input end
-    if w and vim.api.nvim_win_is_valid(w) then
-      vim.api.nvim_set_current_win(w)
-      vim.cmd("startinsert!")
-    end
-  end
   for _, b in ipairs({ log_buf, input_buf }) do
     KEYS.bind(b, "chat", "new_chat", function() new_chat() end, { desc = "start a new conversation" })
     KEYS.bind(b, "chat", "cancel", function() cancel() end, { desc = "stop the agent" })
@@ -467,7 +476,12 @@ local function ensure_bufs()
     end, { desc = "back to the screen next to the chat" })
   end
   KEYS.bind(log_buf, "chat", "focus_input", focus_input, { desc = "type a message" })
-  KEYS.bind(log_buf, "chat", "open_ref", function() open_ref() end, { desc = "open the PR/work item under the cursor" })
+  KEYS.bind(log_buf, "chat", "open_ref", function() open_ref() end,
+    { desc = "open the PR/work item under the cursor (on a queued message: send it)" })
+  KEYS.bind(log_buf, "chat", "queue_drop", function() require("azure-cli.chat.actions").queue_drop() end,
+    { desc = "cancel the queued message" })
+  KEYS.bind(log_buf, "chat", "queue_edit", function() require("azure-cli.chat.actions").queue_edit() end,
+    { desc = "edit the queued message" })
   KEYS.bind(log_buf, "chat", "use_as_reply", function() use_as_reply() end, { desc = "draft this answer as a reply" })
   KEYS.bind(log_buf, "chat", "why", function() ask_why() end, { desc = "ask the agent why it did this" })
   -- Not in the input box: A there is Vim's own "append at the end".
@@ -1048,7 +1062,7 @@ end
 M._ = {
   state = STATE, render = render, render_soon = render_soon, save = save, confirm_for = confirm_for,
   tool_env = tool_env, input_text = input_text, restore_once = restore_once, group = group,
-  load_conversation = load_conversation,
+  load_conversation = load_conversation, focus_input = focus_input,
   input_buf = function() return input_buf end,
   entry_at = function() return entry_at end,
   role_at = function() return role_at end,

@@ -25,12 +25,23 @@ local function stop_persistent(st) return RUN().stop_persistent(st) end
 local new_chat, history_step, open_ref, ask_why, use_as_reply, show_help, pick_model, pick_agent,
   pick_prompt, pick_history, show_audit  -- forward
 
+-- Forgets what's queued in conversation `st` (it's going away), saying so.
+local function drop_queue(st, quiet)
+  local n = #(st.queue or {})
+  st.queue, st.queue_editing = nil, nil
+  if n > 0 and not quiet then
+    notify("Dropped " .. n .. " queued message" .. (n == 1 and "" or "s") .. " (<Up> in the input box brings "
+      .. (n == 1 and "it" or "them") .. " back).")
+  end
+end
+
 -- A fresh conversation (the current one stays in the history - gh).
 new_chat = function(quiet)
   local st = STATE()
   if st.running then cancel() end
   stop_persistent(st)
   save()
+  drop_queue(st, quiet)
   st.entries, st.session_id, st.conv_id, st.created = {}, nil, nil, nil
   require("azure-cli.chat.store").forget_current()
   render()
@@ -53,8 +64,59 @@ history_step = function(dir)
   end
 end
 
--- <CR> on !101 / #3001 in the conversation.
+-- The queued message under the cursor in the conversation (core.render's
+-- "q<n>" lines): its index in st.queue and itself, or nil.
+local function queued_here()
+  local st = STATE()
+  local at = I().entry_at()[vim.api.nvim_win_get_cursor(0)[1]]
+  local n = type(at) == "string" and tonumber(at:match("^q(%d+)$"))
+  local q = n and (st.queue or {})[n]
+  if q then return n, q, st end
+end
+
+-- dd on a queued message: it won't be sent.
+function M.queue_drop()
+  local n, q, st = queued_here()
+  if not n then return notify("Put the cursor on a queued message.") end
+  table.remove(st.queue, n)
+  if st.queue_editing == q then st.queue_editing = nil end
+  render()
+  notify("Cancelled the queued message.")
+  -- One being edited might have been holding up the rest.
+  RUN().drain(st)
+end
+
+-- cc on a queued message: back in the input box to change; sent again, it
+-- keeps its place in the queue (chat/run.lua's requeue).
+function M.queue_edit()
+  local n, q, st = queued_here()
+  if not n then return notify("Put the cursor on a queued message.") end
+  local ib = I().input_buf()
+  if not (ib and vim.api.nvim_buf_is_valid(ib)) then return end
+  local draft = I().input_text()
+  if draft ~= "" and draft ~= q.text then
+    return notify("The input box has a message in it - send or clear it first.", vim.log.levels.WARN)
+  end
+  if st.queue_editing and st.queue_editing ~= q then st.queue_editing.editing = nil end
+  q.editing, st.queue_editing = true, q
+  vim.api.nvim_buf_set_lines(ib, 0, -1, false, vim.split(q.text, "\n", { plain = true }))
+  render()
+  I().focus_input()
+end
+
+-- <CR> on !101 / #3001 in the conversation - or on a queued message: send
+-- it now (the agent free), or once this answer is done (held after <C-c>).
 open_ref = function()
+  local n, q, st = queued_here()
+  if n then
+    if q.editing then return notify("It's in the input box - send it from there.") end
+    if st.running then
+      q.held = nil
+      render()
+      return notify("It goes when this answer is done.")
+    end
+    return RUN().send_queued(st, n)
+  end
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2]
   local ref = require("azure-cli.chat.refs").at(line, col)
@@ -131,9 +193,12 @@ show_help = function()
     { "focus_input", "type a message (in the conversation)" },
     { "prev_message", "the previous message you sent" }, { "next_message", "the next one" },
     { "prompts", "run a saved prompt (/name in the input box does the same)" },
-    { "cancel", "stop the agent" },
+    { "cancel", "stop the agent (what you queued is held until you send it)" },
+    "Queued (sent while the agent answers)",
+    { "queue_drop", "cancel the queued message under the cursor" },
+    { "queue_edit", "edit it in the input box; sending puts it back in its place" },
     "Answers",
-    { "open_ref", "open the !PR / #work item under the cursor" },
+    { "open_ref", "open the !PR / #work item under the cursor (on a queued message: send it)" },
     { "use_as_reply", "draft the answer under the cursor as a reply (queued for "
       .. KEYS.name("list", "batch_submit") .. ")" },
     { "why", "ask the agent why it did the step (or wrote the line) under the cursor" },
@@ -240,6 +305,7 @@ pick_history = function()
     if not choice or choice.id == st.conv_id then return end
     if st.running then cancel() end
     stop_persistent(st)
+    drop_queue(st)
     local rec = STORE.load(choice.id)
     if not rec then return notify("That conversation couldn't be read.", vim.log.levels.WARN) end
     I().load_conversation(rec)

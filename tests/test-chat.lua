@@ -215,6 +215,27 @@ do
   check("render: a few calls stay listed", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} c", 1, true) ~= nil)
 end
 
+-- --- messages queued while the agent answers (issue #29) ---------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  local entries = { { role = "you", text = "q" }, { role = "agent", status = "running", started = 0, text = "", tools = {} } }
+  local plain = CORE.render(entries, 0, "A")
+  check("render: no queue draws as before", vim.deep_equal(plain, (CORE.render(entries, 0, "A", {}))))
+  local lines, roles, name_end, at = CORE.render(entries, 0, "A", { { text = "first" }, { text = "second\nline", held = true } })
+  local n = #plain
+  check("render: queued messages after the conversation, in order",
+    lines[n + 2]:find("^You  \u{00B7}  queued %(1 of 2%)") and lines[n + 3] == "first"
+      and lines[n + 5]:find("^You  \u{00B7}  queued %(2 of 2%)") and lines[n + 6] == "second" and lines[n + 7] == "line",
+    vim.inspect(lines))
+  check("render: queued roles", roles[n + 2] == "queued_head" and roles[n + 3] == "queued" and name_end[n + 2] == 3)
+  check("render: queued lines map to q<n>", at[n + 2] == "q1" and at[n + 3] == "q1" and at[n + 7] == "q2" and at[n + 1] == nil)
+  check("render: the keys on a queued message", lines[n + 2]:find("dd cancels, cc edits", 1, true) ~= nil, lines[n + 2])
+  check("render: a held one says how to send it", lines[n + 5]:find("held - <CR> sends it", 1, true) ~= nil
+    and not lines[n + 2]:find("held", 1, true), lines[n + 5])
+  lines = CORE.render(entries, 0, "A", { { text = "x", editing = true } })
+  check("render: one being edited says so", lines[n + 2]:find("editing in the input box", 1, true) ~= nil, lines[n + 2])
+end
+
 -- --- the status strip ---------------------------------------------------------------
 do
   local CORE = require("azure-cli.chat.core")

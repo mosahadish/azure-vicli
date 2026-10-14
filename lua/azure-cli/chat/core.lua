@@ -824,9 +824,14 @@ end
 -- working… 4s"), your text, the agent's tool calls as they happen, then
 -- its markdown answer. Returns lines, roles (line -> one of you_head, you,
 -- agent_head, agent, agent_log, tool_read, tool_write, tool_err, note,
--- intro, fold; nil for
+-- intro, fold, queued_head, queued; nil for
 -- the gap between turns), name_end (heading line -> byte where its dim
--- part starts) and entry_at (line -> index into entries). Pure.
+-- part starts) and entry_at (line -> index into entries, or "q<n>" for
+-- the n-th of `queue`). Pure.
+--
+-- `queue` (optional): the messages you sent while the agent was answering
+-- ({ text, held, editing }, chat/run.lua's st.queue), drawn after the
+-- conversation as "You · queued (1 of 2)" until they go out.
 --
 -- A finished answer with more than COLLAPSE_TOOLS tool calls shows them as
 -- one summary line ("· 6 lookups, 2 changes"), keeping the ones that
@@ -835,7 +840,8 @@ end
 -- KEEP_LINES and "… N more lines" (role "fold"). An entry with `open` set
 -- (<Tab> on it) shows everything.
 M.COLLAPSE_TOOLS, M.FOLD_LINES, M.KEEP_LINES = 3, 40, 30
-function M.render(entries, now, agent_label)
+function M.render(entries, now, agent_label, queue)
+  queue = queue or {}
   local lines, roles, name_end, entry_at = {}, {}, {}, {}
   local cur
   local function add(l, role) lines[#lines + 1] = l; roles[#lines] = role; entry_at[#lines] = cur end
@@ -844,7 +850,7 @@ function M.render(entries, now, agent_label)
     add(name .. (extra ~= "" and ("  \u{00B7}  " .. extra) or ""), role)
     name_end[#lines] = #name
   end
-  if #entries == 0 then
+  if #entries == 0 and #queue == 0 then
     add("Chat", "agent_head")
     name_end[1] = 4
     add("", "intro")
@@ -904,6 +910,23 @@ function M.render(entries, now, agent_label)
       end
     else
       add_text(e.text or "", "note")
+    end
+  end
+  if #queue > 0 then
+    local KEYS = require("azure-cli.keys")
+    for i, q in ipairs(queue) do
+      cur = nil
+      if #lines > 0 then add("", nil) end
+      cur = "q" .. i
+      local bits = { "queued (" .. i .. " of " .. #queue .. ")" }
+      if q.editing then
+        bits[#bits + 1] = "editing in the input box"
+      elseif q.held then
+        bits[#bits + 1] = "held - " .. KEYS.name("chat", "open_ref") .. " sends it"
+      end
+      bits[#bits + 1] = KEYS.name("chat", "queue_drop") .. " cancels, " .. KEYS.name("chat", "queue_edit") .. " edits"
+      head("You", table.concat(bits, "  \u{00B7}  "), "queued_head")
+      add_text(q.display or q.text, "queued")
     end
   end
   return lines, roles, name_end, entry_at

@@ -2,13 +2,18 @@
 -- sends (as the hint says) and leaves insert mode; <C-j> (and <S-CR> where
 -- the terminal reports it) breaks the line instead; <C-s> still sends; and
 -- with the completion menu open <CR> picks the entry, it doesn't send.
+-- And while the agent answers (issue #29), <CR> - typing or not - queues
+-- the message instead, and the box is left as after a send.
 -- Needs the main loop (real input events, as in test-editor-mode.lua), so:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-chat-insert-send.lua"
 require("azure-cli").setup({})
 local CHAT = require("azure-cli.chat")
 local sent = {}
-require("azure-cli.chat.run").send = function()
+local RUN = require("azure-cli.chat.run")
+local real_send = RUN.send
+local STATE = require("azure-cli.state")
+RUN.send = function()
   sent[#sent + 1] = CHAT._.input_text()
   vim.api.nvim_buf_set_lines(CHAT._.input_buf(), 0, -1, false, {})
 end
@@ -46,6 +51,23 @@ local steps = {
     if #sent ~= 2 then return "<CR> in the completion menu sent " .. vim.inspect(sent[3]) end
     if not table.concat(lines(), "\n"):find("alpha", 1, true) then return "<CR> didn't pick the entry: " .. vim.inspect(lines()) end
   end },
+  -- The agent answering: the real send queues what's typed.
+  { clear = true, setup = function()
+    RUN.send = real_send
+    STATE.chat.running = { entry = { started = os.time() } }
+  end, keys = "<Esc>iwhile busy<CR>", check = function()
+    local q = STATE.chat.queue or {}
+    if #q ~= 1 or q[1].text ~= "while busy" then return "<CR> while busy queued " .. vim.inspect(q) end
+    if #sent ~= 2 then return "<CR> while busy sent it" end
+    if table.concat(lines(), "") ~= "" then return "the box kept " .. vim.inspect(lines()) end
+    if mode() ~= "n" then return "<CR> while busy left the box in mode " .. mode() end
+  end },
+  { keys = "iand again<Esc><CR>", check = function()
+    local q = STATE.chat.queue or {}
+    if #q ~= 2 or q[2].text ~= "and again" then return "<CR> in normal mode while busy queued " .. vim.inspect(q) end
+    if mode() ~= "n" then return "normal-mode <CR> left mode " .. mode() end
+    STATE.chat.running, STATE.chat.queue = nil, nil
+  end },
 }
 
 CHAT.show(true)
@@ -60,6 +82,7 @@ vim.defer_fn(function()
     i = i + 1
     if i > #steps then return finish(true) end
     if steps[i].clear then vim.api.nvim_buf_set_lines(CHAT._.input_buf(), 0, -1, false, {}) end
+    if steps[i].setup then steps[i].setup() end
     vim.api.nvim_input(steps[i].keys)
     vim.defer_fn(function()
       local err = steps[i].check()

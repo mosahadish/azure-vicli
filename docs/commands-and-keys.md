@@ -355,6 +355,8 @@ paste the output here after changing a default.
 | `palette` | `g.` |
 | `prev_message` | `<Up>` |
 | `prompts` | `gp` |
+| `queue_drop` | `dd` |
+| `queue_edit` | `cc` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `send` | `<CR>` |

@@ -151,6 +151,147 @@ do
   CHAT.new_chat(true)
 end
 
+-- Issue #29: what you send from the input box while the agent answers is
+-- queued, shown as queued, and sent in order once the answer is done -
+-- each a turn of its own; dd cancels one, cc edits one in place, and after
+-- <C-c> the queue waits for you. The same in a plan's own conversation.
+do
+  CHAT.new_chat(true)
+  CHAT.show(false)
+  local st = STATE.chat
+  local ib = CHAT._.input_buf()
+  local ACT = require("azure-cli.chat.actions")
+  local function input() return table.concat(vim.api.nvim_buf_get_lines(ib, 0, -1, false), "\n") end
+  local function type_and_send(text, conv)
+    vim.api.nvim_buf_set_lines(ib, 0, -1, false, vim.split(text, "\n"))
+    return CHAT.send(nil, { view_win = win, conv = conv })
+  end
+  local function you_sent(text, conv)
+    for _, e in ipairs((conv or st).entries) do if e.role == "you" and e.text == text then return true end end
+    return false
+  end
+  local function answer_to(text, conv)
+    local es = (conv or st).entries
+    for i, e in ipairs(es) do
+      if e.role == "you" and e.text == text and es[i + 1] and es[i + 1].status ~= "running" then return es[i + 1] end
+    end
+  end
+  local function idle(conv)
+    conv = conv or st
+    return vim.wait(20000, function()
+      local last = conv.entries[#conv.entries]
+      return not conv.running and #(conv.queue or {}) == 0 and last and last.status ~= "running"
+    end, 20)
+  end
+  local function log_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if b ~= ib and vim.api.nvim_buf_is_valid(b) and vim.b[b].azure_cli_chat then
+        return table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n"), b
+      end
+    end
+    return ""
+  end
+  -- The cursor on the n-th queued message, in the conversation's window.
+  local function on_queued(n)
+    local _, lb = log_lines()
+    local lw = lb and vim.fn.bufwinid(lb)
+    if not lw or lw == -1 then return false end
+    vim.api.nvim_set_current_win(lw)
+    for row, at in pairs(CHAT._.entry_at()) do
+      if at == "q" .. n then vim.api.nvim_win_set_cursor(lw, { row, 0 }) return true end
+    end
+    return false
+  end
+
+  check("queue: the input box is there", ib ~= nil and vim.api.nvim_buf_is_valid(ib))
+  CHAT.send("one slowly", { view_win = win })
+  check("queue: the agent is answering", CHAT.busy())
+  local r = type_and_send("two")
+  check("queue: sending meanwhile starts no turn", r == nil and not you_sent("two"))
+  check("queue: it's queued", #(st.queue or {}) == 1 and st.queue[1].text == "two", vim.inspect(st.queue))
+  check("queue: the input box is cleared", input() == "", input())
+  check("queue: the conversation shows it queued", log_lines():find("queued (1 of 1)", 1, true) ~= nil, log_lines())
+  check("queue: it keeps what you were looking at", type(st.queue[1].snap) == "table")
+  check("queue: <Up> brings it back", st.sent[#st.sent] == "two")
+  check("queue: answered once the turn ends", idle())
+  local a2 = answer_to("two")
+  check("queue: sent as the next turn", a2 ~= nil and a2.text:match("^turn 2,") ~= nil and a2.text:find("two", 1, true) ~= nil,
+    a2 and a2.text)
+  check("queue: no longer shown as queued", not log_lines():find("queued (", 1, true))
+
+  -- Two queued: in order, each its own turn.
+  CHAT.send("three slowly", { view_win = win })
+  type_and_send("a")
+  type_and_send("b")
+  check("queue: two queued", #(st.queue or {}) == 2 and log_lines():find("queued (2 of 2)", 1, true) ~= nil)
+  check("queue: both answered", idle())
+  local aa, ab = answer_to("a"), answer_to("b")
+  check("queue: in order, a turn each", aa and ab and aa.text:match("^turn 4,") and ab.text:match("^turn 5,"),
+    vim.inspect({ aa and aa.text, ab and ab.text }))
+
+  -- dd: cancelled, never sent.
+  CHAT.send("four slowly", { view_win = win })
+  type_and_send("drop me")
+  check("queue: dd - the cursor on it", on_queued(1))
+  ACT.queue_drop()
+  check("queue: dd takes it out of the queue", #(st.queue or {}) == 0)
+  check("queue: dd - the turn still ends", idle())
+  vim.wait(300)
+  check("queue: dd - it was never sent", not you_sent("drop me"))
+  local nxt = send_and_wait("after drop")
+  check("queue: dd - the agent never got it", nxt ~= nil and nxt.text:match("^turn 7,") ~= nil, nxt and nxt.text)
+
+  -- cc: back in the input box, changed, and sent in its place.
+  CHAT.send("five slowly", { view_win = win })
+  type_and_send("x")
+  type_and_send("after x")
+  check("queue: cc - the cursor on it", on_queued(1))
+  ACT.queue_edit()
+  vim.cmd("stopinsert")
+  check("queue: cc puts it in the input box", input() == "x" and st.queue[1].editing == true, input())
+  type_and_send("y")
+  check("queue: cc - sent again, it's back in its place, changed",
+    #st.queue == 2 and st.queue[1].text == "y" and not st.queue[1].editing and st.queue[2].text == "after x",
+    vim.inspect(st.queue))
+  check("queue: cc - both answered", idle())
+  local ay, ax = answer_to("y"), answer_to("after x")
+  check("queue: cc - the change went, in order", ay and ax and not you_sent("x") and ay.text:match("^turn 9,")
+    and ax.text:match("^turn 10,"), vim.inspect({ ay and ay.text, ax and ax.text }))
+
+  -- <C-c>: what's queued is held until you send it (<CR> on it).
+  CHAT.send("six slowly", { view_win = win })
+  type_and_send("held one")
+  CHAT.cancel_conversation(st)
+  vim.wait(5000, function() return not CHAT.busy() end, 20)
+  vim.wait(500)
+  check("queue: after <C-c> it's held, not sent", #(st.queue or {}) == 1 and st.queue[1].held and not you_sent("held one"),
+    vim.inspect(st.queue))
+  check("queue: held says so", log_lines():find("held - ", 1, true) ~= nil)
+  check("queue: <CR> on it - the cursor", on_queued(1))
+  ACT.open_ref()
+  check("queue: <CR> on a held one sends it", idle() and answer_to("held one") ~= nil and answer_to("held one").status == "done")
+
+  -- A plan's own conversation: its own queue, drained into it.
+  local plan = CHAT.conversation("wi-29", { label = "#29", target = { work_item_id = 29 } })
+  CHAT.send("plan slowly", { conv = plan, view_win = win })
+  type_and_send("plan two", plan)
+  check("queue: a plan's agent's conversation queues in its own", #(plan.queue or {}) == 1 and #(st.queue or {}) == 0)
+  check("queue: and drains there", idle(plan) and answer_to("plan two", plan) ~= nil and not you_sent("plan two"))
+  for _, c in ipairs(CHAT.conversations()) do
+    if c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
+  end
+  STATE.chat.convs = {}
+
+  -- A new chat drops what's queued.
+  CHAT.send("seven slowly", { view_win = win })
+  type_and_send("gone")
+  CHAT.new_chat(true)
+  check("queue: a new chat drops it", st.queue == nil)
+  vim.wait(5000, function() return not CHAT.busy() end, 20)
+  CHAT.hide()
+  CHAT.new_chat(true)
+end
+
 -- A plain one-shot CLI (answers one message, exits) can't stay running:
 -- the message fails with an explanation instead of hanging.
 do

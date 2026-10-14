@@ -107,6 +107,8 @@ local DEFAULT_KEYS = {
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
     back = "<BS>", hide = "q", toggle = "gq", help = "?", palette = "g.", resize_less = "<", resize_more = ">",
     changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
+    -- On a message queued while the agent answers (conversation only).
+    queue_drop = "dd", queue_edit = "cc",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {

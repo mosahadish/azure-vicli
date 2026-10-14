@@ -402,7 +402,9 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
-    -- An agent is free again: start the next plan waiting for one.
+    -- Free again: what you sent meanwhile goes next, then the next plan
+    -- waiting for an agent starts.
+    vim.schedule(function() M.drain(st) end)
     pcall(function() require("azure-cli.chat.agents").pump() end)
   end
 
@@ -582,6 +584,54 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
   end)
 end
 
+local function clear_input()
+  local ib = I().input_buf()
+  if ib and vim.api.nvim_buf_is_valid(ib) then vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "" }) end
+end
+
+-- What you type and send while the agent answers: queued (st.queue) with
+-- what you were looking at then, and sent as a turn of its own once this
+-- one ends (M.drain). Returns nil, like any send that started no turn.
+local function enqueue(st, text, opts)
+  local view_win = opts.view_win or CHAT().main_win()
+  local sel = st.selection
+  if sel and not (vim.api.nvim_win_is_valid(sel.win) and sel.win == view_win) then sel = nil end
+  st.selection = nil
+  local snap = opts.snap or require("azure-cli.chat.view").snapshot(view_win, sel)
+  st.queue = st.queue or {}
+  table.insert(st.queue, { text = text, display = opts.display, snap = snap, view_win = view_win, at = os.time() })
+  clear_input()
+  table.insert(st.sent, text)
+  while #st.sent > 100 do table.remove(st.sent, 1) end
+  st.sent_pos = nil
+  render()
+  local KEYS = require("azure-cli.keys")
+  notify("Queued - it goes to the agent when this answer is done (" .. KEYS.name("chat", "queue_drop")
+    .. " on it in the chat cancels it, " .. KEYS.name("chat", "queue_edit") .. " edits it).")
+end
+
+-- Sending from the input box with a queued message in it (cc put it
+-- there): it goes back in its place, changed - or, sent empty, stays as it
+-- was, held until you send it. Gone from the queue meanwhile (dd'd, or
+-- sent), what you typed is a message of its own.
+local function requeue(st, text)
+  local q = st.queue_editing
+  st.queue_editing = nil
+  q.editing = nil
+  if not vim.tbl_contains(st.queue or {}, q) then return send() end
+  clear_input()
+  local KEYS = require("azure-cli.keys")
+  if text == "" then
+    q.held = true
+    render()
+    return notify("The queued message stays as it was, held - " .. KEYS.name("chat", "open_ref") .. " on it sends it.")
+  end
+  q.text, q.display, q.held = text, nil, nil
+  render()
+  if st.running then return notify("Changed the queued message - it goes when this answer is done.") end
+  M.drain(st)
+end
+
 -- Sends `text` (default: the input box). opts.view_win overrides which
 -- window "current view" describes; opts.display is what the conversation
 -- shows as your message (default: `text`); opts.on_done(entry) runs once
@@ -597,9 +647,13 @@ send = function(text, opts)
   local st = opts.conv or STATE()
   local from_input = text == nil
   if from_input then text = input_text() end
+  if from_input and st.queue_editing then return requeue(st, text) end
   if text == "" then return end
   if vim.v.exiting ~= vim.NIL then return end  -- quitting: no new agent process
   if st.running then
+    -- Typed: it waits its turn. The keys that send for you (gS, gR, ...)
+    -- say so themselves before they get here.
+    if from_input then return enqueue(st, text, opts) end
     notify("The agent is still answering - wait, or stop it (<C-c>).", vim.log.levels.WARN)
     return
   end
@@ -653,7 +707,9 @@ send = function(text, opts)
   local view_win = opts.view_win or CHAT().main_win()
   local sel = st.selection
   if sel and not (vim.api.nvim_win_is_valid(sel.win) and sel.win == view_win) then sel = nil end
-  st.selection = nil
+  -- A queued message took its selection when you sent it (enqueue); the
+  -- one there now is for your next.
+  if not opts.keep_selection then st.selection = nil end
   local snap = opts.snap or VIEW.snapshot(view_win, sel)
   -- The main chat coordinates: its /plan starts an agent of its own for
   -- each work item or PR (chat/agents.lua), instead of planning here.
@@ -778,7 +834,9 @@ send = function(text, opts)
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
-    -- An agent is free again: start the next plan waiting for one.
+    -- Free again: what you sent meanwhile goes next, then the next plan
+    -- waiting for an agent starts.
+    vim.schedule(function() M.drain(st) end)
     pcall(function() require("azure-cli.chat.agents").pump() end)
   end
 
@@ -839,9 +897,36 @@ send = function(text, opts)
 end
 M.send = send
 
+-- The next queued message of conversation `st`, once it's free: in order,
+-- each a turn of its own (whose end drains the next). One being edited
+-- (cc) holds up the rest; held ones (you stopped the agent with <C-c>)
+-- stay until you send them.
+function M.drain(st)
+  while not st.running and vim.v.exiting == vim.NIL do
+    local pick
+    for i, q in ipairs(st.queue or {}) do
+      if q.editing then return end
+      if not q.held then pick = i break end
+    end
+    if not pick then return end
+    M.send_queued(st, pick)
+  end
+end
+
+-- Sends the n-th of `st`'s queued messages now; it leaves the queue.
+function M.send_queued(st, n)
+  local q = table.remove(st.queue, n)
+  if not q then return end
+  render()
+  return send(q.text, { conv = st, snap = q.snap, display = q.display, keep_selection = true,
+    view_win = (q.view_win and vim.api.nvim_win_is_valid(q.view_win)) and q.view_win or nil })
+end
+
 cancel = function(st)
   st = st or STATE()
   if not st.running then return notify("The agent isn't running.") end
+  -- You stopped it for a reason: what you queued waits for you to send it.
+  for _, q in ipairs(st.queue or {}) do q.held = true end
   if st.running.acp then return st.running.cancel() end
   if st.running.turn then st.running.turn.cancelled = true end
   pcall(vim.fn.jobstop, st.running.job)
