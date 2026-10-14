@@ -224,6 +224,8 @@ do
   check("timing: default cached_prs", t.cached_prs == 24, t.cached_prs)
   check("timing: default threads_ttl_seconds", t.threads_ttl_seconds == 120, t.threads_ttl_seconds)
   check("timing: default aged_days", t.aged_days == 14, t.aged_days)
+  check("timing: default idle_after", t.idle_after == 300, t.idle_after)
+  check("timing: default max_poll_seconds", t.max_poll_seconds == 300, t.max_poll_seconds)
   check("hide_ancient_days: default", config.get().hide_ancient_days == 30, config.get().hide_ancient_days)
 end
 
@@ -246,6 +248,19 @@ do
   local ok, err = pcall(config.setup, { timing = { poll_seconds = -5 } })
   check("timing: non-positive number errors clearly",
     not ok and tostring(err):find("poll_seconds", 1, true) ~= nil, err)
+  config.setup({})
+end
+
+do
+  local ok, err = pcall(config.setup, { timing = { idle_after = 0 } })
+  check("timing: non-positive idle_after errors clearly",
+    not ok and tostring(err):find("idle_after", 1, true) ~= nil, err)
+  ok, err = pcall(config.setup, { timing = { max_poll_seconds = "slow" } })
+  check("timing: non-number max_poll_seconds errors clearly",
+    not ok and tostring(err):find("max_poll_seconds", 1, true) ~= nil, err)
+  config.setup({ timing = { idle_after = 60, max_poll_seconds = 600 } })
+  local t = config.get().timing
+  check("timing: idle_after/max_poll_seconds override", t.idle_after == 60 and t.max_poll_seconds == 600)
   config.setup({})
 end
 

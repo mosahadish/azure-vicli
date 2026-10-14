@@ -157,6 +157,12 @@ local REMOVED_KEYS = {
 --   cached_prs           cache.lua's M.MAX_PRS
 --   threads_ttl_seconds  cache.lua's M.THREADS_TTL
 --   aged_days            dashboard.lua's "aged" (AzureCliAged) threshold
+--   idle_after           poll.lua: seconds without a key before the polls
+--                        above (and chat.watch_seconds') slow down, as
+--                        they do while Neovim is unfocused
+--   max_poll_seconds     poll.lua: how slow they get while you're away -
+--                        each tick doubles the interval up to this (never
+--                        below poll_seconds; = poll_seconds turns it off)
 -- cached_prs/threads_ttl_seconds are applied to cache.lua directly inside
 -- M.setup() below (not read live from M.get() at use time, unlike the
 -- others - cache.lua's own M.MAX_PRS/M.THREADS_TTL fields are what every
@@ -170,6 +176,8 @@ local DEFAULT_TIMING = {
   cached_prs = 24,
   threads_ttl_seconds = 120,
   aged_days = 14,
+  idle_after = 300,
+  max_poll_seconds = 300,
 }
 
 -- setup({hide_ancient_days=...}) - exported to the provider as

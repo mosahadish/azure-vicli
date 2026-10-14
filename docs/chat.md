@@ -831,8 +831,10 @@ that wrote the plan; everywhere else the panel is your main conversation.
 To watch the agents from a phone, `:AzureCli web start` serves a
 read-only web page of the Agents screen from this machine: each row as the
 screen shows it (#id, title, status, age, cost, the current step), "Needs
-you" first, and the totals line. It updates itself every few seconds,
-fits a phone's width, and follows its light or dark mode. It shows no plan
+you" first, and the totals line. It updates itself every few seconds -
+also while Neovim is unfocused or idle, when the network polls slow down
+(`timing.idle_after`, [Configuration](configuration.md)) - fits a phone's
+width, and follows its light or dark mode. It shows no plan
 text, code, diffs or tokens, and has no buttons - approving and the rest
 stay in Neovim.
 

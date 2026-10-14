@@ -3713,18 +3713,21 @@ refresh_threads = function(opts)
   end
 end
 
--- Per review, like the badge timer above.
-EXT.threads_timer = vim.fn.timer_start(
-  require("azure-cli.config").get().timing.poll_seconds * 1000, function()
-  if list_win and vim.api.nvim_win_is_valid(list_win) then
-    refresh_threads()
-    EXT.check_new_push()
-    EXT.check_source_sha()
-  else
-    pcall(vim.fn.timer_stop, EXT.threads_timer)
-    EXT.threads_timer = nil
-  end
-end, { ["repeat"] = -1 })
+-- Per review, like the badge timer above; poll.lua slows it while you're
+-- away.
+EXT.threads_timer = require("azure-cli.poll").every("review:" .. KEY, {
+  base = function() return require("azure-cli.config").get().timing.poll_seconds end,
+  tick = function()
+    if list_win and vim.api.nvim_win_is_valid(list_win) then
+      refresh_threads()
+      EXT.check_new_push()
+      EXT.check_source_sha()
+    else
+      EXT.threads_timer = nil
+      return false
+    end
+  end,
+})
 -- The same refetch the poll above runs, for tests/demo-smoke.lua (opts as
 -- for refresh_threads: on_done runs once it lands). The last review opened.
 EXT.refresh_hook = function(opts) refresh_threads(opts) end
@@ -3765,7 +3768,7 @@ EXT.cleanup = function()
   if STATE.review_refresh_threads == EXT.refresh_hook then STATE.review_refresh_threads = nil end
   if STATE.review_preview_pending == EXT.preview_hook then STATE.review_preview_pending = nil end
   for _, name in ipairs({ "threads_timer", "badge_timer" }) do
-    if EXT[name] then pcall(vim.fn.timer_stop, EXT[name]); EXT[name] = nil end
+    if EXT[name] then require("azure-cli.poll").stop(EXT[name]); EXT[name] = nil end
   end
   local bufs = {}
   for _, entry in pairs(diff_cache) do bufs[#bufs + 1] = entry.buf end

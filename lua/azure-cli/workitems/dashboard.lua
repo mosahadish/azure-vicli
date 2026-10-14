@@ -1847,7 +1847,7 @@ end
 -- key (dashboard.lua) - this dashboard is reached from it by a same-tab
 -- swap ("W"), not a new tab, so quitting from here means the same thing.
 KEYS.bind(buf, "workitems", "quit", function()
-  if S.WI_REFRESH_TIMER then pcall(vim.fn.timer_stop, S.WI_REFRESH_TIMER); S.WI_REFRESH_TIMER = nil end
+  if S.WI_REFRESH_TIMER then require("azure-cli.poll").stop(S.WI_REFRESH_TIMER); S.WI_REFRESH_TIMER = nil end
   if require("azure-cli").is_standalone() then
     vim.cmd("qa!")
     return
@@ -1899,13 +1899,17 @@ end
 -- Periodic auto-refresh (silent + change-aware). Stop any timer from a previous
 -- swap into this dashboard so timers don't stack across W/P swaps - see
 -- config.lua's timing.poll_seconds for the interval (the same knob the PR
--- dashboard/reviewer polls use).
-if S.WI_REFRESH_TIMER then pcall(vim.fn.timer_stop, S.WI_REFRESH_TIMER) end
-S.WI_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1000, function()
-  if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
-    load_sprints(function() load(true) end, false)
-  end
-end, { ["repeat"] = -1 })
+-- dashboard/reviewer polls use), and poll.lua for how it slows down while
+-- you're away.
+require("azure-cli.poll").stop(S.WI_REFRESH_TIMER)
+S.WI_REFRESH_TIMER = require("azure-cli.poll").every("wi-board:" .. B.host, {
+  base = function() return CONFIG.get().timing.poll_seconds end,
+  tick = function()
+    if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
+      load_sprints(function() load(true) end, false)
+    end
+  end,
+})
 
 -- Warm the PR list in the background at startup so the first swap to the PR
 -- dashboard (P) is instant. No-op when already cached.

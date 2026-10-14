@@ -540,6 +540,16 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-watchdog.lua (headless nvim)" "$out"
   fi
 
+  # poll.lua (#93): the network polls slow while unfocused or idle and
+  # refresh once on return, on a clock the test turns by hand; the phone
+  # dashboard's feed keeps its pace.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-poll.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all poll tests passed"* ]]; then
+    pass "test-poll.lua (headless nvim)"
+  else
+    fail "test-poll.lua (headless nvim)" "$out"
+  fi
+
   # start_story against a scratch origin and clone: the worktree on its
   # branch (#59), the clone from clones_dir (#64), no PR on an existing
   # branch (#57).
@@ -686,6 +696,23 @@ $out"
       fail "test-boards.lua ($expect): I only when a GitHub account has issues:" "$out"
     fi
   done
+
+  # tests/test-poll.lua on the real screens (#93): the PR dashboard, both
+  # boards, a review and the chat's watched PRs all poll through poll.lua.
+  ws="$TMP/poll-surfaces"
+  python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
+  printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
+  out="$(POLL_SURFACES=1 AZVICLI_FAKE_WS="$ws" AZVICLI_TEST_SANDBOX="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
+    AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" \
+    XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
+    AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \
+    timeout 120 nvim --headless -u "$ws/init.lua" \
+    -c "lua local ok, err = pcall(dofile, [[$REPO_ROOT/tests/test-poll.lua]]); if not ok then print('POLL-TEST-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')" 2>&1)"
+  if [[ "$out" == *POLL-TEST-OK* ]]; then
+    pass "test-poll.lua (surfaces): every network poll goes through poll.lua"
+  else
+    fail "test-poll.lua (surfaces): every network poll goes through poll.lua" "$out"
+  fi
 
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a

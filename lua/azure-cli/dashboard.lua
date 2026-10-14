@@ -1996,7 +1996,7 @@ end)
 -- run this session), :tabclose would refuse to close the last one, so this
 -- wipes the buffer instead and leaves Neovim itself open.
 KEYS.bind(buf, "dashboard", "quit", function()
-  if STATE.PR_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.PR_REFRESH_TIMER); STATE.PR_REFRESH_TIMER = nil end
+  if STATE.PR_REFRESH_TIMER then require("azure-cli.poll").stop(STATE.PR_REFRESH_TIMER); STATE.PR_REFRESH_TIMER = nil end
   if require("azure-cli").is_standalone() then
     vim.cmd("qa!")
     return
@@ -2043,16 +2043,20 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- swap into this dashboard so timers don't stack across W/P swaps. Each poll is
 -- a full ADO sweep, guarded by list_inflight (below) so a slow sweep is
 -- skipped rather than stacked if the next tick fires before it returns -
--- see config.lua's timing.poll_seconds for the interval.
-if STATE.PR_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.PR_REFRESH_TIMER) end
-STATE.PR_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1000, function()
-  -- Keep polling while the list is shown in any tab, so build/PR status stays
-  -- fresh even while a PR is open in an embedded reviewer tab; stop once the
-  -- dashboard buffer has been swapped away (e.g. to the work-items dashboard).
-  if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
-    load(true, true)
-  end
-end, { ["repeat"] = -1 })
+-- see config.lua's timing.poll_seconds for the interval, and poll.lua for
+-- how it slows down while you're away.
+require("azure-cli.poll").stop(STATE.PR_REFRESH_TIMER)
+STATE.PR_REFRESH_TIMER = require("azure-cli.poll").every("pr-dashboard", {
+  base = function() return CONFIG.get().timing.poll_seconds end,
+  tick = function()
+    -- Keep polling while the list is shown in any tab, so build/PR status stays
+    -- fresh even while a PR is open in an embedded reviewer tab; stop once the
+    -- dashboard buffer has been swapped away (e.g. to the work-items dashboard).
+    if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
+      load(true, true)
+    end
+  end,
+})
 
 -- The agent column follows its agents between polls: redrawn when one of
 -- them changes state.

@@ -197,18 +197,18 @@ end
 local timer
 function M.start()
   if timer or not next(load()) then return end
-  local secs = tonumber(config().watch_seconds) or M.DEFAULT_SECONDS
-  timer = vim.fn.timer_start(secs * 1000, function()
-    if vim.v.exiting ~= vim.NIL then return end
-    M.poll()
-  end, { ["repeat"] = -1 })
+  -- poll.lua slows it while you're away (up to timing.max_poll_seconds).
+  timer = require("azure-cli.poll").every("chat-watch", {
+    base = function() return tonumber(config().watch_seconds) or M.DEFAULT_SECONDS end,
+    tick = function() M.poll() end,
+  })
 end
 
 -- Tests: forget what's loaded (a "restart") and stop the timer.
 function M._reset()
   list = nil
   polling = false
-  if timer then pcall(vim.fn.timer_stop, timer); timer = nil end
+  if timer then require("azure-cli.poll").stop(timer); timer = nil end
 end
 
 return M
