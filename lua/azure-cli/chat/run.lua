@@ -589,6 +589,20 @@ local function clear_input()
   if ib and vim.api.nvim_buf_is_valid(ib) then vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "" }) end
 end
 
+-- Puts `text` at the end of conversation `st`'s queue, to go as a turn of
+-- its own once the one running ends (M.drain) - nothing else: the input
+-- box and what you sent before stay as they are, so the main chat's
+-- message_agent can queue for another agent. opts: snap, display,
+-- view_win, done_note (as send's). Returns its place in the queue.
+function M.queue(st, text, opts)
+  opts = opts or {}
+  st.queue = st.queue or {}
+  table.insert(st.queue, { text = text, display = opts.display, snap = opts.snap, view_win = opts.view_win,
+    done_note = opts.done_note, at = os.time() })
+  render()
+  return #st.queue
+end
+
 -- What you type and send while the agent answers: queued (st.queue) with
 -- what you were looking at then, and sent as a turn of its own once this
 -- one ends (M.drain). Returns nil, like any send that started no turn.
@@ -598,8 +612,7 @@ local function enqueue(st, text, opts)
   if sel and not (vim.api.nvim_win_is_valid(sel.win) and sel.win == view_win) then sel = nil end
   st.selection = nil
   local snap = opts.snap or require("azure-cli.chat.view").snapshot(view_win, sel)
-  st.queue = st.queue or {}
-  table.insert(st.queue, { text = text, display = opts.display, snap = snap, view_win = view_win, at = os.time() })
+  M.queue(st, text, { display = opts.display, snap = snap, view_win = view_win, done_note = opts.done_note })
   clear_input()
   table.insert(st.sent, text)
   while #st.sent > 100 do table.remove(st.sent, 1) end
@@ -918,7 +931,7 @@ function M.send_queued(st, n)
   local q = table.remove(st.queue, n)
   if not q then return end
   render()
-  return send(q.text, { conv = st, snap = q.snap, display = q.display, keep_selection = true,
+  return send(q.text, { conv = st, snap = q.snap, display = q.display, done_note = q.done_note, keep_selection = true,
     view_win = (q.view_win and vim.api.nvim_win_is_valid(q.view_win)) and q.view_win or nil })
 end
 

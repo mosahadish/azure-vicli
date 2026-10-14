@@ -1324,7 +1324,18 @@ json.dump(s, open(p, "w", encoding="utf-8"))
 
   -- Board tools, then u in gH undoes the link.
   e, why = ask("plan the work")
-  if not need(e, why, "create_child_task: Created Task", "move_to_sprint: Moved #3002", "link_pr_to_work_item: Linked PR #102") then return end
+  if not need(e, why, "create_child_task: Created Task", "create_work_item: Created Bug #", "move_to_sprint: Moved #3002",
+    "link_pr_to_work_item: Linked PR #102") then return end
+  -- create_work_item: top-level (no parent), its body, in the sprint named.
+  do
+    local s = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+    local made
+    for _, w in ipairs(s.workitems) do if w.title == "Lockout emails go to spam" then made = w end end
+    if not (made and made.type == "Bug" and made.parentId == vim.NIL and made.description == "Reported by support.\nTwice."
+        and made.iterationPath:find("Sprint 43", 1, true)) then
+      return fail("create_work_item didn't make a top-level Bug with its body in Sprint 43: " .. vim.inspect(made))
+    end
+  end
   local items = require("azure-cli.chat.store").audit()
   if not (items[#items] and items[#items].tool == "link_pr_to_work_item" and items[#items].undo) then
     return fail("the link isn't in the audit log with an undo: " .. vim.inspect(items[#items]))
@@ -1384,7 +1395,8 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     e, why = ask("work the issue")
     if not need(e, why, "view board: github, item 12", "list_work_items: [", "\"board\":\"github\"",
         "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
-        "create_child_task: Created issue #", "start_story: {", "create_pull_request: Opened PR !",
+        "create_child_task: Created issue #", "create_work_item: Created issue #", "start_story: {",
+        "create_pull_request: Opened PR !",
         "link_pr_to_work_item: Linked PR #7 to issue #13 (\"Closes #13\" in its description).") then return end
     local s = fake_state()
     local i12 = issue_in(s, 12)
@@ -1395,6 +1407,11 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     local kid
     for _, i in ipairs(s.issues) do if i.parent == 12 and i.title == "Write the wobble test" then kid = i end end
     if not (kid and kid.iteration == "it2") then return fail("no sub-issue of #12 in its iteration: " .. vim.inspect(kid)) end
+    local top
+    for _, i in ipairs(s.issues) do if i.title == "Wobble at high speed" then top = i end end
+    if not (top and top.parent == vim.NIL and top.body == "Seen on the test rig.") then
+      return fail("create_work_item didn't make a top-level issue with its body: " .. vim.inspect(top))
+    end
     local linked_branch = false
     for _, b in ipairs(i12.branches or {}) do if b.name == "feature/12-wobble" and b.repo == "gizmos" then linked_branch = true end end
     local tip = vim.fn.system({ "git", "--git-dir", ws .. "/origin/gizmos.git", "rev-parse", "-q", "--verify",
@@ -1427,6 +1444,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     local calls = vim.list_slice(vim.fn.readfile(ws .. "/calls.log"), log_from + 1)
     for _, want in ipairs({ '"--wi-list"]', '"--wi-detail", "12"', '"--wi-state", "set", "12", "In Progress"',
         '"comment", "12", "Picking this up."', '"create", "Issue", "Write the wobble test", "12"',
+        '"create", "Issue", "Wobble at high speed", ""',
         '"create-branch", "12"', '"link-pr", "13"', '"unlink-pr", "13", "7"' }) do
       local seen = false
       for _, l in ipairs(calls) do

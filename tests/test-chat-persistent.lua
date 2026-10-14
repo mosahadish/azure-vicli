@@ -277,6 +277,48 @@ do
   type_and_send("plan two", plan)
   check("queue: a plan's agent's conversation queues in its own", #(plan.queue or {}) == 1 and #(st.queue or {}) == 0)
   check("queue: and drains there", idle(plan) and answer_to("plan two", plan) ~= nil and not you_sent("plan two"))
+
+  -- Issue #60: the main chat's message_agent to that agent mid-turn
+  -- queues in its queue, says so, and leaves the input box alone; the
+  -- messages go in order once the turn ends. Idle, it still sends at once.
+  local TOOLS = require("azure-cli.chat.tools")
+  local function message(text)
+    local res, err
+    TOOLS.by_name.message_agent.run({ work_item_id = 29, message = text }, {}, function(r, e) res, err = r, e end)
+    vim.wait(2000, function() return res ~= nil or err ~= nil end, 10)
+    return res, err
+  end
+  CHAT.send("plan again slowly", { conv = plan, view_win = win })
+  vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "half typed" })
+  local q1, e1 = message("first tip")
+  local q2 = message("second tip")
+  check("message_agent: mid-turn it's queued, and says so", q1 and q1:find("Queued for #29's agent (1 of 1)", 1, true)
+    and q1:find("delivered when that turn ends", 1, true), q1 or e1)
+  check("message_agent: the second behind it", q2 and q2:find("(2 of 2)", 1, true), q2)
+  check("message_agent: in that agent's queue", #(plan.queue or {}) == 2
+    and plan.queue[1].display == "From the main chat: first tip" and plan.queue[2].display == "From the main chat: second tip",
+    vim.inspect(plan.queue))
+  check("message_agent: the input box is left alone", input() == "half typed", input())
+  check("message_agent: list_agents counts them", (function()
+    local listed
+    TOOLS.by_name.list_agents.run({}, {}, function(r) listed = r end)
+    for _, row in ipairs(type(listed) == "table" and listed or {}) do
+      if row.queued_messages == 2 then return true end
+    end
+  end)())
+  check("message_agent: both delivered once the turn ends", idle(plan))
+  local first_at, second_at
+  for i, e in ipairs(plan.entries) do
+    if e.role == "you" and e.text == "From the main chat: first tip" then first_at = i end
+    if e.role == "you" and e.text == "From the main chat: second tip" then second_at = i end
+  end
+  check("message_agent: in order, each answered", first_at and second_at and first_at < second_at
+    and plan.entries[first_at + 1].status == "done" and plan.entries[second_at + 1].status == "done",
+    vim.inspect({ first_at, second_at }))
+  local sent = message("third tip")
+  check("message_agent: idle, it's sent at once", sent and sent:find("Sent to #29's agent", 1, true), sent)
+  idle(plan)
+  vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "" })
   for _, c in ipairs(CHAT.conversations()) do
     if c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
   end

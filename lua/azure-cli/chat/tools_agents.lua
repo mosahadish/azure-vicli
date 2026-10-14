@@ -76,9 +76,11 @@ return function(T)
           PLAN().load, os.time())
         local out = {}
         for _, r in ipairs(rows) do
+          local conv = r.key and CHAT().find_conversation(r.key)
+          local waiting = conv and #(conv.queue or {}) or 0
           out[#out + 1] = { agent = r.label, target = r.target, title = r.title, state = r.state,
             latest = r.detail ~= "" and r.detail or nil, started_ago = r.ago ~= "" and r.ago or nil,
-            plan_waits_for_user = r.waiting }
+            plan_waits_for_user = r.waiting, queued_messages = waiting > 0 and waiting or nil }
         end
         done(#out > 0 and out or "No agents yet - start_agents starts some.")
       end,
@@ -87,7 +89,8 @@ return function(T)
       name = "message_agent",
       description = "Passes a message on to the agent for work_item_id or pr_id - the user's instructions, or a "
         .. "question - shown in that agent's own chat as coming from the main chat. It answers there, not here; "
-        .. "list_agents / get_plan show what came of it. Refused while that agent is busy.",
+        .. "list_agents / get_plan show what came of it. While that agent is mid-turn the message is queued, and "
+        .. "goes to it (in order, one turn each) when the turn ends.",
       schema = { type = "object", properties = {
         work_item_id = target_props.work_item_id, pr_id = target_props.pr_id,
         message = { type = "string" },
@@ -102,16 +105,40 @@ return function(T)
         local key = PLAN().key(target)
         local conv = CHAT().find_conversation(key)
         if not conv then return done(nil, "no agent for " .. key .. " - start_agents starts one") end
-        if conv.running then return done(nil, "that agent is busy - try again once it's done (list_agents)") end
         -- What it was started on stays its "current view".
         local snap
         for _, e in ipairs(conv.entries) do if e.role == "you" and e.view then snap = e.view end end
-        local entry = CHAT().send("(From the user, through the main chat) " .. args.message, {
-          conv = conv, snap = snap, display = "From the main chat: " .. args.message,
-          done_note = (conv.label or key) .. "'s agent answered (the Agents screen lists them).",
-        })
+        local who = conv.label or key
+        local text = "(From the user, through the main chat) " .. args.message
+        local opts = { conv = conv, snap = snap, display = "From the main chat: " .. args.message,
+          done_note = who .. "'s agent answered (the Agents screen lists them)." }
+        -- Mid-turn: it waits in the agent's queue (#29's, chat/run.lua) for
+        -- the turn to end, behind anything queued before it. So does one
+        -- arriving while the queue still has messages to go (a turn just
+        -- ended, its drain not yet run), not to jump ahead of them.
+        local pending = false
+        for _, q in ipairs(conv.queue or {}) do if not q.held then pending = true end end
+        if conv.running or pending then
+          local RUN = require("azure-cli.chat.run")
+          local n = RUN.queue(conv, text, opts)
+          local mine = conv.queue[n]
+          if not conv.running then RUN.drain(conv) end
+          if not vim.tbl_contains(conv.queue or {}, mine) then
+            return done("Sent to " .. who .. "'s agent; it answers in its own chat.")
+          end
+          n = 0
+          for i, q in ipairs(conv.queue) do if q == mine then n = i end end
+          local editing = false
+          for i = 1, n - 1 do if conv.queue[i].editing then editing = true end end
+          return done("Queued for " .. who .. "'s agent (" .. n .. " of " .. #conv.queue .. ") - "
+            .. (conv.running and "it's mid-turn; the message is delivered when that turn ends, in order"
+              or "it goes after the messages queued before it, in order")
+            .. (editing and ", once the user finishes editing the queued message before it" or "")
+            .. ". It answers in its own chat.")
+        end
+        local entry = CHAT().send(text, opts)
         if not entry then return done(nil, "couldn't send it (is a chat agent configured?)") end
-        done("Sent to " .. (conv.label or key) .. "'s agent; it answers in its own chat.")
+        done("Sent to " .. who .. "'s agent; it answers in its own chat.")
       end,
     },
   }

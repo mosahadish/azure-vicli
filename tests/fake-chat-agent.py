@@ -172,6 +172,7 @@ def answer_turn(mcp, init, message, turn, model, session):
         call("set_work_item_state", {"id": 12, "state": "In Progress"})
         call("comment_on_work_item", {"id": 12, "text": "Picking this up.", "board": "github"})
         call("create_child_task", {"parent_id": 12, "title": "Write the wobble test"})
+        call("create_work_item", {"title": "Wobble at high speed", "body": "Seen on the test rig.", "board": "github"})
         res, err = call("start_story", {"work_item_id": 12, "repo": "gizmos", "from": "main",
                                         "name": "feature/12-wobble", "board": "github"})
         if not err:
@@ -270,6 +271,8 @@ def answer_turn(mcp, init, message, turn, model, session):
         call("find_implementations", {"repo": "widgets", "name": "Nothing"})
     elif "plan" in asked:
         call("create_child_task", {"parent_id": 3001, "title": "Write the lockout tests"})
+        call("create_work_item", {"title": "Lockout emails go to spam", "body": "Reported by support.\nTwice.",
+                                  "type": "Bug", "iteration": "Sprint 43", "board": "azure"})
         call("move_to_sprint", {"id": 3002, "sprint": "Sprint 43"})
         call("link_pr_to_work_item", {"pr_id": 102, "work_item_id": 3002})
     out.append("FAKE-CHAT-RAN")

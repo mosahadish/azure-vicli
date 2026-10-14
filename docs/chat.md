@@ -649,7 +649,8 @@ changes to agents rather than doing them itself:
   !101", "what are the agents doing?", "tell #3001 to use the existing
   cache". It has three tools for that: `start_agents`, `list_agents` and
   `message_agent` (the message shows in that agent's own chat, as coming
-  from the main chat, and it answers there).
+  from the main chat, and it answers there; while that agent is mid-turn the
+  message is queued, like one you type there, and goes when the turn ends).
 - It's a strong default, not a lock: ask the main chat to do something
   itself and it will.
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
@@ -750,6 +751,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
 | `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
+| `create_work_item` | A new top-level work item (title, body, type, sprint), assigned to you | **yes** |
 | `requeue_build` | Queues the PR's build again | no |
 | `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you in a tab like the reviewer: changed files on the left, `]c`/`[c` through the changes); throwing it away | no |
 | `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
@@ -866,7 +868,8 @@ tab lists, or the only board your config has. Otherwise it's Azure's.
 
 - `set_work_item_state` takes a Status option, or `Closed` with reason
   `completed` or `not planned`. `create_child_task` makes a sub-issue in its
-  parent's iteration.
+  parent's iteration; `create_work_item` a new issue in the default
+  repository.
 - `start_story` and `create_branch` make the branch with GitHub's linked
   branches, so it shows in the issue's Development section.
 - `create_pull_request` into a GitHub repository adds a `Closes #12` line

@@ -1,7 +1,7 @@
 -- lua/azure-cli/chat/tools_board.lua: the chat agent's work-item tools
--- beyond reading and state changes (chat/tools.lua) - child tasks,
--- assignment, sprints and comments. Every one goes through the same
--- --wi-edit subcommands the work-items screens use, on the board
+-- beyond reading and state changes (chat/tools.lua) - new items (top-level
+-- or child tasks), assignment, sprints and comments. Every one goes
+-- through the same --wi-edit subcommands the work-items screens use, on the board
 -- T.board_for picks (Azure work items, or the GitHub project's issues).
 --
 -- Returns function(T) -> list of tools, T being chat/tools.lua.
@@ -23,6 +23,15 @@ return function(T)
       end
       cb(list)
     end)
+  end
+
+  -- The sprint in `list` named or pathed `s`: its path and name, or `s`
+  -- itself as the path when none matches.
+  local function find_sprint(list, s)
+    for _, sp in ipairs(list) do
+      if sp.path == s or (sp.name and sp.name:lower() == s:lower()) then return sp.path, sp.name end
+    end
+    return s
   end
 
   return {
@@ -69,6 +78,49 @@ return function(T)
       end,
     },
     {
+      name = "create_work_item",
+      description = "Creates a top-level work item (a Task by default; type e.g. \"Bug\", \"User Story\"), with no "
+        .. "parent, assigned to the user. On GitHub (board = \"github\"): a new issue in the project's default "
+        .. "repository (type is the issue type, when the repository has them). body is its description; "
+        .. "iteration (optional) a sprint's name or path, else none. For one under a parent, use create_child_task. "
+        .. "Asks first.",
+      schema = { type = "object", properties = T.with_board({ title = { type = "string" },
+        body = { type = "string" }, type = { type = "string" }, iteration = { type = "string" } }),
+        required = { "title" } },
+      risk = "ask",
+      -- Without board, the one it lands on comes from the screen (run's env).
+      confirm = function(a)
+        local on = a.board == "github" and " on GitHub" or a.board == "azure" and " on Azure DevOps" or ""
+        return "create " .. (a.type and (a.type .. " ") or "") .. "\"" .. tostring(a.title) .. "\"" .. on
+          .. ((a.iteration and a.iteration ~= "") and (" in " .. a.iteration) or "")
+      end,
+      details = function(a, cb) cb(vim.split(a.body or "", "\n", { plain = true })) end,
+      run = function(args, env, done)
+        local B = T.board_for(args, env)
+        if type(args.title) ~= "string" or vim.trim(args.title) == "" then return done(nil, "the title is empty") end
+        local wtype = args.type or (B.host == "github" and "Issue" or "Task")
+        local what = B.host == "github" and "issue" or wtype
+        local function create(iteration)
+          T.provider({ "--wi-edit", "create", wtype, args.title, "", iteration or "" }, B.env, function(ok, out, err)
+            if not ok then return done(nil, "creating it failed: " .. err) end
+            local okd, d = pcall(vim.json.decode, out)
+            local id = okd and type(d) == "table" and d.id or nil
+            local said = "Created " .. what .. " #" .. tostring(id or "?") .. " \"" .. args.title .. "\"."
+              .. ((okd and type(d) == "table" and d.warning) and (" Note: " .. d.warning) or "")
+            if not (id and args.body and args.body ~= "") then return done(said) end
+            -- GitHub's owner~repo~n key: a bare number can name issues in two repositories.
+            local ref = (B.host == "github" and type(d.key) == "string") and d.key or T.wi_ref(B, id)
+            T.provider({ "--wi-edit", "set", ref, "description", args.body }, B.env, function(ok2, _, err2)
+              if not ok2 then return done(said .. " But setting its description failed: " .. err2) end
+              done(said)
+            end)
+          end)
+        end
+        if not args.iteration or args.iteration == "" then return create(nil) end
+        sprints(B, function(list) create((find_sprint(list, args.iteration))) end)
+      end,
+    },
+    {
       name = "assign_work_item",
       description = "Assigns a work item to someone (a display name or email; empty = the user; on GitHub, "
         .. "logins, comma-separated). Asks first.",
@@ -103,13 +155,7 @@ return function(T)
         local B = T.board_for(args, env)
         local ref = T.wi_ref(B, args.id, args.repo)
         sprints(B, function(list)
-          local path, name
-          for _, sp in ipairs(list) do
-            if sp.path == args.sprint or (sp.name and sp.name:lower() == args.sprint:lower()) then
-              path, name = sp.path, sp.name
-            end
-          end
-          path = path or args.sprint
+          local path, name = find_sprint(list, args.sprint)
           -- GitHub's iteration paths are ids: say the name.
           local shown = B.host == "github" and (name or args.sprint) or path
           T.work_item_field(args.id, B.host == "github" and "iteration" or "iterationPath", function(before)

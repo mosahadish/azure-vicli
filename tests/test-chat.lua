@@ -114,7 +114,7 @@ do
   table.sort(asks)
   check("tools: what asks first - everything others see or that leaves the machine",
     table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
-      .. "complete_pull_request,create_pull_request,run_tests,set_thread_status,set_work_item_state,update_pr_description,vote",
+      .. "complete_pull_request,create_pull_request,create_work_item,run_tests,set_thread_status,set_work_item_state,update_pr_description,vote",
     table.concat(asks, ","))
   check("tools: links, branches, drafts, tasks and sprints don't",
     TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
@@ -153,7 +153,7 @@ do
     and TOOLS.wi_ref(GH, 7, "web") == "o/web#7" and TOOLS.wi_ref(GH, 7) == "7" and TOOLS.wi_ref(AZ, 7, "o/web") == "7")
   ST.BOARDS = saved_boards
   for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
-      "create_branch", "list_sprints", "create_child_task", "assign_work_item", "move_to_sprint",
+      "create_branch", "list_sprints", "create_child_task", "create_work_item", "assign_work_item", "move_to_sprint",
       "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui" }) do
     local props = TOOLS.by_name[name].schema.properties
     check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
