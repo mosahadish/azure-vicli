@@ -2731,7 +2731,7 @@ toggle_ignore_ws = function()
     end
   end
   diff_cache = {}
-  if shown and shown ~= OVERVIEW_MARK and files_loaded then
+  if shown and shown ~= OVERVIEW_MARK and files_loaded and not (EXT.nav and EXT.nav.showing_revision()) then
     open_file(shown, false)
   end
   if shown_entry and shown_entry.buf and vim.api.nvim_buf_is_valid(shown_entry.buf) then
@@ -3171,8 +3171,8 @@ load_files()
 -- The shared body toggle_ignore_ws (gw) and review/since.lua's gi
 -- both rebuild the reviewer for: recompute the active content_cache bucket
 -- (ignore_ws and/or EXT.since's variant - see cache.lua's M.diffs),
--- drop every diff buffer (the shown one is rebuilt in place via open_file,
--- others are deleted outright), optionally reload the file list (load_files
+-- drop every diff buffer (the shown one is rebuilt in place via open_file
+-- unless a revision buffer is on screen, others are deleted outright), optionally reload the file list (load_files
 -- - a since-range change can add/drop files, unlike a plain gw toggle) or
 -- just re-run prefetch_all_diffs, then refresh every winbar/decoration.
 -- Assigned to EXT.rebuild_view (never a new top-level local - see EXT's own
@@ -3207,7 +3207,9 @@ EXT.rebuild_view = function(reload_files)
     load_files()
   end
 
-  if shown and shown ~= OVERVIEW_MARK and files_loaded then
+  -- Not while a gd/gr/gf jump is on screen: that would pull you out of the
+  -- revision you're reading. <BS> reopens the rebuilt diff (review/nav.lua).
+  if shown and shown ~= OVERVIEW_MARK and files_loaded and not EXT.nav.showing_revision() then
     open_file(shown, false)
   end
   if shown_entry and shown_entry.buf and vim.api.nvim_buf_is_valid(shown_entry.buf) then

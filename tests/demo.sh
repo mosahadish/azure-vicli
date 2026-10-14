@@ -110,9 +110,12 @@ case "$MODE" in
     rc=$?
     if [ "$rc" -eq 124 ]; then out="$out"$'\n'"DEMO-SMOKE-FAIL: timed out after 300s"; fi
     printf '%s\n' "$out"
+    # Passed: ran to its end (SMOKE-DONE) with no check failing on the way.
     case "$out" in
-      *DEMO-SMOKE-OK*) exit 0 ;;
-      *) echo "demo.sh: headless smoke failed (see $WS/calls.log)" >&2; exit 1 ;;
+      *DEMO-SMOKE-FAIL*) ;;
+      *SMOKE-DONE*) exit 0 ;;
     esac
+    echo "demo.sh: headless smoke failed (see $WS/calls.log)" >&2
+    exit 1
     ;;
 esac

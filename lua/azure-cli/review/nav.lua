@@ -117,12 +117,19 @@ local function nav_context(buf)
   return NAV_REF[side], path, m and m.lineno or nil
 end
 
--- Show `buf` in the diff window, remembering where we came from.
+-- Show `buf` in the diff window, remembering where we came from. A diff
+-- buffer's entry also keeps its path and the {side, lineno} under the
+-- cursor: a rebuild (gw, gi, new commits pulled in) while you're off in a
+-- revision buffer deletes that diff buffer, and nav_back reopens the
+-- file's fresh diff from them instead of dropping the way back.
 local function nav_show(buf, lnum)
   if not (ctx.diff_win() and vim.api.nvim_win_is_valid(ctx.diff_win())) then return end
   local cur = vim.api.nvim_win_get_buf(ctx.diff_win())
   if cur ~= buf then
-    nav_stack[#nav_stack + 1] = { buf = cur, cursor = vim.api.nvim_win_get_cursor(ctx.diff_win()) }
+    local cursor = vim.api.nvim_win_get_cursor(ctx.diff_win())
+    local m = (maps_by_buf[cur] or {})[cursor[1]]
+    nav_stack[#nav_stack + 1] = { buf = cur, cursor = cursor, path = paths_by_buf[cur],
+      anchor = m and { side = m.side, lineno = m.lineno } or nil }
     vim.api.nvim_win_set_buf(ctx.diff_win(), buf)
   end
   vim.api.nvim_set_current_win(ctx.diff_win())
@@ -132,11 +139,36 @@ local function nav_show(buf, lnum)
   end
 end
 
+-- A diff the stack points at was rebuilt meanwhile: open the file's
+-- current diff instead, back on the same source line once its lines are in.
+local function reopen_diff(top)
+  ctx.open_file(top.path, false)
+  if not top.anchor then return end
+  ensure_diff_content(top.path, function()
+    vim.schedule(function()
+      local win = ctx.diff_win()
+      if not (win and vim.api.nvim_win_is_valid(win)) then return end
+      local buf = vim.api.nvim_win_get_buf(win)
+      if paths_by_buf[buf] ~= top.path then return end  -- moved on meanwhile
+      for i, m in ipairs(maps_by_buf[buf] or {}) do
+        if m.side == top.anchor.side and m.lineno == top.anchor.lineno then
+          pcall(vim.api.nvim_win_set_cursor, win, { i, 0 })
+          return
+        end
+      end
+    end)
+  end)
+end
+
 local function nav_back()
   local top = table.remove(nav_stack)
-  while top and not vim.api.nvim_buf_is_valid(top.buf) do top = table.remove(nav_stack) end
+  while top and not vim.api.nvim_buf_is_valid(top.buf) and not top.path do top = table.remove(nav_stack) end
   if not top then
     notify("Nothing to go back to.")
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(top.buf) then
+    reopen_diff(top)
     return
   end
   vim.api.nvim_win_set_buf(ctx.diff_win(), top.buf)
@@ -714,6 +746,12 @@ M.NAV_REF = NAV_REF
 M.bufs = nav_bufs
 M.show = nav_show
 M.back = nav_back
+-- Whether the diff window is on a revision buffer (a gd/gr/gf jump) right
+-- now - review/init.lua's rebuild then leaves it there (see nav_show).
+M.showing_revision = function()
+  local win = ctx.diff_win()
+  return win ~= nil and vim.api.nvim_win_is_valid(win) and nav_meta[vim.api.nvim_win_get_buf(win)] ~= nil
+end
 M.context = nav_context
 M.decorate_revision = decorate_revision
 M.ensure_revision_buf = ensure_revision_buf

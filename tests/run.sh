@@ -64,6 +64,7 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
 
 PASS=0
 FAIL=0
+SKIPPED=0  # smoke checks skipped for an earlier smoke failure
 FAILED_NAMES=()
 
 pass() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
@@ -685,95 +686,61 @@ $out"
   # all three references) - the reviewer's least automated surface, and the
   # one whose helpers the other review/* modules reach through ctx.
   out="$(bash "$REPO_ROOT/tests/demo.sh" --headless --fresh --workspace "$TMP/demo-ws" 2>&1)"
-  if [[ "$out" == *DEMO-SMOKE-OK* ]]; then
-    pass "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer"
+  # One result per check of demo-smoke.lua's (see its header). A failed one
+  # shows its own DEMO-SMOKE-FAIL[<marker>] lines and what it printed with
+  # them, not the whole output again; one skipped because a check it builds
+  # on failed is listed as skipped - that failure is reported once, there.
+  smoke_check() {
+    local desc="$1" m why="" skipped=""
+    shift
+    for m in "$@"; do
+      [[ "$out" == *"$m-SMOKE-OK"* ]] && continue
+      if [[ "$out" == *"SMOKE-SKIP[$m]"* ]]; then
+        skipped="$(printf '%s\n' "$out" | grep -aF "SMOKE-SKIP[$m]" | head -1)"
+      elif [[ "$out" == *"DEMO-SMOKE-FAIL[$m]"* ]]; then
+        why+="$(printf '%s\n' "$out" | awk -v tag="DEMO-SMOKE-FAIL[$m]" '
+          index($0, tag) { on = 1; n = 0 }
+          on && !index($0, tag) && (/-SMOKE-OK/ || /SMOKE-SKIP\[/ || /DEMO-SMOKE-FAIL\[/) { on = 0 }
+          on && n++ < 60')"$'\n'
+      else
+        why+="no result for $m: the smoke stopped before it (see the SMOKE-DONE check)"$'\n'
+      fi
+    done
+    if [ -n "$why" ]; then
+      fail "$desc" "$why"
+    elif [ -n "$skipped" ]; then
+      SKIPPED=$((SKIPPED + 1))
+      printf 'SKIP  %s\n      %s\n' "$desc" "$skipped"
+    else
+      pass "$desc"
+    fi
+  }
+  smoke_check "smoke: demo.sh --headless renders the fake dashboard, numbers its rows, <Space> folds a section" DEMO
+  smoke_check "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" NAV
+  smoke_check "smoke: gu lists my comments and gA filters them there like everywhere else" FOLLOWUP
+  smoke_check "smoke: a PR row shows its linked work item, PR #101 opens in the reviewer, and gW opens the item from the dashboard and the reviewer" PRWI REVIEW-WI
+  smoke_check "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" LINK
+  smoke_check "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues" ISSUES
+  smoke_check "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github" BOARDS
+  smoke_check "smoke: the agent's board tools on I (state, comment, sub-issue, start_story, Closes #n, link + undo), gW, gP" ISSUE-TOOLS
+  smoke_check "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" CHATPLUS
+  smoke_check "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" PLAN
+  smoke_check "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" AGENTS
+  smoke_check "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" BATCHQ
+  smoke_check "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" CHAT
+  smoke_check "smoke: both dashboards number their rows relatively inside the box, following the cursor" ROWNUM
+  smoke_check "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them" TREE
+  smoke_check "smoke: the dashboard marks linked PRs and the item view lists them with title and status" PRS
+  smoke_check "smoke: gs on a visual selection maps the other items onto the first one's state" SELECTION
+  smoke_check "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" GS
+  smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
+  # Every check above got its own result only if the script ran to its end:
+  # a crash, a hang (demo.sh's timeout) or a Lua error outside a check
+  # stops it short, and shows here with the end of the output.
+  if [[ "$out" == *SMOKE-DONE* ]]; then
+    pass "smoke: demo-smoke.lua ran to its end"
   else
-    fail "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer" "$out"
-  fi
-  if [[ "$out" == *NAV-SMOKE-OK* ]]; then
-    pass "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference"
-  else
-    fail "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" "$out"
-  fi
-  if [[ "$out" == *FOLLOWUP-SMOKE-OK* ]]; then
-    pass "smoke: gu lists my comments and gA filters them there like everywhere else"
-  else
-    fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
-  fi
-  if [[ "$out" == *PRWI-SMOKE-OK* && "$out" == *REVIEW-WI-SMOKE-OK* ]]; then
-    pass "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer"
-  else
-    fail "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer" "$out"
-  fi
-  if [[ "$out" == *LINK-SMOKE-OK* ]]; then
-    pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
-  else
-    fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
-  fi
-  if [[ "$out" == *ISSUES-SMOKE-OK* ]]; then
-    pass "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues"
-  else
-    fail "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues" "$out"
-  fi
-  if [[ "$out" == *BOARDS-SMOKE-OK* ]]; then
-    pass "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github"
-  else
-    fail "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github" "$out"
-  fi
-  if [[ "$out" == *ISSUE-TOOLS-SMOKE-OK* ]]; then
-    pass "smoke: the agent's board tools on I (state, comment, sub-issue, start_story, Closes #n, link + undo), gW, gP"
-  else
-    fail "smoke: the agent's board tools on I (state, comment, sub-issue, start_story, Closes #n, link + undo), gW, gP" "$out"
-  fi
-  if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
-    pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"
-  else
-    fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
-  fi
-  if [[ "$out" == *PLAN-SMOKE-OK* ]]; then
-    pass "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves"
-  else
-    fail "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" "$out"
-  fi
-  if [[ "$out" == *AGENTS-SMOKE-OK* ]]; then
-    pass "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation"
-  else
-    fail "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" "$out"
-  fi
-  if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
-    pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
-  else
-    fail "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" "$out"
-  fi
-  if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
-    pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
-  else
-    fail "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" "$out"
-  fi
-  if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
-    pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"
-  else
-    fail "smoke: both dashboards number their rows relatively inside the box, following the cursor" "$out"
-  fi
-  if [[ "$out" == *TREE-SMOKE-OK* ]]; then
-    pass "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them"
-  else
-    fail "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them" "$out"
-  fi
-  if [[ "$out" == *PRS-SMOKE-OK* ]]; then
-    pass "smoke: the dashboard marks linked PRs and the item view lists them with title and status"
-  else
-    fail "smoke: the dashboard marks linked PRs and the item view lists them with title and status" "$out"
-  fi
-  if [[ "$out" == *SELECTION-SMOKE-OK* ]]; then
-    pass "smoke: gs on a visual selection maps the other items onto the first one's state"
-  else
-    fail "smoke: gs on a visual selection maps the other items onto the first one's state" "$out"
-  fi
-  if [[ "$out" == *GS-SMOKE-OK* ]]; then
-    pass "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones"
-  else
-    fail "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" "$out"
+    fail "smoke: demo-smoke.lua ran to its end" "$(printf '%s\n' "$out" | tail -40)"
   fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"
@@ -781,7 +748,7 @@ fi
 
 echo
 echo "== summary =="
-echo "passed: $PASS  failed: $FAIL"
+echo "passed: $PASS  failed: $FAIL  skipped: $SKIPPED"
 if [ "$FAIL" -gt 0 ]; then
   echo "failing checks:"
   for n in "${FAILED_NAMES[@]}"; do echo "  - $n"; done
