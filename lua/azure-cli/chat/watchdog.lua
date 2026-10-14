@@ -68,9 +68,12 @@ function M.span(s)
   return s .. "s"
 end
 
--- The entry's status once `fired` stopped it: "timed out (idle 10m)".
-function M.status(fired, w)
-  return "timed out (" .. fired.kind .. " " .. M.span(fired.kind == "cap" and w.cap or w.idle) .. ")"
+-- The entry's status once `fired` stopped it: "timed out (idle 10m)", or
+-- "timed out (idle 10m, killed)" when the agent ignored the interrupt and
+-- its process had to go (chat/run.lua).
+function M.status(fired, w, killed)
+  return "timed out (" .. fired.kind .. " " .. M.span(fired.kind == "cap" and w.cap or w.idle)
+    .. (killed and ", killed" or "") .. ")"
 end
 
 -- The line under the answer saying which limit fired, and after how long

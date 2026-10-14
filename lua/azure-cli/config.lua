@@ -255,7 +255,7 @@ local CHAT_FIELDS = {
 -- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
-  idle_timeout_seconds = "number", max_turn_seconds = "number",
+  idle_timeout_seconds = "number", max_turn_seconds = "number", interrupt_grace_seconds = "number",
   models = "table", strip = "table", acp = "boolean", premium_requests = "table",
   planner_model = "string", implementer_model = "string",
 }

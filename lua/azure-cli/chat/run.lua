@@ -27,6 +27,7 @@ local function input_text() return I().input_text() end
 local function restore_once() return I().restore_once() end
 
 local send, cancel  -- forward
+local interrupt_seq = 0  -- control_request ids (send's turn.stop)
 
 -- The MCP server definition every agent gets: one stdio server,
 -- `azure-cli.py --mcp`, with the bridge's address and token in its
@@ -392,7 +393,7 @@ end
 
 -- A jobstart on_stdout for the agent's process: `get_turn()` names the
 -- message in progress on it. A turn ends when the stream reports a
--- result, without the process exiting.
+-- result (an interrupted one's too), without the process exiting.
 local function turn_on_stdout(get_turn)
   return function(_, d)
     local turn = get_turn()
@@ -401,7 +402,11 @@ local function turn_on_stdout(get_turn)
     if d and CORE.stream_feed(turn.reader, d, vim.json.decode) then
       vim.schedule(function()
         turn.absorb()
-        if turn.reader.final ~= nil then turn.finish(nil, false) end
+        if turn.reader.final ~= nil or turn.reader.ended then
+          turn.finish(nil, false)
+        elseif turn.interrupt_id and (turn.reader.control or {})[turn.interrupt_id] == "error" and turn.kill then
+          turn.kill("the agent refused the interrupt, so it was killed")
+        end
         render_soon()
       end)
     end
@@ -901,11 +906,20 @@ send = function(text, opts)
       turn.pj.cost_seen = reader.cost_total
     end
     entry.tokens = reader.tokens
-    if reader.is_error and entry.text == "" then entry.text = "(the agent reported an error)" end
+    if turn.interrupt_id then
+      -- Interrupted (chat/run.lua's turn.stop): the process and its session
+      -- go on, unless it had to be killed.
+      if entry.text == "" then entry.text = "_(stopped before it answered)_" end
+      if not turn.killed then
+        table.insert(entry.tools, "\u{00B7} interrupted - the session stays, your next message continues it")
+      end
+    elseif reader.is_error and entry.text == "" then
+      entry.text = "(the agent reported an error)"
+    end
     if turn.timed_out then
-      entry.status = WD.status(turn.timed_out, turn.watch)
-    elseif cancelled then
-      entry.status = "stopped"
+      entry.status = WD.status(turn.timed_out, turn.watch, turn.killed)
+    elseif cancelled or turn.cancelled then
+      entry.status = turn.killed and "stopped (killed)" or "stopped"
     elseif code and code ~= 0 then
       entry.status = "failed (exit " .. code .. ")"
       local tail = vim.tbl_filter(function(l) return l ~= "" end, err)
@@ -988,11 +1002,44 @@ send = function(text, opts)
 
   turn.pj = st.persistent_job
   st.running = { job = job, turn = turn, entry = entry, watch = turn.watch }
+
+  -- Stopping this turn (a timeout, <C-c>). Claude Code - the default
+  -- stream-json stdin - is interrupted with a control_request: the turn
+  -- ends with a `result` (turn_on_stdout finishes it) and the process, its
+  -- session and its worktree stay for your next message. If it doesn't end
+  -- within interrupt_grace_seconds, or the agent refuses, or you stop it
+  -- again, or its stdin is some other CLI's, the process is killed - and
+  -- the next message replays the conversation to a new one.
+  local interruptible = agent.stdin == nil
+  local grace = tonumber(agent.interrupt_grace_seconds) or 5
+  function turn.kill(why)
+    if turn.done then return end
+    if not turn.interrupt_id then return pcall(vim.fn.jobstop, job) end
+    turn.killed = true
+    table.insert(entry.tools, "\u{2717} " .. why .. " - your next message starts it again and replays the conversation")
+    render_soon()
+    stop_tree(job)
+  end
+  function turn.stop()
+    if turn.done then return end
+    if st.running and st.running.turn == turn then st.running.on_timeout = nil end
+    if turn.interrupt_id then return turn.kill("stopped again while interrupting, so it was killed") end
+    if not interruptible then return turn.kill() end
+    interrupt_seq = interrupt_seq + 1
+    turn.interrupt_id = "azvicli-int-" .. interrupt_seq
+    table.insert(entry.tools, "\u{22EF} interrupting the turn")
+    render_soon()
+    pcall(vim.fn.chansend, job, CORE.interrupt_line(turn.interrupt_id) .. "\n")
+    vim.defer_fn(function()
+      turn.kill("the agent didn't stop within " .. WD.span(grace) .. " of the interrupt, so it was killed")
+    end, math.floor(grace * 1000))
+  end
+  st.running.stop = turn.stop
   st.running.on_timeout = function(fired)
     if turn.done then return end
     turn.timed_out, turn.cancelled = fired, true
     table.insert(entry.tools, WD.line(fired, turn.watch))
-    pcall(vim.fn.jobstop, job)
+    turn.stop()
   end
   start_spinner(st)
   return entry
@@ -1031,6 +1078,8 @@ cancel = function(st)
   for _, q in ipairs(st.queue or {}) do q.held = true end
   if st.running.acp then return st.running.cancel() end
   if st.running.turn then st.running.turn.cancelled = true end
+  -- Claude Code's turn is interrupted, its session kept (send's turn.stop).
+  if st.running.stop then return st.running.stop() end
   pcall(vim.fn.jobstop, st.running.job)
 end
 

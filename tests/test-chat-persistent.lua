@@ -362,6 +362,9 @@ do
   check("timeout: the agent isn't running any more", not CHAT.busy())
   local nx, nxerr = send_and_wait("after the timeout")
   check("timeout: the next message still gets answered", nx ~= nil and nx.status == "done", nxerr or (nx and nx.status))
+  -- Issue #65: the turn was interrupted, not the process killed.
+  check("timeout: by the same process, its turn 2 - not a replay",
+    nx ~= nil and nx.text:match("^turn 2,") ~= nil and nx.mode ~= "replay", nx and (nx.text .. " " .. tostring(nx.mode)))
 
   -- Output every 0.3s for 3s: three times the idle timeout - the old wall
   -- clock of that length would have stopped it.
@@ -385,6 +388,144 @@ do
   check("timeout: the Agents screen shows which one fired", rows[1] and rows[1].state == "\u{2717} timed out (cap 1s)",
     rows[1] and rows[1].state)
   CHAT.new_chat(true)
+end
+
+-- Issue #65: a timed-out or stopped Claude Code turn is interrupted with a
+-- stream-json control_request, so the process - its session, its worktree
+-- - takes the next message. An agent that ignores the interrupt is killed
+-- after interrupt_grace_seconds, and the chat says so.
+do
+  local mk, clog = vim.fn.tempname(), vim.fn.tempname()
+  local function agent(idle, cap, grace)
+    require("azure-cli").setup({ chat = { agent = {
+      label = "Fake Persistent", idle_timeout_seconds = idle, max_turn_seconds = cap,
+      interrupt_grace_seconds = grace or 1,
+      cmd = { py, fake, "--marker-file", mk, "--control-log", clog },
+    } } })
+    CHAT.new_chat(true)
+    os.remove(mk)
+    os.remove(clog)
+  end
+  local function lines_of(path)
+    local t = {}
+    if vim.fn.filereadable(path) == 1 then for l in io.lines(path) do t[#t + 1] = l end end
+    return t
+  end
+  local function said_at(e, s)
+    for i, l in ipairs(e and e.tools or {}) do if l:find(s, 1, true) then return i end end
+  end
+  local function pid_of(e) return e and e.text:match("pid (%d+)") end
+  local KEPT = "interrupted - the session stays, your next message continues it"
+  local KILLED = "so it was killed - your next message starts it again and replays the conversation"
+
+  -- Idle timeout, interrupt honoured.
+  agent(1, 30)
+  local h = send_and_wait("hello")
+  local pid0 = pid_of(h)
+  local t0 = os.time()
+  local q, qerr = send_and_wait("go quiet")
+  check("interrupt: the idle timeout still says so", q ~= nil and q.status == "timed out (idle 1s)", qerr or (q and q.status))
+  check("interrupt: #27's line first, then that the session stays",
+    (said_at(q, "no output from the agent for 1s") or 99) < (said_at(q, KEPT) or 0), q and vim.inspect(q.tools))
+  check("interrupt: no kill", not said_at(q, "killed"), q and vim.inspect(q.tools))
+  check("interrupt: the agent got one control_request, an interrupt",
+    vim.deep_equal(lines_of(clog), { "interrupt" }), vim.inspect(lines_of(clog)))
+  check("interrupt: it ended on the agent's result, not the 6s it would have taken", os.time() - t0 <= 4, os.time() - t0)
+  check("interrupt: what it said so far stays", q and q.text:find("Thinking...", 1, true) ~= nil, q and q.text)
+  local n, nerr = send_and_wait("next")
+  check("interrupt: the next message is the same process's next turn",
+    n ~= nil and n.status == "done" and n.text:match("^turn 3,") ~= nil and pid_of(n) == pid0 and n.mode ~= "replay",
+    nerr or (n and (n.text .. " " .. tostring(n.mode))))
+  check("interrupt: only one process ever started", #lines_of(mk) == 1, vim.inspect(lines_of(mk)))
+
+  -- Idle timeout, interrupt ignored: killed after the grace period.
+  t0 = os.time()
+  local d, derr = send_and_wait("go quiet and ignore interrupts")
+  check("ignored: killed, and the status says so", d ~= nil and d.status == "timed out (idle 1s, killed)",
+    derr or (d and d.status))
+  check("ignored: #27's line, then why it was killed",
+    (said_at(d, "no output from the agent for 1s") or 99)
+      < (said_at(d, "the agent didn't stop within 1s of the interrupt, " .. KILLED) or 0), d and vim.inspect(d.tools))
+  check("ignored: not said to be kept", not said_at(d, KEPT), d and vim.inspect(d.tools))
+  check("ignored: within idle + grace, not the agent's 6s", os.time() - t0 <= 5, os.time() - t0)
+  local r, rerr = send_and_wait("after the kill")
+  check("ignored: the next message starts a new process and replays",
+    r ~= nil and r.status == "done" and r.mode == "replay" and r.text:match("^turn 1,") ~= nil and pid_of(r) ~= pid0,
+    rerr or (r and (r.text .. " " .. tostring(r.mode))))
+
+  -- The hard cap, honoured, then ignored.
+  agent(30, 1)
+  h = send_and_wait("hello")
+  pid0 = pid_of(h)
+  local c, cerr = send_and_wait("stream steadily")
+  check("cap: still the cap's status", c ~= nil and c.status == "timed out (cap 1s)", cerr or (c and c.status))
+  check("cap: the cap's line, then that the session stays",
+    (said_at(c, "the turn ran 1s, the cap (max_turn_seconds = 1)") or 99) < (said_at(c, KEPT) or 0),
+    c and vim.inspect(c.tools))
+  check("cap: it stopped streaming", c and not c.text:find("chunk 9", 1, true), c and c.text)
+  n, nerr = send_and_wait("next")
+  check("cap: the next message is the same process's next turn",
+    n ~= nil and n.text:match("^turn 3,") ~= nil and pid_of(n) == pid0, nerr or (n and n.text))
+  local ck, ckerr = send_and_wait("stream steadily and ignore interrupts")
+  check("cap: ignored, killed", ck ~= nil and ck.status == "timed out (cap 1s, killed)", ckerr or (ck and ck.status))
+  check("cap: says why", said_at(ck, "didn't stop within 1s of the interrupt") ~= nil, ck and vim.inspect(ck.tools))
+
+  -- <C-c> (the chat's, and the Agents screen's): interrupted, the session
+  -- kept; a second one while it's interrupting kills at once.
+  agent(30, 30, 10)
+  h = send_and_wait("hello")
+  pid0 = pid_of(h)
+  local function start(text)
+    CHAT.send(text, { view_win = win })
+    local e = STATE.chat.entries[#STATE.chat.entries]
+    vim.wait(5000, function() return e.text:find("Thinking...", 1, true) ~= nil end, 20)
+    return e
+  end
+  local function settle(e) vim.wait(5000, function() return e.status ~= "running" end, 20) return e end
+  local s = start("go quiet")
+  require("azure-cli.chat.run").cancel()  -- the chat's <C-c>
+  settle(s)
+  check("<C-c>: stopped", s.status == "stopped", s.status)
+  check("<C-c>: the session stays", said_at(s, KEPT) ~= nil, vim.inspect(s.tools))
+  n, nerr = send_and_wait("next")
+  check("<C-c>: the next message is the same process's",
+    n ~= nil and n.text:match("^turn 3,") ~= nil and pid_of(n) == pid0, nerr or (n and n.text))
+  s = start("go quiet")
+  CHAT.cancel_conversation(STATE.chat)
+  settle(s)
+  check("Agents <C-c>: interrupted too", s.status == "stopped" and said_at(s, KEPT) ~= nil, s.status)
+  t0 = os.time()
+  s = start("go quiet and ignore interrupts")
+  require("azure-cli.chat.run").cancel()  -- the chat's <C-c>
+  require("azure-cli.chat.run").cancel()  -- the chat's <C-c>
+  settle(s)
+  check("<C-c> twice: killed at once, not after the 10s grace", s.status == "stopped (killed)" and os.time() - t0 <= 4,
+    s.status .. " after " .. (os.time() - t0))
+  check("<C-c> twice: says so", said_at(s, "stopped again while interrupting, " .. KILLED) ~= nil, vim.inspect(s.tools))
+
+  -- Sent while a turn is being interrupted: it waits, then goes to the
+  -- same process.
+  agent(1, 30)
+  h = send_and_wait("hello")
+  pid0 = pid_of(h)
+  CHAT.show(false)
+  local ib = CHAT._.input_buf()
+  CHAT.send("go quiet", { view_win = win })
+  local quiet = STATE.chat.entries[#STATE.chat.entries]
+  vim.wait(5000, function() return said_at(quiet, "interrupting the turn") ~= nil end, 20)
+  vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "queued one" })
+  CHAT.send(nil, { view_win = win })
+  check("queued: it waits while the turn is interrupted", #(STATE.chat.queue or {}) == 1, vim.inspect(STATE.chat.queue))
+  vim.wait(10000, function()
+    local last = STATE.chat.entries[#STATE.chat.entries]
+    return not STATE.chat.running and #(STATE.chat.queue or {}) == 0 and last.role == "agent" and last.status ~= "running"
+  end, 20)
+  local last = STATE.chat.entries[#STATE.chat.entries]
+  check("queued: then goes to the same process", last.text:find(": queued one", 1, true) ~= nil and pid_of(last) == pid0,
+    last.text)
+  CHAT.new_chat(true)
+  os.remove(mk)
+  os.remove(clog)
 end
 
 -- A plain one-shot CLI (answers one message, exits) can't stay running:

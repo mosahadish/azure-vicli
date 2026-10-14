@@ -376,6 +376,18 @@ do
   CORE.stream_feed(q, { "no newline at the end" }, dec)
   CORE.stream_finish(q, dec)
   check("stream: finish flushes the last line", CORE.stream_text(q) == "no newline at the end")
+  -- Issue #65: Claude Code's answer to an interrupt, and the interrupted
+  -- turn's result - which has no `result` text.
+  local i = CORE.stream_new()
+  CORE.stream_feed(i, { '{"type":"assistant","message":{"content":[{"type":"text","text":"Half an answer"}]}}', "" }, dec)
+  check("stream: interrupt ack is recorded by request id", CORE.stream_feed(i,
+    { '{"type":"control_response","response":{"subtype":"success","request_id":"azvicli-int-1","response":{}}}', "" }, dec)
+    and i.control["azvicli-int-1"] == "success" and not i.ended, vim.inspect(i.control))
+  check("stream: a result without text ends the turn", CORE.stream_feed(i, { '{"type":"result","subtype":"error_during_execution",'
+    .. '"is_error":true,"session_id":"s-1","total_cost_usd":0.5}', "" }, dec) and i.ended and i.final == nil and i.cost_total == 0.5)
+  check("stream: and keeps what was streamed", CORE.stream_text(i) == "Half an answer", CORE.stream_text(i))
+  check("interrupt_line", vim.deep_equal(dec(CORE.interrupt_line("azvicli-int-7")),
+    { type = "control_request", request_id = "azvicli-int-7", request = { subtype = "interrupt" } }), CORE.interrupt_line("azvicli-int-7"))
   local text, sid, tools = CORE.parse_answer('{"type":"system","session_id":"x"}\n{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}\n{"type":"result","result":"Hi","session_id":"x"}', "", dec)
   check("parse_answer: stream-json too", text == "Hi" and sid == "x" and #tools == 0)
   local pretty = CORE.parse_answer('{\n  "result": "multi",\n  "session_id": "m"\n}', "", dec)

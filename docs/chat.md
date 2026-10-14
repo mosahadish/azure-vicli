@@ -59,7 +59,7 @@ until you hide it. The conversation is the same in every tab.
 | `gh` | Open an earlier conversation |
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `gM` / `gm` | Choose the agent / the model |
-| `<C-c>` | Stop the agent (what you queued is held until you send it) |
+| `<C-c>` | Stop the agent's answer - its session stays for your next message (what you queued is held until you send it) |
 | `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
 | `<BS>` | Back to the screen next to the panel |
 | `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
@@ -303,7 +303,8 @@ picks goes through `session/set_config_option`.
   in your checkout. Leave it out if you don't want the agent changing code.
 - **Stopping** a message (`<C-c>`, a [timeout](#fields)) first asks Copilot
   to stop the turn (`session/cancel`), and only stops the process if that
-  doesn't work within 5s - so the session normally survives it.
+  doesn't work within 5s - so the session normally survives it. (Claude
+  Code's turns are interrupted the same way: see [Timeouts](#fields).)
 
 Check `--add-dir` and `--allow-tool` against your `copilot --help`; if
 Copilot rejects a flag, the error shows in the chat.
@@ -372,14 +373,28 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 | `env` | Extra environment. |
 | `idle_timeout_seconds` | How long the agent may go quiet in a message before it's stopped (default 600). Everything it sends - a chunk of its answer, a tool call, a permission request - starts the count again, and it doesn't run while one of azure-vicli's tools works (`run_tests`, a push) or a popup waits for you. `timeout_seconds`, its old name, still works. |
 | `max_turn_seconds` | How long one message may take in all, however busy the agent is (default 7200), less the time popups waited for you. |
+| `interrupt_grace_seconds` | How long a stopped message may take to end once the agent is asked to stop it, before its process is killed (default 5). |
 
 **Timeouts.** When either one fires, the message is stopped as `<C-c>`
-would (`acp`: the agent is asked to stop the turn first), its status says
-which and how long - `timed out (idle 10m)`, `timed out (cap 2h)`, also on
-the Agents screen - and a line under it names the setting:
+would, its status says which and how long - `timed out (idle 10m)`,
+`timed out (cap 2h)`, also on the Agents screen - and a line under it
+names the setting:
 `✗ timed out: no output from the agent for 10m (idle_timeout_seconds = 600)`.
 Claude Code sends nothing while its own shell runs a command, so keep the
 idle timeout above your longest build.
+
+**Stopping keeps the session.** A stopped message (`<C-c>` in the chat or
+on the Agents screen, or a timeout) only stops that turn: Claude Code is
+sent a stream-json interrupt (`control_request`), Copilot a
+`session/cancel`. The process, its session and the worktree it was in stay,
+and your next message continues it - `· interrupted - the session stays,
+your next message continues it`. If the turn hasn't ended
+`interrupt_grace_seconds` later (or you press `<C-c>` again meanwhile), the
+process is killed instead: the status says so - `timed out (idle 10m,
+killed)`, `stopped (killed)` - and so does a line under it, and your next
+message starts the agent again and replays the conversation to it. An
+agent with its own `stdin` template is a CLI that may not understand the
+interrupt, so it's stopped by killing it straight away.
 
 `followup`, `session_pattern` and `persistent` are gone: they were for
 starting a process per message and resuming a session each time. A config

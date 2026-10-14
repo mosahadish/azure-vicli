@@ -82,6 +82,8 @@ local wi = { idle = 600, cap = 7200 }
 check("status: idle", WD.status({ kind = "idle", after = 600.4 }, wi) == "timed out (idle 10m)",
   WD.status({ kind = "idle", after = 600.4 }, wi))
 check("status: cap", WD.status({ kind = "cap", after = 7200 }, wi) == "timed out (cap 2h)")
+check("status: killed after an ignored interrupt (#65)",
+  WD.status({ kind = "idle", after = 600 }, wi, true) == "timed out (idle 10m, killed)")
 local li = WD.line({ kind = "idle", after = 600.4 }, wi)
 check("line: idle names the time and the setting",
   li:find("no output from the agent for 10m", 1, true) and li:find("idle_timeout_seconds = 600", 1, true), li)

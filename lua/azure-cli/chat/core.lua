@@ -9,6 +9,7 @@
 --                  envelope, or plain text, line by line
 --   parse_answer   the same over a finished run's whole output
 --   STREAM_JSON_STDIN  the default chat.agent.stdin: one stream-json request
+--   interrupt_line     the stream-json control_request stopping a turn
 --   expand         {placeholder} templates
 --   render         the transcript's lines and what each one is
 --   prompts        saved prompts ("/triage ...")
@@ -752,8 +753,12 @@ local function stream_line(st, line, decode)
         if #chunk > 0 then st.texts[#st.texts + 1] = table.concat(chunk, "") end
         return
       end
-      if type(ev.result) == "string" then
-        st.final = ev.result
+      -- The turn's end. An interrupted one's (Claude Code's
+      -- "error_during_execution") has no `result` text: the turn still
+      -- ends (`ended`), and what it streamed so far stays the answer.
+      if type(ev.result) == "string" or ev.type == "result" then
+        if type(ev.result) == "string" then st.final = ev.result end
+        st.ended = true
         st.is_error = ev.is_error == true
         -- Claude Code's cost so far for this process (cumulative), and this
         -- turn's tokens.
@@ -765,10 +770,27 @@ local function stream_line(st, line, decode)
         end
         return
       end
+      -- The answer to one of our control_requests (M.interrupt_line):
+      -- "success" or "error", by request_id.
+      if ev.type == "control_response" and type(ev.response) == "table" then
+        local id = ev.response.request_id
+        if type(id) == "string" then
+          st.control = st.control or {}
+          st.control[id] = tostring(ev.response.subtype or "")
+        end
+        return
+      end
       if ev.type then return end  -- system/user/other stream events
     end
   end
   if not stripped(st, line) then st.plain[#st.plain + 1] = line end
+end
+
+-- How much the reader has seen: stream_feed reports a change in it.
+local function stream_seen(st)
+  local n = 0
+  for _ in pairs(st.control or {}) do n = n + 1 end
+  return #st.texts + #st.plain + #st.tools + (st.final and 1 or 0) + (st.ended and 1 or 0) + n
 end
 
 -- Feeds jobstart's on_stdout `data` (a list whose first element continues
@@ -776,13 +798,13 @@ end
 -- line). Returns true when something visible changed.
 function M.stream_feed(st, data, decode)
   if not data or #data == 0 then return false end
-  local before = #st.texts + #st.plain + #st.tools + (st.final and 1 or 0)
+  local before = stream_seen(st)
   st.pending = st.pending .. data[1]
   for i = 2, #data do
     stream_line(st, st.pending, decode)
     st.pending = data[i]
   end
-  return #st.texts + #st.plain + #st.tools + (st.final and 1 or 0) ~= before
+  return stream_seen(st) ~= before
 end
 
 -- Flushes the last partial line (call when the job exits).
@@ -840,6 +862,14 @@ end
 -- reads until stdin closes - the agent's process stays running between
 -- messages. {message_json} is the message already JSON-quoted.
 M.STREAM_JSON_STDIN = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}'
+
+-- The stdin line that stops the turn in progress of a CLI reading
+-- STREAM_JSON_STDIN, leaving its process and session running: Claude Code
+-- answers it with a control_response for `id`, then ends the turn with a
+-- `result` event. `id` is ours (letters, digits, dashes), so no quoting.
+function M.interrupt_line(id)
+  return '{"type":"control_request","request_id":"' .. id .. '","request":{"subtype":"interrupt"}}'
+end
 
 function M.expand(template, vars, quote)
   if type(template) ~= "string" then return template end
