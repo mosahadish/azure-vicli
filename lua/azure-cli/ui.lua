@@ -773,6 +773,10 @@ end
 --                   under way when an agent's question pops up can't answer
 --                   it (the buttons light up once they work); any key that
 --                   does nothing waits that long again, and q doesn't cancel
+--   checks          booleans for the first #checks buttons, which become
+--                   tick boxes ("[x] "/"[ ] "): <CR>, <Space>, x and their
+--                   keys tick them instead of answering; another button
+--                   answers, and cb gets the ticks as its second argument
 -- <Tab> / <S-Tab> / h / l / j / k / the arrows move between the buttons,
 -- <CR> presses the focused one; every other key does nothing. Opened from
 -- insert mode it leaves it, and goes back to it after (give_back: not in
@@ -824,6 +828,15 @@ function M.choose(opts, cb)
   if cancel == nil then cancel = #labels elseif cancel == false then cancel = nil end
   local done, counted = false, false
   local details_win, full_win
+  local checks = opts.checks and vim.deepcopy(opts.checks) or nil
+  local function checkable(i) return checks ~= nil and i ~= nil and i <= #checks end
+  -- The buttons as drawn: tick boxes in front of the checkable ones.
+  local function shown()
+    if not checks then return labels end
+    local out = {}
+    for i, l in ipairs(labels) do out[i] = checkable(i) and ((checks[i] and "[x] " or "[ ] ") .. l) or l end
+    return out
+  end
   local function finish(i)
     if done then return end
     done = true
@@ -838,7 +851,7 @@ function M.choose(opts, cb)
         vim.schedule(function() for _, fn in ipairs(waiting) do pcall(fn) end end)
       end
     end
-    cb(i)
+    cb(i, checks)
   end
   local function details_float(focus_row)
     if not (opts.details and #opts.details > 0) then return end
@@ -878,7 +891,7 @@ function M.choose(opts, cb)
   local hint = opts.hint or table.concat(hint_parts, " \u{00B7} ")
 
   local width = math.max(40, math.min(vim.fn.strdisplaywidth(hint) + 2, 80))
-  for _, l in ipairs(labels) do width = math.max(width, vim.fn.strdisplaywidth(l) + 6) end
+  for _, l in ipairs(shown()) do width = math.max(width, vim.fn.strdisplaywidth(l) + 6) end
   width = math.min(width, math.max(30, math.min(80, vim.o.columns - 4)))
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
@@ -886,7 +899,7 @@ function M.choose(opts, cb)
   local rows, spans = {}, {}
   local function draw()
     local lines, hls
-    lines, hls, rows = M.choose_lines(opts.lines, labels, focused, width, hint, not armed(), opts.stack)
+    lines, hls, rows = M.choose_lines(opts.lines, shown(), focused, width, hint, not armed(), opts.stack)
     for i = 1, #labels do spans[i] = hls[i] end  -- the buttons come first: { row, from, to, group }
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -994,8 +1007,21 @@ function M.choose(opts, cb)
   local function move(d) focused = (focused - 1 + d) % #labels + 1; draw(); place() end
   for _, k in ipairs({ "<Tab>", "l", "j", "<Right>", "<Down>" }) do bind(k, guarded(function() move(1) end)) end
   for _, k in ipairs({ "<S-Tab>", "h", "k", "<Left>", "<Up>" }) do bind(k, guarded(function() move(-1) end)) end
-  bind("<CR>", guarded(function() answer(under_cursor() or focused) end))
-  for k, i in pairs(opts.keys or {}) do bind(k, guarded(function() answer(i) end)) end
+  -- A tick box's button ticks it (focused on it) and keeps asking.
+  local function press(i)
+    if not checkable(i) then return answer(i) end
+    checks[i] = not checks[i]
+    focused = i
+    draw()
+    place()
+  end
+  bind("<CR>", guarded(function() press(under_cursor() or focused) end))
+  for k, i in pairs(opts.keys or {}) do bind(k, guarded(function() press(i) end)) end
+  if checks then
+    for _, k in ipairs({ "<Space>", "x" }) do
+      if not bound[k] then bind(k, guarded(function() if checkable(focused) then press(focused) end end)) end
+    end
+  end
   -- Never guarded: backing out is always safe. q too, but not in a question
   -- that can pop up while you type (arm_ms): there it's a stray key.
   bind("<Esc>", function() answer(cancel) end)
@@ -1055,7 +1081,9 @@ function M.choose(opts, cb)
     -- (<C-i> is <Tab> and <C-m> is <CR>)
     if not bound[k] and c ~= string.byte("i") and c ~= string.byte("m") then vim.keymap.set("n", k, ignore, kopts) end
   end
-  for _, k in ipairs({ "<Space>", "<BS>", "<Del>" }) do vim.keymap.set("n", k, ignore, kopts) end
+  for _, k in ipairs({ "<Space>", "<BS>", "<Del>" }) do
+    if not bound[k] then vim.keymap.set("n", k, ignore, kopts) end
+  end
   -- The button the cursor lands on lights up (before keys count, arming
   -- puts the cursor back on the focused one).
   vim.api.nvim_create_autocmd("CursorMoved", { buffer = buf, callback = function()

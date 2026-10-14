@@ -255,6 +255,47 @@ function M.claude_tool(args)
     title = name .. (what and (": " .. tostring(what)) or "") }
 end
 
+-- What the permission tool answers Claude Code's AskUserQuestion with
+-- (issue #31): the picks (chat/init.lua's ask_questions - per question
+-- the labels picked, or your own words) as `updatedInput.answers`, keyed
+-- by each question's text, several picks joined with ", " - which Claude
+-- Code hands the tool as your answer. nil picks: declined. Pure.
+function M.answers_for(input, picks)
+  if not picks then return { behavior = "deny", message = "The user declined to answer the question(s)." } end
+  local answers = {}
+  for i, q in ipairs(input.questions or {}) do
+    local text = type(q) == "table" and q.question or q
+    answers[tostring(text)] = table.concat(picks[i] or {}, ", ")
+  end
+  -- (a shallow copy: 0.9's vim.deepcopy can't copy a JSON null, vim.NIL)
+  local updated = {}
+  for k, v in pairs(input) do updated[k] = v end
+  updated.answers = answers
+  return { behavior = "allow", updatedInput = updated }
+end
+
+-- Claude Code's AskUserQuestion, through its --permission-prompt-tool:
+-- asked as the questions they are (not Allow/Deny), the answer replied in
+-- the shape M.answers_for builds. Never answered for you - not by
+-- chat.permissions, a skill or a plan: an allow without answers means
+-- nothing. The question and what became of it go under the tool call.
+local function ask_questions(conv, entry, input, reply, w)
+  if w then WD.busy(w, 1, now()); WD.asking(w, 1, now()) end
+  local first = type(input.questions[1]) == "table" and tostring(input.questions[1].question or "") or ""
+  table.insert(entry.tools, "\u{00B7} AskUserQuestion: " .. first:gsub("%s+", " ")
+    .. (#input.questions > 1 and (" (+" .. (#input.questions - 1) .. " more)") or ""))
+  render_soon()
+  I().ask_questions(conv, input.questions, function(picks)
+    if w then WD.asking(w, -1, now()); WD.busy(w, -1, now()) end
+    local said = {}
+    for _, p in ipairs(picks or {}) do said[#said + 1] = table.concat(p, ", ") end
+    table.insert(entry.tools, "  \u{21B3} " .. (picks and ("you answered: " .. table.concat(said, " / "):gsub("%s+", " "))
+      or "you declined to answer"))
+    render_soon()
+    reply({ text = vim.json.encode(M.answers_for(input, picks)) })
+  end)
+end
+
 -- The bridge's own tool for Claude Code's --permission-prompt-tool
 -- (mcp__azure-vicli__permission): Claude Code asks it instead of refusing
 -- what --allowedTools doesn't cover, and gets decide_permission's answer.
@@ -280,6 +321,10 @@ local function bridge_handler(entry_ref, conv, run_st)
     local w = run_st and run_st.running and run_st.running.watch
     if req.method == "call" and req.name == "permission" then
       local args = type(req.arguments) == "table" and req.arguments or {}
+      if args.tool_name == "AskUserQuestion" and type(args.input) == "table"
+          and type(args.input.questions) == "table" and #args.input.questions > 0 then
+        return ask_questions(conv, entry_ref() or { tools = {} }, args.input, reply, w)
+      end
       local input = type(args.input) == "table" and next(args.input) and args.input or vim.empty_dict()
       if w then WD.busy(w, 1, now()) end
       return decide_permission(conv, entry_ref() or { tools = {} }, M.claude_tool(args), function(yes)

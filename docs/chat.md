@@ -334,6 +334,20 @@ agent = {
   prompt with the command or the diff; while `/plan` runs, editing is
   refused. Without that flag a tool `--allowedTools` doesn't list is
   refused silently - the agent says it was denied, and you never see why.
+- **Its questions.** When Claude Code asks you something (its
+  `AskUserQuestion` tool), each question pops up as itself rather than as
+  Allow/Deny: its header as the title, the question, and its options with
+  their descriptions. `1`-`9` (or `<CR>` on one) picks an option; with
+  `multiSelect` they're tick boxes - `1`-`9`, `<Space>` or `<CR>` tick
+  them, and **Done** answers. **Other…** opens the comment editor for an
+  answer in your own words (`q` there goes back to the question). Several
+  questions come one after another. Your answer goes back as the tool's
+  `updatedInput.answers` (each question's text → the label picked, several
+  joined with ", ", or your own words), so the agent carries on with it;
+  `<Esc>` or **Cancel**, on any of them, declines them all - the agent is
+  told you declined to answer. No setting ever answers one for you, and
+  like every other question it waits while another is open. (Over ACP
+  there's no way to send an answer back, so there it stays Allow/Deny.)
 - `--allowedTools "mcp__azure-vicli,Read,Grep,Glob"`: azure-vicli's tools
   and reading never ask. Leave `Edit`/`Write` and `Bash` out of it - listed
   there, they'd skip azure-vicli's checks (the plan's Files, a plan that

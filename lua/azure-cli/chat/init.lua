@@ -869,44 +869,142 @@ vim.api.nvim_create_autocmd({ "FocusGained", "FocusLost" }, {
 
 -- One question at a time: with several agents, another one asking while
 -- you answer waits here, so each answer goes to the question you read.
+-- `ask(release)` puts its question up once none is open (`question`: the
+-- winbar's and the toast's text); release(fn) once it's answered runs fn
+-- and lets the next one ask.
 local asking, waiting_questions = false, {}
-
--- `extra`: a third button's label (an "always" for this kind of request);
--- picking it calls cb(true, true). `full`: what o in the popup opens (the
--- request as it is; default: the details).
-local function confirm(question, cb, details, extra, full)
+local function one_at_a_time(question, ask)
   if asking then
-    table.insert(waiting_questions, { question, cb, details, extra, full })
+    table.insert(waiting_questions, { question, ask })
     MAIN().questions_waiting = #waiting_questions
     M.set_winbars()
     return
   end
   asking = true
-  local is_diff = details and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) and "diff" or nil
   notify(question .. " (answer in the prompt)")
   M.alert("azure-vicli: a question for you", question)
   MAIN().question = question
   M.set_winbars()
-  -- It can pop up while you're typing something else: Deny is focused, and
-  -- keys only count after a moment (ui.lua's M.choose).
-  require("azure-cli.ui").choose({ title = "The agent asks", lines = { question },
-    buttons = extra and { "Allow", "Deny", extra } or { "Allow", "Deny" },
-    default = 2, keys = extra and { y = 1, n = 2, a = 3 } or { y = 1, n = 2 }, cancel = 2, details = details,
-    details_ft = is_diff, arm_ms = 400, full = full,
-    hint = extra and "y allow \u{00B7} n deny \u{00B7} a " .. extra:lower() .. " \u{00B7} Esc deny \u{00B7} Tab moves"
-      .. ((details and #details > 0) and " \u{00B7} o shows all" or "") or nil },
-  function(i)
-    local yes = i == 1 or i == 3
+  ask(function(fn)
     MAIN().question = nil
     asking = false
-    cb(yes, i == 3)
+    if fn then fn() end
     local nxt = table.remove(waiting_questions, 1)
     MAIN().questions_waiting = #waiting_questions
     M.set_winbars()
-    if nxt then vim.schedule(function() confirm(nxt[1], nxt[2], nxt[3], nxt[4], nxt[5]) end) end
+    if nxt then vim.schedule(function() one_at_a_time(nxt[1], nxt[2]) end) end
+  end)
+end
+
+-- `extra`: a third button's label (an "always" for this kind of request);
+-- picking it calls cb(true, true). `full`: what o in the popup opens (the
+-- request as it is; default: the details).
+local function confirm(question, cb, details, extra, full)
+  one_at_a_time(question, function(release)
+    local is_diff = details and (("\n" .. table.concat(details, "\n")):find("\ndiff ")) and "diff" or nil
+    -- It can pop up while you're typing something else: Deny is focused, and
+    -- keys only count after a moment (ui.lua's M.choose).
+    require("azure-cli.ui").choose({ title = "The agent asks", lines = { question },
+      buttons = extra and { "Allow", "Deny", extra } or { "Allow", "Deny" },
+      default = 2, keys = extra and { y = 1, n = 2, a = 3 } or { y = 1, n = 2 }, cancel = 2, details = details,
+      details_ft = is_diff, arm_ms = 400, full = full,
+      hint = extra and "y allow \u{00B7} n deny \u{00B7} a " .. extra:lower() .. " \u{00B7} Esc deny \u{00B7} Tab moves"
+        .. ((details and #details > 0) and " \u{00B7} o shows all" or "") or nil },
+    function(i)
+      release(function() cb(i == 1 or i == 3, i == 3) end)
+    end)
   end)
 end
 M.confirm = confirm
+
+-- Claude Code's AskUserQuestion (issue #31): each of `questions` ({
+-- question, header, options = { { label, description } }, multiSelect })
+-- as a popup of its own, in order - its options as buttons (1-9 press
+-- them; ticked with multiSelect, then Done), Other... for your own words
+-- (the comment editor), Cancel / Esc declining them all. cb(picks): per
+-- question the labels picked (your own words last), or nil when declined.
+-- `conv`'s label leads each title, like confirm_for's.
+function M.ask_questions(conv, questions, cb)
+  local UI = require("azure-cli.ui")
+  local who = (conv and conv.label) and ("[" .. conv.label .. "] ") or ""
+  local first = type(questions[1]) == "table" and tostring(questions[1].question or "") or ""
+  one_at_a_time(who .. "The agent asks: " .. first, function(release)
+    local picks = {}
+    local ask
+    ask = function(n, ticks)
+      local q = questions[n]
+      if q == nil then return release(function() cb(picks) end) end
+      q = type(q) == "table" and q or { question = tostring(q) }
+      local opts = type(q.options) == "table" and q.options or {}
+      local multi = q.multiSelect == true
+      local lines, buttons, keys = { tostring(q.question or "") }, {}, {}
+      if #opts > 0 then lines[#lines + 1] = "" end
+      for i, o in ipairs(opts) do
+        o = type(o) == "table" and o or { label = tostring(o) }
+        local label = tostring(o.label or ("Option " .. i))
+        buttons[i] = label
+        local d = o.description and tostring(o.description) or ""
+        lines[#lines + 1] = i .. ". " .. label .. (d ~= "" and (" - " .. d) or "")
+        if i <= 9 then keys[tostring(i)] = i end
+      end
+      local other = #buttons + 1
+      buttons[other] = "Other\u{2026}"
+      local done_i = multi and other + 1 or nil
+      if done_i then buttons[done_i] = "Done" end
+      buttons[#buttons + 1] = "Cancel"
+      local cancel = #buttons
+      if multi then lines[#lines + 1] = "(Pick any number of them.)" end
+      local checks
+      if multi then
+        checks = {}
+        for i = 1, #opts do checks[i] = ticks and ticks[i] or false end
+      end
+      local keys_hint = #opts > 1 and ("1-" .. math.min(#opts, 9)) or "1"
+      local hint = (multi and (keys_hint .. " / Space tick \u{00B7} Done answers") or (keys_hint .. " picks \u{00B7} Enter picks"))
+        .. " \u{00B7} Tab moves \u{00B7} Esc declines"
+      local title = who .. tostring(q.header or "The agent asks")
+        .. (#questions > 1 and (" (" .. n .. "/" .. #questions .. ")") or "")
+      local function ticked(ch)
+        local out = {}
+        for i = 1, #opts do if ch and ch[i] then out[#out + 1] = buttons[i] end end
+        return out
+      end
+      UI.choose({ title = title, lines = lines, buttons = buttons, keys = keys, cancel = cancel, stack = true,
+        checks = checks, arm_ms = 400, hint = hint },
+      function(i, ch)
+        if i == nil or i == cancel then return release(function() cb(nil) end) end
+        if i <= #opts then
+          -- (with ui.confirm = "select" a multiSelect pick is just that one)
+          picks[n] = { buttons[i] }
+          return ask(n + 1)
+        end
+        if i == other then
+          return require("azure-cli.editor").open({ title = "Your answer \u{00B7} " .. tostring(q.header or "the agent's question"),
+            initial = "", context_lines = { tostring(q.question or "") },
+            on_submit = function(text)
+              text = vim.trim(text or "")
+              if text == "" then return ask(n, ch) end
+              local p = multi and ticked(ch) or {}
+              p[#p + 1] = text
+              picks[n] = p
+              ask(n + 1)
+            end,
+            -- Backing out of your own words asks the question again.
+            on_cancel = function() ask(n, ch) end })
+        end
+        -- Done: what's ticked (nothing ticked asks again).
+        local p = ticked(ch)
+        if #p == 0 then
+          notify("Tick at least one, or pick Other\u{2026} - Esc declines.")
+          return ask(n, ch)
+        end
+        picks[n] = p
+        ask(n + 1)
+      end)
+    end
+    ask(1)
+  end)
+end
 
 -- A question from conversation `conv`'s agent says whose it is: "[#3001] ...".
 local function confirm_for(conv)
@@ -1061,6 +1159,7 @@ end
 -- call, the input box and which entry / role a conversation line shows.
 M._ = {
   state = STATE, render = render, render_soon = render_soon, save = save, confirm_for = confirm_for,
+  ask_questions = M.ask_questions,
   tool_env = tool_env, input_text = input_text, restore_once = restore_once, group = group,
   load_conversation = load_conversation, focus_input = focus_input,
   input_buf = function() return input_buf end,

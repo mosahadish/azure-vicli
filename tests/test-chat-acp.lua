@@ -384,6 +384,86 @@ do
   a = ask("Write", { file_path = "notes.txt", content = "hi" })
   check("an edit asks, and Allow allows it with its input", a and a.behavior == "allow"
     and a.updatedInput.file_path == "notes.txt" and #asked == 2, vim.inspect({ a, asked }))
+
+  -- Issue #31: AskUserQuestion is asked as its questions, and the answer
+  -- goes back as updatedInput.answers, keyed by the question's text.
+  local colour = { question = "Which colour?", header = "Colour", multiSelect = false, options = {
+    { label = "Red", description = "warm" }, { label = "Blue", description = "cool" } } }
+  local extras = { question = "Which extras?", header = "Extras", multiSelect = true, options = {
+    { label = "A", description = "first" }, { label = "B", description = "second" }, { label = "C", description = "third" } } }
+  -- `answers`: per popup, what it answers - cb's (index, ticks).
+  local popups
+  local function answering(answers)
+    popups = {}
+    UI.choose = function(o, cb)
+      popups[#popups + 1] = o
+      local ans = table.remove(answers, 1) or {}
+      cb(ans[1], ans[2])
+    end
+  end
+  answering({ { 2 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: one pick is the answer, under the question's text", a and a.behavior == "allow"
+    and a.updatedInput.answers["Which colour?"] == "Blue" and a.updatedInput.questions[1].question == "Which colour?",
+    vim.inspect(a))
+  local p = popups[1] or {}
+  check("AskUserQuestion: the popup shows the header, the question and the options with their descriptions",
+    #popups == 1 and p.title == "Colour" and p.lines[1] == "Which colour?"
+    and vim.tbl_contains(p.lines, "1. Red - warm") and vim.tbl_contains(p.lines, "2. Blue - cool")
+    and vim.deep_equal(p.buttons, { "Red", "Blue", "Other\u{2026}", "Cancel" }) and p.cancel == 4 and p.keys["2"] == 2
+    and p.checks == nil and p.arm_ms == 400, vim.inspect(p))
+
+  -- multiSelect: tick boxes, then Done (button 5: A B C Other Done Cancel).
+  answering({ { 5, { true, false, true } } })
+  a = ask("AskUserQuestion", { questions = { extras } })
+  p = popups[1] or {}
+  check("AskUserQuestion: multiSelect offers tick boxes and Done", vim.deep_equal(p.checks, { false, false, false })
+    and vim.deep_equal(p.buttons, { "A", "B", "C", "Other\u{2026}", "Done", "Cancel" }), vim.inspect(p))
+  check("AskUserQuestion: multiSelect answers the ticked labels, joined", a and a.behavior == "allow"
+    and a.updatedInput.answers["Which extras?"] == "A, C", vim.inspect(a))
+
+  -- Other: your own words, from the comment editor.
+  local EDITOR = require("azure-cli.editor")
+  local real_open, opened = EDITOR.open, {}
+  EDITOR.open = function(o) opened[#opened + 1] = o; o.on_submit("  my own  ") end
+  answering({ { 3 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: Other sends your own words", a and a.behavior == "allow"
+    and a.updatedInput.answers["Which colour?"] == "my own" and #opened == 1
+    and opened[1].context_lines[1] == "Which colour?", vim.inspect({ a, opened }))
+  -- Backing out of the editor asks the question again.
+  opened = {}
+  EDITOR.open = function(o) opened[#opened + 1] = o; o.on_cancel() end
+  answering({ { 3 }, { 1 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: cancelling Other asks again", a and a.updatedInput.answers["Which colour?"] == "Red"
+    and #popups == 2 and #opened == 1, vim.inspect({ a, #popups }))
+  EDITOR.open = real_open
+
+  -- Esc (cancel): declined, and nothing answered.
+  answering({ { 4 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: Esc declines to answer", a and a.behavior == "deny" and a.updatedInput == nil
+    and a.message == "The user declined to answer the question(s).", vim.inspect(a))
+
+  -- Two questions: each its own popup, both answers back; cancelling the
+  -- second declines both.
+  answering({ { 1 }, { 5, { false, true, false } } })
+  a = ask("AskUserQuestion", { questions = { colour, extras } })
+  check("AskUserQuestion: two questions, two answers", a and a.behavior == "allow" and #popups == 2
+    and popups[1].title == "Colour (1/2)" and a.updatedInput.answers["Which colour?"] == "Red"
+    and a.updatedInput.answers["Which extras?"] == "B", vim.inspect(a))
+  answering({ { 1 }, { 6 } })
+  a = ask("AskUserQuestion", { questions = { colour, extras } })
+  check("AskUserQuestion: cancelling one of them declines them all", a and a.behavior == "deny", vim.inspect(a))
+
+  -- Every other tool still gets Allow/Deny.
+  asked = {}
+  UI.choose = function(o, cb) asked[#asked + 1] = o; cb(2) end
+  a = ask("Bash", { command = "rm -rf build" })
+  check("and any other tool still asks Allow/Deny", a and a.behavior == "deny" and #asked == 1
+    and vim.deep_equal(asked[1].buttons, { "Allow", "Deny" }), vim.inspect(asked))
+  check("answers_for: declined is a deny", RUN.answers_for({ questions = {} }, nil).behavior == "deny")
   UI.choose = real_choose
 end
 

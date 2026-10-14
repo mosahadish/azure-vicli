@@ -108,6 +108,45 @@ check("arm_ms: y straight away does nothing", #early == 0 and still, vim.inspect
 check("arm_ms: <Esc> straight away still cancels", is(run("<Esc>", { arm_ms = 400 }), 2))
 check("arm_ms: y after the moment answers", is(run("y", { arm_ms = 150 }, 250), 1))
 
+-- Tick boxes (issue #31's multiSelect): <CR>, <Space>, x and their keys
+-- tick, another button answers with the ticks; nothing given, none.
+do
+  local function ticking(keys, wait)
+    local got = {}
+    local win = UI.choose({ title = "Pick", lines = { "x" }, buttons = { "A", "B", "C", "Done", "Cancel" },
+      keys = { ["1"] = 1, ["2"] = 2, ["3"] = 3 }, checks = { false, true, false }, stack = true, arm_ms = wait and 150 or nil },
+      function(i, ticks) got[#got + 1] = { i, ticks } end)
+    if wait then vim.wait(wait) end
+    local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false), "\n")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    vim.wait(150, function() return #got > 0 end, 10)
+    local answered = vim.deepcopy(got)  -- (closing it below answers cancel)
+    local open = vim.api.nvim_win_is_valid(win)
+    if open then pcall(vim.api.nvim_win_close, win, true) vim.wait(30) end
+    return answered, open, text
+  end
+  local got, _, text = ticking("<Esc>")
+  check("checks: drawn as tick boxes, the others as they are", text:find("[ ] A", 1, true) and text:find("[x] B", 1, true)
+    and text:find("  Done", 1, true) and not text:find("] Done", 1, true), text)
+  check("checks: <Esc> answers cancel, with the ticks", #got == 1 and got[1][1] == 5
+    and vim.deep_equal(got[1][2], { false, true, false }), vim.inspect(got))
+  got = ticking("<CR>")
+  check("checks: <CR> on a tick box ticks it and keeps asking", #got == 0, vim.inspect(got))
+  got = ticking("<CR>j<Space>jjx<CR>")
+  check("checks: <CR> / <Space> tick, x off a tick box does nothing, <CR> on Done answers",
+    #got == 1 and got[1][1] == 4 and vim.deep_equal(got[1][2], { true, false, false }), vim.inspect(got))
+  got = ticking("1<Tab><Tab><Tab><CR>")
+  check("checks: a tick box's key ticks it", #got == 1 and got[1][1] == 4
+    and vim.deep_equal(got[1][2], { true, true, false }), vim.inspect(got))
+  got = ticking("1", 0)
+  check("checks: arm_ms guards ticking too", #got == 0, vim.inspect(got))
+  local plain = {}
+  UI.choose({ title = "T", lines = { "x" }, buttons = { "Yes", "No" } }, function(i, t) plain = { i, t } end)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+  vim.wait(100, function() return plain[1] ~= nil end, 10)
+  check("checks: without them <CR> answers and cb gets no ticks", plain[1] == 1 and plain[2] == nil, vim.inspect(plain))
+end
+
 -- The details: a window above the popup, scrolled from it.
 do
   local details = {}
@@ -184,6 +223,46 @@ end
 check("chat: y after the moment allows", ask_chat("y") == true)
 check("chat: <Tab> to Allow, <CR> allows", ask_chat("<Tab><CR>") == true)
 check("chat: n denies", ask_chat("n") == false)
+
+-- Issue #31: the agent's own questions in the real popup, one at a time
+-- with the yes/no ones - a confirm asked meanwhile waits for the answer.
+do
+  local CHAT = require("azure-cli.chat")
+  local main = vim.api.nvim_get_current_win()
+  local picks, yes = false, nil
+  CHAT.ask_questions({ label = "#21" }, { { question = "Which colour?", header = "Colour",
+    options = { { label = "Red", description = "warm" }, { label = "Blue", description = "cool" } } } },
+    function(p) picks = p end)
+  local popup = vim.api.nvim_get_current_win()
+  local cfg = vim.api.nvim_win_get_config(popup)
+  local title = type(cfg.title) == "table" and (cfg.title[1] and cfg.title[1][1]) or cfg.title
+  local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(popup), 0, -1, false), "\n")
+  check("ask_questions: the header (whose it is) as the title, the options with their descriptions",
+    tostring(title):find("[#21] Colour", 1, true) and text:find("1. Red - warm", 1, true)
+    and text:find("Other\u{2026}", 1, true), vim.inspect({ title, text }))
+  CHAT.confirm("The agent wants to run `ls`.", function(y) yes = y end)
+  check("ask_questions: a yes/no question waits for it", vim.api.nvim_get_current_win() == popup and yes == nil)
+  feed("2")
+  check("ask_questions: 2 straight away does nothing", picks == false)
+  vim.wait(500)
+  feed("2")
+  vim.wait(200, function() return picks ~= false end, 10)
+  check("ask_questions: 2 after the moment picks Blue", vim.deep_equal(picks, { { "Blue" } }), vim.inspect(picks))
+  vim.wait(300, function() return vim.api.nvim_get_current_win() ~= main end, 10)
+  vim.wait(500)
+  feed("n")
+  vim.wait(200, function() return yes ~= nil end, 10)
+  check("ask_questions: then the waiting yes/no question asks", yes == false, tostring(yes))
+  pcall(vim.api.nvim_set_current_win, main)
+  -- Esc declines.
+  picks = false
+  CHAT.ask_questions(nil, { { question = "Q?", options = { { label = "A" } } } }, function(p) picks = p end)
+  feed("<Esc>")
+  vim.wait(200, function() return picks ~= false end, 10)
+  check("ask_questions: <Esc> declines", picks == nil, vim.inspect(picks))
+  check("ask_questions: the focus comes back", vim.api.nvim_get_current_win() == main)
+end
+
 do
   local lit
   local got = ask_chat("<CR>", function(popup)
