@@ -522,7 +522,10 @@ setmetatable(M, { __call = function(_, T)
       name = "commit_and_push_fix",
       description = "Commits the start_fix / start_story change with a message and pushes it to its branch (the "
         .. "pull request's source branch, or the story's). Give pr_id for a fix, work_item_id for a story. Asks the "
-        .. "user first, showing the diff.",
+        .. "user first, showing the diff. If the change is already committed (nothing to commit, HEAD ahead of the "
+        .. "branch), it pushes those commits. It only fast-forwards: if the branch has moved, it says so and you "
+        .. "rebase onto origin/<branch> and call it again. Never git reset --soft onto a branch HEAD isn't directly "
+        .. "on: that silently reverts the commits it doesn't have.",
       schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
         work_item_id = target_schema.properties.work_item_id, message = { type = "string" } }, required = { "message" } },
       risk = "ask",
@@ -538,11 +541,18 @@ setmetatable(M, { __call = function(_, T)
           -- The plan's tests' last run - which one, and whether it was on
           -- this change - above the diff.
           local TR = require("azure-cli.chat.tests_run")
-          local lines = vim.split(diff or "", "\n", { plain = true })
-          table.insert(lines, 1, TR.describe(TR.load(t.dir), TR.fingerprint(diff or ""),
-            { key = require("azure-cli.keys").name("diff", "run_tests"), running = TR.running(t.dir) }))
-          table.insert(lines, 2, "")
-          cb(lines)
+          local function show(shown)
+            local lines = vim.split(shown or "", "\n", { plain = true })
+            table.insert(lines, 1, TR.describe(TR.load(t.dir), TR.fingerprint(diff or ""),
+              { key = require("azure-cli.keys").name("diff", "run_tests"), running = TR.running(t.dir) }))
+            table.insert(lines, 2, "")
+            cb(lines)
+          end
+          if vim.trim(diff or "") ~= "" then return show(diff) end
+          -- Already committed (#102): what the push takes over origin's tip.
+          T.git({ "git", "-C", t.dir, "diff", "refs/remotes/origin/" .. t.branch, "HEAD" }, function(ok, out)
+            show(ok and out or diff)
+          end)
         end, T.git)
       end,
       preapproved = function(a, cb)
@@ -557,13 +567,47 @@ setmetatable(M, { __call = function(_, T)
         local t, why = locate(args)
         if not t then return done(nil, why) end
         local wt = t.dir
+        local remote = "refs/remotes/origin/" .. t.branch
+        -- Commits only what's staged: a change the agent already committed
+        -- (#102) goes straight to the push.
+        local function commit(cb)
+          T.git({ "git", "-C", wt, "diff", "--cached", "--quiet" }, function(clean)
+            if clean then return cb(false) end
+            T.git({ "git", "-C", wt, "commit", "-q", "-m", args.message }, function(cok, cout, cerr)
+              if not cok then return done(nil, "commit failed: " .. vim.trim(cerr ~= "" and cerr or cout)) end
+              cb(true)
+            end)
+          end)
+        end
+        -- Fast-forward only: origin's tip fetched fresh must be under HEAD.
+        -- cb() to push; a fetch that fails leaves it to the push itself.
+        local function check_target(committed, cb)
+          T.git({ "git", "-C", wt, "fetch", "-q", "origin", "+refs/heads/" .. t.branch .. ":" .. remote }, function(fok)
+            if not fok then return cb() end
+            T.git({ "git", "-C", wt, "rev-parse", "--short", remote }, function(_, tip)
+              T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, head)
+                tip, head = vim.trim(tip or ""), vim.trim(head or "")
+                if not committed and tip == head then
+                  return done(nil, "nothing to push: no change, and HEAD is already at origin/" .. t.branch
+                    .. " (" .. tip .. ")")
+                end
+                T.git({ "git", "-C", wt, "merge-base", "--is-ancestor", remote, "HEAD" }, function(ff)
+                  if ff then return cb() end
+                  done(nil, "the target branch moved - rebase onto it first: origin/" .. t.branch .. " is at " .. tip
+                    .. ", HEAD " .. head .. " isn't on top of it. Run git rebase origin/" .. t.branch
+                    .. ", then call commit_and_push_fix again (never git reset --soft onto it).")
+                end)
+              end)
+            end)
+          end)
+        end
         T.git({ "git", "-C", wt, "add", "-A" }, function()
-          T.git({ "git", "-C", wt, "commit", "-q", "-m", args.message }, function(cok, cout, cerr)
-            if not cok then return done(nil, "commit failed: " .. (cerr ~= "" and cerr or cout)) end
+          commit(function(committed)
+          check_target(committed, function()
             env.log("git push " .. t.branch)
             T.git({ "git", "-C", wt, "push", "-q", "origin", "HEAD:refs/heads/" .. t.branch }, function(pok, _, perr)
               if not pok then
-                return done(nil, "push failed (the branch may have moved since): " .. perr)
+                return done(nil, "push failed (the branch may have moved since): " .. vim.trim(perr or ""):gsub("%s*\n%s*", " "))
               end
               -- The plan behind it is done: the next change needs its own.
               pcall(require("azure-cli.chat.plan").mark_done,
@@ -599,6 +643,7 @@ setmetatable(M, { __call = function(_, T)
                 done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")." .. ci_step .. next_step)
               end)
             end)
+          end)
           end)
         end)
       end,

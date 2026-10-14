@@ -55,6 +55,11 @@ do
     if not CORE.PREAMBLE:find(phrase, 1, true) then missing[#missing + 1] = phrase end
   end
   check("#71 preamble: plan in start_story's read-only worktree", #missing == 0, "missing: " .. table.concat(missing, ", "))
+  -- #102: a soft reset onto a moved branch silently reverts its commits.
+  check("#102 preamble: never soft-reset onto a branch HEAD isn't on",
+    CORE.PREAMBLE:find("never soft-reset onto a branch HEAD isn't directly on", 1, true) ~= nil)
+  check("#102 commit_and_push_fix: its description warns off git reset --soft",
+    require("azure-cli.chat.tools").by_name.commit_and_push_fix.description:find("git reset --soft", 1, true) ~= nil)
   check("#71 /plan: reads a work item's code in start_story's worktree",
     CORE.DEFAULT_PROMPTS.plan:find("read-only worktree start_story gives you", 1, true) ~= nil)
   for _, board in ipairs({ "github", "azure" }) do

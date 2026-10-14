@@ -101,6 +101,42 @@ do
   local ok, why
   PLAN.pr_allowed({ work_item_ids = { 1 }, source = "host", target = "host" }, function(o, w) ok, why = o, w end)
   check("#57 pr_allowed: refuses for an existing branch", ok == false and tostring(why):find("existing branch", 1, true), why)
+
+  -- #102: a change the agent already committed is pushed, fast-forward.
+  vim.fn.writefile({ "c" }, wt .. "/c.txt")
+  sh({ "git", "-C", wt, "add", "-A" })
+  sh({ "git", "-C", wt, "commit", "-q", "-m", "c" })
+  out, perr = call("commit_and_push_fix", { work_item_id = 1, message = "c" })
+  check("#102 already committed: pushed", type(out) == "string" and out:find("^Pushed")
+    and sh({ "git", "-C", origin, "rev-parse", "host" }) == sh({ "git", "-C", wt, "rev-parse", "HEAD" }), perr)
+  out, perr = call("commit_and_push_fix", { work_item_id = 1, message = "again" })
+  check("#102 nothing to commit, nothing ahead: says so", out == nil and tostring(perr):find("nothing to push", 1, true), perr)
+
+  -- #102: origin moved under it - the rebase message, nothing pushed or reset.
+  sh({ "git", "-C", seed, "fetch", "-q" })
+  sh({ "git", "-C", seed, "checkout", "-q", "-B", "host", "origin/host" })
+  vim.fn.writefile({ "b" }, seed .. "/b.txt")
+  sh({ "git", "-C", seed, "add", "-A" })
+  sh({ "git", "-C", seed, "commit", "-q", "-m", "moved" })
+  sh({ "git", "-C", seed, "push", "-q", "origin", "host" })
+  local moved = sh({ "git", "-C", origin, "rev-parse", "--short", "host" })
+  vim.fn.writefile({ "d" }, wt .. "/d.txt")
+  out, perr = call("commit_and_push_fix", { work_item_id = 1, message = "d" })
+  local mine = sh({ "git", "-C", wt, "rev-parse", "--short", "HEAD" })
+  check("#102 target moved: the rebase message, naming the branch and both commits", out == nil
+    and tostring(perr):find("the target branch moved - rebase onto it first", 1, true)
+    and tostring(perr):find("origin/host is at " .. moved, 1, true) and tostring(perr):find("HEAD " .. mine, 1, true)
+    and not tostring(perr):find("\n", 1, true), perr)
+  check("#102 target moved: nothing pushed", sh({ "git", "-C", origin, "rev-parse", "--short", "host" }) == moved)
+  check("#102 target moved: the commit is kept, not reset", sh({ "git", "-C", wt, "log", "-1", "--format=%s" }) == "d"
+    and sh({ "git", "-C", wt, "status", "--porcelain" }) == "")
+
+  -- Rebased onto it, the same call pushes.
+  sh({ "git", "-C", wt, "rebase", "-q", "origin/host" })
+  out, perr = call("commit_and_push_fix", { work_item_id = 1, message = "d" })
+  check("#102 rebased: pushed on top of the moved branch", type(out) == "string"
+    and sh({ "git", "-C", origin, "rev-parse", "host" }) == sh({ "git", "-C", wt, "rev-parse", "HEAD" })
+    and vim.fn.filereadable(wt .. "/b.txt") == 1, perr)
 end
 
 -- #59: a new branch is made and checked out, tracking origin.
