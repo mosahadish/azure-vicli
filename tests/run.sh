@@ -49,7 +49,8 @@ cd "$REPO_ROOT"
 for v in $(env | sed -n 's/^\(AZVICLI_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 # Nor the parent Neovim's runtime: an nvim started from a :terminal or an
 # agent would otherwise use that one's VIMRUNTIME, whatever nvim PATH finds.
-unset VIM VIMRUNTIME NVIM MYVIMRC
+# NVIM_LOG_FILE too, so a run from inside Neovim sees what CI sees.
+unset VIM VIMRUNTIME NVIM MYVIMRC NVIM_LOG_FILE
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -348,7 +349,11 @@ run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
 # A test started straight from a polluted environment - XDG dirs at a
 # sentinel "real" directory, the parent nvim's runtime vars, the chat's
 # AZVICLI_CHAT_* - must not write a byte there (tests/sandbox.lua).
+# The outer nvim creates its log at startup, before any test code runs, so
+# it gets NVIM_LOG_FILE outside $REAL - as an nvim started from Neovim
+# would; test-sandbox.lua checks that file doesn't reach the sandbox.
 REAL="$TMP/real"
+OUTER_LOG="$TMP/outer-nvim.log"
 mkdir -p "$REAL/data" "$REAL/state" "$REAL/cache" "$REAL/config" "$TMP/bogus-runtime"
 sentinel() {
   local name="$1"
@@ -357,6 +362,7 @@ sentinel() {
   out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX \
     XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" \
     VIM="$TMP/bogus-runtime" VIMRUNTIME="$TMP/bogus-runtime" NVIM="$TMP/bogus-nvim.sock" MYVIMRC="$REAL/config/nvim/init.lua" \
+    NVIM_LOG_FILE="$OUTER_LOG" \
     AZVICLI_CHAT_AGENT=leak AZVICLI_CHAT_BRIDGE=leak AZVICLI_CHAT_TOKEN=leak \
     timeout 120 "$@" 2>&1)"
   rc=$?
@@ -613,7 +619,7 @@ if command -v nvim >/dev/null 2>&1; then
   # A script loaded into an already-running nvim can't start again in a
   # sandbox of its own, so outside one it refuses (and touches nothing).
   out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" \
-    XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" \
+    XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" NVIM_LOG_FILE="$OUTER_LOG" \
     timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-boards.lua" -c 'qa!' 2>&1)"
   rc=$?
   left="$(find "$REAL" -mindepth 2 2>/dev/null)"

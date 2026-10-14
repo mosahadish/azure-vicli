@@ -10,8 +10,11 @@
 -- Unless the test already runs in a sandbox (AZVICLI_TEST_SANDBOX is set
 -- and XDG_DATA/STATE/CACHE/CONFIG_HOME are all under it), this runs the
 -- same command line again with fresh XDG directories in a temp dir and
--- without VIM, VIMRUNTIME, NVIM, MYVIMRC or any AZVICLI_CHAT_*, passes its
--- output through, removes the temp dir and exits with its exit code. Doing
+-- without VIM, VIMRUNTIME, NVIM, MYVIMRC, NVIM_LOG_FILE or any
+-- AZVICLI_CHAT_*, passes its output through, removes the temp dir and exits
+-- with its exit code. (nvim exports NVIM_LOG_FILE to its children: kept,
+-- the sandboxed nvim would log to the parent's file, in the real state
+-- dir, instead of under its own XDG_STATE_HOME.) Doing
 -- it in-process is not enough: nvim picks its runtime and shada at startup,
 -- and several modules work out their stdpath("data") files when required.
 --
@@ -81,7 +84,7 @@ return function(opts)
   for _, a in ipairs(argv()) do cmd[#cmd + 1] = quote(a) end
   local d = quote(dir)
   local script = table.concat({
-    "unset VIM VIMRUNTIME NVIM MYVIMRC",
+    "unset VIM VIMRUNTIME NVIM MYVIMRC NVIM_LOG_FILE",
     [[for v in $(env | sed -n 's/^\(AZVICLI_CHAT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done]],
     "mkdir -p " .. d .. "/data " .. d .. "/state " .. d .. "/cache " .. d .. "/config",
     "export AZVICLI_TEST_SANDBOX=" .. d .. " XDG_DATA_HOME=" .. d .. "/data XDG_STATE_HOME=" .. d .. "/state"

@@ -34,6 +34,10 @@ local chat = {}
 for k in pairs(env) do if k:match("^AZVICLI_CHAT_") then chat[#chat + 1] = k end end
 check("no AZVICLI_CHAT_* reaches what the test starts", #chat == 0, table.concat(chat, " "))
 check("no MYVIMRC", env.MYVIMRC == nil, env.MYVIMRC)
+-- nvim sets NVIM_LOG_FILE for itself (under the sandbox's state dir); the
+-- parent's must not get through.
+check("NVIM_LOG_FILE is unset or in the sandbox", env.NVIM_LOG_FILE == nil
+  or (under(env.NVIM_LOG_FILE, root) and not (real and under(env.NVIM_LOG_FILE, real))), env.NVIM_LOG_FILE)
 
 local data
 if type(vim) == "table" and vim.fn then
