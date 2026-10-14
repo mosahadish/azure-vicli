@@ -234,6 +234,38 @@ function M.restore_plans()
       end
     end
   end
+  -- A plan no agent's conversation has (the main chat wrote it before it
+  -- had to hand planning on, or its conversation was pruned): an idle one
+  -- of its own, so the Agents screen lists it and approving it goes to an
+  -- agent rather than the main chat (#86). Finished ones stay as they are.
+  local adopted = {}
+  for _, f in ipairs(vim.fn.glob(PLAN.root() .. "/*.json", false, true)) do
+    local key = vim.fn.fnamemodify(f, ":t:r")
+    if (key:match("^wi%-%d+$") or key:match("^pr%-%d+$")) and not main.convs[key] then
+      local plan = PLAN.load(key)
+      if plan and type(plan.target) == "table"
+          and (plan.status == "draft" or plan.status == "changes_requested" or plan.status == "approved") then
+        local label = PLAN.target_label(plan.target)
+        local c = M.conversation(key, { label = label, target = plan.target, title = plan.title })
+        c.entries[#c.entries + 1] = { role = "note", text = "This plan was written in the main chat, before planning "
+          .. "moved to agents. " .. (plan.status == "approved"
+            and "Tell this agent to carry it out (or ask the main chat to message_agent it), "
+            or "Approve it (gA) to hand it to an agent, ")
+          .. "or ask the main chat to discard_plan it." }
+        adopted[#adopted + 1] = label
+      end
+    end
+  end
+  if #adopted > 0 then
+    table.sort(adopted)
+    notify("Plan" .. (#adopted == 1 and " " or "s ") .. table.concat(adopted, ", ") .. " had no agent - "
+      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now: approve to hand on, or discard_plan.")
+  end
+end
+
+-- Forgets plan `key`'s conversation (discard_plan); its saved file stays.
+function M.drop_conversation(key)
+  MAIN().convs[key] = nil
 end
 
 local function restore_once()
@@ -1062,6 +1094,9 @@ local function tool_env(entry, conv)
     -- showing another one right now (a plan's agent working in the
     -- background): such a call shouldn't pull you into a tab.
     conv = conv,
+    -- The main chat's own calls come without a conversation (chat/run.lua's
+    -- BRIDGE.handler); planning and code changes refuse them (#86).
+    main_chat = conv == nil,
     background = function()
       return conv ~= nil and STATE() ~= conv and not (popup and MAIN().convs[popup.key] == conv)
     end,

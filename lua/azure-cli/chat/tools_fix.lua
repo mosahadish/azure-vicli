@@ -321,6 +321,8 @@ setmetatable(M, { __call = function(_, T)
       schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
       risk = "write",
       run = function(args, env, done)
+        local refused = require("azure-cli.chat.plan").main_chat_refusal(env, "start_fix", { pr_id = args.pr_id })
+        if refused then return done(nil, refused) end
         local planned, why = require("azure-cli.chat.plan").gate({ pr_id = args.pr_id })
         if not planned then return done(nil, why) end
         local pr, clone = need_clone(args, done)
@@ -382,6 +384,8 @@ setmetatable(M, { __call = function(_, T)
       run = function(args, env, done)
         local id = args.work_item_id
         local PLAN = require("azure-cli.chat.plan")
+        local refused = PLAN.main_chat_refusal(env, "start_story", { work_item_id = id })
+        if refused then return done(nil, refused) end
         local planned, why = PLAN.gate({ work_item_id = id })
         -- Not approved yet: a read-only worktree to plan in (#71) - unless
         -- the plan was carried out already, which needs a new one first.

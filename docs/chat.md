@@ -713,8 +713,15 @@ changes to agents rather than doing them itself:
   `start_agents` takes `board` like the other work-item tools, and each
   agent reads its item from that board; without it, the board a list showed
   the item on, else the one you're looking at.
-- It's a strong default, not a lock: ask the main chat to do something
-  itself and it will.
+- It's a lock, not a default: `submit_plan`, `start_story` and `start_fix`
+  refuse the main chat's calls and tell it to `start_agents` instead, even
+  when you ask it to do the work itself. To work hands-on, talk to the
+  agent in its own conversation (`gq` on its row).
+- **A plan with no agent** - one the main chat wrote before this, or whose
+  conversation was pruned - gets an idle agent conversation of its own when
+  the plans are restored, so the Agents screen lists it. Approve it (`gA`)
+  to hand it to that agent, or ask the main chat to `discard_plan` it (it
+  asks first; the files move to `plans/discarded/`).
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
   tab. The main chat can't approve a plan, and an agent can't start or
   message other agents.
@@ -799,7 +806,8 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | Tool | What it does | Asks you first? |
 |---|---|---|
 | `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item (on `board`) or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
-| `submit_plan`, `get_plan` | Shows you its plan for a PR or work item (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions | - |
+| `submit_plan`, `get_plan` | Shows you its plan for a PR or work item (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions. `submit_plan` (like `start_fix` and `start_story`) is a plan agent's only: the main chat's call is refused | - |
+| `discard_plan` | The main chat only: discards a plan no agent has worked on (one the main chat wrote itself); its files move to `plans/discarded/` | yes |
 | `current_view` | What you're looking at when you sent the message (see above) | - |
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details - any PR in the project by id, not only your dashboard's (after it, the other PR tools work for that PR too) | - |
 | `find_implementations`, `find_definition` | Across a whole repository (the fix/story worktree, a PR's source branch, or a local clone): the types implementing an interface or deriving from a class, and the ones deriving from those; where a type or member is declared. Text-based (`git grep` and declaration patterns for C#, Java, TypeScript, Kotlin, Python, ...), no build needed | - |

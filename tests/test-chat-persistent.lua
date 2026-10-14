@@ -152,6 +152,41 @@ do
   CHAT.new_chat(true)
 end
 
+-- #86: a plan no agent's conversation has (the main chat wrote it) gets an
+-- idle one on restore - the Agents screen lists it, and approving it goes
+-- to that agent, told the plan is its now. A finished one is left alone.
+do
+  local PLAN = require("azure-cli.chat.plan")
+  PLAN.save({ key = "wi-8601", target = { work_item_id = 8601 }, title = "Orphan", status = "draft",
+    revisions = { { by = "agent", markdown = "# Orphan" } }, threads = {} })
+  PLAN.save({ key = "wi-8602", target = { work_item_id = 8602 }, title = "Finished", status = "done",
+    revisions = { { by = "agent", markdown = "# Done" } }, threads = {} })
+  STATE.chat.convs, STATE.chat.plans_restored = {}, nil
+  CHAT.restore_plans()
+  local c = CHAT.find_conversation("wi-8601")
+  check("#86 restore: an orphan plan gets a conversation of its own, with a note",
+    c and #c.entries == 1 and c.entries[1].role == "note" and c.entries[1].text:find("discard_plan", 1, true)
+      and c.label == "#8601" and c.title == "Orphan", c and vim.inspect(c.entries))
+  check("#86 restore: a finished one is left alone", CHAT.find_conversation("wi-8602") == nil)
+  local rows = require("azure-cli.chat.agents_view").rows(CHAT.conversations(), {}, PLAN.load, os.time())
+  local row
+  for _, r in ipairs(rows) do if r.key == "wi-8601" then row = r end end
+  check("#86 the Agents screen lists it as waiting for you", row and row.waiting and row.state:find("plan waits for you", 1, true),
+    vim.inspect(row and row.state))
+  local orig_send, sent = CHAT.send, nil
+  CHAT.send = function(text, o) sent = { text = text, conv = o.conv } return {} end
+  PLAN.approve("wi-8601")
+  CHAT.send = orig_send
+  check("#86 approving it goes to its own agent, told the plan is its now",
+    sent and sent.conv == c and sent.text:find("it's yours now - read it with get_plan (work_item_id 8601)", 1, true)
+      and sent.text:find("I approve the plan for #8601", 1, true), sent and sent.text)
+  for _, k in ipairs({ "wi-8601", "wi-8602" }) do
+    vim.fn.delete(PLAN.root() .. "/" .. k .. ".json")
+    vim.fn.delete(PLAN.root() .. "/" .. k .. ".md")
+  end
+  STATE.chat.convs = {}
+end
+
 -- Issue #29: what you send from the input box while the agent answers is
 -- queued, shown as queued, and sent in order once the answer is done -
 -- each a turn of its own; dd cancels one, cc edits one in place, and after

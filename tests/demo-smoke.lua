@@ -1561,6 +1561,25 @@ end)
 -- push, asked first), board tools with an undo from the audit log (gH, u),
 -- gr drafting an answer as a reply, switching agents (gM) and going back to
 -- an earlier conversation (gh).
+-- #86: planning and changing code are a plan agent's - the main chat's
+-- submit_plan / start_story / start_fix are refused. The flows below that
+-- do them run in that agent's own conversation, shown in this tab's panel
+-- (as a plan's tab shows its agent's); as_main() goes back, dropping it so
+-- the Agents screen's own checks start from none.
+local function as_agent(key, fields)
+  local CHAT = require("azure-cli.chat")
+  local c = CHAT.conversation(key, fields)
+  vim.t.azure_cli_plan_key = key
+  CHAT.sync_active()
+  return c
+end
+local function as_main(tab, key)
+  local CHAT = require("azure-cli.chat")
+  if tab and vim.api.nvim_tabpage_is_valid(tab) then pcall(vim.api.nvim_tabpage_del_var, tab, "azure_cli_plan_key") end
+  if key then CHAT.drop_conversation(key) end
+  CHAT.sync_active()
+end
+
 section("CHATPLUS", function()
   local CHAT = require("azure-cli.chat")
   local STATE = require("azure-cli.state")
@@ -1589,17 +1608,18 @@ section("CHATPLUS", function()
   local function wins() return st.wins[vim.api.nvim_get_current_tabpage()] end
   local function ask(msg)
     local w = wins()
-    local n = #st.entries
+    local s = CHAT._.state()  -- the main chat, or the plan agent's (as_agent)
+    local n = #s.entries
     vim.api.nvim_set_current_win(w.input)
     vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(w.input), 0, -1, false, { msg })
     vim.cmd("stopinsert")
     feed("<CR>")
     local e
     local okw = vim.wait(40000, function()
-      e = st.entries[#st.entries]
-      return #st.entries >= n + 2 and e.role == "agent" and e.status ~= "running"
+      e = s.entries[#s.entries]
+      return #s.entries >= n + 2 and e.role == "agent" and e.status ~= "running"
     end, 100)
-    if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(st.entries[#st.entries]) end
+    if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(s.entries[#s.entries]) end
     return e
   end
   local function need(e, why, ...)
@@ -1712,6 +1732,7 @@ section("CHATPLUS", function()
   -- The fix flow: the push asks first ("Allow"), then lands on the branch.
   answer = "Allow"
   local fix_tab = vim.api.nvim_get_current_tabpage()
+  as_agent("pr-101", { target = { pr_id = 101 }, label = "PR !101" })
   e, why = ask("fix it please")
   if not need(e, why, "start_fix:", "show_fix:", "commit_and_push_fix: Pushed") then return end
   -- show_fix opened the change in its own tab, like the reviewer: files on
@@ -1791,7 +1812,10 @@ section("CHATPLUS", function()
   end
 
   -- The story flow: a branch from main linked to #3001, a worktree of it,
-  -- the change pushed there (asks first - answer is still "Allow").
+  -- the change pushed there (asks first - answer is still "Allow"), by
+  -- #3001's own agent.
+  CHAT.drop_conversation("pr-101")
+  as_agent("wi-3001", { target = { work_item_id = 3001 }, label = "#3001" })
   e, why = ask("implement the story")
   if not need(e, why, "start_story: {", "Already started", "show_fix:", "commit_and_push_fix: Pushed", "create_pull_request",
     "delete_fix_file: Deleted SCRATCH.md", "delete_fix_file: Deleted README.md", "outside.txt isn't inside") then return end
@@ -1810,6 +1834,7 @@ section("CHATPLUS", function()
   if not subject:find("Implement the login throttle story", 1, true) or not content:find("IMPLEMENTED-BY-AGENT", 1, true) then
     return fail("the story wasn't pushed: " .. subject)
   end
+  as_main(fix_tab, "wi-3001")
 
   -- The fix pushed to !101 (and the story's new PR) are watched for new
   -- comments, dashboard or not: Alice answering is said in the chat.
@@ -1939,7 +1964,10 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     local issue_tab = vim.api.nvim_get_current_tabpage()
     feed("gq")
     answer = "Allow"
+    -- #12's own agent: it makes the story branch (start_story).
+    as_agent("wi-12", { target = { work_item_id = 12 }, label = "#12" })
     e, why = ask("work the issue")
+    as_main(issue_tab, "wi-12")
     if not need(e, why, "view board: github, item 12", "list_work_items: [", "\"board\":\"github\"",
         "\"iteration\":\"Iteration 2\"", "\"iteration_id\":\"it2\"", "\"iteration\":\"Demo\\\\Sprint 42\"",
         "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
@@ -2123,8 +2151,22 @@ section("PLAN", function()
     return okw and e or nil
   end
   local n = #st.entries
+  -- #86: the main chat can't plan - submit_plan and start_story refuse it,
+  -- pointing at start_agents, and no plan is written.
   CHAT.send("make a plan for #3002")
   local e = answered(n)
+  if not e then return fail("no answer to the main chat's plan request: " .. vim.inspect(st.entries[#st.entries])) end
+  for _, s in ipairs({ "submit_plan isn't available in the main chat", "start_story isn't available in the main chat",
+    "Call start_agents with work_item_ids = { 3002 }" }) do
+    if not e.text:find(s, 1, true) then return fail("\"" .. s .. "\" missing from the main chat's answer:\n" .. e.text) end
+  end
+  if PLAN.load("wi-3002") then return fail("the main chat's refused submit_plan still wrote a plan for #3002") end
+  -- The plan's own agent plans it.
+  local plan_home = vim.api.nvim_get_current_tabpage()
+  st = as_agent("wi-3002", { target = { work_item_id = 3002 }, label = "#3002", title = "Lockout reason codes" })
+  n = #st.entries
+  CHAT.send("make a plan for #3002", { conv = st })
+  e = answered(n)
   if not e then return fail("no answer to the plan request: " .. vim.inspect(st.entries[#st.entries])) end
   -- #71: before approval start_story gives a read-only worktree to plan in,
   -- both times, and makes no branch (the answer's JSON writes / as \/).
@@ -2535,6 +2577,7 @@ section("PLAN", function()
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(v.tab))
+  as_main(plan_home, "wi-3002")
   smoke_ok("PLAN")
 end)
 -- Several agents at once: gP on two work items of the board starts one

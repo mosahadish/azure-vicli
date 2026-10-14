@@ -1099,6 +1099,78 @@ do
   check("hunks: keys differ", parsed.hunks[1].key ~= parsed.hunks[2].key)
 end
 
+-- --- #86: the main chat hands planning to agents ------------------------------------------------
+do
+  local CHAT = require("azure-cli.chat")
+  local TOOLS = require("azure-cli.chat.tools")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local CORE = require("azure-cli.chat.core")
+  local function call(name, args, env)
+    local res, err, finished
+    TOOLS.by_name[name].run(args, env, function(r, e) res, err, finished = r, e, true end)
+    vim.wait(5000, function() return finished end, 10)
+    return res, err
+  end
+  local function exists(key) return vim.fn.filereadable(PLAN.root() .. "/" .. key .. ".json") == 1
+    or vim.fn.filereadable(PLAN.root() .. "/" .. key .. ".md") == 1 end
+  local worktrees = function() return #vim.fn.glob(FIX.root() .. "/*", false, true) end
+  local main_env = CHAT._.tool_env({ tools = {} }, nil)
+  check("#86 tool_env: the main chat's calls say so", main_env.main_chat == true)
+  local before = worktrees()
+  local provider_calls = 0
+  local orig_provider = TOOLS.provider
+  TOOLS.provider = function(_, _, cb) provider_calls = provider_calls + 1 cb(false, "", "no") end
+  local md = "# T\n\n## Goal\nx\n\n## Approach\nx\n\n## Files\n- `a`\n\n## Risks\nx\n\n## Test plan\nx\n\n## Open questions\nNone"
+  local _, err = call("submit_plan", { work_item_id = 99001, title = "T", markdown = md }, main_env)
+  check("#86 submit_plan from the main chat: refused, start_agents named",
+    err and err:find("start_agents with work_item_ids = { 99001 }", 1, true) and err:find("main chat", 1, true), err)
+  check("#86 submit_plan from the main chat: no plan file", not exists("wi-99001"))
+  _, err = call("start_story", { work_item_id = 99001, repo = "o/repo", from = "main", name = "f" }, main_env)
+  check("#86 start_story from the main chat: refused, start_agents named",
+    err and err:find("start_story isn't available in the main chat", 1, true)
+      and err:find("work_item_ids = { 99001 }", 1, true), err)
+  _, err = call("start_fix", { pr_id = 99002 }, main_env)
+  check("#86 start_fix from the main chat: refused, start_agents named",
+    err and err:find("start_fix isn't available", 1, true) and err:find("pr_id = 99002", 1, true), err)
+  check("#86 none of them made a plan, a worktree or a server call",
+    not exists("wi-99001") and not exists("pr-99002") and worktrees() == before and provider_calls == 0,
+    vim.inspect({ worktrees(), before, provider_calls }))
+  TOOLS.provider = orig_provider
+
+  -- A plan's own agent: as before.
+  local conv = CHAT.conversation("wi-99001", { target = { work_item_id = 99001 }, label = "#99001" })
+  local agent_env = CHAT._.tool_env({ tools = {} }, conv)
+  check("#86 tool_env: a plan agent's calls aren't the main chat's", agent_env.main_chat == false)
+  local res
+  res, err = call("submit_plan", { work_item_id = 99001, title = "T", markdown = md }, agent_env)
+  check("#86 submit_plan from a plan agent: written as before", res and res.revision == 1 and exists("wi-99001"), err)
+  _, err = call("start_story", { work_item_id = 99001, repo = "nowhere/repo", from = "main", name = "f" }, agent_env)
+  check("#86 start_story from a plan agent: past the guard", err and not err:find("start_agents", 1, true), err)
+  _, err = call("start_fix", { pr_id = 99002 }, agent_env)
+  check("#86 start_fix from a plan agent: past the guard", err and not err:find("start_agents", 1, true), err)
+  check("#86 a bare env (tests, no conversation info) isn't the main chat",
+    PLAN.main_chat_refusal({}, "submit_plan", { work_item_id = 1 }) == nil)
+
+  -- The main chat's prompt: no "unless asked" any more.
+  check("#86 ORCHESTRATOR: no do-it-yourself escape",
+    not CORE.ORCHESTRATOR:find("only do it here when the user asks", 1, true)
+      and CORE.ORCHESTRATOR:find("submit_plan, start_story and start_fix don't work here", 1, true) ~= nil)
+
+  -- discard_plan: only an orphan's, only from the main chat.
+  conv.entries = { { role = "you", text = "/plan #99001" }, { role = "agent", text = "planned" } }
+  _, err = call("discard_plan", { work_item_id = 99001 }, main_env)
+  check("#86 discard_plan: refused once an agent worked on it", err and err:find("an agent has worked on", 1, true)
+    and exists("wi-99001"), err)
+  conv.entries = { { role = "note", text = "This plan was written in the main chat" } }
+  _, err = call("discard_plan", { work_item_id = 99001 }, agent_env)
+  check("#86 discard_plan: a plan agent can't", err and err:find("only the main chat", 1, true) and exists("wi-99001"), err)
+  res, err = call("discard_plan", { work_item_id = 99001 }, main_env)
+  local moved = vim.fn.glob(PLAN.root() .. "/discarded/wi-99001-*", false, true)
+  check("#86 discard_plan: an orphan's files move to plans/discarded/, its conversation goes",
+    res and not exists("wi-99001") and #moved == 2 and CHAT.find_conversation("wi-99001") == nil, vim.inspect({ res, err, moved }))
+  for _, f in ipairs(moved) do vim.fn.delete(f) end
+end
+
 -- --- the azure-vicli palette in plugin mode ----------------------------------------------------
 do
   require("azure-cli").setup({ ui = { palette = "azure-vicli" } })

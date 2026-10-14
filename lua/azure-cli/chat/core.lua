@@ -876,8 +876,9 @@ function M.tool_paths(tool)
 end
 
 -- The main chat's part (compose's opts.orchestrator): it coordinates the
--- agents rather than planning and changing code itself - unless asked to.
-M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing code - implementing a work item, fixing a pull request's review comments - is done by agents of its own, one per work item or PR, each in its own conversation, and the user approves each plan. So for that, start agents with start_agents rather than planning or editing here yourself; only do it here when the user asks you to do it yourself. list_agents shows what each agent is doing and whose plan waits for the user; get_plan reads a plan; message_agent passes the user's instructions on to an agent. Approving a plan is the user's, never yours.]]
+-- agents rather than planning and changing code itself: submit_plan,
+-- start_story and start_fix refuse its calls (#86).
+M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing code - implementing a work item, fixing a pull request's review comments - is done by agents of its own, one per work item or PR, each in its own conversation, and the user approves each plan. So for that, start agents with start_agents: submit_plan, start_story and start_fix don't work here, even when the user asks you to plan or change code yourself - say an agent does it, and start one (their words go in its instructions). list_agents shows what each agent is doing and whose plan waits for the user; get_plan reads a plan; message_agent passes the user's instructions on to an agent. Approving a plan is the user's, never yours.]]
 
 -- The text one message sends: the preamble (first message, or every
 -- replayed one), the earlier conversation (replay only), the current view,

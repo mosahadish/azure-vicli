@@ -339,6 +339,15 @@ function M.ask_approval(keys, cb)
   end)
 end
 
+-- Whether conversation `conv` has had no turn yet: only notes, or none -
+-- an orphan plan's (chat/init.lua's restore_plans).
+local function untouched(conv)
+  for _, e in ipairs(conv and conv.entries or {}) do
+    if e.role ~= "note" then return false end
+  end
+  return true
+end
+
 -- Approves plan `key`: its status, the run log, and the go-ahead (with
 -- your answers, and your version if you edited it) to the agent that
 -- wrote it - its own conversation when it has one (a board agent), else
@@ -358,7 +367,14 @@ function M.approve(key, allow_push)
   VIEW().changed(rec)
   local CHAT = require("azure-cli.chat")
   local conv = CHAT.find_conversation(key)
-  local entry = CHAT.send(M.approval_message(rec, current_lines(rec)), {
+  local text = M.approval_message(rec, current_lines(rec))
+  -- An orphan plan's agent (#86) starts with this: it knows nothing yet.
+  if conv and untouched(conv) then
+    text = "This plan was written before it had an agent; it's yours now - read it with get_plan ("
+      .. (rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id)))
+      .. ") and its " .. (rec.target.work_item_id and "work item" or "pull request") .. " first.\n\n" .. text
+  end
+  local entry = CHAT.send(text, {
     conv = conv, view_win = VIEW().plan_win(key),
     display = "Approved the plan for " .. M.target_label(rec.target)
       .. (rec.allow_push and " (it may push and open the PR once the tests pass)." or "."),
@@ -375,6 +391,20 @@ end
 
 -- ---------------------------------------------------------------------------
 -- The gate (chat/tools_fix.lua).
+
+-- nil, or why tool `name` refuses a call from the main chat (env.main_chat,
+-- chat/init.lua's tool_env): plans and code changes are an agent's, one
+-- per work item or PR (#86). `target` = { work_item_id } or { pr_id }.
+function M.main_chat_refusal(env, name, target)
+  if not (env and env.main_chat) then return nil end
+  local which = (target and target.pr_id) and ("pr_id = " .. tostring(target.pr_id))
+    or (target and target.work_item_id) and ("work_item_ids = { " .. tostring(target.work_item_id) .. " }")
+    or "work_item_ids or pr_id"
+  return name .. " isn't available in the main chat: planning and changing code is done by an agent of its own, one "
+    .. "per work item or PR, so its plan, worktree and conversation stay together and show on the Agents screen. "
+    .. "Call start_agents with " .. which .. " instead (pass board as you would here, and what the user asked as "
+    .. "`instructions`)."
+end
 
 function M.gate(target)
   return M.gate_check(M.load(M.key(target)), config().plan_first, target)
@@ -505,6 +535,8 @@ function M.tools(T)
       risk = "write",
       run = function(args, env, done)
         local target = target_of(args)
+        local refused = M.main_chat_refusal(env, "submit_plan", target)
+        if refused then return done(nil, refused) end
         if not target then return done(nil, "give work_item_id or pr_id") end
         if type(args.markdown) ~= "string" or vim.trim(args.markdown) == "" then return done(nil, "the plan is empty") end
         local key = M.key(target)
@@ -558,6 +590,42 @@ function M.tools(T)
         done({ title = rec.title, status = rec.status, revision = #rec.revisions,
           edited_by_user = rev and rev.by == "you" or false,
           markdown = table.concat(current_lines(rec), "\n"), questions = qs })
+      end,
+    },
+    {
+      name = "discard_plan",
+      description = "The main chat only: discards a plan no agent has worked on - one written in the main chat "
+        .. "before planning moved to agents (the Agents screen says so). Its files move to plans/discarded/. A plan "
+        .. "an agent wrote or worked on can't be discarded this way.",
+      schema = { type = "object", properties = target_props },
+      risk = "ask",
+      confirm = function(a)
+        return "discard the plan for " .. M.target_label(target_of(a) or {}) .. " (its files move to plans/discarded/)"
+      end,
+      run = function(args, env, done)
+        if not (env and env.main_chat) then return done(nil, "only the main chat discards plans") end
+        local target = target_of(args)
+        if not target then return done(nil, "give work_item_id or pr_id") end
+        local key = M.key(target)
+        if not M.load(key) then return done(nil, "no plan for " .. M.target_label(target)) end
+        local CHAT = require("azure-cli.chat")
+        local conv = CHAT.find_conversation(key)
+        if conv and (conv.running or not untouched(conv)) then
+          return done(nil, "an agent has worked on the plan for " .. M.target_label(target)
+            .. " - it isn't discarded this way (message_agent it, or the user reviews it)")
+        end
+        local dir = M.root() .. "/discarded"
+        vim.fn.mkdir(dir, "p")
+        local stamp = os.date("%Y%m%d-%H%M%S")
+        for _, ext in ipairs({ ".json", ".md" }) do
+          local from = M.root() .. "/" .. key .. ext
+          if vim.fn.filereadable(from) == 1 and vim.fn.rename(from, dir .. "/" .. key .. "-" .. stamp .. ext) ~= 0 then
+            return done(nil, "couldn't move " .. from)
+          end
+        end
+        if index then index[key] = nil end
+        CHAT.drop_conversation(key)
+        done("Discarded the plan for " .. M.target_label(target) .. " (moved to " .. dir .. ").")
       end,
     },
   }
