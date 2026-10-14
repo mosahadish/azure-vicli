@@ -474,6 +474,17 @@ function M.unanswered(lines, threads)
   return n
 end
 
+-- How many of your answers to the plan's open questions (`lines`) haven't
+-- gone to the agent yet - neither with a change request (gR) nor with the
+-- approval. One on a line that's no longer a question doesn't count. Pure.
+function M.unsent_answers(lines, threads)
+  local n = 0
+  for _, q in ipairs(M.question_status(lines, threads)) do
+    if q.answer and q.answer.status ~= "sent" then n = n + 1 end
+  end
+  return n
+end
+
 -- Where ]t / [t stop in the plan (`lines`): every open question, answered
 -- or not, and every thread's line, sorted, each once; a thread past the
 -- end is left out. Pure.

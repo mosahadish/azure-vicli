@@ -23,7 +23,7 @@ local function last_rev(rec) return rec.revisions[#rec.revisions] end
 local view = nil  -- { tab, list_win, plan_win, list_buf, plan_buf, key, rec, sections, rows, width }
 local views = {}  -- plan key -> its view
 local by_buf = {} -- buffer -> the view it belongs to
-local goto_code, unanswered  -- forward
+local goto_code, unanswered, unsent  -- forward
 local list_ns = vim.api.nvim_create_namespace("azure_cli_plan_list")
 
 local function valid_win(w) return w and vim.api.nvim_win_is_valid(w) end
@@ -38,7 +38,7 @@ local LIST_HELP = {
   { "prev_thread", "move the plan to the previous open question or thread" },
   "Decide",
   { "approve", "approve it - the agent goes ahead" },
-  { "revise", "ask for changes (you say what)" },
+  { "revise", "ask for changes or send your answers (you say what; your unsent answers go along)" },
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
   "See",
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
@@ -60,7 +60,10 @@ local PLAN_HELP = {
     return "queue a change on this line (in visual mode: these lines) - " .. KEYS().name("plan", "revise")
       .. " sends them together"
   end },
-  { "answer", "answer the open question under the cursor - sent along when you approve" },
+  { "answer", function()
+    return "answer the open question under the cursor - " .. KEYS().name("plan", "revise")
+      .. " sends your answers (approving does too)"
+  end },
   { "expand_thread", "show all of the answer under this line / fold it again" },
   { "view_thread", "the question and answer in a popup" },
   { "delete_thread", "drop the queued change under this line (asks first), or forget the question - a sent change stays" },
@@ -68,7 +71,8 @@ local PLAN_HELP = {
   "Decide",
   { "approve", "approve it - the agent goes ahead" },
   { "revise", function()
-    return "ask for changes: what you write, plus the ones queued on lines (" .. KEYS().name("plan", "request") .. ")"
+    return "ask for changes or send your answers: what you write, plus the changes queued on lines ("
+      .. KEYS().name("plan", "request") .. ") and your unsent answers"
   end },
   { "open_file", "edit the plan by hand" },
   "See",
@@ -209,6 +213,10 @@ local function set_winbars()
   if open_q > 0 and rec.status ~= "approved" and rec.status ~= "done" then
     tags[#tags + 1] = "[" .. open_q .. " to answer]"
   end
+  local not_sent = unsent()
+  if not_sent > 0 and rec.status ~= "approved" and rec.status ~= "done" then
+    tags[#tags + 1] = "[" .. not_sent .. " answer" .. (not_sent == 1 and "" or "s") .. " unsent]"
+  end
   if view.changes then tags[#tags + 1] = "[\u{00B1} since rev " .. (#rec.revisions - 1) .. "]" end
   if valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. PLAN().target_label(rec.target),
@@ -247,6 +255,20 @@ local function render_list()
   local st, st_hl = PLAN().status_label(rec)
   if rec.allow_push and rec.status == "approved" then st = st .. " \u{00B7} may push" end
   add(" " .. st .. (#rec.revisions > 1 and ("  \u{00B7} revision " .. #rec.revisions) or ""), st_hl)
+  local decided = rec.status == "approved" or rec.status == "done"
+  -- Answers you gave that the agent hasn't seen yet, and the key that sends them.
+  local not_sent = unsent()
+  if not_sent > 0 and not decided then
+    local what = not_sent .. " answer" .. (not_sent == 1 and "" or "s") .. " unsent - "
+    local how = KEYS().name("plan", "revise") .. " sends " .. (not_sent == 1 and "it" or "them")
+    -- On two lines when the list is too narrow for one.
+    if vim.fn.strdisplaywidth(what .. how) <= width - 2 then
+      add(" " .. what .. how, "AzureCliAccent")
+    else
+      add(" " .. UI().fit(vim.trim(what), width - 2), "AzureCliAccent")
+      add("   " .. UI().fit(how, width - 4), "AzureCliAccent")
+    end
+  end
   add("")
   local per, per_req = {}, {}
   for _, th in ipairs(rec.threads) do
@@ -256,7 +278,6 @@ local function render_list()
     if s and into and not (th.kind == "request" and th.status == "sent") then into[s.line] = (into[s.line] or 0) + 1 end
   end
   local open_q = unanswered()
-  local decided = rec.status == "approved" or rec.status == "done"
   for _, s in ipairs(view.sections) do
     if s.level >= 2 then
       local badge = ""
@@ -278,7 +299,7 @@ local function render_list()
   local hints = {}
   if not decided then
     hints[#hints + 1] = { "plan", "approve", "approve" }
-    hints[#hints + 1] = { "plan", "revise", "ask for changes" }
+    hints[#hints + 1] = { "plan", "revise", not_sent > 0 and "send your answers / ask for changes" or "ask for changes" }
   end
   hints[#hints + 1] = { "plan", "ask", "ask about a line" }
   if not decided then hints[#hints + 1] = { "plan", "request", "ask a change on a line" } end
@@ -339,15 +360,18 @@ local function changed(rec)
   end
 end
 
+-- Sends `text` to the agent that wrote the plan: its own conversation when
+-- it has one (a board agent), as approving does, else the panel's.
 local function send(text, display)
   local CHAT = require("azure-cli.chat")
-  if CHAT.busy() then
+  local conv = view and CHAT.find_conversation(view.key)
+  if (conv and conv.running) or (not conv and CHAT.busy()) then
     notify("The agent is still answering - tell it once it's done (it can read the plan with get_plan).",
       vim.log.levels.WARN)
     return false
   end
-  return CHAT.send(text, { view_win = valid_win(view and view.plan_win) and view.plan_win or nil, display = display })
-    ~= nil
+  return CHAT.send(text, { conv = conv, view_win = valid_win(view and view.plan_win) and view.plan_win or nil,
+    display = display }) ~= nil
 end
 
 -- gA: approve - and, if you say so, let the change be pushed without
@@ -361,7 +385,8 @@ local function approve()
 end
 
 -- gR: ask for changes - what you write here, plus every change queued on
--- a line with gc.
+-- a line with gc and your answers to the open questions. With only
+-- answers waiting it opens ready to send just those.
 local function revise()
   local rec = view and view.rec
   if not rec then return end
@@ -369,18 +394,28 @@ local function revise()
   for _, th in ipairs(rec.threads) do
     if th.kind == "request" and th.status ~= "sent" then queued[#queued + 1] = th end
   end
+  local answers = unsent()
+  local extra = {}
+  if #queued > 0 then extra[#extra + 1] = "+" .. #queued .. " on its lines" end
+  if answers > 0 then extra[#extra + 1] = "+" .. answers .. " answer" .. (answers == 1 and "" or "s") end
+  local suffix = #extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or ""
+  local initial = ""
+  if #queued > 0 and answers > 0 then
+    initial = "See my comments on its lines and my answers to your questions."
+  elseif #queued > 0 then
+    initial = "See my comments on its lines."
+  elseif answers > 0 then
+    initial = "See my answers to your questions."
+  end
   require("azure-cli.editor").open({
-    title = "What should change in the plan?" .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or ""),
-    initial = #queued > 0 and "See my comments on its lines." or "", anchor = "center",
+    title = "What should change in the plan?" .. suffix, initial = initial, anchor = "center",
     on_submit = function(text)
       view = views[rec.key] or view
-      if send(PLAN().revise_message(rec, text, queued, PLAN().lines(rec)), "Changes to the plan: " .. text
-          .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or "")) then
+      if send(PLAN().revise_message(rec, text, queued, PLAN().lines(rec)), "Changes to the plan: " .. text .. suffix) then
         rec.status = "changes_requested"
         for _, th in ipairs(queued) do th.status = "sent" end
         for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
-        PLAN().add_event(rec, "changes", "You asked for changes: " .. text
-          .. (#queued > 0 and (" (+" .. #queued .. " on its lines)") or ""))
+        PLAN().add_event(rec, "changes", "You asked for changes: " .. text .. suffix)
         changed(rec)
       end
     end,
@@ -408,7 +443,7 @@ local function request(from, to)
 end
 
 -- gr on one of the plan's open questions: your answer, shown under it and
--- sent along when you approve (or ask for changes).
+-- sent by gR (on its own, or with a change request) or with the approval.
 local function answer_here()
   local rec = view.rec
   local row = vim.api.nvim_win_get_cursor(0)[1]
@@ -437,6 +472,12 @@ end
 unanswered = function()
   local lines = valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
   return PLAN().unanswered(lines, view.rec.threads)
+end
+
+-- How many of your answers haven't gone to the agent yet.
+unsent = function()
+  local lines = valid_buf(view.plan_buf) and vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false) or {}
+  return PLAN().unsent_answers(lines, view.rec.threads)
 end
 
 local function already_sent()
@@ -599,7 +640,7 @@ end
 
 local function bind_common(buf)
   bind(buf, "approve", approve, { desc = "approve the plan" })
-  bind(buf, "revise", revise, { desc = "ask for changes to the plan" })
+  bind(buf, "revise", revise, { desc = "ask for changes / send your answers" })
   bind(buf, "open_file", open_file, { desc = "edit the plan by hand" })
   bind(buf, "refresh", function() M.refresh() end, { desc = "reload the plan" })
   bind(buf, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })

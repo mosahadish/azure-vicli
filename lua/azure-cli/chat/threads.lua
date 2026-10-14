@@ -73,7 +73,7 @@ function M.virt_lines(th, opts)
       out[#out + 1] = { bar, { (i == 1 and "\u{21AA} you: " or "       ") .. l, "AzureCliStatusOk" } }
     end
     out[#out + 1] = { bar, { th.status == "sent" and "  sent to the agent"
-      or "  goes to the agent with your approval (or change request)", "AzureCliThreadMeta" } }
+      or ("  not sent yet - " .. (opts.send or "gR") .. " sends it (approving does too)"), "AzureCliThreadMeta" } }
     return out
   end
   if th.kind == "request" then

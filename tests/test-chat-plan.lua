@@ -421,7 +421,7 @@ do
   local q, r = TH.counts(rec.threads)
   check("counts: an answer is neither a question nor a request", q == 1 and r == 0)
   local vl = TH.virt_lines({ kind = "answer", question = "No.", status = "queued" }, { width = 60 })
-  check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("approval", 1, true))
+  check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("approving", 1, true))
   check("unanswered: answered questions stop counting", PLAN.unanswered(lines, rec.threads) == 1
     and PLAN.unanswered(lines, {}) == 3)
 end
@@ -545,6 +545,158 @@ do
     ph:find("open question or thread", 1, true) ~= nil and lh:find("open question or thread", 1, true) ~= nil, ph .. "\n--\n" .. lh)
   close(v, "wi-9081")
   NOTIFY.flash = flash
+end
+
+-- --- #82: gR sends just your answers ----------------------------------------------------------
+do
+  local lines = { "## Open questions", "- Error or fallback?", "- Admins too?", "## Risks" }
+  check("unsent_answers: none answered", PLAN.unsent_answers(lines, {}) == 0)
+  local a1 = { kind = "answer", line = 2, question = "An error.", status = "queued" }
+  local a2 = { kind = "answer", line = 3, question = "Yes.", status = "queued" }
+  check("unsent_answers: both answered, neither sent", PLAN.unsent_answers(lines, { a1, a2 }) == 2)
+  check("unsent_answers: a sent one stops counting",
+    PLAN.unsent_answers(lines, { a1, { kind = "answer", line = 3, question = "Yes.", status = "sent" } }) == 1)
+  check("unsent_answers: one on a line that's no longer a question doesn't count",
+    PLAN.unsent_answers(lines, { { kind = "answer", line = 4, question = "x", status = "queued" } }) == 0)
+  local vl = TH.virt_lines({ kind = "answer", question = "No.", status = "queued" }, { width = 60, send = "gR" })
+  check("virt_lines: an unsent answer says which key sends it", vl[2][2][1]:find("gR sends it", 1, true) ~= nil, vl[2][2][1])
+
+  -- In the plan view, with the editor and the chat stubbed.
+  local KEYS = require("azure-cli.keys")
+  local EDITOR = require("azure-cli.editor")
+  local CHAT = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local orig = { open = EDITOR.open, send = CHAT.send, busy = CHAT.busy }
+  local ed, sent = nil, {}
+  EDITOR.open = function(o) ed = o end
+  CHAT.send = function(text, o) sent[#sent + 1] = { text = text, conv = o.conv, display = o.display } return {} end
+  CHAT.busy = function() return false end
+  local function feed(k) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "x", false) end
+  local key = "wi-9082"
+  local md = "# Answers\n\n## Goal\nx\n\n## Approach\ny\n\n## Open questions\n- Error or fallback?\n- Admins too?\n\n## Risks\nnone"
+  local function open()
+    PLAN.save({ key = key, target = { work_item_id = 9082 }, title = "Answers", status = "draft",
+      revisions = { { by = "agent", markdown = md } }, threads = {} })
+    PLAN.open(key)
+    return PLAN.current()
+  end
+  local function close(v)
+    pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(v.tab))
+    pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  end
+  local function line_of(v, text)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false)) do if l == text then return i end end
+  end
+  local function list_text(v) return table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n") end
+  local function answer_both(v)
+    vim.api.nvim_set_current_win(v.plan_win)
+    for _, q in ipairs({ { "- Error or fallback?", "An error." }, { "- Admins too?", "Admins too." } }) do
+      vim.api.nvim_win_set_cursor(v.plan_win, { line_of(v, q[1]), 0 })
+      ed = nil
+      feed(KEYS.first("plan", "answer"))
+      if ed then ed.on_submit(q[2]) end
+    end
+  end
+  local revise_key = KEYS.first("plan", "revise")
+
+  -- Two answers, then gR: just the answers go.
+  local v = open()
+  answer_both(v)
+  local bar, list = vim.wo[v.plan_win].winbar, list_text(v)
+  check("two answers: the winbar and the list say they're unsent and which key sends them",
+    bar:find("[2 answers unsent]", 1, true) ~= nil and list:find("2 answers unsent -", 1, true) ~= nil
+    and list:find(KEYS.name("plan", "revise") .. " sends them", 1, true) ~= nil, bar .. "\n" .. list)
+  vim.api.nvim_win_set_width(v.list_win, 50)
+  PLAN.refresh()
+  check("a wide list: on one line", list_text(v):find("2 answers unsent - " .. KEYS.name("plan", "revise")
+    .. " sends them", 1, true) ~= nil, list_text(v))
+  ed = nil
+  feed(revise_key)
+  check("gR with only answers: opens prefilled, +2 answers in its title", ed ~= nil
+    and ed.initial == "See my answers to your questions." and ed.title:find("(+2 answers)", 1, true) ~= nil,
+    vim.inspect(ed and { ed.title, ed.initial }))
+  sent = {}
+  if ed then ed.on_submit(ed.initial) end
+  local msg = sent[1] and sent[1].text or ""
+  check("gR: the message has both answers and no change request",
+    msg:find("- Error or fallback? An error.", 1, true) ~= nil and msg:find("- Admins too? Admins too.", 1, true) ~= nil
+    and not msg:find("On its lines:", 1, true), msg)
+  local rec = PLAN.load(key)
+  local all_sent = true
+  for _, th in ipairs(rec.threads) do if th.status ~= "sent" then all_sent = false end end
+  check("gR: changes asked for, the answers marked sent", rec.status == "changes_requested" and #rec.threads == 2
+    and all_sent, vim.inspect(rec.threads))
+  check("gR: the unsent hint goes away", not vim.wo[v.plan_win].winbar:find("unsent", 1, true)
+    and not list_text(v):find("unsent", 1, true), vim.wo[v.plan_win].winbar)
+  close(v)
+
+  -- Two answers and a queued change: gR sends both.
+  v = open()
+  answer_both(v)
+  vim.api.nvim_win_set_cursor(v.plan_win, { line_of(v, "y"), 0 })
+  ed = nil
+  feed(KEYS.first("plan", "request"))
+  if ed then ed.on_submit("Use a decorator.") end
+  ed = nil
+  feed(revise_key)
+  check("gR with answers and a change: both in the title", ed ~= nil
+    and ed.title:find("(+1 on its lines, +2 answers)", 1, true) ~= nil, vim.inspect(ed and ed.title))
+  sent = {}
+  if ed then ed.on_submit("See below.") end
+  msg = sent[1] and sent[1].text or ""
+  check("gR: the answers and the line's change go together", msg:find("- Admins too? Admins too.", 1, true) ~= nil
+    and msg:find("On its lines:", 1, true) ~= nil and msg:find("Use a decorator.", 1, true) ~= nil, msg)
+  rec = PLAN.load(key)
+  all_sent = true
+  for _, th in ipairs(rec.threads) do if th.status ~= "sent" then all_sent = false end end
+  check("gR: the answers and the change are all marked sent", #rec.threads == 3 and all_sent, vim.inspect(rec.threads))
+  close(v)
+
+  -- Approving with unsent answers still sends them.
+  v = open()
+  answer_both(v)
+  sent = {}
+  PLAN.approve(key)
+  msg = sent[1] and sent[1].text or ""
+  rec = PLAN.load(key)
+  all_sent = true
+  for _, th in ipairs(rec.threads) do if th.status ~= "sent" then all_sent = false end end
+  check("approving: the unsent answers go with it", msg:find("My answers to your open questions:", 1, true) ~= nil
+    and msg:find("- Error or fallback? An error.", 1, true) ~= nil and rec.status == "approved" and all_sent, msg)
+  close(v)
+
+  -- A board agent's plan: gR goes to that plan's own conversation, and only
+  -- its being busy holds gR back.
+  local conv = CHAT.conversation(key, { target = { work_item_id = 9082 }, label = "#9082" })
+  CHAT.busy = function() return true end  -- the main chat is answering something else
+  v = open()
+  answer_both(v)
+  ed = nil
+  feed(revise_key)
+  sent = {}
+  if ed then ed.on_submit(ed.initial) end
+  check("gR on a board agent's plan: to its own conversation, whatever the main chat is doing",
+    sent[1] ~= nil and sent[1].conv == conv, vim.inspect(sent[1] and sent[1].display))
+  close(v)
+  STATE.chat.convs[key] = nil
+
+  -- ? help: gr and gR say gR sends the answers.
+  v = open()
+  vim.api.nvim_set_current_win(v.plan_win)
+  local before = {}
+  for _, w in ipairs(vim.api.nvim_list_wins()) do before[w] = true end
+  feed(KEYS.first("plan", "help"))
+  local help = ""
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if not before[w] then
+      help = help .. table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false), "\n")
+      pcall(vim.api.nvim_win_close, w, true)
+    end
+  end
+  check("? help: gr / gR say gR sends your answers", help:find("sends your answers (approving does too)", 1, true) ~= nil
+    and help:find("ask for changes or send your answers", 1, true) ~= nil, help)
+  close(v)
+  EDITOR.open, CHAT.send, CHAT.busy = orig.open, orig.send, orig.busy
 end
 
 -- --- an agent for a PR's comments ---------------------------------------------------------

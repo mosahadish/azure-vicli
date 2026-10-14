@@ -588,8 +588,8 @@ their line when the text around them changes.
 |---|---|
 | `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push and open the PR once the tests pass) |
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
-| `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
-| `gr` | Answer the open question under the cursor (its Open questions section) - sent along when you approve |
+| `gR` | Ask for changes or send your answers: what you write, plus every change queued with `gc` and your unsent answers; the agent submits a new revision |
+| `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
 | `gi` | Mark what this revision changed against the one before (on by default; toggles) |
@@ -632,9 +632,14 @@ which shows under the question (`↪ you: no, admins too`); the winbar
 and the Open questions row in the section list count the ones still open
 (`[1 to answer]`). A lead-in that isn't about questions - a `###` heading,
 a bold line or one ending in `:`, like "Follow-ups, out of scope:" - ends
-them, so the follow-ups under it don't count. Approving - or asking for
-changes - sends your answers along with each question, so the agent goes
-ahead knowing them.
+them, so the follow-ups under it don't count. Once you've answered, the
+winbar says `[2 answers unsent]` and the section list `2 answers unsent -
+gR sends them`: `gR` with no changes queued opens ready to send just your
+answers ("See my answers to your questions.", `+2 answers` in its title),
+and the agent revises the plan with them. Asking for changes or approving
+sends them too, each with its question, so the agent goes ahead knowing
+them; sent answers say so under their question. A board agent's plan
+sends all of this to that agent's own conversation.
 
 **What changed since the last revision.** When the agent sends a new
 revision (or you save your own), the lines it changed get a bar beside
