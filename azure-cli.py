@@ -723,6 +723,8 @@ def get_cached_config():
             return Config.from_config_file()
         if _config_cache["config"] is None:
             _config_cache["config"] = Config.from_config_file()
+            # A (newly) loaded config: no identity fetched before it stays.
+            _conn_data_cache.clear()
         return _config_cache["config"]
 
 
@@ -1501,6 +1503,8 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
         if e.code == 400 and not _retried and api_version not in (None, "6.0"):
             return http_request(url, method=method, data=data, pat=pat, api_version="6.0", _retried=True, raw=raw,
                                  content_type=content_type)
+        if e.code in CONN_DATA_AUTH_STATUSES:
+            conn_data_invalidate(full_url, pat)
         raise AdoHttpError(e.code, full_url, err_body) from e
     except urllib.error.URLError as e:
         if perf:
@@ -1520,6 +1524,7 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
     # Information" and an HTML sign-in page, not a 401; without this it
     # surfaced as "Expecting value: line 1 column 1" from json.loads.
     if status == 203 or (raw_bytes[:1] not in (b"{", b"[", b"") and "html" in ctype.lower()):
+        conn_data_invalidate(full_url, pat)
         raise AdoHttpError(203 if status == 203 else (status or 200), full_url, raw_bytes)
 
     if raw:
@@ -1571,6 +1576,111 @@ def authenticated_user(resp):
     uid = user.get("id")
     name = user.get("customDisplayName") or user.get("providerDisplayName") or ""
     return (str(uid) if uid else ""), name
+
+
+# ConnectionData cache (#94). The PR list asked for it once per org on
+# every poll tick, and --wi-list once per run for its assignee, though
+# the answer only changes when the PAT does. Under --serve it's kept per
+# (org/collection URL, PAT digest) for CONN_DATA_TTL; one-shot runs, which
+# never ask twice, keep fetching it (`serving` False - see
+# get_cached_config's header comment).
+#
+# An entry goes when:
+#   - CONN_DATA_TTL has passed since it was fetched (an account or display
+#     name change shows within that);
+#   - any request to that org with that PAT answers 401/403/203
+#     (http_request calls conn_data_invalidate before raising);
+#   - the PAT changes - a different PAT is a different key, never a hit;
+#   - the daemon loads its config (get_cached_config) or starts (serve()),
+#     and with the daemon itself - nothing is ever written to disk.
+# A response without an authenticated user is never kept, nor is a failed
+# fetch. A request that used a cached identity and then fails with
+# 401/403/203 drops it, looks it up afresh and retries once (--list's
+# listings, --wi-list's WIQL). The key holds a digest of the PAT, never
+# the PAT, and the perf log only ever gets the host and hit/miss.
+
+CONN_DATA_TTL = 600.0
+CONN_DATA_AUTH_STATUSES = (401, 403, 203)
+
+
+class ConnectionDataCache:
+    """ConnectionData responses per (base URL, PAT digest), with a per-key
+    lock (as RepoBranchCache) so concurrent workers wait for one fetch
+    instead of each making their own."""
+
+    def __init__(self, ttl=CONN_DATA_TTL, clock=time.monotonic):
+        self.ttl = ttl
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._entries = {}
+
+    @staticmethod
+    def key(base, pat):
+        digest = hashlib.sha256((pat or "").encode("utf-8")).hexdigest()[:16]
+        return (base or "").rstrip("/").lower(), digest
+
+    def get(self, base, pat, loader):
+        """(response, hit): the kept response while it's fresh, else
+        loader()'s, kept when it names an authenticated user."""
+        key = self.key(base, pat)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = {"lock": threading.Lock(), "value": None, "at": None}
+                self._entries[key] = entry
+        with entry["lock"]:
+            if entry["at"] is not None and self.clock() - entry["at"] < self.ttl:
+                return entry["value"], True
+            entry["at"] = None
+            value = loader()
+            if authenticated_user(value)[0]:
+                entry["value"], entry["at"] = value, self.clock()
+            return value, False
+
+    def invalidate(self, url, pat=None):
+        """Drops the entries whose base URL `url` is (or is under), for
+        `pat` only when given. Returns how many went."""
+        target = (url or "").lower()
+        digest = self.key("", pat)[1] if pat is not None else None
+        with self._lock:
+            gone = [k for k in self._entries
+                    if (digest is None or k[1] == digest)
+                    and target.startswith(k[0]) and target[len(k[0]):len(k[0]) + 1] in ("", "/", "?")]
+            for k in gone:
+                del self._entries[k]
+        return len(gone)
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
+
+_conn_data_cache = ConnectionDataCache()
+_conn_data_local = threading.local()
+
+
+def _conn_data_take_hit():
+    """Whether this thread's last connection_data() came from the cache
+    (False when there was none since the last call) - for the retry-once."""
+    return vars(_conn_data_local).pop("hit", False)
+
+
+def connection_data(base, pat, loader, fresh=False):
+    """The ConnectionData response for `base`/`pat`: loader()'s own,
+    through the daemon's cache under --serve unless `fresh` (--doctor and
+    --whoami ask for a live sign-in)."""
+    if fresh or not _config_cache["serving"]:
+        _conn_data_local.hit = False
+        return loader()
+    resp, hit = _conn_data_cache.get(base, pat, loader)
+    _conn_data_local.hit = hit
+    perf_cache_record("connectionData", base, "hit" if hit else "miss")
+    return resp
+
+
+def conn_data_invalidate(url, pat=None):
+    if _conn_data_cache.invalidate(url, pat):
+        perf_cache_record("connectionData", url, "invalidate")
 
 
 class RepoBranchCache:
@@ -1673,11 +1783,12 @@ class AzureDevOpsPullRequestSource:
 
     # -- identity -----------------------------------------------------------
 
-    def _whoami_for_org(self, org, pat):
-        uid, name = authenticated_user(self.fetch_bare(connection_data_url(org), pat))
+    def _whoami_for_org(self, org, pat, fresh=False):
+        resp = connection_data(org, pat, lambda: self.fetch_bare(connection_data_url(org), pat), fresh=fresh)
+        uid, name = authenticated_user(resp)
         return (uid or None), name
 
-    def whoami(self, organization_url, project):
+    def whoami(self, organization_url, project, fresh=False):
         """Mirrors AzureDevOpsPullRequestSource.WhoAmIAsync: matches an
         account group by org (and, if given, project - matched against any
         account in that org's group), connects, and returns (id, name), or
@@ -1695,7 +1806,7 @@ class AzureDevOpsPullRequestSource:
                     "The configured organization ({0}) has no configured PAT; a PAT is required "
                     "(no Azure AD fallback in this build).".format(org)
                 )
-            return self._whoami_for_org(org, pat)
+            return self._whoami_for_org(org, pat, fresh=fresh)
         return None
 
     # -- listing --------------------------------------------------------------
@@ -1930,12 +2041,25 @@ class AzureDevOpsPullRequestSource:
                         "The configured organization ({0}) has no configured PAT; a PAT is required "
                         "(no Azure AD fallback in this build).".format(org)
                     )
+                _conn_data_take_hit()
                 user_id, user_name = self._whoami_for_org(org, pat)
+                from_cache = _conn_data_take_hit()
                 repo_cache = RepoBranchCache()
 
                 for account in accounts:
-                    assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
-                    created = self._list_prs(org, pat, account.project, creator_id=user_id)
+                    try:
+                        assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
+                        created = self._list_prs(org, pat, account.project, creator_id=user_id)
+                    except AdoHttpError as e:
+                        if not (from_cache and e.status in CONN_DATA_AUTH_STATUSES):
+                            raise
+                        # The identity came from the daemon's cache: look
+                        # it up afresh and retry once (see ConnectionDataCache).
+                        conn_data_invalidate(org, pat)
+                        from_cache = False
+                        user_id, user_name = self._whoami_for_org(org, pat)
+                        assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
+                        created = self._list_prs(org, pat, account.project, creator_id=user_id)
 
                     futures = []
                     # _perf_bind: the perf log's run (AZVICLI_DEBUG) follows the
@@ -3201,6 +3325,7 @@ class WorkItemActions:
         # self.pat - not known until ensure_pat() runs after __init__.
         self._assignee_override = env.get("AZVICLI_WI_ASSIGNEE") or wi.get("assignee") or None
         self._assignee_cache = None
+        self._assignee_from_cache = False
         self.types = _wi_types_to_str(env.get("AZVICLI_WI_TYPES") or wi.get("types") or WI_TYPES_DEFAULT)
         # work_items.states: an ordered list (rank = position, first = most
         # actionable) the dashboard sorts/colours by - see states.lua and
@@ -3289,9 +3414,13 @@ class WorkItemActions:
         if not self.pat:
             return ""
         try:
-            resp = self.fetch_bare(connection_data_url(self.collection), self.pat)
+            _conn_data_take_hit()
+            resp = connection_data(self.collection, self.pat,
+                                   lambda: self.fetch_bare(connection_data_url(self.collection), self.pat))
         except Exception:
             return ""
+        finally:
+            self._assignee_from_cache = _conn_data_take_hit()
         return authenticated_user(resp)[1]
 
     # -- shared REST helpers ------------------------------------------------
@@ -3474,20 +3603,31 @@ class WorkItemActions:
                 type_clause += " AND [System.State] NOT IN (" + ",".join(
                     "'{0}'".format(_wi_sql_esc(s)) for s in closed) + ")"
 
-        wiql = (
-            "SELECT [System.Id] FROM WorkItems\n"
-            "WHERE [System.TeamProject] = '{0}'\n"
-            "  AND {1}\n"
-            "  AND ( {2} )\n"
-            "  {3}\n"
-            "  AND [System.AssignedTo] = '{4}'\n"
-            "ORDER BY [System.Id]"
-        ).format(_wi_sql_esc(self.project), iteration_clause, area_clause, type_clause,
-                 _wi_sql_esc(self.assignee))
+        def wiql():
+            return (
+                "SELECT [System.Id] FROM WorkItems\n"
+                "WHERE [System.TeamProject] = '{0}'\n"
+                "  AND {1}\n"
+                "  AND ( {2} )\n"
+                "  {3}\n"
+                "  AND [System.AssignedTo] = '{4}'\n"
+                "ORDER BY [System.Id]"
+            ).format(_wi_sql_esc(self.project), iteration_clause, area_clause, type_clause,
+                     _wi_sql_esc(self.assignee))
 
         wiql_url = "{0}/{1}/_apis/wit/wiql".format(self.collection, self.project)
         try:
-            resp = self._post(wiql_url, {"query": wiql})
+            try:
+                resp = self._post(wiql_url, {"query": wiql()})
+            except AdoHttpError as e:
+                if not (self._assignee_from_cache and e.status in CONN_DATA_AUTH_STATUSES):
+                    raise
+                # The assignee came from the daemon's ConnectionData cache:
+                # look it up afresh and retry once (see ConnectionDataCache).
+                conn_data_invalidate(self.collection, self.pat)
+                self._assignee_cache = None
+                self._assignee_from_cache = False
+                resp = self._post(wiql_url, {"query": wiql()})
         except AdoHttpError as e:
             return self._list_style_error(e, "POST")
         ids = [w["id"] for w in ((resp or {}).get("workItems") or [])]
@@ -4490,6 +4630,18 @@ def perf_record(method, url, status, nbytes, t0, conn="new"):
                            "ms": round(ms, 1), "conn": conn})
 
 
+def perf_cache_record(what, url, result):
+    """One provider-cache lookup's line ("hit", "miss" or "invalidate"),
+    when this thread has a run: the URL's host only. perf.lua reads just
+    "req"/"total" lines and skips these."""
+    run = _perf_current()
+    if run is None:
+        return
+    host, _path = _perf_safe_url(url)
+    _perf_write(run.path, {"ts": round(time.time(), 3), "kind": "cache", "cmd": run.cmd, "what": what,
+                           "host": host, "result": result})
+
+
 def _perf_write(path, entry):
     """Appends one line; past PERF_LOG_MAX_BYTES the file moves to
     perf.log.1 first. Never raises - logging must not fail a request."""
@@ -4950,7 +5102,7 @@ def _doctor_config_checks(config):
         name = "sign in to {0} ({1})".format(org, projects)
         pat = source._pick_pat(accounts)
         try:
-            user_id, user_name = source._whoami_for_org(org, pat)
+            user_id, user_name = source._whoami_for_org(org, pat, fresh=True)
             if not user_id:
                 checks.append({"check": name, "ok": False,
                                "detail": "connected, but no authenticated user came back - " + (_auth_hint(401) or "")})
@@ -5027,7 +5179,7 @@ def cmd_whoami(config, org, project):
             print(json.dumps({"id": login, "displayName": name}))
             return 0
         source = AzureDevOpsPullRequestSource(config)
-        result = source.whoami(org, project)
+        result = source.whoami(org, project, fresh=True)
         if result is None:
             suffix = "." if not project else " and project '{0}'.".format(project)
             print("azure-cli --whoami: no account matches org '{0}'{1}".format(org, suffix), file=sys.stderr)
@@ -5264,6 +5416,7 @@ def serve():
     # path - never a reason for the daemon not to start.
     with _config_cache_lock:
         _config_cache["serving"] = True
+    _conn_data_cache.clear()
     if Config.is_configured():
         try:
             get_cached_config()
