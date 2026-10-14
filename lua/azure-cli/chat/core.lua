@@ -908,6 +908,16 @@ end
 
 local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
 
+-- A line for an entry's `tools` log, as stored: CRLF / CR made "\n",
+-- trailing blanks and newlines trimmed, blank lines dropped. Its inner
+-- newlines stay (a git error over two lines): render shows them as
+-- indented continuation lines (#101).
+function M.tool_line(s)
+  s = tostring(s or ""):gsub("\r\n", "\n"):gsub("\r", "\n"):gsub("%s+$", "")
+  while s:find("\n[ \t]*\n") do s = s:gsub("\n[ \t]*\n", "\n") end
+  return s
+end
+
 -- ---------------------------------------------------------------------------
 -- Reading the agent's output.
 
@@ -1179,16 +1189,48 @@ end
 -- their own lines; an answer longer than FOLD_LINES shows its first
 -- KEEP_LINES and "… N more lines" (role "fold"). An entry with `open` set
 -- (<Tab> on it) shows everything.
-M.COLLAPSE_TOOLS, M.FOLD_LINES, M.KEEP_LINES = 3, 40, 30
+--
+-- No line it returns has a newline (#101): a tool call over several lines
+-- shows them indented under its first (TOOL_MORE_LINES of them, then
+-- "… N more lines", unless open), a heading's parts are joined onto one
+-- line, and any other line with one is split.
+M.COLLAPSE_TOOLS, M.FOLD_LINES, M.KEEP_LINES, M.TOOL_MORE_LINES = 3, 40, 30, 6
 function M.render(entries, now, agent_label, queue)
   queue = queue or {}
   local lines, roles, name_end, entry_at = {}, {}, {}, {}
   local cur
-  local function add(l, role) lines[#lines + 1] = l; roles[#lines] = role; entry_at[#lines] = cur end
+  -- A buffer line can't hold a newline (nvim_buf_set_lines refuses it):
+  -- one that still has one is split here, each part with the same role.
+  local function add(l, role)
+    l = tostring(l or "")
+    if l:find("\n", 1, true) then
+      for part in (l .. "\n"):gmatch("(.-)\n") do add(part, role) end
+      return
+    end
+    lines[#lines + 1] = l; roles[#lines] = role; entry_at[#lines] = cur
+  end
   local function add_text(t, role) for l in ((t or "") .. "\n"):gmatch("(.-)\n") do add(l, role) end end
+  local function flat(s)
+    s = tostring(s or "")
+    return s:find("\n", 1, true) and (trim(s):gsub("%s*\n%s*", " ")) or s
+  end
   local function head(name, extra, role)
+    name, extra = flat(name), flat(extra)
     add(name .. (extra ~= "" and ("  \u{00B7}  " .. extra) or ""), role)
     name_end[#lines] = #name
+  end
+  -- One tool call: its first line, then any more (a git error over two
+  -- lines) indented under it in the same colour, at most
+  -- TOOL_MORE_LINES of them unless the entry is open.
+  local function add_tool(tl, role, open)
+    local first, rest = M.tool_line(tl):match("^([^\n]*)\n?(.*)$")
+    add("  " .. first, role)
+    if rest == "" then return end
+    local more = {}
+    for l in (rest .. "\n"):gmatch("(.-)\n") do more[#more + 1] = l end
+    local shown = (not open and #more > M.TOOL_MORE_LINES + 1) and M.TOOL_MORE_LINES or #more
+    for k = 1, shown do add("    " .. more[k], role) end
+    if shown < #more then add("    \u{2026} " .. (#more - shown) .. " more lines  (<Tab> shows them)", role) end
   end
   if #entries == 0 and #queue == 0 then
     add("Chat", "agent_head")
@@ -1235,9 +1277,9 @@ function M.render(entries, now, agent_label, queue)
         if writes > 0 then parts[#parts + 1] = writes .. " change" .. (writes == 1 and "" or "s") end
         add("  " .. (writes > 0 and "\u{270E} " or "\u{00B7} ") .. table.concat(parts, ", ") .. "  (<Tab> shows them)",
           writes > 0 and "tool_write" or "tool_read")
-        for _, tl in ipairs(kept) do add("  " .. tl, role_of(tl)) end
+        for _, tl in ipairs(kept) do add_tool(tl, role_of(tl), e.open) end
       else
-        for _, tl in ipairs(tools) do add("  " .. tl, role_of(tl)) end
+        for _, tl in ipairs(tools) do add_tool(tl, role_of(tl), e.open) end
       end
       if #(e.tools or {}) > 0 and (e.text or "") ~= "" then add("", "agent") end
       if e.text and e.text ~= "" then

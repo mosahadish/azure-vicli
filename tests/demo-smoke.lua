@@ -1474,6 +1474,32 @@ section("CHAT", function()
   e, why = ask("vote approve")
   if not e then return fail(why) end
   if not e.text:find("vote: The user declined", 1, true) then return fail("the vote wasn't asked/declined:\n" .. e.text) end
+
+  -- A tool line with newlines (a git error, issue #101) draws over two
+  -- lines, and the conversation goes on: the next message still goes out.
+  table.insert(e.tools, "\u{2717} commit_and_push_fix: commit failed: Not currently on any branch.\nnothing to commit, working tree clean\n")
+  local drew = pcall(require("azure-cli.chat").render_now)
+  log = text(vim.api.nvim_win_get_buf(wins.log))
+  if not drew or not log:find("Not currently on any branch.\n    nothing to commit, working tree clean", 1, true) then
+    return fail("a tool line with newlines didn't draw:\n" .. log)
+  end
+  vim.api.nvim_set_current_win(diff_win)
+  e, why = ask("vote approve")
+  if not e then return fail("after a tool line with newlines: " .. why) end
+  if not e.text:find("vote: The user declined", 1, true) then return fail("the message after it didn't reach the agent:\n" .. e.text) end
+  -- Even a redraw that fails outright doesn't stop a message going out.
+  local real_set_lines = vim.api.nvim_buf_set_lines
+  local log_buf = vim.api.nvim_win_get_buf(wins.log)
+  vim.api.nvim_buf_set_lines = function(buf, ...)
+    if buf == log_buf then error("draw failed (test)") end
+    return real_set_lines(buf, ...)
+  end
+  vim.api.nvim_set_current_win(diff_win)
+  e, why = ask("vote approve")
+  vim.api.nvim_buf_set_lines = real_set_lines
+  if not e then return fail("with the redraw failing: " .. why) end
+  if not e.text:find("vote: The user declined", 1, true) then return fail("with the redraw failing, the message didn't go out:\n" .. e.text) end
+  require("azure-cli.chat").render_now()
   print("== chat ==")
   print(text(vim.api.nvim_win_get_buf(wins.log)))
 

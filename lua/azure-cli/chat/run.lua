@@ -155,7 +155,7 @@ local function decide_permission(st, entry, tool, answer, w)
   if CORE.READ_ONLY_KINDS[tool.kind] then return answer(true) end
   if CORE.FILE_CHANGE_KINDS[tool.kind] then
     if entry.planning then
-      table.insert(entry.tools, "\u{2717} " .. (tool.title or tool.kind) .. " (refused: planning changes no files)")
+      table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(tool.title or tool.kind) .. " (refused: planning changes no files)"))
       render_soon()
       return answer(false)
     end
@@ -515,11 +515,11 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       entry.skill = entry.skill or require("azure-cli.chat.skills").in_tool_call(u, entry.skill_names)
       if CORE.FILE_CHANGE_KINDS[u.kind] and u.toolCallId then file_calls[u.toolCallId] = true end
       if not title:find("azure%-vicli") then
-        table.insert(entry.tools, "\u{00B7} " .. title)
+        table.insert(entry.tools, CORE.tool_line("\u{00B7} " .. title))
         render_soon()
       end
     elseif u.sessionUpdate == "tool_call_update" and u.status == "failed" then
-      table.insert(entry.tools, "\u{2717} " .. (u.title or "tool failed"))
+      table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(u.title or "tool failed")))
       render_soon()
     elseif u.sessionUpdate == "tool_call_update" and u.status == "completed"
         and (CORE.FILE_CHANGE_KINDS[u.kind] or file_calls[u.toolCallId]) then
@@ -664,7 +664,7 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       ACP.http_server(vars.mcp_server, function(server, herr)
         if not live() then return end
         if not server then
-          table.insert(entry.tools, "\u{2717} azure-vicli's tools: " .. tostring(herr))
+          table.insert(entry.tools, CORE.tool_line("\u{2717} azure-vicli's tools: " .. tostring(herr)))
           return next_step({})
         end
         next_step({ server })
@@ -895,7 +895,7 @@ send = function(text, opts)
   local seen_tools, err = 0, {}
   local function absorb()
     entry.text = CORE.stream_text(reader)
-    for i = seen_tools + 1, #reader.tools do table.insert(entry.tools, "\u{00B7} " .. reader.tools[i]) end
+    for i = seen_tools + 1, #reader.tools do table.insert(entry.tools, CORE.tool_line("\u{00B7} " .. reader.tools[i])) end
     seen_tools = #reader.tools
   end
   local turn = { entry = entry, reader = reader, err = err, absorb = absorb, cancelled = false, done = false,
@@ -1022,7 +1022,7 @@ send = function(text, opts)
     if turn.done then return end
     if not turn.interrupt_id then return pcall(vim.fn.jobstop, job) end
     turn.killed = true
-    table.insert(entry.tools, "\u{2717} " .. why .. " - your next message starts it again and replays the conversation")
+    table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(why)) .. " - your next message starts it again and replays the conversation")
     render_soon()
     stop_tree(job)
   end

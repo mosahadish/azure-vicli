@@ -324,8 +324,15 @@ local function cur_role_at() return on_popup() and (popup.role_at or {}) or role
 local function draw(buf, st)
   local lines, roles, name_end, at = CORE.render(st.entries, os.time(), agent_label(), st.queue)
   vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  -- render never returns a line with a newline (#101); should one slip
+  -- through anyway, it's drawn with spaces instead of failing the redraw.
+  local ok = pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines)
+  if not ok then
+    for i, l in ipairs(lines) do lines[i] = tostring(l):gsub("[\r\n]", " ") end
+    ok = pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines)
+  end
   vim.bo[buf].modifiable = false
+  if not ok then error("chat: couldn't draw the conversation", 0) end
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   local function mark(row, col, opts) pcall(vim.api.nvim_buf_set_extmark, buf, ns, row, col, opts) end
   for i = 1, #lines do
@@ -350,19 +357,34 @@ local function draw(buf, st)
   return lines, roles, at
 end
 
+-- draw, but a conversation that can't be drawn only warns (once for it)
+-- and returns nil: render is called from send, the queue and tool logs,
+-- and must never stop a message going out (#101).
+local function safe_draw(buf, st)
+  local ok, lines, roles, at = pcall(draw, buf, st)
+  if ok then return lines, roles, at end
+  if not st.draw_warned then
+    st.draw_warned = true
+    vim.notify("azure-cli chat: couldn't redraw the conversation: " .. tostring(lines), vim.log.levels.WARN)
+  end
+end
+
 local function render()
   local c = popup and MAIN().convs[popup.key]
   if c and vim.api.nvim_buf_is_valid(popup.log_buf) then
-    local lines
-    lines, popup.role_at, popup.entry_at = draw(popup.log_buf, c)
-    if vim.api.nvim_win_is_valid(popup.log) and vim.api.nvim_get_current_win() ~= popup.log then
-      pcall(vim.api.nvim_win_set_cursor, popup.log, { #lines, 0 })
+    local lines, roles, at = safe_draw(popup.log_buf, c)
+    if lines then
+      popup.role_at, popup.entry_at = roles, at
+      if vim.api.nvim_win_is_valid(popup.log) and vim.api.nvim_get_current_win() ~= popup.log then
+        pcall(vim.api.nvim_win_set_cursor, popup.log, { #lines, 0 })
+      end
     end
   end
   if not (log_buf and vim.api.nvim_buf_is_valid(log_buf)) then return end
   local st = panel_state()
-  local lines
-  lines, role_at, entry_at = draw(log_buf, st)
+  local lines, roles, at = safe_draw(log_buf, st)
+  if not lines then return pcall(M.set_winbars) end
+  role_at, entry_at = roles, at
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) and vim.api.nvim_get_current_win() ~= w.log then
       pcall(vim.api.nvim_win_set_cursor, w.log, { #lines, 0 })
@@ -1106,7 +1128,7 @@ local function tool_env(entry, conv)
     view = function() return entry.snap end,
     log = function(line)
       entry.tools = entry.tools or {}
-      table.insert(entry.tools, line)
+      table.insert(entry.tools, CORE.tool_line(line))
       render_soon()
     end,
     confirm = confirm_for(conv),

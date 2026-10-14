@@ -343,6 +343,47 @@ do
   check("render: a few calls stay listed", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} c", 1, true) ~= nil)
 end
 
+-- --- render: lines with newlines (issue #101) ----------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  check("tool_line: CRLF and a trailing newline go, inner newlines stay",
+    CORE.tool_line("\u{2717} x: a\r\n\r\nb\n\n") == "\u{2717} x: a\nb", vim.inspect(CORE.tool_line("\u{2717} x: a\r\n\r\nb\n\n")))
+  local err = "\u{2717} commit_and_push_fix: commit failed: Not currently on any branch.\nnothing to commit, working tree clean\n"
+  local entries = {
+    { role = "you", text = "push it", where = "on PR\n!101" },
+    { role = "agent", status = "failed\n(exit 1)", label = "Fake\nClaude", text = "", tools = { "\u{00B7} a", err } },
+  }
+  local lines, roles, name_end, at = CORE.render(entries, 0, "A", { { text = "next\none" } })
+  local bad
+  for i, l in ipairs(lines) do if l:find("[\r\n]") then bad = i end end
+  check("render: no line has a newline", bad == nil, vim.inspect(lines))
+  check("render: the split queued message still maps to it", at[#lines] == "q1" and at[#lines - 1] == "q1"
+    and roles[#lines] == "queued" and lines[#lines] == "one")
+  local all = table.concat(lines, "\n")
+  check("render: a multi-line tool error shows indented under its call",
+    all:find("  \u{2717} commit_and_push_fix: commit failed: Not currently on any branch.\n    nothing to commit, working tree clean", 1, true), all)
+  local k
+  for i, l in ipairs(lines) do if l:find("nothing to commit", 1, true) then k = i end end
+  check("render: its continuation is red too", k and roles[k] == "tool_err" and roles[k - 1] == "tool_err" and at[k] == 2)
+  check("render: headings stay on one line", lines[1] == "You  \u{00B7}  on PR !101" and name_end[1] == 3
+    and all:find("Fake Claude  \u{00B7}  failed (exit 1)", 1, true), all)
+  -- Collapsed: the failure is kept, with its continuation.
+  entries[2].tools = { "\u{00B7} a", "\u{00B7} b", "\u{00B7} c", err }
+  all = table.concat(CORE.render(entries, 0, "A"), "\n")
+  check("render: a kept multi-line failure keeps its continuation",
+    all:find("3 lookups  (<Tab> shows them)\n  \u{2717} commit_and_push_fix", 1, true) and all:find("\n    nothing to commit", 1, true), all)
+  -- A long one folds after TOOL_MORE_LINES, unless open.
+  local long = { "\u{2717} x: boom" }
+  for i = 1, 20 do long[#long + 1] = "detail " .. i end
+  entries[2].tools = { table.concat(long, "\n") }
+  all = table.concat(CORE.render(entries, 0, "A"), "\n")
+  check("render: a long tool error folds", all:find("    detail 6\n    \u{2026} 14 more lines  (<Tab> shows them)", 1, true)
+    and not all:find("detail 7", 1, true), all)
+  entries[2].open = true
+  all = table.concat(CORE.render(entries, 0, "A"), "\n")
+  check("render: open shows all of it", all:find("detail 20", 1, true) and not all:find("more lines", 1, true))
+end
+
 -- --- messages queued while the agent answers (issue #29) ---------------------------------
 do
   local CORE = require("azure-cli.chat.core")
