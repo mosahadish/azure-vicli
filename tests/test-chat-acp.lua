@@ -380,6 +380,19 @@ do
     and a.updatedInput.command == "git log -3" and #asked == 0, vim.inspect({ a, asked }))
   a = ask("Bash", { command = "rm -rf build" })
   check("anything else asks, and Deny refuses it", a and a.behavior == "deny" and #asked == 1, vim.inspect({ a, asked }))
+  -- #74: what every agent runs each round, through the popup's path.
+  local quiet, loud = {}, {}
+  for _, c in ipairs({ "gh run view 1 --log-failed", "git fetch -q origin github-host", "printf '%s' a", "file a.lua" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "allow" and #asked == 1) then quiet[#quiet + 1] = c end
+  end
+  check("printf, file, gh run view and plain git fetch don't ask (#74)", #quiet == 0, vim.inspect({ quiet, asked }))
+  for k, c in ipairs({ "git fetch --upload-pack=x origin", "gh run rerun 1", "printf -v x y" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
+  end
+  check("git fetch --upload-pack, gh run rerun and printf -v still ask (#74)", #loud == 0, vim.inspect({ loud, asked }))
+  asked = { asked[1] }
   UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(1) end
   a = ask("Write", { file_path = "notes.txt", content = "hi" })
   check("an edit asks, and Allow allows it with its input", a and a.behavior == "allow"

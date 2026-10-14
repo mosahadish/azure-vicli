@@ -157,8 +157,8 @@ local LOOK_ONLY = {
   find = { "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls" },
   fd = { "-x", "--exec", "-X", "--exec-batch" },
   ls = {}, dir = {}, tree = {}, cat = {}, type = {}, head = {}, tail = {}, wc = {}, sort = { "-o", "--output" },
-  uniq = {}, cut = {}, echo = {}, pwd = {}, cd = {}, file = {}, stat = {}, which = {}, where = {},
-  basename = {}, dirname = {}, realpath = {},
+  uniq = {}, cut = {}, echo = {}, printf = { "-v" }, pwd = {}, cd = {}, file = { "-C", "--compile" }, stat = {},
+  which = {}, where = {}, basename = {}, dirname = {}, realpath = {},
   ["get-content"] = {}, gc = {}, ["get-childitem"] = {}, gci = {}, ["select-string"] = {}, sls = {},
   ["get-item"] = {}, ["test-path"] = {}, ["resolve-path"] = {}, ["get-location"] = {},
   ["where-object"] = {}, ["out-null"] = {}, ["select-object"] = {}, select = {}, ["sort-object"] = {},
@@ -171,6 +171,23 @@ local GIT_LOOK_ONLY = {
   ["ls-files"] = {}, ["ls-tree"] = {}, ["rev-parse"] = {}, describe = {}, shortlog = {}, ["cat-file"] = {},
   ["merge-base"] = {}, ["show-ref"] = {},
 }
+-- gh run's that only read, each with the flags that open a browser.
+local GH_RUN_LOOK_ONLY = { list = { "--web" }, view = { "-w", "--web" }, watch = { "--web" } }
+
+-- Whether `git fetch` with `words` from `from` on only fetches: -q,
+-- --quiet or --prune, then a remote's name and branches. That writes
+-- origin/* and FETCH_HEAD only: no path or URL (another transport, or
+-- a repo whose upload-pack runs), no x:y or +x refspec (a local branch),
+-- and no other option (--upload-pack, -c, --recurse-submodules, ...).
+local function fetch_reads(words, from)
+  local k = from
+  while words[k] == "-q" or words[k] == "--quiet" or words[k] == "--prune" do k = k + 1 end
+  if words[k] and not words[k]:match("^[%w][%w._-]*$") then return false end
+  for m = k + 1, #words do
+    if not words[m]:match("^[%w_][%w._/-]*$") then return false end
+  end
+  return true
+end
 
 -- A one-letter flag counts inside a cluster too (sort -ro out).
 local function bad_flag(words, from, flags)
@@ -282,8 +299,14 @@ local function look_only_part(words, unknown)
     -- Only these before the subcommand: -c / --config-env would set a pager.
     local i = 2
     while words[i] == "--no-pager" or words[i] == "-C" or words[i] == "-P" do i = i + (words[i] == "-C" and 2 or 1) end
+    if words[i] == "fetch" then return fetch_reads(words, i + 1) end
     local flags = GIT_LOOK_ONLY[words[i] or ""]
     return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
+  end
+  if name == "gh" then
+    -- gh run list / view / watch; any other gh command asks.
+    local flags = words[2] == "run" and GH_RUN_LOOK_ONLY[words[3] or ""]
+    return flags and not free and not bad_flag(words, 4, flags) or false
   end
   if name == "sed" then
     -- Scripts that only print (sed_reads), given first or with -e; no -i,

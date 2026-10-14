@@ -713,6 +713,23 @@ do
   wrong = again({ "sed 's/a\\/b/c/w out' f", "git grep x origin/y | sed 's/^origin\\/y://' > out",
     "sed 's/a\\/b/c/e' f", "sed 's/a\\/b' f" }, false)
   check("look_only_command: writes still ask, called again and again (#62)", wrong == nil, wrong)
+  -- #74: printf, file, gh run list / view / watch and plain git fetch.
+  wrong = again({ "printf '%s ' a", "printf '%s\\n' a b | sort",
+    "for f in a b; do printf '%s ' $f; git show HEAD:$f | grep -c x; done", "file lua/x.lua", "file -b a b",
+    "gh run list -L 5 --json status,conclusion", "gh run list -w ci.yml", "gh run view 123 --log-failed",
+    "gh run view 123 -j 456", "gh run watch 123 --exit-status", "git fetch", "git fetch -q", "git fetch --prune origin",
+    "git fetch -q origin github-host", "git -C ../r fetch origin", "git fetch -q origin && git log --oneline origin/x",
+    "git fetch origin feature/74-x 2>&1" }, true)
+  check("look_only_command: printf, file, gh run list/view/watch, plain git fetch (#74)", wrong == nil, wrong)
+  wrong = again({ "printf -v x y", "printf -v$x y", "B=y; printf -v$B z", "printf -vx y", "printf x > f",
+    "while read l; do printf $l; done < f", "file -C -m x", "file --compile -m x",
+    "git fetch --upload-pack=evil origin", "git fetch --upload-pack evil origin", "git -c core.sshCommand=x fetch",
+    "git fetch -c x origin", "git fetch origin x:main", "git fetch origin +x", "git fetch origin -- x", "git fetch ../repo",
+    "git fetch ext::sh", "git fetch https://h/r", "git fetch .", "git fetch --recurse-submodules", "git fetch --all",
+    "while read l; do git fetch $l; done < f", "gh run rerun 1", "gh run cancel 1", "gh run delete 1",
+    "gh run download 1", "gh run view 1 --web", "gh run view 1 -w", "gh run list --web", "gh pr merge 1",
+    "gh api -X POST x", "gh run", "gh", "while read l; do gh run view $l; done < f" }, false)
+  check("look_only_command: printf -v, git fetch that runs things, gh run that acts still ask (#74)", wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

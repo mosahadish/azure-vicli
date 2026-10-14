@@ -253,8 +253,11 @@ picks goes through `session/set_config_option`.
   (`↳ $ git status  (allowed: only looks)`, `(you denied it)`), and so in
   the run log (`gH`). Reading and searching files never ask -
   they're always allowed, and so is searching or listing through the
-  shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `git log` / `diff` /
-  `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
+  shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `printf` (not
+  `-v`), `file`, `git log` / `diff` / `show` / `status` / `blame` /
+  `grep`, plain `git fetch [-q] [--prune] [remote [branch…]]` (no
+  `--upload-pack` or other options, no `x:y` refspecs), `gh run list` /
+  `view` / `watch`, PowerShell's `Get-ChildItem`,
   `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
   of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
   `2>&1`), and `for` / `while read` loops of them (`while read l; do
