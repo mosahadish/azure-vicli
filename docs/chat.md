@@ -759,11 +759,11 @@ latest step). The chat's winbar shows the same for the conversation in it
 
 | Key (Agents screen) | Action |
 |---|---|
-| `<CR>` | The row's plan |
+| `<CR>` | The row's agent: its plan's tab, with that agent's conversation in the chat; before it has planned, its conversation in a popup (watch it, or `i` to talk to it), the panel keeping the main chat |
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
-| `gq` | Its plan's tab, with that agent's conversation in the chat |
+| `gq` | The same as `<CR>` |
 | `<C-c>` | Stop what it's doing |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `r` / `q` / `?` | Redraw / close / keys |

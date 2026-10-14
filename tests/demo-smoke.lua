@@ -2603,16 +2603,56 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   if not screen():find("gA approve (2 waiting)", 1, true) then
     return fail("the Agents screen's keys don't offer approving both:\n" .. screen())
   end
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
-    if l:find("#3001", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  local function to_row(label)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+      if l:find(label, 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) return true end
+    end
   end
-  feed("<CR>")
-  if not (PLAN.current() and PLAN.current().key == "wi-3001" and vim.api.nvim_get_current_tabpage() == PLAN.current().tab) then
-    return fail("<CR> on #3001's row didn't open its plan")
+  -- <CR> (and gq, the same) on #3001's row: its plan's tab, with that
+  -- agent's conversation in the chat; back on the Agents screen, the main
+  -- chat is as it was (issue #87).
+  for _, key in ipairs({ "<CR>", "gq" }) do
+    to_row("#3001")
+    feed(key)
+    if not (PLAN.current() and PLAN.current().key == "wi-3001" and vim.api.nvim_get_current_tabpage() == PLAN.current().tab) then
+      return fail(key .. " on #3001's row didn't open its plan")
+    end
+    vim.wait(1000, function() return STATE.chat.wins[vim.api.nvim_get_current_tabpage()] ~= nil end, 20)
+    CHAT.sync_active()
+    if STATE.chat.active ~= "wi-3001" or not STATE.chat.wins[vim.api.nvim_get_current_tabpage()] then
+      return fail(key .. " on #3001's row didn't show that agent's conversation in the chat: " .. tostring(STATE.chat.active))
+    end
+    vim.cmd("tabclose")
+    vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(av.win))
+    vim.api.nvim_set_current_win(av.win)
+    CHAT.sync_active()
+    if STATE.chat.active ~= nil or #STATE.chat.entries ~= main_turns then
+      return fail("back from #3001's plan, the main chat changed: " .. tostring(STATE.chat.active))
+    end
   end
-  vim.cmd("tabclose")
-  vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(av.win))
+  CHAT.hide()  -- the panel <CR> opened
   vim.api.nvim_set_current_win(av.win)
+  -- <CR> on an agent that hasn't planned yet: its conversation in the
+  -- popup, the main chat left alone; closing it comes back here.
+  local early = CHAT.conversation("wi-9087", { label = "#9087", title = "Not planned yet", target = { work_item_id = 9087 } })
+  early.entries = { { role = "agent", text = "STILL-PLANNING-9087", status = "done" } }
+  feed("r")
+  if not to_row("#9087") then return fail("the unplanned agent's row isn't on the Agents screen:\n" .. screen()) end
+  feed("<CR>")
+  local pw = CHAT.popup_wins()
+  if not (pw and pw.key == "wi-9087") then return fail("<CR> on an agent without a plan didn't show its conversation") end
+  if not table.concat(vim.api.nvim_buf_get_lines(pw.log_buf, 0, -1, false), "\n"):find("STILL-PLANNING-9087", 1, true) then
+    return fail("the popup doesn't show that agent's conversation")
+  end
+  if STATE.chat.active ~= nil or #STATE.chat.entries ~= main_turns then return fail("the popup changed the main chat") end
+  vim.api.nvim_set_current_win(pw.log)
+  CHAT.hide()
+  vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+  if CHAT.popup_wins() or vim.api.nvim_get_current_win() ~= av.win then
+    return fail("closing the popup didn't come back to the Agents screen")
+  end
+  STATE.chat.convs["wi-9087"] = nil
+  feed("r")
   if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
   -- gA on both rows (visual): one question, each plan approved and its own
   -- agent sets off implementing it - both at once.

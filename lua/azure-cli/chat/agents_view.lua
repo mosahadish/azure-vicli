@@ -17,9 +17,10 @@
 -- Grouped by what needs you first (M.arrange), the most recent first in
 -- each group; finished means its PR was merged or abandoned
 -- (plan.pr_closed), and those over M.FINISHED_DAYS old hide until gF.
--- <CR> opens the row's plan, gd its change, gH its run log, gq its plan's
--- tab with that agent's conversation in the chat; <C-c> stops what it's
--- doing. Redrawn every second while it's showing.
+-- <CR> (or gq) opens the row's agent: its plan's tab with that agent's
+-- conversation in the chat, or - before it has planned - its conversation
+-- in a popup; gd its change, gH its run log; <C-c> stops what it's doing.
+-- Redrawn every second while it's showing.
 --
 --   M.rows(convs, queued, plan_of, now)  the rows (pure)
 --   M.arrange(rows, now, all)            grouped and sorted (pure)
@@ -237,11 +238,10 @@ local function render()
   if #rows > 0 then
     local waiting = 0
     for _, r in ipairs(rows) do if r.waiting then waiting = waiting + 1 end end
-    local hints = { { "agents", "open", "its plan" } }
+    local hints = { { "agents", "open", "its agent" } }
     if waiting > 0 then hints[#hints + 1] = { "agents", "approve", "approve (" .. waiting .. " waiting)" } end
     hints[#hints + 1] = { "agents", "changes", "its change" }
     hints[#hints + 1] = { "agents", "run_log", "what happened" }
-    hints[#hints + 1] = { "agents", "chat", "its conversation" }
     hints[#hints + 1] = { "agents", "chat_input", "type in the chat" }
     hints[#hints + 1] = { "agents", "help", "all keys" }
     local text, hhls = require("azure-cli.keys").hint_line(hints, "  ")
@@ -308,17 +308,29 @@ local function row_here()
   return view and view.rows[vim.api.nvim_win_get_cursor(0)[1]]
 end
 
-local function open_plan(r)
-  if not (r and require("azure-cli.chat.plan").load(r.key)) then
-    return notify("No plan for " .. (r and r.label or "this row") .. " yet.")
+-- <CR> / gq: the row's agent. With a plan, its plan's tab - the chat there
+-- shows that plan's own conversation (chat's sync_active) - and the panel
+-- opened on it; before it has planned, its conversation in the popup ga
+-- opens on the PR dashboard, the panel keeping the main one (issue #87).
+local function open_agent(r)
+  if not r then return end
+  local PLAN = require("azure-cli.chat.plan")
+  if PLAN.load(r.key) then
+    PLAN.open(r.key)
+    -- A plan with no conversation of its own: just the plan, not the main
+    -- chat passed off as its agent's.
+    if CHAT().find_conversation(r.key) then vim.schedule(function() CHAT().show(true) end) end
+    return
   end
-  require("azure-cli.chat.plan").open(r.key)
+  if r.conv then return CHAT().popup(r.key) end
+  notify((r.label or "That row") .. " is waiting for an agent - nothing to show yet.")
 end
 
 local HELP = {
   "This agent",
-  { "open", "the row's plan" }, { "changes", "its change, file by file" }, { "run_log", "its run log" },
-  { "chat", "its plan's tab, with that agent's conversation in the chat" },
+  { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
+  { "changes", "its change, file by file" }, { "run_log", "its run log" },
+  { "chat", "the same: the row's agent" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
@@ -332,7 +344,8 @@ local HELP = {
 
 local function setup(buf)
   local K = require("azure-cli.keys")
-  K.bind(buf, "agents", "open", function() open_plan(row_here()) end, { desc = "the row's plan" })
+  K.bind(buf, "agents", "open", function() open_agent(row_here()) end,
+    { desc = "the row's agent: its plan and conversation" })
   K.bind(buf, "agents", "changes", function()
     local r = row_here()
     if not r then return end
@@ -344,16 +357,8 @@ local function setup(buf)
     local r = row_here()
     if r then require("azure-cli.chat.plan").open_run_log(r.key) end
   end, { desc = "its run log" })
-  K.bind(buf, "agents", "chat", function()
-    local r = row_here()
-    if not r then return end
-    if require("azure-cli.chat.plan").load(r.key) then
-      open_plan(r)
-      vim.schedule(function() CHAT().show(true) end)
-    else
-      notify((r.label or "") .. " hasn't written its plan yet - its conversation shows in the plan's tab once it has.")
-    end
-  end, { desc = "its conversation" })
+  K.bind(buf, "agents", "chat", function() open_agent(row_here()) end,
+    { desc = "the row's agent (as Enter)" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "type in the chat (opens the panel; a draft stays)" })
