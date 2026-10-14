@@ -717,7 +717,9 @@ function M.popup(key)
       vim.schedule(close_popup)
       return true
     end
-    if ev.event == "WinEnter" then
+    -- A question popping up over it (ui.lua's M.choose) isn't leaving it:
+    -- answered, the focus comes back here (issue #55).
+    if ev.event == "WinEnter" and not require("azure-cli.ui").choosing() then
       local cur = vim.api.nvim_get_current_win()
       if cur ~= popup.log and cur ~= popup.input then
         vim.schedule(close_popup)

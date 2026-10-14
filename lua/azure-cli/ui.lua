@@ -775,7 +775,8 @@ end
 --                   does nothing waits that long again, and q doesn't cancel
 -- <Tab> / <S-Tab> / h / l / j / k / the arrows move between the buttons,
 -- <CR> presses the focused one; every other key does nothing. Opened from
--- insert mode it leaves it, and goes back to it after. cb(index), once.
+-- insert mode it leaves it, and goes back to it after (give_back: not in
+-- the chat's input box). cb(index), once.
 -- With ui.confirm = "select" it's vim.ui.select (prompt.lua) instead - the
 -- details in a float beside it.
 -- How many of those popups are open, and what waits for them all to close
@@ -787,6 +788,32 @@ function M.choosing() return choosing > 0 end
 function M.after_choose(fn)
   if choosing == 0 then return fn() end
   after_choose[#after_choose + 1] = fn
+end
+
+-- Where the popup gives the focus back once answered (issue #55): the
+-- window it was opened from (in its tab), in the mode it was in - insert
+-- only there. That window gone (closed while it asked): the screen next to
+-- the chat, in normal mode. The chat's input box gets it back in normal
+-- mode, never insert: the popup left insert mode, so what you type next
+-- looks like commands to you - and <CR> there sends.
+local function give_back(prev_win, was_insert)
+  local back = false
+  if vim.api.nvim_win_is_valid(prev_win) then
+    pcall(vim.api.nvim_set_current_win, prev_win)
+    back = vim.api.nvim_get_current_win() == prev_win
+  end
+  -- (only when the chat is loaded already: a popup doesn't start it)
+  local chat = _G.package.loaded["azure-cli.chat"]
+  if not back and type(chat) == "table" and chat.main_win then
+    local ok, main = pcall(chat.main_win)
+    if ok and main and vim.api.nvim_win_is_valid(main) then pcall(vim.api.nvim_set_current_win, main) end
+  end
+  local in_chat = type(chat) == "table" and chat.is_chat_buf and chat.is_chat_buf(vim.api.nvim_get_current_buf())
+  if back and was_insert and not in_chat then
+    vim.cmd("startinsert")
+  elseif vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then
+    vim.cmd("stopinsert")
+  end
 end
 
 function M.choose(opts, cb)
@@ -956,8 +983,7 @@ function M.choose(opts, cb)
   local function answer(i)
     if done then return end
     if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
-    if vim.api.nvim_win_is_valid(prev_win) then pcall(vim.api.nvim_set_current_win, prev_win) end
-    if was_insert then vim.cmd("startinsert") end
+    give_back(prev_win, was_insert)
     finish(i)
   end
   local function guarded(fn) return function() if armed() then fn() else rearm() end end end

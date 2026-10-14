@@ -373,6 +373,108 @@ do
   PLAN.load = real_load
 end
 
+-- Issue #55: answered, a popup gives the focus back to the window it was
+-- opened from, in normal mode - not to the chat's input box, where the
+-- keys typed next went out as messages. From screens with the chat panel
+-- beside them, as the agents' popups come.
+local CHAT55 = require("azure-cli.chat")
+local RUN55 = require("azure-cli.chat.run")
+local real_send, sent55 = RUN55.send, {}
+RUN55.send = function(text) sent55[#sent55 + 1] = text or CHAT55._.input_text() end
+local function screen55(ft)
+  vim.cmd("tabnew")
+  vim.bo.buftype, vim.bo.filetype = "nofile", ft
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "row 1", "row 2" })
+  local w = vim.api.nvim_get_current_win()
+  CHAT55.show(false)
+  vim.wait(50)
+  vim.api.nvim_set_current_win(w)
+  return w
+end
+local function where55(w)
+  return { same = vim.api.nvim_get_current_win() == w, mode = vim.api.nvim_get_mode().mode,
+    buf = vim.api.nvim_buf_get_name(0), sent = #sent55 }
+end
+do
+  local screen = screen55("azurecli-agents")
+  local got
+  CHAT55.confirm("The agent wants to run `git status`.", function(yes) got = yes end)
+  vim.wait(500)
+  feed("y")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 Agents screen: y allows, back on the screen in normal mode", got == true and at.same and at.mode == "n",
+    vim.inspect(at))
+  vim.g.azure_cli_t55 = nil
+  feed(":let g:azure_cli_t55 = 1<CR>")
+  check("#55 Agents screen: a : command typed next runs, nothing is sent", vim.g.azure_cli_t55 == 1 and #sent55 == 0,
+    vim.inspect(sent55))
+  vim.cmd("tabclose!")
+end
+do
+  local screen = screen55("azurecli-workitems")
+  local got
+  CHAT55.confirm("The agent wants to push.", function(yes) got = yes end)
+  vim.wait(500)
+  feed("<Esc>")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 dashboard: <Esc> denies, back on the dashboard in normal mode", got == false and at.same
+    and at.mode == "n" and at.sent == 0, vim.inspect(at))
+  vim.cmd("tabclose!")
+end
+do
+  local PLAN = require("azure-cli.chat.plan")
+  local real_load = PLAN.load
+  PLAN.load = function(k) return { key = k, target = { work_item_id = 9 }, revisions = {}, threads = {} } end
+  local screen = screen55("azurecli-agents")
+  local got
+  PLAN.ask_approval({ "wi-9" }, function(allow) got = allow end)
+  feed("a")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 plan approval: a approves, back on the Agents screen in normal mode", got == false and at.same
+    and at.mode == "n", vim.inspect(at))
+  PLAN.load = real_load
+  vim.cmd("tabclose!")
+end
+do
+  -- The window it was opened from closed while it asked: the screen beside
+  -- the chat, never the chat.
+  local screen = screen55("azurecli-agents")
+  local fw = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), true,
+    { relative = "editor", row = 2, col = 2, width = 30, height = 3 })
+  local got
+  UI.choose({ lines = { "q?" }, buttons = { "Yes", "No" }, keys = { y = 1 } }, function(i) got = i end)
+  pcall(vim.api.nvim_win_close, fw, true)
+  feed("y")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 its window gone: back on the screen, not the chat", got == 1 and at.same and at.mode == "n"
+    and not vim.b.azure_cli_chat, vim.inspect(at))
+  vim.cmd("tabclose!")
+end
+do
+  -- A question over an agent's conversation popup: that popup stays, and
+  -- the focus comes back to it.
+  local screen = screen55("azurecli-agents")
+  CHAT55.conversation("wi-55", { label = "#55" })
+  local log = CHAT55.popup("wi-55")
+  local got
+  CHAT55.confirm("The agent wants to run `ls`.", function(yes) got = yes end)
+  vim.wait(500)
+  feed("y")
+  vim.wait(100, function() return got ~= nil end, 10)
+  vim.wait(50)
+  local pw = CHAT55.popup_wins()
+  check("#55 conversation popup: still open after the question, the focus back in it", got == true and pw
+    and vim.api.nvim_win_is_valid(log) and vim.api.nvim_get_current_win() == log
+    and vim.api.nvim_get_mode().mode == "n", vim.inspect({ got, pw and true, vim.api.nvim_get_current_win() == log }))
+  vim.api.nvim_set_current_win(screen)
+  vim.wait(50)
+  vim.cmd("tabclose!")
+end
+
 -- Last, once this script has returned to the main loop - startinsert only
 -- takes effect there: from insert mode, out of it while the popup asks,
 -- back in after, in the same buffer.
@@ -380,20 +482,67 @@ local function finish()
   io.stdout:write((fails == 0 and "all confirm tests passed" or (fails .. " confirm test(s) failed")) .. "\n")
   vim.cmd(fails == 0 and "qa!" or "cq!")
 end
-vim.cmd("enew")
-local ebuf = vim.api.nvim_get_current_buf()
-vim.cmd("startinsert")
-vim.defer_fn(function()
-  local got, mode_in
-  UI.choose({ lines = { "q?" }, buttons = { "Yes", "No" }, keys = { y = 1 } }, function(i) got = i end)
+-- Each: `setup()` puts the cursor somewhere in insert mode (returning the
+-- window), a popup opens, `during()` runs while it asks, y answers,
+-- `after(win, got, mode_in)` checks.
+local function in_insert(setup, during, after, nxt)
+  local win = setup()
+  vim.cmd("startinsert")
   vim.defer_fn(function()
-    mode_in = vim.api.nvim_get_mode().mode
-    vim.api.nvim_input("y")
+    local got, mode_in
+    UI.choose({ lines = { "q?" }, buttons = { "Yes", "No" }, keys = { y = 1 } }, function(i) got = i end)
+    if during then during() end
     vim.defer_fn(function()
-      local mode_after = vim.api.nvim_get_mode().mode
-      check("insert mode: left while it asks, back after, in the same buffer", got == 1 and mode_in == "n"
-        and mode_after == "i" and vim.api.nvim_get_current_buf() == ebuf, vim.inspect({ got, mode_in, mode_after }))
-      finish()
+      mode_in = vim.api.nvim_get_mode().mode
+      vim.api.nvim_input("y")
+      vim.defer_fn(function()
+        after(win, got, mode_in)
+        vim.cmd("stopinsert")
+        vim.defer_fn(nxt, 50)
+      end, 100)
     end, 100)
   end, 100)
-end, 100)
+end
+local ebuf
+in_insert(function()
+  vim.cmd("enew")
+  ebuf = vim.api.nvim_get_current_buf()
+  return vim.api.nvim_get_current_win()
+end, nil, function(_, got, mode_in)
+  local mode_after = vim.api.nvim_get_mode().mode
+  check("insert mode: left while it asks, back after, in the same buffer", got == 1 and mode_in == "n"
+    and mode_after == "i" and vim.api.nvim_get_current_buf() == ebuf, vim.inspect({ got, mode_in, mode_after }))
+end, function()
+  -- #55: typing in the chat's input box when it asks - back there, but in
+  -- normal mode: what you type next isn't a message.
+  local screen
+  in_insert(function()
+    screen = screen55("azurecli-agents")
+    CHAT55.show(true)
+    vim.wait(50)
+    return vim.api.nvim_get_current_win()
+  end, nil, function(input, got)
+    local at = where55(input)
+    check("#55 from the chat's input box in insert mode: back there in normal mode", got == 1 and at.same
+      and at.mode == "n" and vim.b.azure_cli_chat == true and at.sent == 0, vim.inspect(at))
+  end, function()
+    vim.cmd("tabclose!")
+    -- #55: its window closed while it asked - insert mode doesn't carry
+    -- over to wherever the cursor lands.
+    local fw
+    in_insert(function()
+      screen = screen55("azurecli-agents")
+      fw = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), true,
+        { relative = "editor", row = 2, col = 2, width = 30, height = 3 })
+      return fw
+    end, function() pcall(vim.api.nvim_win_close, fw, true) end, function(_, got)
+      local at = where55(screen)
+      check("#55 from insert mode in a window closed while it asks: the screen, normal mode", got == 1
+        and at.same and at.mode == "n" and at.sent == 0, vim.inspect(at))
+    end, function()
+      vim.cmd("tabclose!")
+      RUN55.send = real_send
+      finish()
+    end)
+  end)
+end)
