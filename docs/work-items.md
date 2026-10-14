@@ -240,10 +240,17 @@ What's different on GitHub:
   project's Priority field (when it has one), the title and the iteration.
 - **Linked pull requests** are the ones GitHub lists as closing the issue,
   shown as `repo#7`. `gR` opens one.
-- **Not on GitHub yet:** linking and unlinking PRs (`gl`/`gL`), the chat
-  panel (`gq`) and planning agents (`gP`) aren't bound on the Issues tab.
-  They come with the agent's GitHub board tools
-  ([GITHUB_PLAN.md](../GITHUB_PLAN.md), phase 6, stage 3).
+- **`gl`/`gL`** link and unlink a GitHub pull request. GitHub has no other
+  way to link an existing PR to an issue, so `gl` adds a `Closes #12` line
+  to the PR's description (`owner/repo#12` across repositories) and `gL`
+  removes it. GitHub honours it only on a PR into the repository's default
+  branch, and closes the issue when that PR merges; for a PR into another
+  branch you're told the line won't link it. On the PR dashboard and in the
+  reviewer, `gW` on a GitHub PR lists the issues it closes and opens them
+  here.
+- **`gq` and `gP`** work as on `W`: the chat's board tools then work on the
+  issue (see [the chat](chat.md#issues-on-github)), and each `gP` agent plans
+  its issue.
 
 Your key overrides for the `workitems` and `workitem_view` surfaces apply
 to both tabs.

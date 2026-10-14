@@ -313,7 +313,8 @@ is simpler.
           the project's own workflow.
         - Ids: the issue number; every `<id>` also takes `owner/repo#n`,
           and a number two of the project's issues share is refused.
-        - `link-pr`/`unlink-pr`/`create-branch`/`delete-branch`: stage 3.
+        - `link-pr`/`unlink-pr`/`create-branch`/`delete-branch`: stage 3
+          (done there).
      2. **The `I` tab** (done): the work-items screens with the env above,
         GitHub's words, `key`-based ids and a Markdown body; the fake
         provider gains a GitHub project.
@@ -325,11 +326,30 @@ is simpler.
         - `--boards` reads the config alone and says whether a GitHub
           account has `issues:`; `I` (and the launcher's Issues tab) exist
           only then. With several such accounts, the first one's.
-        - `gl`/`gL`, `gq` and `gP` aren't bound on the Issues tab until
-          stage 3.
-     3. **The agent's board tools on GitHub**: `get_work_item`,
+        - `gl`/`gL`, `gq` and `gP` came to the Issues tab in stage 3.
+     3. **The agent's board tools on GitHub** (done): `get_work_item`,
         `list_work_items`, `start_story` (and branches linked to issues),
         `#n` in chat, `Closes #n` from `create_pull_request`.
+        - One set of tools for both boards: each takes `board: azure |
+          github` (and `repo`, an issue's owner/repo). Left out, the board
+          is the view's (the Issues tab, an issue's view, a gP agent's
+          issue), else the only board the config has, else Azure's.
+        - `create-branch` is GraphQL `createLinkedBranch` (the issue's
+          Development section); `delete-branch`, the undo, deletes the
+          ref only while its tip is where it was made.
+        - Linking: GitHub can link an existing PR to an issue only by a
+          closing keyword in its body, so `link-pr` adds `Closes #n` (and
+          asks first, from the chat) and `unlink-pr` removes it. GitHub
+          honours them only on PRs into the default branch; the answer
+          says so for any other.
+        - From phase 4: `--create-pr` (a `Closes #n` line per work item)
+          and `--work-items` (a PR's `closingIssuesReferences`) on GitHub.
+          The rest of phase 4 stays there.
+        - The PR dashboard caches a GitHub PR's issues by its key, so the
+          two repositories' #7 don't share a badge.
+        - Follow-ups: plans are still keyed `wi-<n>` on both boards, so an
+          Azure #n and a GitHub #n share one (with #38, a plan on a named
+          branch); #31, AskUserQuestion shown as raw JSON.
 
 Rough size: Phase 0 touches about 15 Lua files with mostly mechanical
 changes. Phases 1–4 are mostly new Python (about 1,000–1,500 lines with

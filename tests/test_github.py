@@ -547,6 +547,52 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["value"][0]["id"], 0)
 
 
+class IssueLinkTests(unittest.TestCase):
+    """--work-items and --create-pr (phase 6 stage 3): a PR's issues are
+    its closing references."""
+
+    def test_work_items_are_the_closing_issues(self):
+        c = RestClient(graphql={"closingIssuesReferences": {"repository": {"pullRequest": {
+            "closingIssuesReferences": {"nodes": [
+                {"number": 21, "title": "Issues", "state": "OPEN", "url": "u",
+                 "repository": {"name": "r", "owner": {"login": "o"}},
+                 "assignees": {"nodes": [{"login": "me"}]},
+                 "projectItems": {"nodes": [{"fieldValueByName": None},
+                                            {"fieldValueByName": {"name": "In Progress"}}]}},
+                {"number": 3, "title": "Old", "state": "CLOSED", "url": "v",
+                 "repository": {"name": "web", "owner": {"login": "o"}},
+                 "assignees": {"nodes": []}, "projectItems": {"nodes": []}}]}}}}})
+        code, out = quiet(actions(c).work_items)
+        recs = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual(code, 0)
+        self.assertEqual(recs[0], {"id": 21, "type": "Issue", "state": "In Progress", "title": "Issues",
+                                   "assignedTo": "me", "url": "u", "repo": "r", "key": "o~r~21", "host": "github"})
+        self.assertEqual((recs[1]["state"], recs[1]["key"]), ("Closed", "o~web~3"))
+
+    def test_create_pr_closes_its_issues(self):
+        c = RestClient({("POST", "/repos/o/r/pulls"): {
+            "number": 17, "html_url": "https://github.com/o/r/pull/17",
+            "base": {"ref": "main", "repo": {"default_branch": "main"}}}})
+        code, out = quiet(actions(c).create_pr, "refs/heads/feature/21-x", "main", "T", "Body.\n\nCloses #4",
+                          "21,4,o/web#2,o~web~3", "true")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"id": 17, "url": "https://github.com/o/r/pull/17", "key": "o~r~17"})
+        self.assertEqual(c.writes(), [("POST", "/repos/o/r/pulls", {
+            "title": "T", "head": "feature/21-x", "base": "main", "draft": True,
+            "body": "Body.\n\nCloses #4\n\nCloses #21\nCloses o/web#2\nCloses o/web#3"})])
+
+    def test_create_pr_into_another_branch_has_a_note(self):
+        c = RestClient({("POST", "/repos/o/r/pulls"): {
+            "number": 18, "html_url": "x", "base": {"ref": "github-host", "repo": {"default_branch": "master"}}}})
+        code, out = quiet(actions(c).create_pr, "b", "github-host", "T", "", "21", "false")
+        self.assertIn("only from pull requests into master", json.loads(out)["note"])
+        self.assertEqual(c.writes()[0][2]["body"], "Closes #21")
+
+    def test_both_are_dispatched(self):
+        self.assertIn("--work-items", ac._GITHUB_ACTIONS)
+        self.assertIn("--create-pr", ac._GITHUB_ACTIONS)
+
+
 class PrefetchTests(unittest.TestCase):
     def test_a_fork_source_is_fetched_from_refs_pull(self):
         calls = []

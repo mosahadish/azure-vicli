@@ -722,10 +722,10 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
 | `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
-| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints | - |
+| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints. These and the other work-item tools also work on GitHub issues (see [Issues on GitHub](#issues-on-github)) | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
-| `link_pr_to_work_item` | Links a PR and a work item | no |
+| `link_pr_to_work_item` | Links a PR and a work item | no (**yes** on GitHub, where it edits the PR's description) |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
 | `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
@@ -832,6 +832,31 @@ through `--permission-prompt-tool mcp__azure-vicli__permission` (see
 allowed up front is refused, and the agent stops with something like
 "permission denied and could not request permission from user". Either
 still needs `--add-dir {fix_root}` to reach that directory.
+
+### Issues on GitHub
+
+With a GitHub account's `issues:` block (the [Issues tab](work-items.md#issues-github)),
+the same board tools work on its project. Each takes `board` (`azure` or
+`github`) and, on GitHub, `repo` (`owner/repo`) when the project spans
+several repositories and the number alone is ambiguous. Without `board`,
+a tool uses the board you're looking at: `gq` on the Issues tab or an
+issue's view, a `gP` agent started for an issue, a `#12` only the Issues
+tab lists, or the only board your config has. Otherwise it's Azure's.
+
+- `set_work_item_state` takes a Status option, or `Closed` with reason
+  `completed` or `not planned`. `create_child_task` makes a sub-issue in its
+  parent's iteration.
+- `start_story` and `create_branch` make the branch with GitHub's linked
+  branches, so it shows in the issue's Development section.
+- `create_pull_request` into a GitHub repository adds a `Closes #12` line
+  for each issue in `work_item_ids`.
+- `link_pr_to_work_item` adds `Closes #12` to the PR's description, which
+  is GitHub's only way to link an existing PR, and asks first there because
+  merging that PR into the default branch closes the issue. `u` in `gH`
+  removes the line again.
+
+GitHub only honours `Closes` on a PR into the repository's default branch;
+for any other, the tool's answer says the line won't link it yet.
 
 ## How it works
 

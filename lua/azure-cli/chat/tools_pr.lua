@@ -151,12 +151,13 @@ return function(T)
     {
       name = "create_pull_request",
       description = "Opens a pull request from one branch into another in a repository, optionally linking work "
-        .. "items. Leave description out to use your approved plan's (its Goal, Approach, Risks and Test plan), or "
+        .. "items (on GitHub, issues: a \"Closes #n\" line each). Leave description out to use your approved plan's (its Goal, Approach, Risks and Test plan), or "
         .. "give both description and from_plan = true for yours followed by the plan's. Asks first.",
       schema = { type = "object", properties = { repo = { type = "string" }, source = { type = "string" },
         target = { type = "string" }, title = { type = "string" }, description = { type = "string" },
         from_plan = { type = "boolean", description = "add the plan's sections after description" },
-        work_item_ids = { type = "array", items = { type = "integer" } }, draft = { type = "boolean" } },
+        work_item_ids = { type = "array", items = { type = "integer" } }, draft = { type = "boolean" },
+        board = T.board_props.board },
         required = { "repo", "source", "target", "title" } },
       risk = "ask",
       confirm = function(a) return "open a pull request \"" .. tostring(a.title) .. "\" from " .. tostring(a.source) .. " into " .. tostring(a.target) .. " in " .. tostring(a.repo) end,
@@ -166,33 +167,33 @@ return function(T)
       end,
       -- The PR of a plan you approved with pushing allowed opens without asking.
       preapproved = function(a, cb) require("azure-cli.chat.plan").pr_allowed(a, cb) end,
-      run = function(args, _, done)
+      run = function(args, env, done)
         args.description = require("azure-cli.chat.plan").description_for(args.description, args.from_plan,
           args.work_item_ids, args.source)
-        local org, project
-        for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do
-          if p.repo == args.repo then org, project = p.org, p.project break end
-        end
-        org = org or vim.env.AZVICLI_WI_COLLECTION or ""
-        project = project or vim.env.AZVICLI_WI_PROJECT or ""
+        -- The repository's org/project: a PR of it on the dashboard, else the
+        -- board's account (on GitHub its API root and owner; work_item_ids
+        -- then become "Closes #n" lines in the description).
+        local org, project = T.repo_location(args.repo, T.board_for(args, env))
+        local repo = tostring(args.repo):match("/(.+)$") or args.repo
         local ids = {}
         for _, w in ipairs(args.work_item_ids or {}) do ids[#ids + 1] = tostring(w) end
         T.provider({ "--create-pr", args.source, args.target, args.title, args.description or "", table.concat(ids, ","),
           args.draft and "true" or "false" },
-          { AZVICLI_ORG = org, AZVICLI_PROJECT = project, AZVICLI_REPO = args.repo, AZVICLI_PR = "0" },
+          { AZVICLI_ORG = org, AZVICLI_PROJECT = project, AZVICLI_REPO = repo, AZVICLI_PR = "0" },
           function(ok, out, err)
             if not ok then return done(nil, err) end
             local okd, d = pcall(vim.json.decode, out)
             local id = okd and d.id or "?"
             -- Its reviewers' comments (chat/watch.lua).
             if okd and d.id then
-              pcall(require("azure-cli.chat.watch").add, { id = d.id, org = org, project = project, repo = args.repo,
+              pcall(require("azure-cli.chat.watch").add, { id = d.id, org = org, project = project, repo = repo,
                 title = args.title })
               -- The plans it was opened for know it (the Agents screen).
               pcall(require("azure-cli.chat.plan").link_pr, args.work_item_ids, args.source,
                 { id = d.id, org = org, project = project })
             end
-            done("Opened PR !" .. tostring(id) .. " (" .. ((okd and d.url) or "") .. "). It shows on the dashboard at its next refresh.")
+            done("Opened PR !" .. tostring(id) .. " (" .. ((okd and d.url) or "") .. "). It shows on the dashboard at its next refresh."
+              .. ((okd and d.note) and (" Note: " .. d.note .. ".") or ""))
           end)
       end,
     },
@@ -234,14 +235,17 @@ return function(T)
     {
       name = "open_in_ui",
       description = "Shows the user something in azure-vicli: a pull request in the reviewer (optionally at a "
-        .. "file and line), or a work item. Use it when the user asks to be shown or taken somewhere.",
+        .. "file and line), or a work item (with board = \"github\", an issue). Use it when the user asks to be "
+        .. "shown or taken somewhere.",
       schema = { type = "object", properties = { pr_id = { type = "integer" }, file = { type = "string" },
-        line = { type = "integer" }, side = { type = "string", enum = { "R", "L" } }, work_item_id = { type = "integer" } } },
+        line = { type = "integer" }, side = { type = "string", enum = { "R", "L" } }, work_item_id = { type = "integer" },
+        board = T.board_props.board, item_repo = T.board_props.repo_of_item } },
       risk = "read",
-      run = function(args, _, done)
+      run = function(args, env, done)
         if args.work_item_id then
-          require("azure-cli.pr_workitems").open_item(args.work_item_id)
-          return done("Showing work item #" .. args.work_item_id .. ".")
+          local B = T.board_for(args, env)
+          require("azure-cli.pr_workitems").open_item(args.work_item_id, B, T.wi_ref(B, args.work_item_id, args.item_repo))
+          return done("Showing " .. T.wi_name(B, args.work_item_id) .. ".")
         end
         if not args.pr_id then return done(nil, "give pr_id (and file/line) or work_item_id") end
         local file = args.file and (args.file:gsub("^/", "")) or nil

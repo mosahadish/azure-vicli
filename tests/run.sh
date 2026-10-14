@@ -627,6 +627,11 @@ if command -v nvim >/dev/null 2>&1; then
   else
     fail "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github" "$out"
   fi
+  if [[ "$out" == *ISSUE-TOOLS-SMOKE-OK* ]]; then
+    pass "smoke: the agent's board tools on I (state, comment, sub-issue, start_story, Closes #n, link + undo), gW, gP"
+  else
+    fail "smoke: the agent's board tools on I (state, comment, sub-issue, start_story, Closes #n, link + undo), gW, gP" "$out"
+  fi
   if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
     pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"
   else

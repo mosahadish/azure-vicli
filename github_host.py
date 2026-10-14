@@ -607,6 +607,70 @@ def _uint(s):
     return isinstance(s, str) and s.isdigit()
 
 
+# ---------------------------------------------------------------------------
+# Closing keywords: how a PR links an issue
+# ---------------------------------------------------------------------------
+#
+# GitHub has no call that links an existing PR to an issue; a closing
+# keyword in the PR's body does (and closes the issue when the PR merges
+# into the default branch). github_issues.py's link-pr/unlink-pr and
+# --create-pr's work items all write and read these lines.
+
+CLOSING_WORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+
+
+def _issue_ref(io, ir, n, po, pr):
+    """How PR po/pr's body names issue io/ir#n: #n in the same repository."""
+    same = (io or "").lower() == (po or "").lower() and (ir or "").lower() == (pr or "").lower()
+    return "#{0}".format(n) if same else "{0}/{1}#{2}".format(io, ir, n)
+
+
+def _closing_re(io, ir, n, po, pr):
+    refs = {re.escape(_issue_ref(io, ir, n, po, pr)), re.escape("{0}/{1}#{2}".format(io, ir, n))}
+    return re.compile(r"^[ \t]*{0}:?[ \t]+(?:{1})[ \t]*\.?[ \t]*$".format(CLOSING_WORDS, "|".join(refs)),
+                      re.IGNORECASE | re.MULTILINE)
+
+
+def closing_line(io, ir, n, po, pr):
+    return "Closes " + _issue_ref(io, ir, n, po, pr)
+
+
+def closes(body, io, ir, n, po, pr):
+    """Whether `body` already has a closing line for the issue."""
+    return bool(_closing_re(io, ir, n, po, pr).search(body or ""))
+
+
+def without_closing(body, io, ir, n, po, pr):
+    """`body` minus its closing lines for the issue (and the blank lines
+    that only led up to them at the end)."""
+    out = _closing_re(io, ir, n, po, pr).sub("", body or "")
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.rstrip() if out.strip() else ""
+
+
+def default_branch_note(pull):
+    """A REST pull's note when GitHub won't honour its closing keywords:
+    it isn't into the repository's default branch."""
+    base = pull.get("base") or {}
+    default = ((base.get("repo") or {}).get("default_branch")) or ""
+    if default and base.get("ref") and base.get("ref") != default:
+        return ("GitHub links (and closes) issues only from pull requests into {0}; this one is into {1}, so the "
+                "Closes line won't link it until it is retargeted").format(default, base.get("ref"))
+    return ""
+
+
+CLOSING_ISSUES_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    closingIssuesReferences(first: 50) { nodes {
+      number title state url repository { name owner { login } }
+      assignees(first: 10) { nodes { login } }
+      projectItems(first: 5) { nodes { fieldValueByName(name: "Status") {
+        ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } } }
+}
+"""
+
+
 class Actions(object):
     """The PR actions for a GitHub PR, answering azure-cli.py's PR_ACTION
     flags with the same output (the same one-line messages on success)."""
@@ -875,6 +939,66 @@ class Actions(object):
                 return "Thread {0} isn't on this pull request.".format(a[0])
             return (ADD_REPLY, {"pullRequestReviewThreadId": node, "body": a[1]})
         return "{0} can't be part of a review.".format(flag)
+
+    def work_items(self):
+        """--work-items: the issues this PR closes (its closing keywords and
+        the links made on github.com), one NDJSON line each in the Azure
+        record's shape plus key/repo/host - the PR's badge and gW."""
+        data = self.client.graphql(CLOSING_ISSUES_QUERY, self._vars())
+        pr = ((data.get("repository") or {}).get("pullRequest")) or {}
+        for n in ((pr.get("closingIssuesReferences") or {}).get("nodes") or []):
+            if not n:
+                continue
+            r = n.get("repository") or {}
+            owner, name = (r.get("owner") or {}).get("login") or "", r.get("name") or ""
+            status = next((((i or {}).get("fieldValueByName") or {}).get("name")
+                           for i in ((n.get("projectItems") or {}).get("nodes") or [])
+                           if ((i or {}).get("fieldValueByName") or {}).get("name")), None)
+            state = "Closed" if n.get("state") == "CLOSED" else (status or "No Status")
+            print(json.dumps({"id": n.get("number"), "type": "Issue", "state": state, "title": n.get("title") or "",
+                              "assignedTo": ", ".join((a or {}).get("login") or ""
+                                                      for a in ((n.get("assignees") or {}).get("nodes") or [])),
+                              "url": n.get("url") or "", "repo": name, "key": pr_key(owner, name, n.get("number")),
+                              "host": "github"}, ensure_ascii=False))
+        return 0
+
+    def create_pr(self, source, target, title, description="", work_items="", draft="false"):
+        """--create-pr: opens a PR from `source` into `target` in this
+        repository (AZVICLI_REPO under AZVICLI_PROJECT), its body ending in a
+        "Closes #n" line per issue in `work_items` (comma-separated numbers,
+        owner/repo#n or owner~repo~n). Prints {"id", "url", "key"} plus
+        "note" when GitHub won't honour those lines (not the default
+        branch)."""
+        import sys
+        if not source or not target or _blank(title):
+            print("create-pr needs <source> <target> <title>", file=sys.stderr)
+            return 1
+        strip = lambda b: b[len("refs/heads/"):] if b.startswith("refs/heads/") else b  # noqa: E731
+        body = (description or "").rstrip()
+        lines = []
+        for w in (work_items or "").split(","):
+            w = w.strip().lstrip("#")
+            m = re.match(r"^(?:([^/~\s]+)[/~]([^#~\s]+)[#~])?(\d+)$", w)
+            if not m:
+                continue
+            io, ir = (m.group(1), m.group(2)) if m.group(1) else (self.owner, self.repo)
+            if not closes(body, io, ir, m.group(3), self.owner, self.repo):
+                lines.append(closing_line(io, ir, m.group(3), self.owner, self.repo))
+        if lines:
+            body = (body + "\n\n" if body else "") + "\n".join(lines)
+        made = self.client.rest("POST", self._repo("/pulls"), {
+            "title": title, "head": strip(source), "base": strip(target), "body": body,
+            "draft": str(draft).lower() == "true"}) or {}
+        number = made.get("number")
+        if number is None:
+            print("unexpected response: " + json.dumps(made)[:400], file=sys.stderr)
+            return 2
+        out = {"id": number, "url": made.get("html_url") or "", "key": pr_key(self.owner, self.repo, number)}
+        note = default_branch_note(made) if lines else ""
+        if note:
+            out["note"] = note
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
 
     def get_pr(self):
         data = self.client.graphql(PR_QUERY, self._vars())

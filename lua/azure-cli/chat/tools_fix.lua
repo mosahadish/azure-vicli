@@ -248,12 +248,15 @@ setmetatable(M, { __call = function(_, T)
         .. "there, then call show_fix and, when the user agrees, commit_and_push_fix (both with work_item_id), then "
         .. "offer create_pull_request. Ask the user which repository and base branch when they aren't clear; name "
         .. "the branch like feature/<id>-<short-title>. Calling it again for the same work item reuses the worktree. "
-        .. "Runs without asking (nothing but the empty branch leaves the machine until commit_and_push_fix).",
+        .. "Runs without asking (nothing but the empty branch leaves the machine until commit_and_push_fix). "
+        .. "For a GitHub issue (board = \"github\"), the branch is linked to the issue (its Development section).",
       schema = { type = "object", properties = {
         work_item_id = { type = "integer" },
-        repo = { type = "string", description = "repository name" },
+        repo = { type = "string", description = "repository name (owner/repo on GitHub also works)" },
         from = { type = "string", description = "branch to start from, e.g. develop" },
         name = { type = "string", description = "the new branch's name, without refs/heads/" },
+        board = T.board_props.board,
+        item_repo = T.board_props.repo_of_item,
       }, required = { "work_item_id", "repo", "from", "name" } },
       risk = "write",
       run = function(args, env, done)
@@ -265,12 +268,14 @@ setmetatable(M, { __call = function(_, T)
           return done({ directory = existing, branch = ebranch, note = "Already started - kept as it was.",
             next = "Edit files under the directory, then call show_fix with work_item_id." })
         end
-        local org, project, clone = T.repo_location(args.repo)
+        local B = T.board_for(args, env)
+        local org, project, clone = T.repo_location(args.repo, B)
+        local repo = tostring(args.repo):match("/(.+)$") or args.repo
         if not is_repo(clone) then
           return done(nil, args.repo .. " isn't cloned locally (clones_dir in azure-cli.yml, or open one of its PRs "
             .. "from the dashboard to clone it)")
         end
-        local wt = M.story_path(args.repo, id)
+        local wt = M.story_path(repo, id)
         local undo
         local function failed(what)
           done(nil, what .. (undo and (" (" .. args.name .. " was created on the server; start_story again uses it)") or ""))
@@ -284,7 +289,7 @@ setmetatable(M, { __call = function(_, T)
               T.git({ "git", "-C", clone, "worktree", "add", "-q", "--detach", wt, "origin/" .. args.name }, function(ok, _, err)
                 if not ok then return failed("creating the worktree failed: " .. err) end
                 vim.fn.writefile({ args.name, args.from or "" }, wt .. ".branch")
-                done({ directory = wt, branch = args.name, repo = args.repo,
+                done({ directory = wt, branch = args.name, repo = repo,
                   next = "Edit files under the directory, then call show_fix with work_item_id." }, nil, undo)
               end)
             end)
@@ -293,15 +298,17 @@ setmetatable(M, { __call = function(_, T)
         -- An existing branch (made by hand, or by create_branch) is used as it is.
         T.git({ "git", "-C", clone, "ls-remote", "--heads", "origin", "refs/heads/" .. args.name }, function(_, heads)
           if vim.trim(heads or "") ~= "" then return checkout() end
-          T.provider({ "--wi-edit", "create-branch", tostring(id), org, project, args.repo, args.from, args.name }, nil,
+          T.provider({ "--wi-edit", "create-branch", T.wi_ref(B, id, args.item_repo), org, project, repo, args.from,
+            args.name }, B.env,
             function(ok, out, err)
               if not ok then return done(nil, "creating the branch failed: " .. err) end
               local okd, res = pcall(vim.json.decode, out)
               res = okd and type(res) == "table" and res or {}
-              undo = { op = "delete_branch", org = org, project = project, repo = args.repo, name = args.name,
-                sha = res.objectId }
+              undo = { op = "delete_branch", org = org, project = project, repo = repo, name = args.name,
+                sha = res.objectId, board = B.host }
               env.log("created " .. args.name .. " from " .. args.from
-                .. (res.linked and (", linked to #" .. tostring(res.linked)) or ""))
+                .. (res.linked and (", linked to #" .. tostring(res.linked)) or "")
+                .. (res.linkError and (" (not linked: " .. res.linkError .. ")") or ""))
               checkout()
             end)
         end)

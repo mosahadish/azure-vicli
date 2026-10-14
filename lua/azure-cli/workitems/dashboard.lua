@@ -1186,12 +1186,17 @@ end
 -- collection/project. Same flow as wi-view.lua's own gl.
 -- Offers the cached PR list (the dashboard's own, prefetched in the
 -- background) as a picker before falling back to typing an id, then
--- calls cb(pr_id_string). Shared with the detail view via STATE.
+-- calls cb(pr_id_string, record) (record nil for a typed id). Only this
+-- board's host's PRs: an issue links GitHub PRs. Shared with the detail
+-- view via the board's state.
 local function pick_pr(prompt, cb)
   local cache = STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs or {}
   local items = {}
   for _, pr in ipairs(cache) do
-    items[#items + 1] = { label = "!" .. tostring(pr.id) .. "  " .. (pr.title or "") .. "  (" .. (pr.repo or "") .. ")", id = tostring(pr.id) }
+    if (pr.host == "github") == (B.host == "github") then
+      items[#items + 1] = { label = "!" .. tostring(pr.id) .. "  " .. (pr.title or "") .. "  (" .. (pr.repo or "") .. ")",
+        id = tostring(pr.id), rec = pr }
+    end
   end
   local function typed()
     PROMPT.input({ prompt = prompt .. " (PR id):" }, function(t)
@@ -1204,19 +1209,23 @@ local function pick_pr(prompt, cb)
   end
   items[#items + 1] = { label = "(type a PR id\u{2026})", typed = true }
   UI.pick_popup({ title = prompt, items = items, action = "link" }, function(choice)
-    if choice.typed then typed() else cb(choice.id) end
+    if choice.typed then typed() else cb(choice.id, choice.rec) end
   end)
 end
 S.WI_PICK_PR = pick_pr
 
--- gl/gL are Azure's (B.caps.links): GitHub's issue links come in stage 3.
+-- gl/gL where the board can link PRs (B.caps.links) - on GitHub a "Closes
+-- #n" line in the PR's description (github_issues.py).
 local function link_pr_item()
   local it = current_item()
   if not it then return end
   local id = tostring(it.id)
   -- linked_prs.lua links it and updates every screen showing the link.
-  pick_pr("Link a pull request to #" .. id, function(pr_id)
-    if pr_id ~= nil then LINKED_PRS.link(id, pr_id, it) end
+  pick_pr("Link a pull request to #" .. id, function(pr_id, rec)
+    if pr_id ~= nil then
+      LINKED_PRS.link(ref(it), pr_id, it, rec and { org = rec.org, project = rec.project, repo = rec.repo } or nil,
+        B.host == "github" and B or nil)
+    end
   end)
 end
 
@@ -1226,15 +1235,16 @@ local function unlink_pr_item()
   local it = current_item()
   if not it then return end
   local id = tostring(it.id)
+  local key = ref(it)
   local function with_detail(cb)
-    local c = WI_DETAIL_CACHE[id]
+    local c = WI_DETAIL_CACHE[key]
     if c and c.body then
       local ok, data = pcall(vim.json.decode, c.body)
       if ok and type(data) == "table" then cb(data) return end
     end
     notify("Loading #" .. id .. " \u{2026}")
     local out = {}
-    B.run({ "--wi-detail", id }, {
+    B.run({ "--wi-detail", key }, {
       stdout_buffered = true,
       on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
       on_exit = function(_, code)
@@ -1255,10 +1265,10 @@ local function unlink_pr_item()
     end
     local items = {}
     for _, p in ipairs(prs) do
-      items[#items + 1] = { label = "!" .. tostring(p.id) .. ((p.title and p.title ~= "") and ("  " .. p.title) or ""), pr = p }
+      items[#items + 1] = { label = LINKED_PRS.label(p, B.host) .. ((p.title and p.title ~= "") and ("  " .. p.title) or ""), pr = p }
     end
     UI.pick_popup({ title = "Unlink a PR from #" .. id, items = items, action = "unlink" }, function(choice)
-      LINKED_PRS.unlink(id, choice.pr.id, it)
+      LINKED_PRS.unlink(key, choice.pr.id, it, B.host == "github" and B or nil, choice.pr.repo)
     end)
   end)
 end
@@ -1703,8 +1713,8 @@ KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open a config 
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
 KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
--- The chat's board tools are Azure's until stage 3 (B.caps): on GitHub,
--- neither gq nor gP is bound.
+-- gq and gP where the board has them (B.caps): on GitHub the chat's board
+-- tools take board = "github", which the snapshot and gP's agents name.
 if B.caps.chat then
 -- gq: the chat panel, told about the work item under the cursor.
 require("azure-cli.chat").bind_toggle(buf, "workitems")
@@ -1713,8 +1723,9 @@ if B.caps.plan_agents then
 -- gP: an agent per work item - the one under the cursor, or every one in
 -- the selected rows - each writing its plan (chat/agents.lua).
 KEYS.bind(buf, "workitems", "plan_agents", function()
-  require("azure-cli.chat.agents").start_for_items({ row_item[vim.api.nvim_win_get_cursor(0)[1]] })
-end, { desc = "an agent plans this work item" })
+  require("azure-cli.chat.agents").start_for_items({ row_item[vim.api.nvim_win_get_cursor(0)[1]] }, nil,
+    B.host == "github" and "github" or nil)
+end, { desc = "an agent plans this " .. WORDS.item })
 KEYS.bind(buf, "workitems", "plan_agents", function()
   local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
   if a > b then a, b = b, a end
@@ -1727,17 +1738,22 @@ KEYS.bind(buf, "workitems", "plan_agents", function()
       items[#items + 1] = it
     end
   end
-  require("azure-cli.chat.agents").start_for_items(items)
-end, { desc = "an agent per selected work item, each planning its item", mode = "x" })
+  require("azure-cli.chat.agents").start_for_items(items, nil, B.host == "github" and "github" or nil)
+end, { desc = "an agent per selected " .. WORDS.item .. ", each planning its item", mode = "x" })
 end
 if B.caps.chat then
-require("azure-cli.chat.view").register("azurecli-workitems", function(w)
+require("azure-cli.chat.view").register(B.ft, function(w)
   local it = row_item[vim.api.nvim_win_get_cursor(w)[1]]
-  local snap = { screen = "work items dashboard" }
+  local snap = { screen = WORDS.screen }
+  if B.host == "github" then snap.board = "github" end
   if type(it) == "table" and it.id then
     snap.work_item = { id = it.id, type = it.type, title = it.title, state = it.state, assigned_to = it.assignedTo }
+    if B.host == "github" then
+      snap.work_item.board, snap.work_item.repo, snap.work_item.key = "github", it.repo, it.key
+    end
   else
-    snap.note = "The cursor isn't on a work item; list_work_items shows the sprint."
+    snap.note = "The cursor isn't on " .. (B.host == "github" and "an issue" or "a work item") .. "; list_work_items"
+      .. (B.host == "github" and " with board = \"github\"" or "") .. " shows the " .. WORDS.sprint .. "."
   end
   return snap
 end)

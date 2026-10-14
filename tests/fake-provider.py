@@ -59,7 +59,8 @@ GH_API = "https://api.github.com"
 GH_OWNER = "demo-gh"
 # The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
-              "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review")
+              "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
+              "--create-pr")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -957,6 +958,16 @@ class Fake:
 
     def cmd_work_items(self):
         pid = self.pr_id()
+        if self.is_github():
+            # A GitHub PR's issues: the ones it closes (github_host.py).
+            repo = self.env.get("AZVICLI_REPO") or ""
+            for n in self.state.get("issues", []):
+                if n["repo"] == repo and pid.isdigit() and int(pid) in n.get("prs", []):
+                    print(json.dumps({"id": n["number"], "type": "Issue", "state": self.gh_state(n),
+                                      "title": n["title"], "assignedTo": ", ".join(n["assignees"]),
+                                      "repo": n["repo"], "key": self.gh_key(n), "host": "github"},
+                                     ensure_ascii=False))
+            return 0
         for w in self.state["workitems"]:
             if pid.isdigit() and int(pid) in w.get("prs", []):
                 print(json.dumps({k: w[k] for k in ("id", "type", "state", "title", "assignedTo")},
@@ -1022,6 +1033,8 @@ class Fake:
             print("create-pr needs <source> <target> <title>", file=sys.stderr)
             return 1
         repo = self.env.get("AZVICLI_REPO") or ""
+        if self.is_github():
+            return self.gh_create_pr(repo, source, target, title, desc, wis)
         pid = max(p["id"] for p in self.state["prs"]) + 1
         self.state["prs"].append({
             "id": pid, "title": title, "repo": repo, "source": source, "target": target, "author": "me",
@@ -1464,7 +1477,7 @@ class Fake:
                 "pullRequests": [{"id": p, "repo": n["repo"]} for p in n.get("prs", [])], "childIds": kids,
                 "changedIso": n["updated"], "changedHuman": humanize(n["updated"]),
                 "url": "https://github.com/{0}/{1}/issues/{2}".format(GH_OWNER, n["repo"], n["number"]),
-                "repo": n["repo"], "key": self.gh_key(n)}
+                "repo": n["repo"], "key": self.gh_key(n), "iteration": n.get("iteration") or ""}
 
     def gh_summary(self, n):
         return {"id": n["number"], "type": "Issue", "state": self.gh_state(n), "title": n["title"],
@@ -1574,7 +1587,8 @@ class Fake:
         item.update({"createdBy": "alice", "createdDate": n["updated"], "changedDate": n["updated"],
                      "areaPath": "{0}/{1}".format(GH_OWNER, n["repo"]), "iterationPath": it.get("title", ""),
                      "reason": n.get("reason", ""), "description": n.get("body", ""), "acceptanceCriteria": "",
-                     "reproSteps": "", "pullRequests": [self.gh_linked_pr(n, p) for p in n.get("prs", [])]})
+                     "reproSteps": "", "pullRequests": [self.gh_linked_pr(n, p) for p in n.get("prs", [])],
+                     "branches": n.get("branches", [])})
         for k in ("changedIso", "changedHuman", "childIds", "parentId"):
             item.pop(k, None)
         parent = self.gh_issue("{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["parent"])) if n.get("parent") else None
@@ -1672,16 +1686,109 @@ class Fake:
             self.gh_touch(n)
             print(json.dumps({"id": len(n["comments"])}))
             return 0
-        if cmd in ("link-pr", "unlink-pr", "create-branch", "delete-branch"):
-            raise ValueError("{0} isn't supported for GitHub issues yet".format(cmd))
+        a = list(rest[1:]) + ["", "", "", "", "", ""]
+        if cmd == "create-branch":
+            # <id|0> <apiUrl> <owner> <repo> <from> <new>: a real branch in the
+            # bare origin, in the issue's Development section (createLinkedBranch).
+            sha, err = self.make_branch(a[3].split("/")[-1], a[4], a[5])
+            if err:
+                raise ValueError(err)
+            n = self.gh_issue(a[0]) if a[0] and a[0] != "0" else None
+            if n is not None:
+                n.setdefault("branches", []).append({"repo": a[3].split("/")[-1], "name": a[5]})
+                self.gh_touch(n)
+            print(json.dumps({"branch": a[5], "objectId": sha, "linked": n["number"] if n else None}))
+            return 0
+        if cmd == "delete-branch":
+            return self.cmd_wi_edit(["delete-branch", a[0], a[1], a[2].split("/")[-1], a[3], a[4]])
+        if cmd == "link-pr":
+            # <id> <apiUrl> <owner> <repo> <pr>: "Closes #n" in the PR's body.
+            n, pr = self.gh_issue(a[0]), self.gh_pr(a[3], a[4])
+            if n is None or pr is None:
+                raise ValueError("no issue {0} or pull request {1}#{2}".format(a[0], a[3], a[4]))
+            line = "Closes " + ("#{0}".format(n["number"]) if n["repo"] == pr["repo"]
+                                else "{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["number"]))
+            if line not in (pr.get("description") or "").splitlines():
+                pr["description"] = ((pr.get("description") or "").rstrip() + "\n\n" + line).strip()
+            if pr["id"] not in n.setdefault("prs", []):
+                n["prs"].append(pr["id"])
+            self.gh_touch(n)
+            out = {"linked": n["number"], "pr": pr["id"], "line": line}
+            if pr["target"] != "main":
+                out["note"] = ("GitHub links (and closes) issues only from pull requests into main; this one is "
+                               "into {0}, so the Closes line won't link it until it is retargeted").format(pr["target"])
+            print(json.dumps(out))
+            return 0
+        if cmd == "unlink-pr":
+            # <id> <pr> [owner/repo]
+            n = self.gh_issue(a[0])
+            pr = self.gh_pr((a[2] or (n or {}).get("repo") or "").split("/")[-1], a[1])
+            if n is None or pr is None:
+                raise ValueError("no issue {0} or pull request {1}".format(a[0], a[1]))
+            body = [l for l in (pr.get("description") or "").splitlines()
+                    if not re.match(r"^(close[sd]?|fix(e[sd])?|resolve[sd]?):?\s+(\S+/\S+)?#{0}\.?\s*$".format(
+                        n["number"]), l.strip(), re.I)]
+            pr["description"] = "\n".join(body).strip()
+            if pr["id"] in n.get("prs", []):
+                n["prs"].remove(pr["id"])
+            self.gh_touch(n)
+            print(json.dumps({"unlinked": n["number"], "pr": pr["id"], "changed": True}))
+            return 0
         raise ValueError("usage: --wi-edit create <type> <title> [parentId] [iteration] | set <id> <field> <value> | "
-                         "comment <id> <text>")
+                         "comment <id> <text> | link-pr | unlink-pr | create-branch | delete-branch")
+
+    def gh_pr(self, repo, number):
+        return next((p for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == repo
+                     and str(p["id"]) == str(number)), None)
+
+    def make_branch(self, repo, from_branch, new_branch):
+        """Branch `new_branch` at `from_branch`'s tip in the bare origin:
+        (sha, None) or (None, error)."""
+        bare = self.ws.clone_url(repo)
+        if not os.path.isdir(bare):
+            return None, "repository '{0}' not found".format(repo)
+        sha = subprocess.run(["git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/" + from_branch],
+                             capture_output=True, text=True).stdout.strip()
+        if not sha:
+            return None, "branch '{0}' not found in {1}".format(from_branch, repo)
+        made = subprocess.run(["git", "--git-dir", bare, "branch", new_branch, sha], capture_output=True, text=True)
+        if made.returncode != 0:
+            return None, "could not create '{0}': {1}".format(new_branch, made.stderr.strip())
+        return sha, None
+
+    def gh_create_pr(self, repo, source, target, title, desc, wis):
+        """--create-pr on a GitHub repository: a "Closes #n" line per issue."""
+        strip = lambda b: b[len("refs/heads/"):] if b.startswith("refs/heads/") else b  # noqa: E731
+        lines = []
+        for w in [x.strip().lstrip("#") for x in wis.split(",") if x.strip()]:
+            n = self.gh_issue(w)
+            if n is None:
+                continue
+            lines.append("Closes " + ("#{0}".format(n["number"]) if n["repo"] == repo
+                                      else "{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["number"])))
+        body = (desc.rstrip() + "\n\n" if desc.strip() else "") + "\n".join(lines)
+        pid = max([p["id"] for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == repo] or [0]) + 1
+        self.state["prs"].append({
+            "id": pid, "title": title, "repo": repo, "host": "github", "source": strip(source), "target": strip(target),
+            "author": "me", "isDraft": False, "autoComplete": False, "autoCompleteSetBy": "", "description": body.strip(),
+            "buildStatus": "none", "queuePosition": -1, "buildUrl": "", "policies": [], "missingReviewers": [],
+            "mergeConflict": False, "reviewers": [], "updatedIso": now_iso(), "completed": False,
+        })
+        for w in [x.strip().lstrip("#") for x in wis.split(",") if x.strip()]:
+            n = self.gh_issue(w)
+            if n is not None and pid not in n.setdefault("prs", []):
+                n["prs"].append(pid)
+        self.ws.save(self.state)
+        out = {"id": pid, "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, repo, pid),
+               "key": "{0}~{1}~{2}".format(GH_OWNER, repo, pid)}
+        print(json.dumps(out))
+        return 0
 
     def cmd_boards(self):
         """--boards, from the workspace's config like azure-cli.py's boards()."""
         with open(os.path.join(self.ws.root, "config", "azure-cli.yml"), encoding="utf-8") as fh:
             text = fh.read()
-        issues = [{"owner": GH_OWNER, "project": "1", "scope": "all"}] if "issues:" in text else []
+        issues = [{"owner": GH_OWNER, "project": "1", "scope": "all", "apiUrl": GH_API}] if "issues:" in text else []
         print(json.dumps({"workItems": "work_items:" in text, "issues": issues}))
         return 0
 

@@ -484,18 +484,109 @@ class EditTests(Base):
         self.assertEqual(code, 1)
         self.assertIn("unknown field", err)
 
-    def test_not_on_github_yet(self):
-        for cmd in ("link-pr", "unlink-pr", "create-branch", "delete-branch"):
-            code, _, err = run(Fake(), "--wi-edit", cmd, "1")
-            self.assertEqual(code, 1)
-            self.assertIn("isn't supported for GitHub issues yet", err)
-
     def test_a_missing_project_scope_says_how_to_add_it(self):
         c = Fake({"projectV2(number": RuntimeError(
             "GitHub GraphQL: Your token has not been granted the required scopes: ['read:project']")})
         code, _, err = run(c, "--wi-list", "sprints")
         self.assertEqual(code, 2)
         self.assertIn("gh auth refresh -s project", err)
+
+
+REPO_REF_ANSWER = {"repository": {"id": "R_r", "ref": {"target": {"oid": "abc123"}}}}
+
+
+def pull(body, base="main", default="main"):
+    return {"number": 9, "body": body, "base": {"ref": base, "repo": {"default_branch": default}}}
+
+
+class BranchAndLinkTests(Base):
+    """Stage 3: branches linked to an issue, and PRs linked by closing
+    keywords."""
+
+    def test_create_branch_links_it_to_the_issue(self):
+        c = Fake({"ref(qualifiedName": REPO_REF_ANSWER, "createLinkedBranch": {},
+                  "issue(number": {"repository": {"issue": in_project(issue(4), values("Todo"))}}})
+        code, out, _ = run(c, "--wi-edit", "create-branch", "o/r#4", API, "o", "r", "main", "feature/4-x")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"branch": "feature/4-x", "objectId": "abc123", "linked": 4})
+        self.assertEqual(c.gql("ref(qualifiedName")[0]["ref"], "refs/heads/main")
+        self.assertEqual(c.gql("createLinkedBranch"),
+                         [{"issue": "I_r_4", "repo": "R_r", "oid": "abc123", "name": "feature/4-x"}])
+        self.assertEqual(c.rest_calls("POST"), [])
+
+    def test_create_branch_without_an_issue_is_a_plain_ref(self):
+        c = Fake({"ref(qualifiedName": REPO_REF_ANSWER})
+        code, out, _ = run(c, "--wi-edit", "create-branch", "0", API, "", "o/r", "refs/heads/main", "b")
+        self.assertEqual((code, json.loads(out)["linked"]), (0, None))
+        self.assertEqual(c.rest_calls("POST"), [("POST", "/repos/o/r/git/refs",
+                                                 {"ref": "refs/heads/b", "sha": "abc123"})])
+
+    def test_a_failed_link_still_makes_the_branch(self):
+        c = Fake({"ref(qualifiedName": REPO_REF_ANSWER,
+                  "createLinkedBranch": RuntimeError("GitHub GraphQL: Resource not accessible by integration"),
+                  "issue(number": {"repository": {"issue": in_project(issue(4), values("Todo"))}}})
+        code, out, _ = run(c, "--wi-edit", "create-branch", "o/r#4", API, "o", "r", "main", "b")
+        self.assertEqual(code, 0)
+        self.assertIn("Resource not accessible", json.loads(out)["linkError"])
+        self.assertEqual(len(c.rest_calls("POST")), 1)
+
+    def test_create_branch_from_a_missing_branch(self):
+        c = Fake({"ref(qualifiedName": {"repository": {"id": "R_r", "ref": None}}})
+        code, _, err = run(c, "--wi-edit", "create-branch", "0", API, "o", "r", "nope", "b")
+        self.assertEqual(code, 1)
+        self.assertIn("branch 'nope' not found in o/r", err)
+
+    def test_delete_branch_only_where_it_was_made(self):
+        ref = {("GET", "/repos/o/r/git/refs/heads/feature/x"): {"object": {"sha": "abc123"}}}
+        c = Fake(rest=ref)
+        self.assertEqual(run(c, "--wi-edit", "delete-branch", API, "o", "r", "feature/x", "abc123")[0], 0)
+        self.assertEqual(c.rest_calls("DELETE"), [("DELETE", "/repos/o/r/git/refs/heads/feature/x", None)])
+        c = Fake(rest=ref)
+        code, _, err = run(c, "--wi-edit", "delete-branch", API, "o", "r", "feature/x", "other")
+        self.assertEqual(code, 1)
+        self.assertIn("has moved", err)
+        self.assertEqual(c.rest_calls("DELETE"), [])
+        code, _, err = run(Fake(), "--wi-edit", "delete-branch", API, "o", "r", "gone")
+        self.assertIn("doesn't exist", err)
+
+    def test_link_pr_adds_one_closing_line(self):
+        c = Fake({"issue(number": {"repository": {"issue": issue(4)}}},
+                 rest={("GET", "/repos/o/r/pulls/9"): pull("Fixes the thing.")})
+        code, out, _ = run(c, "--wi-edit", "link-pr", "o/r#4", API, "o", "r", "9")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"linked": 4, "pr": 9, "line": "Closes #4"})
+        self.assertEqual(c.rest_calls("PATCH"), [("PATCH", "/repos/o/r/pulls/9",
+                                                  {"body": "Fixes the thing.\n\nCloses #4"})])
+
+    def test_link_pr_across_repos_and_twice(self):
+        c = Fake(rest={("GET", "/repos/o/web/pulls/9"): pull("closes o/r#4")})
+        code, out, _ = run(c, "--wi-edit", "link-pr", "o/r#4", API, "o", "web", "9")
+        self.assertEqual(json.loads(out)["already"], True)
+        self.assertEqual(c.rest_calls("PATCH"), [])
+        c = Fake(rest={("GET", "/repos/o/web/pulls/9"): pull("")})
+        run(c, "--wi-edit", "link-pr", "o/r#4", API, "o", "web", "9")
+        self.assertEqual(c.rest_calls("PATCH")[0][2], {"body": "Closes o/r#4"})
+
+    def test_link_pr_into_another_branch_says_github_wont_link_it(self):
+        c = Fake(rest={("GET", "/repos/o/r/pulls/9"): pull("", base="github-host", default="master")})
+        out = json.loads(run(c, "--wi-edit", "link-pr", "o/r#4", API, "o", "r", "9")[1])
+        self.assertIn("only from pull requests into master", out["note"])
+
+    def test_unlink_pr_removes_only_that_issues_lines(self):
+        c = Fake(rest={("GET", "/repos/o/r/pulls/9"): pull("Body.\n\nCloses #4\nCloses #5\nfixes: #4.")})
+        code, out, _ = run(c, "--wi-edit", "unlink-pr", "o/r#4", "9")
+        self.assertEqual((code, json.loads(out)["changed"]), (0, True))
+        self.assertEqual(c.rest_calls("PATCH"), [("PATCH", "/repos/o/r/pulls/9", {"body": "Body.\n\nCloses #5"})])
+        c = Fake(rest={("GET", "/repos/o/web/pulls/9"): pull("Closes #4")})
+        run(c, "--wi-edit", "unlink-pr", "o/r#4", "9", "o/web")
+        self.assertEqual(c.rest_calls("PATCH"), [])
+
+    def test_detail_lists_linked_branches(self):
+        node = in_project(issue(4, linkedBranches={"nodes": [{"ref": {
+            "name": "feature/4-x", "repository": {"name": "r", "owner": {"login": "o"}}}}]}), values("Todo"))
+        c = Fake({"issue(number": {"repository": {"issue": node}}})
+        out = json.loads(run(c, "--wi-detail", "o/r#4")[1])
+        self.assertEqual(out["item"]["branches"], [{"name": "feature/4-x", "repo": "r"}])
 
 
 class DoctorTests(Base):

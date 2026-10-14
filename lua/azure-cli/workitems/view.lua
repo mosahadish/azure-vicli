@@ -575,17 +575,20 @@ local function link_pr()
   if ID == "" then return end
   local function ask(cb)
     if S.WI_PICK_PR then
-      S.WI_PICK_PR("Link a pull request to #" .. ID, cb)
+      S.WI_PICK_PR("Link a pull request to #" .. shown(), cb)
       return
     end
-    PROMPT.input({ prompt = "Link PR id to #" .. ID .. ":" }, function(t)
+    PROMPT.input({ prompt = "Link PR id to #" .. shown() .. ":" }, function(t)
       if t ~= nil then cb((t:gsub("^!", ""))) end
     end)
   end
   -- linked_prs.lua links it and updates every screen showing the link
   -- (this tab reloads through STATE.WI_VIEW_RELOAD).
-  ask(function(pr_id)
-    if pr_id ~= nil then LINKED_PRS.link(ID, pr_id, current_item) end
+  ask(function(pr_id, rec)
+    if pr_id ~= nil then
+      LINKED_PRS.link(ID, pr_id, current_item, rec and { org = rec.org, project = rec.project, repo = rec.repo } or nil,
+        B.host == "github" and B or nil)
+    end
   end)
 end
 
@@ -595,15 +598,15 @@ local function unlink_pr()
   if ID == "" then return end
   local prs = current_item.pullRequests or {}
   if #prs == 0 then
-    notify("No linked pull requests on #" .. ID .. ".", vim.log.levels.WARN)
+    notify("No linked pull requests on #" .. shown() .. ".", vim.log.levels.WARN)
     return
   end
   local items = {}
   for _, p in ipairs(prs) do
-    items[#items + 1] = { label = "!" .. tostring(p.id) .. (p.title and p.title ~= "" and ("  " .. p.title) or ""), pr = p }
+    items[#items + 1] = { label = LINKED_PRS.label(p, B.host) .. (p.title and p.title ~= "" and ("  " .. p.title) or ""), pr = p }
   end
-  UI.pick_popup({ title = "Unlink a PR from #" .. ID, items = items, action = "unlink" }, function(choice)
-    LINKED_PRS.unlink(ID, choice.pr.id, current_item)
+  UI.pick_popup({ title = "Unlink a PR from #" .. shown(), items = items, action = "unlink" }, function(choice)
+    LINKED_PRS.unlink(ID, choice.pr.id, current_item, B.host == "github" and B or nil, choice.pr.repo)
   end)
 end
 
@@ -645,7 +648,7 @@ local WORKITEM_VIEW_HELP = {
   { "help", "this help" },
 }
 local function show_help()
-  -- gl/gL are Azure's until stage 3 (B.caps.links): not bound, not listed.
+  -- gl/gL only where the board can link PRs (B.caps.links): not bound, not listed.
   local help = vim.tbl_filter(function(a)
     return type(a) == "string" or B.caps.links or (a[1] ~= "link_pr" and a[1] ~= "unlink_pr")
   end, WORKITEM_VIEW_HELP)
@@ -684,17 +687,27 @@ KEYS.bind(buf, "workitem_view", "refresh", function() if ID ~= "" then load(ID, 
 KEYS.bind(buf, "workitem_view", "back", leave, { desc = "close and return to the dashboard" })
 KEYS.bind(buf, "workitem_view", "quit", leave, { desc = "close and return to the dashboard" })
 KEYS.bind(buf, "workitem_view", "help", show_help, { desc = "this help" })
--- The chat's board tools are Azure's until stage 3 (B.caps.chat).
+-- The chat (B.caps.chat): on GitHub its board tools then take board =
+-- "github", which the snapshot names.
 if B.caps.chat then
 -- gq: the chat panel, told which work item this view shows.
 require("azure-cli.chat").bind_toggle(buf, "workitem_view")
-require("azure-cli.chat.view").register("azurecli-workitem", function()
-  local snap = { screen = "work item detail view", work_item = { id = tonumber(ID) or ID } }
+require("azure-cli.chat.view").register(B.item_ft, function()
+  local snap = { screen = B.host == "github" and "issue detail view" or "work item detail view",
+    work_item = { id = tonumber(ID) or ID } }
   local c = S.WI_DETAIL_CACHE[ID]
   local ok, d = pcall(vim.json.decode, c and c.body or "")
   local item = ok and type(d) == "table" and (d.item or d) or nil
   if type(item) == "table" then
     snap.work_item.type, snap.work_item.title, snap.work_item.state = item.type, item.title, item.state
+  end
+  if B.host == "github" then
+    snap.board = "github"
+    local n = ID:match("~(%d+)$")
+    if n then snap.work_item.id = tonumber(n) end
+    snap.work_item.board = "github"
+    snap.work_item.repo = (type(item) == "table" and item.repo) or ID:match("^[^~]+~([^~]+)~") or nil
+    snap.work_item.key = (type(item) == "table" and item.key) or (n and ID) or nil
   end
   return snap
 end)

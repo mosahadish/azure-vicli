@@ -27,7 +27,17 @@ work item:
   owner/repo#n (or the owner~repo~n key records carry), and a bare number
   that two of the project's issues share is refused rather than guessed.
 
-link-pr / unlink-pr / create-branch / delete-branch aren't on GitHub yet.
+Branches and PRs (stage 3):
+
+- create-branch makes the branch with createLinkedBranch, so it shows in
+  the issue's Development section (a plain ref when no issue is given, or
+  when linking fails - then with linkError); delete-branch (the chat's
+  undo) deletes it only while its tip is still the commit it was made at;
+- GitHub links a PR to an issue only through a closing keyword in the
+  PR's body, so link-pr adds a "Closes #n" line (owner/repo#n across
+  repositories) and unlink-pr removes the closing lines for that issue.
+  GitHub honours them only on PRs into the default branch: the answer's
+  "note" says so for any other.
 
 azure-cli.py hands in its own module (`core`, for _wi_human and friends)
 and github_host.py (`host`, for Client, tokens and errors) through bind().
@@ -93,7 +103,7 @@ REPO = "repository { name owner { login } }"
 # Sub-issues and issue types are newer than some Enterprise Servers: when
 # the server says a field doesn't exist, the same query runs without them
 # (lite) and the tree is flat, every issue an "Issue".
-NEW_FIELDS_RE = re.compile(r"Field '(issueType|parent|subIssues)' doesn't exist")
+NEW_FIELDS_RE = re.compile(r"Field '(issueType|parent|subIssues|linkedBranches)' doesn't exist")
 
 
 def issue_fields(full, detail=False):
@@ -115,6 +125,8 @@ def issue_fields(full, detail=False):
         parts.append("issueType { name }")
         parts.append("parent { number " + REPO + " }")
         parts.append("subIssues(first: 50) { nodes { number " + REPO + " } }")
+        if detail:
+            parts.append("linkedBranches(first: 20) { nodes { ref { name " + REPO + " } } }")
     return "\n".join(parts)
 
 
@@ -167,6 +179,11 @@ CLEAR_FIELD = """mutation($project: ID!, $item: ID!, $field: ID!) {
 CLOSE_ISSUE = """mutation($id: ID!, $reason: IssueClosedStateReason!) {
   closeIssue(input: {issueId: $id, stateReason: $reason}) { issue { id } } }"""
 REOPEN_ISSUE = """mutation($id: ID!) { reopenIssue(input: {issueId: $id}) { issue { id } } }"""
+REPO_REF = """query($owner: String!, $name: String!, $ref: String!) { repository(owner: $owner, name: $name) {
+  id ref(qualifiedName: $ref) { target { oid } } } }"""
+CREATE_LINKED_BRANCH = """mutation($issue: ID!, $repo: ID!, $oid: GitObjectID!, $name: String!) {
+  createLinkedBranch(input: {issueId: $issue, repositoryId: $repo, oid: $oid, name: $name}) {
+    linkedBranch { id } } }"""
 
 CLOSED = "Closed"
 NO_STATUS = "No Status"
@@ -176,7 +193,6 @@ MILESTONE = "milestone/"
 # How many finished iterations the tab bar keeps, before the active ones.
 COMPLETED_TABS = 3
 MAX_PAGES = 20
-UNSUPPORTED = ("link-pr", "unlink-pr", "create-branch", "delete-branch")
 
 
 class IssueError(Exception):
@@ -362,6 +378,10 @@ class Board(object):
             "url": issue.get("url") or "",
             "repo": repo,
             "key": host.pr_key(owner, repo, issue.get("number")),
+            # What `set <id> iteration` takes back (the chat's undo, a
+            # child's iteration): the iteration's id, else milestone/<n>.
+            "iteration": self.iteration(values).get("iterationId") or (
+                MILESTONE + str(issue["milestone"]["number"]) if (issue.get("milestone") or {}).get("number") else ""),
         }
 
     def summary(self, issue):
@@ -778,6 +798,9 @@ class IssueActions(object):
             "reproSteps": "",
             "pullRequests": [_pr_summary(p) for p in
                              ((issue.get("closedByPullRequestsReferences") or {}).get("nodes") or []) if p],
+            # The branches in its Development section (create-branch's).
+            "branches": [{"name": (b.get("ref") or {}).get("name") or "", "repo": _repo_of(b.get("ref"))[1]}
+                         for b in ((issue.get("linkedBranches") or {}).get("nodes") or []) if b and b.get("ref")],
         })
         for k in ("changedIso", "changedHuman", "childIds", "parentId"):
             item.pop(k, None)
@@ -868,19 +891,134 @@ class IssueActions(object):
 
     def cmd_wi_edit(self, rest):
         cmd = rest[0] if rest else ""
-        a = list(rest[1:]) + ["", "", "", ""]
+        a = list(rest[1:]) + ["", "", "", "", "", ""]
         if cmd == "create":
             return self._create(a[0], a[1], a[2], a[3])
         if cmd == "set":
             return self._set_field(a[0], a[1], a[2])
         if cmd == "comment":
             return self._comment(a[0], a[1])
-        if cmd in UNSUPPORTED:
-            _error("{0} isn't supported for GitHub issues yet".format(cmd))
-            return 1
+        if cmd == "link-pr":
+            return self._link_pr(a[0], a[2], a[3], a[4])
+        if cmd == "unlink-pr":
+            return self._unlink_pr(a[0], a[1], a[2])
+        if cmd == "create-branch":
+            return self._create_branch(a[0], a[2], a[3], a[4], a[5])
+        if cmd == "delete-branch":
+            return self._delete_branch(a[1], a[2], a[3], a[4])
         _error("usage: --wi-edit create <type> <title> [parentId] [iteration] | set <id> <field> <value> | "
-               "comment <id> <text>")
+               "comment <id> <text> | link-pr <id> <apiUrl> <owner> <repo> <prNumber> | "
+               "unlink-pr <id> <prNumber> [owner/repo] | "
+               "create-branch <id|0> <apiUrl> <owner> <repo> <fromBranch> <newBranch> | "
+               "delete-branch <apiUrl> <owner> <repo> <branch> [sha]")
         return 1
+
+    # -- branches and pull requests ------------------------------------------
+
+    def _where(self, owner, repo, issue_ref=""):
+        """(owner, repo) of a repository argument: owner/repo, else repo
+        under `owner` (a GitHub PR record's project), the account's owner,
+        or the issue's."""
+        repo = (repo or "").strip()
+        if "/" in repo:
+            o, r = repo.split("/", 1)
+            return o, r
+        if not repo:
+            raise IssueError("which repository? give its name or owner/repo")
+        if not owner:
+            owner = self.account.owner or (self.resolve(issue_ref)[0] if issue_ref and issue_ref != "0" else "")
+        return owner or self.viewer(), repo
+
+    def _create_branch(self, ref, owner, repo, from_branch, new_branch):
+        strip = lambda b: b[len("refs/heads/"):] if b.startswith("refs/heads/") else b  # noqa: E731
+        from_branch, new_branch = strip(from_branch or ""), strip(new_branch or "")
+        if not (repo and from_branch and new_branch):
+            _error("create-branch needs <id|0> <apiUrl> <owner> <repo> <fromBranch> <newBranch>")
+            return 1
+        owner, repo = self._where(owner, repo, ref)
+        data = self.client.graphql(REPO_REF, {"owner": owner, "name": repo, "ref": "refs/heads/" + from_branch})
+        node = data.get("repository") or {}
+        oid = (((node.get("ref") or {}).get("target")) or {}).get("oid")
+        if not node.get("id") or not oid:
+            raise IssueError("branch '{0}' not found in {1}/{2}".format(from_branch, owner, repo))
+        out = {"branch": new_branch, "objectId": oid, "linked": None}
+        if ref and ref != "0":
+            issue = self.issue(ref)
+            try:
+                self.client.graphql(CREATE_LINKED_BRANCH, {"issue": issue.get("id"), "repo": node["id"],
+                                                           "oid": oid, "name": new_branch})
+                out["linked"] = issue.get("number")
+            except RuntimeError as e:
+                out["linkError"] = _scope_hint(e)
+        if out["linked"] is None:
+            self.client.rest("POST", self._rest_repo(owner, repo, "/git/refs"),
+                             {"ref": "refs/heads/" + new_branch, "sha": oid})
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+
+    def _delete_branch(self, owner, repo, branch, sha=""):
+        branch = branch[len("refs/heads/"):] if (branch or "").startswith("refs/heads/") else (branch or "")
+        if not (repo and branch):
+            _error("delete-branch needs <apiUrl> <owner> <repo> <branch> [sha]")
+            return 1
+        owner, repo = self._where(owner, repo)
+        path = self._rest_repo(owner, repo, "/git/refs/heads/" + urllib.parse.quote(branch, safe="/"))
+        try:
+            tip = ((self.client.rest("GET", path) or {}).get("object") or {}).get("sha")
+        except host.GitHubHttpError as e:
+            if e.status != 404:
+                raise
+            tip = None
+        if not tip:
+            raise IssueError("branch '{0}' doesn't exist".format(branch))
+        if sha and tip != sha:
+            raise IssueError("'{0}' has moved since it was created (new commits) - not deleting it".format(branch))
+        self.client.rest("DELETE", path)
+        print(json.dumps({"deleted": branch}))
+        return 0
+
+    def _pull(self, owner, repo, number):
+        if not str(number or "").isdigit():
+            raise IssueError("'{0}' isn't a pull request number".format(number))
+        return self.client.rest("GET", self._rest_repo(owner, repo, "/pulls/" + str(number))) or {}
+
+    def _link_pr(self, ref, owner, repo, number):
+        """Adds "Closes #n" for issue `ref` to PR `number`'s body."""
+        if not (ref and repo and number):
+            _error("link-pr needs <id> <apiUrl> <owner> <repo> <prNumber>")
+            return 1
+        io, ir, inum = self.resolve(ref)
+        po, pr = self._where(owner, repo, ref)
+        pull = self._pull(po, pr, number)
+        body = pull.get("body") or ""
+        line = host.closing_line(io, ir, inum, po, pr)
+        out = {"linked": inum, "pr": int(number), "line": line}
+        if host.closes(body, io, ir, inum, po, pr):
+            out["already"] = True
+        else:
+            self.client.rest("PATCH", self._rest_repo(po, pr, "/pulls/" + str(number)),
+                             {"body": (body.rstrip() + "\n\n" if body.strip() else "") + line})
+        note = host.default_branch_note(pull)
+        if note:
+            out["note"] = note
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+
+    def _unlink_pr(self, ref, number, where=""):
+        """Removes PR `number`'s closing lines for issue `ref`; the PR is in
+        `where` (owner/repo), else in the issue's repository."""
+        if not (ref and number):
+            _error("unlink-pr needs <id> <prNumber> [owner/repo]")
+            return 1
+        io, ir, inum = self.resolve(ref)
+        po, pr = self._where("", where) if where else (io, ir)
+        pull = self._pull(po, pr, number)
+        body = pull.get("body") or ""
+        kept = host.without_closing(body, io, ir, inum, po, pr)
+        if kept != body:
+            self.client.rest("PATCH", self._rest_repo(po, pr, "/pulls/" + str(number)), {"body": kept})
+        print(json.dumps({"unlinked": inum, "pr": int(number), "changed": kept != body}, ensure_ascii=False))
+        return 0
 
     def _create(self, wtype, title, parent, iteration):
         if not wtype or not title:

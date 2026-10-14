@@ -38,12 +38,13 @@ local WORDS = {
   },
 }
 
--- What a board can do: on GitHub, linking PRs to an issue and the chat's
--- board tools come in stage 3 (GITHUB_PLAN.md phase 6), so those keys
--- aren't bound there at all.
+-- What a board can do: linking PRs (gl/gL - on GitHub a "Closes #n" line
+-- in the PR's description), the chat (gq) and planning agents (gP). Both
+-- boards can since GITHUB_PLAN.md phase 6 stage 3; a key a board can't do
+-- isn't bound there at all.
 local CAPS = {
   azure = { links = true, chat = true, plan_agents = true },
-  github = { links = false, chat = false, plan_agents = false },
+  github = { links = true, chat = true, plan_agents = true },
 }
 
 local boards = {}
@@ -144,12 +145,18 @@ function M.enabled(cb)
   })
 end
 
+-- The GitHub account the Issues board is (--boards' first issues entry:
+-- owner, project, scope, apiUrl), or {} before --boards answers / without.
+function M.issues_account()
+  local b = STATE.BOARDS
+  return (b and type(b.issues) == "table" and b.issues[1]) or {}
+end
+
 -- Whether a sprint lists everyone's items (issues: scope: all) rather than
 -- mine - only the empty-list message reads it.
 function M.everyones(B)
   if B.host ~= "github" then return false end
-  local first = STATE.BOARDS and STATE.BOARDS.issues and STATE.BOARDS.issues[1]
-  return first ~= nil and first.scope == "all"
+  return M.issues_account().scope == "all"
 end
 
 -- For tests: forget the --boards answer (and ask again next time).

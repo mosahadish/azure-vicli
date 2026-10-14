@@ -50,14 +50,28 @@ function M.working()
 end
 
 function M.plan_prompt(item)
+  if item.board == "github" then
+    return "/plan GitHub issue #" .. tostring(item.id) .. (item.repo and (" in " .. item.repo) or "")
+      .. (item.title and (" \"" .. item.title .. "\"") or "")
+      .. ": read it (get_work_item with board = \"github\"), look at the code it touches, then write the plan for it "
+      .. "with submit_plan (work_item_id " .. tostring(item.id) .. "). Pass board = \"github\" to every work-item "
+      .. "tool for it. You were started from the Issues board, one agent per issue - this conversation is about "
+      .. "this one only."
+  end
   return "/plan Work item #" .. tostring(item.id) .. (item.title and (" \"" .. item.title .. "\"") or "")
     .. ": read it, look at the code it touches, then write the plan for it with submit_plan (work_item_id "
     .. tostring(item.id) .. "). You were started from the board, one agent per work item - this conversation is "
     .. "about this one only."
 end
 
--- The view a board-started agent is told about: just its work item.
+-- The view a board-started agent is told about: just its work item (and
+-- on GitHub its board, which the board tools then default to).
 local function snap_for(item)
+  if item.board == "github" then
+    return { screen = "issues dashboard (this agent was started for one issue)", board = "github",
+      work_item = { id = item.id, type = item.type, title = item.title, state = item.state, board = "github",
+        repo = item.repo, key = item.key } }
+  end
   return { screen = "work items dashboard (this agent was started for one work item)",
     work_item = { id = item.id, type = item.type, title = item.title, state = item.state } }
 end
@@ -181,11 +195,15 @@ local function enqueue(jobs, nothing)
   return msg, added
 end
 
--- Queues `items` (work items from the board; nil entries skipped).
-function M.start_for_items(items, extra)
+-- Queues `items` (work items from the board; nil entries skipped);
+-- `board` "github" when they're the Issues board's.
+function M.start_for_items(items, extra, board)
   local jobs = {}
   for _, it in ipairs(items or {}) do
-    if type(it) == "table" and it.id then jobs[#jobs + 1] = job_for_item(it, extra) end
+    if type(it) == "table" and it.id then
+      if board then it = vim.tbl_extend("force", it, { board = board }) end
+      jobs[#jobs + 1] = job_for_item(it, extra)
+    end
   end
   return enqueue(jobs, "Put the cursor on a work item (or select some rows).")
 end
@@ -213,7 +231,7 @@ function M.start_for(text, snap)
     if r.kind == "pr" then
       prs[#prs + 1] = r.pr or require("azure-cli.chat.tools").pr_record(r.id) or { id = r.id }
     else
-      items[#items + 1] = r.item or { id = r.id }
+      items[#items + 1] = vim.tbl_extend("force", r.item or { id = r.id }, { board = r.board })
     end
   end
   local threads_of = {}

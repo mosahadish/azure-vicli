@@ -131,6 +131,35 @@ do
   check("simplify_threads", #th == 1 and th[1].file == "a.py" and th[1].side == "R" and th[1].line == 3)
   check("clone_path", TOOLS.clone_path({ clonesDir = "C:\\src", repo = "w" }) == "C:/src/w")
 
+  -- Which board a tool works on (GITHUB_PLAN.md phase 6 stage 3): board=,
+  -- else the view's, else the only board, else Azure's.
+  local ST = require("azure-cli.state")
+  local saved_boards = ST.BOARDS
+  local function on(args, snap) return TOOLS.board_for(args, { view = function() return snap end }).host end
+  ST.BOARDS = { workItems = true, issues = { { owner = "o", project = "3", apiUrl = "https://api.github.com" } } }
+  check("board_for: board= first", on({ board = "github" }, { board = "azure" }) == "github"
+    and on({ board = "azure" }, { board = "github" }) == "azure")
+  check("board_for: else the view's", on({}, { board = "github" }) == "github"
+    and on({}, { work_item = { id = 1, board = "github" } }) == "github" and on({}, { screen = "x" }) == "azure")
+  ST.BOARDS = { workItems = false, issues = { { owner = "o", project = "3" } } }
+  check("board_for: else the only board", on({}, nil) == "github")
+  ST.BOARDS = { workItems = true, issues = {} }
+  check("board_for: else Azure's, and a stray board= can't reach GitHub", on({}, nil) == "azure"
+    and on({ board = "jira" }, nil) == "azure")
+  ST.BOARDS = { workItems = true, issues = { { owner = "o", project = "3" } } }
+  local GH = require("azure-cli.workitems.board").get("github")
+  local AZ = require("azure-cli.workitems.board").get("azure")
+  check("wi_ref: owner/repo#n on GitHub only", TOOLS.wi_ref(GH, 7, "o/web") == "o/web#7"
+    and TOOLS.wi_ref(GH, 7, "web") == "o/web#7" and TOOLS.wi_ref(GH, 7) == "7" and TOOLS.wi_ref(AZ, 7, "o/web") == "7")
+  ST.BOARDS = saved_boards
+  for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
+      "create_branch", "list_sprints", "create_child_task", "assign_work_item", "move_to_sprint",
+      "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui" }) do
+    local props = TOOLS.by_name[name].schema.properties
+    check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
+      and props.board.enum[1] == "azure" and props.board.enum[2] == "github")
+  end
+
   -- An "ask" tool: declined -> the agent hears so, run never called.
   local ran, logged, answer = false, {}, nil
   local orig = TOOLS.by_name.vote.run

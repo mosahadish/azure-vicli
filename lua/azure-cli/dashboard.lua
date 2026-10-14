@@ -600,7 +600,7 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(fit(pr.autoComplete and "A" or "", 1), "AzureCliAutoComplete")
   seg(" ")
   -- Its linked work items, once pr_workitems.lua has read them: "#3001".
-  local wi = PR_WORKITEMS.label(PR_WORKITEMS.cached(pr.id))
+  local wi = PR_WORKITEMS.label(PR_WORKITEMS.cached(pr))
   local title_w = widths.title
   if wi ~= "" and title_w > #wi + 8 then
     seg(fit(pr.title, title_w - #wi - 2))
@@ -1602,7 +1602,7 @@ warm_workitems = function(list)
   if workitems_running then return end
   local todo = {}
   for _, pr in ipairs(list or {}) do
-    if not PR_WORKITEMS.cached(pr.id) then todo[#todo + 1] = pr end
+    if not PR_WORKITEMS.cached(pr) then todo[#todo + 1] = pr end
   end
   if #todo == 0 then return end
   workitems_running = true
@@ -1614,7 +1614,7 @@ warm_workitems = function(list)
       workitems_running = false
       return
     end
-    PR_WORKITEMS.fetch(pr.id, pr_env(pr), function()
+    PR_WORKITEMS.fetch(pr, pr_env(pr), function()
       vim.schedule(function()
         if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
         next_one()

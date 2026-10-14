@@ -1357,7 +1357,8 @@ class BoardsTests(unittest.TestCase):
         cfg = ac.Config.from_string("accounts:\n  - host: github\n    owner: o\n    issues: { project: 3, scope: all }\n"
                                     "  - host: github\n    owner: p\n    issues:\n      project: Road Map\n")
         self.assertEqual(ac.boards(cfg), {"workItems": False, "issues": [
-            {"owner": "o", "project": "3", "scope": "all"}, {"owner": "p", "project": "Road Map", "scope": "mine"}]})
+            {"owner": "o", "project": "3", "scope": "all", "apiUrl": "https://api.github.com"},
+            {"owner": "p", "project": "Road Map", "scope": "mine", "apiUrl": "https://api.github.com"}]})
 
     def test_the_flag_reads_the_config_only(self):
         with mock.patch.object(ac, "get_cached_config", return_value=ac.Config.from_dict(

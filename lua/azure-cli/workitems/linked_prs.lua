@@ -158,34 +158,64 @@ end
 
 local function same(a, b) return tostring(a) == tostring(b) end
 
+-- Whether record `rec` is item `item_id`: its id, or on GitHub its
+-- owner~repo~n key (`item_id` may be either).
+local function is_item(rec, item_id)
+  if not rec then return false end
+  item_id = tostring(item_id)
+  if item_id:find("~", 1, true) then return rec.key == item_id end
+  return same(rec.id, item_id)
+end
+
+-- Whether cache key `k` (a board's ref: the id, or owner~repo~n) is item
+-- `item_id`.
+local function is_ref(k, item_id)
+  k, item_id = tostring(k), tostring(item_id)
+  if k == item_id then return true end
+  if item_id:find("~", 1, true) then return k == item_id:match("(%d+)$") end
+  return k:match("~(%d+)$") == item_id
+end
+
 -- Everything that shows a link between work item `item_id` and PR `pr_id`
 -- picks up that it was just made (`linked`) or removed: the work-items
 -- dashboard's cached records (list and tree - their "!101" marker), the PR
 -- dashboard's cached work items for that PR (its "#3001" badge and gW), and
 -- an open detail tab for the item; both dashboards redraw. `item` is the
--- work item's record when the caller has it, for the PR side's entry.
-function M.link_changed(item_id, pr_id, linked, item)
+-- work item's record when the caller has it, for the PR side's entry. `B`
+-- is the item's board (absent: Azure's); on GitHub `pr_repo` names the
+-- PR's repository for the row's "repo#12" marker.
+function M.link_changed(item_id, pr_id, linked, item, B, pr_repo)
   local STATE = require("azure-cli.state")
+  local S = (B and B.state) or STATE
   local function patch(rec)
-    if not rec or not same(rec.id, item_id) then return end
+    if not is_item(rec, item_id) then return end
     local list = {}
     for _, p in ipairs(rec.pullRequests or {}) do
       if not same(p.id, pr_id) then list[#list + 1] = p end
     end
-    if linked then list[#list + 1] = { id = tonumber(pr_id) or pr_id } end
+    if linked then list[#list + 1] = { id = tonumber(pr_id) or pr_id, repo = pr_repo } end
     rec.pullRequests = list
   end
-  for _, c in pairs(STATE.WI_SPRINT_ITEMS or {}) do
+  for _, c in pairs(S.WI_SPRINT_ITEMS or {}) do
     for _, r in ipairs(c.items or {}) do patch(r) end
   end
-  for _, by_id in pairs(STATE.WI_TREE_KIDS or {}) do
+  for _, by_id in pairs(S.WI_TREE_KIDS or {}) do
     for _, r in pairs(by_id) do patch(r) end
   end
-  local c = STATE.PR_WORKITEMS and STATE.PR_WORKITEMS[tostring(pr_id)]
+  -- A GitHub PR's issues are cached under its owner~repo~n key: drop that
+  -- (and its read is redone) rather than guess which repository's #n.
+  if B and B.host == "github" then
+    for k in pairs(STATE.PR_WORKITEMS or {}) do
+      if k:match("~(%d+)$") == tostring(pr_id) and (not pr_repo or k:find("~" .. pr_repo .. "~", 1, true)) then
+        STATE.PR_WORKITEMS[k] = nil
+      end
+    end
+  end
+  local c = not (B and B.host == "github") and STATE.PR_WORKITEMS and STATE.PR_WORKITEMS[tostring(pr_id)]
   if c then
     local list = {}
     for _, w in ipairs(c.list or {}) do
-      if not same(w.id, item_id) then list[#list + 1] = w end
+      if not is_item(w, item_id) then list[#list + 1] = w end
     end
     if linked then
       item = item or {}
@@ -194,21 +224,34 @@ function M.link_changed(item_id, pr_id, linked, item)
     end
     c.list = list
   end
-  STATE.WI_DETAIL_CACHE[tostring(item_id)] = nil
-  if STATE.WI_ITEM_CHANGED then STATE.WI_ITEM_CHANGED(item_id, {}) end
-  local reload = STATE.WI_VIEW_RELOAD and STATE.WI_VIEW_RELOAD[tostring(item_id)]
-  if reload then vim.schedule(reload) end
+  -- The detail cache and an open view are keyed by the board's ref: the id,
+  -- or on GitHub the key - drop/reload every one that is this item.
+  for k in pairs(S.WI_DETAIL_CACHE or {}) do
+    if is_ref(k, item_id) then S.WI_DETAIL_CACHE[k] = nil end
+  end
+  if S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(item_id, {}) end
+  for k, reload in pairs(S.WI_VIEW_RELOAD or {}) do
+    if is_ref(k, item_id) then vim.schedule(reload) end
+  end
   if STATE.PR_DASHBOARD_RENDER then vim.schedule(STATE.PR_DASHBOARD_RENDER) end
+end
+
+-- The provider call for board B (absent: Azure's): RPC.run with B's env.
+local function run(B, args, opts)
+  if B then return B.run(args, opts) end
+  return require("azure-cli.rpc").run(vim.list_extend(require("azure-cli.config").provider_argv(), args), opts)
 end
 
 -- Link PR `pr_id` to work item `item_id` (`item`: its record, optional).
 -- `where` = { org, project, repo } when the caller knows the PR's home (the
 -- PR side does); otherwise it comes from the PR dashboard's list, or the
 -- repository is asked for and the work-item account's collection/project
--- (AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT) fill the rest.
-function M.link(item_id, pr_id, item, where)
+-- (AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT) fill the rest. On GitHub's
+-- board `B` it adds "Closes #n" to the PR's description (github_issues.py).
+function M.link(item_id, pr_id, item, where, B)
   local SHELL = require("azure-cli.shell")
   local notify = SHELL.notify
+  local host = B and B.host
   item_id, pr_id = tostring(item_id), tostring(pr_id)
   if not pr_id:match("^%d+$") then
     notify("PR id must be numeric.", vim.log.levels.WARN)
@@ -218,24 +261,28 @@ function M.link(item_id, pr_id, item, where)
   if where then
     org, project, repo = where.org, where.project, where.repo
   else
-    local rec = M.listed(pr_id)
+    local rec = M.listed(pr_id, nil, host)
     if rec then org, project, repo = rec.org, rec.project, rec.repo end
   end
+  local shown = "#" .. (item_id:match("~(%d+)$") or item_id)
   local function go()
-    notify("Linking PR !" .. pr_id .. " to #" .. item_id .. " \u{2026}")
-    local err = {}
-    require("azure-cli.rpc").run(require("azure-cli.config").provider_argv(
-      "--wi-edit", "link-pr", item_id, org or "", project or "", repo or "", pr_id), {
+    notify("Linking PR !" .. pr_id .. " to " .. shown .. " \u{2026}")
+    local out, err = {}, {}
+    run(B, { "--wi-edit", "link-pr", item_id, org or "", project or "", repo or "", pr_id }, {
       detach = true,  -- finish the ADO write even if the user quits before it returns
       stdout_buffered = true,
       stderr_buffered = true,
+      on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
       on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
       on_exit = function(_, code)
         if code == 0 then
-          notify("Linked PR !" .. pr_id .. " to #" .. item_id .. ".")
-          M.link_changed(item_id, pr_id, true, item)
+          local ok, res = pcall(vim.json.decode, table.concat(out, ""))
+          local note = ok and type(res) == "table" and res.note or nil
+          notify("Linked PR !" .. pr_id .. " to " .. shown .. "." .. (note and (" " .. note .. ".") or ""),
+            note and vim.log.levels.WARN or nil)
+          M.link_changed(item_id, pr_id, true, item, B, repo)
         else
-          notify("Link PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item #" .. item_id, code, err),
+          notify("Link PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item " .. shown, code, err),
             vim.log.levels.ERROR)
         end
       end,
@@ -245,30 +292,41 @@ function M.link(item_id, pr_id, item, where)
   require("azure-cli.prompt").input({ prompt = "Repository name:" }, function(name)
     if name == nil then return end
     repo = name
-    org = (org and org ~= "") and org or (vim.env.AZVICLI_WI_COLLECTION or "")
-    project = (project and project ~= "") and project or (vim.env.AZVICLI_WI_PROJECT or "")
+    if host == "github" then
+      local acct = require("azure-cli.workitems.board").issues_account()
+      org = (org and org ~= "") and org or (acct.apiUrl or "")
+      project = (project and project ~= "") and project or (acct.owner or "")
+    else
+      org = (org and org ~= "") and org or (vim.env.AZVICLI_WI_COLLECTION or "")
+      project = (project and project ~= "") and project or (vim.env.AZVICLI_WI_PROJECT or "")
+    end
     go()
   end)
 end
 
--- Unlink PR `pr_id` from work item `item_id`.
-function M.unlink(item_id, pr_id, item)
+-- Unlink PR `pr_id` from work item `item_id`. On GitHub's board `B`,
+-- `pr_repo` (owner/repo) is where the PR lives when that isn't the
+-- issue's own repository.
+function M.unlink(item_id, pr_id, item, B, pr_repo)
   local SHELL = require("azure-cli.shell")
   local notify = SHELL.notify
   item_id, pr_id = tostring(item_id), tostring(pr_id)
-  notify("Unlinking PR !" .. pr_id .. " from #" .. item_id .. " \u{2026}")
+  local shown = "#" .. (item_id:match("~(%d+)$") or item_id)
+  notify("Unlinking PR !" .. pr_id .. " from " .. shown .. " \u{2026}")
   local err = {}
-  require("azure-cli.rpc").run(require("azure-cli.config").provider_argv("--wi-edit", "unlink-pr", item_id, pr_id), {
+  local args = { "--wi-edit", "unlink-pr", item_id, pr_id }
+  if B and B.host == "github" and pr_repo and pr_repo ~= "" then args[#args + 1] = pr_repo end
+  run(B, args, {
     detach = true,  -- finish the ADO write even if the user quits before it returns
     stdout_buffered = true,
     stderr_buffered = true,
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
       if code == 0 then
-        notify("Unlinked PR !" .. pr_id .. " from #" .. item_id .. ".")
-        M.link_changed(item_id, pr_id, false, item)
+        notify("Unlinked PR !" .. pr_id .. " from " .. shown .. ".")
+        M.link_changed(item_id, pr_id, false, item, B)
       else
-        notify("Unlink PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item #" .. item_id, code, err),
+        notify("Unlink PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item " .. shown, code, err),
           vim.log.levels.ERROR)
       end
     end,

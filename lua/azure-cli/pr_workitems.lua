@@ -33,20 +33,31 @@ function M.describe(w)
   return table.concat(parts, "  ")
 end
 
--- The cached list for `pr_id` when fresh, else nil.
-function M.cached(pr_id)
-  local c = require("azure-cli.state").PR_WORKITEMS[tostring(pr_id)]
+-- What STATE.PR_WORKITEMS keys a PR's list by: its id on Azure, its
+-- owner~repo~n key on GitHub (two repositories' #7 are two PRs). `pr` is a
+-- PR record, or an id (Azure's).
+function M.key(pr)
+  if type(pr) ~= "table" then return tostring(pr) end
+  return (pr.host == "github" and pr.key) or tostring(pr.id)
+end
+
+-- The cached list for `pr` (a record, or an Azure PR's id) when fresh,
+-- else nil.
+function M.cached(pr)
+  local c = require("azure-cli.state").PR_WORKITEMS[M.key(pr)]
   if c and (os.time() - c.ts) < M.TTL then return c.list end
   return nil
 end
 
--- cb(list) with PR `pr_id`'s linked work items ({id, type, state, title,
--- assignedTo}), or cb(nil, err). `env` is the PR's AZVICLI_* env (the
+-- cb(list) with PR `pr`'s (a record, or an Azure PR's id) linked work items
+-- ({id, type, state, title, assignedTo}; a GitHub PR's issues add key,
+-- repo and host), or cb(nil, err). `env` is the PR's AZVICLI_* env (the
 -- dashboard's pr_env), or nil where the process env already names the PR
 -- (the reviewer). `force` skips the cache.
-function M.fetch(pr_id, env, cb, force)
+function M.fetch(pr, env, cb, force)
+  local pr_id = type(pr) == "table" and pr.id or pr
   if not force then
-    local list = M.cached(pr_id)
+    local list = M.cached(pr)
     if list then return cb(list) end
   end
   local out, err = {}, {}
@@ -67,17 +78,33 @@ function M.fetch(pr_id, env, cb, force)
           if ok and type(rec) == "table" and rec.id then list[#list + 1] = rec end
         end
       end
-      require("azure-cli.state").PR_WORKITEMS[tostring(pr_id)] = { list = list, ts = os.time() }
+      require("azure-cli.state").PR_WORKITEMS[M.key(pr)] = { list = list, ts = os.time() }
       cb(list)
     end,
   })
 end
 
--- Open work item `id` in the detail view, in a new tab.
-function M.open_item(id)
-  vim.env.AZVICLI_WI_ID = tostring(id)
+-- Open work item `id` in the detail view, in a new tab. On GitHub's board
+-- `B`, the issue view, on `ref` (its owner~repo~n key) when given.
+function M.open_item(id, B, ref)
   vim.cmd("tabnew")
+  if B and B.host == "github" then
+    require("azure-cli.workitems.view").open(B, ref or tostring(id))
+    return
+  end
+  vim.env.AZVICLI_WI_ID = tostring(id)
   require("azure-cli.workitems.view").open()
+end
+
+-- The board a PR's linked items are on: a GitHub PR's are issues.
+local function board_of(pr)
+  return require("azure-cli.workitems.board").get(pr and pr.host == "github" and "github" or "azure")
+end
+
+-- Where a GitHub PR lives (owner/repo), for unlinking one of its issues.
+local function pr_repo(pr)
+  if not (pr and pr.host == "github") then return nil end
+  return (pr.project or "") .. "/" .. (pr.repo or "")
 end
 
 -- The popup's line for one item: "#3001  [Active]  User Story  Throttle…  · Jordan Doe".
@@ -100,24 +127,24 @@ end
 -- Work items to offer when linking one to PR `pr_id`: every sprint the
 -- work-items dashboard has cached, minus the ones already linked; cb(list).
 -- When nothing is cached yet (that dashboard was never opened this
--- session), the current sprint's items are read first.
-local function candidates(pr_id, cb)
-  local STATE = require("azure-cli.state")
+-- session), the current sprint's items are read first. On board B (a
+-- GitHub PR's: the Issues board's).
+local function candidates(pr, B, cb)
   local linked, seen, out = {}, {}, {}
-  for _, w in ipairs(M.cached(pr_id) or {}) do linked[tostring(w.id)] = true end
+  for _, w in ipairs(M.cached(pr) or {}) do linked[w.key or tostring(w.id)] = true end
   local function add(r)
-    local id = tostring(r.id)
+    local id = B.ref(r)
     if not seen[id] and not linked[id] then
       seen[id] = true
       out[#out + 1] = r
     end
   end
-  for _, c in pairs(STATE.WI_SPRINT_ITEMS or {}) do
+  for _, c in pairs(B.state.WI_SPRINT_ITEMS or {}) do
     for _, r in ipairs(c.items or {}) do add(r) end
   end
   if #out > 0 then return cb(out) end
   local lines = {}
-  require("azure-cli.rpc").run(require("azure-cli.config").provider_argv("--wi-list", "current"), {
+  B.run({ "--wi-list", "current" }, {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(lines, d) end end,
     on_exit = function()
@@ -136,23 +163,26 @@ end
 function M.link_item(pr, center)
   local notify = require("azure-cli.shell").notify
   local PROMPT = require("azure-cli.prompt")
-  candidates(pr.id, function(list)
+  local B = board_of(pr)
+  local item = B.words.item
+  candidates(pr, B, function(list)
     vim.schedule(function()
       local items = {}
       for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), w = w } end
-      items[#items + 1] = { label = "(other\u{2026} type a work item id)", other = true }
-      require("azure-cli.ui").pick_popup({ title = "Link a work item to PR #" .. tostring(pr.id), items = items,
-        action = "link", center = center }, function(choice)
+      items[#items + 1] = { label = "(other\u{2026} type " .. (B.host == "github" and "an " or "a ") .. item .. " id)",
+        other = true }
+      require("azure-cli.ui").pick_popup({ title = "Link " .. (B.host == "github" and "an " or "a ") .. item
+        .. " to PR #" .. tostring(pr.id), items = items, action = "link", center = center }, function(choice)
         local function go(w)
-          require("azure-cli.workitems.linked_prs").link(w.id, pr.id, w,
-            { org = pr.org, project = pr.project, repo = pr.repo })
+          require("azure-cli.workitems.linked_prs").link(B.ref(w), pr.id, w,
+            { org = pr.org, project = pr.project, repo = pr.repo }, B.host == "github" and B or nil)
         end
         if not choice.other then return go(choice.w) end
-        PROMPT.input({ prompt = "Work item id:" }, function(t)
+        PROMPT.input({ prompt = B.words.Item .. " id:" }, function(t)
           if t == nil then return end
           t = t:gsub("^#", "")
           if not t:match("^%d+$") then
-            notify("Work item id must be numeric.", vim.log.levels.WARN)
+            notify(B.words.Item .. " id must be numeric.", vim.log.levels.WARN)
             return
           end
           go({ id = tonumber(t) })
@@ -165,7 +195,7 @@ end
 -- gL (PR side): unlink one of `pr`'s linked work items, from a popup.
 function M.unlink_item(pr, env, center)
   local notify = require("azure-cli.shell").notify
-  M.fetch(pr.id, env, function(list)
+  M.fetch(pr, env, function(list)
     vim.schedule(function()
       if not list or #list == 0 then
         notify("No work items linked to PR #" .. tostring(pr.id) .. ".")
@@ -173,9 +203,11 @@ function M.unlink_item(pr, env, center)
       end
       local items = {}
       for _, w in ipairs(list) do items[#items + 1] = { label = M.describe(w), w = w } end
-      require("azure-cli.ui").pick_popup({ title = "Unlink a work item from PR #" .. tostring(pr.id), items = items,
-        action = "unlink", center = center }, function(choice)
-        require("azure-cli.workitems.linked_prs").unlink(choice.w.id, pr.id, choice.w)
+      local B = board_of(pr)
+      require("azure-cli.ui").pick_popup({ title = "Unlink " .. (B.host == "github" and "an " or "a ") .. B.words.item
+        .. " from PR #" .. tostring(pr.id), items = items, action = "unlink", center = center }, function(choice)
+        require("azure-cli.workitems.linked_prs").unlink(B.ref(choice.w), pr.id, choice.w,
+          B.host == "github" and B or nil, pr_repo(pr))
       end)
     end)
   end)
@@ -189,8 +221,8 @@ end
 function M.choose(pr, env, center)
   local notify = require("azure-cli.shell").notify
   local pr_id = pr.id
-  if not M.cached(pr_id) then notify("Reading PR #" .. tostring(pr_id) .. "'s work items \u{2026}") end
-  M.fetch(pr_id, env, function(list, err)
+  if not M.cached(pr) then notify("Reading PR #" .. tostring(pr_id) .. "'s work items \u{2026}") end
+  M.fetch(pr, env, function(list, err)
     vim.schedule(function()
       if not list then
         notify("Couldn't read PR #" .. tostring(pr_id) .. "'s work items: " .. tostring(err), vim.log.levels.WARN)
@@ -229,17 +261,23 @@ function M.choose(pr, env, center)
         if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
       end
       local kopts = { buffer = buf, silent = true, nowait = true }
+      -- A GitHub PR's items are issues: they open, and change state, on the
+      -- Issues board.
+      local B = board_of(pr)
+      local github = B.host == "github" and B or nil
       vim.keymap.set("n", "<CR>", function()
         local w = current()
         if not w then return end
         close()
-        M.open_item(w.id)
+        M.open_item(w.id, github, w.key)
       end, kopts)
       vim.keymap.set("n", "gs", function()
         local w = current()
         if not w then return end
         close()
-        require("azure-cli.workitems.state_dialog").open(w)
+        local SD = require("azure-cli.workitems.state_dialog")
+        if github then SD = SD.for_board(github) end
+        SD.open(w)
       end, kopts)
       vim.keymap.set("n", "gl", function()
         close()
@@ -249,7 +287,7 @@ function M.choose(pr, env, center)
         local w = current()
         if not w then return end
         close()
-        require("azure-cli.workitems.linked_prs").unlink(w.id, pr_id, w)
+        require("azure-cli.workitems.linked_prs").unlink(B.ref(w), pr_id, w, github, pr_repo(pr))
       end, kopts)
     end)
   end)

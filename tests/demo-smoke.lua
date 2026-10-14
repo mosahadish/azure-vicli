@@ -1349,6 +1349,140 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
   if not ok then return fail("gr's reply wasn't queued") end
 
+  -- The agent's board tools on the Issues board (GITHUB_PLAN.md phase 6
+  -- stage 3): gq on #12 in the I tab, so calls without board= go to
+  -- GitHub; start_story makes feature/12-wobble in gizmos, linked to #12;
+  -- create_pull_request closes #12; linking gizmos#7 to #13 asks, adds
+  -- "Closes #13" to its description, and u in gH takes it out again. Then
+  -- gW on gizmos#7 opens its issue in the I view, and gP on #12 starts an
+  -- agent that reads the issue without being told the board.
+  do
+    local home_tab = vim.api.nvim_get_current_tabpage()
+    local ws = vim.env.AZVICLI_FAKE_WS
+    local log_from = #vim.fn.readfile(ws .. "/calls.log")
+    local function fake_state() return vim.json.decode(table.concat(vim.fn.readfile(ws .. "/state.json"), "\n")) end
+    local function issue_in(s, n)
+      for _, i in ipairs(s.issues) do if i.number == n and i.repo == "gizmos" then return i end end
+    end
+    local function gizmos_pr(s, pred)
+      for _, p in ipairs(s.prs) do if p.host == "github" and p.repo == "gizmos" and pred(p) then return p end end
+    end
+    local iss = find_buf("azurecli-issues")
+    if not iss then return fail("the Issues tab is gone before the agent's board tools") end
+    at_row(iss, 12)
+    local issue_tab = vim.api.nvim_get_current_tabpage()
+    feed("gq")
+    answer = "Allow"
+    e, why = ask("work the issue")
+    if not need(e, why, "view board: github, item 12", "list_work_items: [", "\"board\":\"github\"",
+        "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
+        "create_child_task: Created issue #", "start_story: {", "create_pull_request: Opened PR !",
+        "link_pr_to_work_item: Linked PR #7 to issue #13 (\"Closes #13\" in its description).") then return end
+    local s = fake_state()
+    local i12 = issue_in(s, 12)
+    local last = i12.comments[#i12.comments] or {}
+    if i12.status ~= "In Progress" or last.text ~= "Picking this up." then
+      return fail("the agent's state/comment didn't reach GitHub #12: " .. vim.inspect({ i12.status, last }))
+    end
+    local kid
+    for _, i in ipairs(s.issues) do if i.parent == 12 and i.title == "Write the wobble test" then kid = i end end
+    if not (kid and kid.iteration == "it2") then return fail("no sub-issue of #12 in its iteration: " .. vim.inspect(kid)) end
+    local linked_branch = false
+    for _, b in ipairs(i12.branches or {}) do if b.name == "feature/12-wobble" and b.repo == "gizmos" then linked_branch = true end end
+    local tip = vim.fn.system({ "git", "--git-dir", ws .. "/origin/gizmos.git", "rev-parse", "-q", "--verify",
+      "refs/heads/feature/12-wobble" })
+    if not linked_branch or vim.v.shell_error ~= 0 then return fail("start_story didn't make feature/12-wobble linked to #12: " .. tip) end
+    local opened = gizmos_pr(s, function(p) return p.source == "feature/12-wobble" end)
+    if not (opened and (opened.description or ""):find("Closes #12", 1, true) and vim.tbl_contains(i12.prs, opened.id)) then
+      return fail("create_pull_request didn't close #12: " .. vim.inspect(opened))
+    end
+    local p7 = gizmos_pr(s, function(p) return p.id == 7 end)
+    if not (p7.description or ""):find("Closes #13", 1, true) then return fail("gizmos#7 doesn't close #13: " .. p7.description) end
+    -- u in gH: the link goes, through the GitHub board.
+    local items = require("azure-cli.chat.store").audit()
+    local it = items[#items]
+    if not (it and it.tool == "link_pr_to_work_item" and it.undo and it.undo.board == "github") then
+      return fail("the GitHub link isn't in the audit log with its board: " .. vim.inspect(it))
+    end
+    vim.api.nvim_set_current_win(wins().log)
+    feed("gH")
+    local fw = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(fw, { 1, 0 })
+    feed("u")
+    ok = vim.wait(10000, function()
+      local p = gizmos_pr(fake_state(), function(x) return x.id == 7 end)
+      return not (p.description or ""):find("Closes #13", 1, true)
+    end, 100)
+    if not ok then return fail("u in the audit log didn't take \"Closes #13\" out of gizmos#7") end
+    pcall(vim.api.nvim_win_close, fw, true)
+    -- Every one of those board calls carried the host switch; no PR call did.
+    local calls = vim.list_slice(vim.fn.readfile(ws .. "/calls.log"), log_from + 1)
+    for _, want in ipairs({ '"--wi-list"]', '"--wi-detail", "12"', '"--wi-state", "set", "12", "In Progress"',
+        '"comment", "12", "Picking this up."', '"create", "Issue", "Write the wobble test", "12"',
+        '"create-branch", "12"', '"link-pr", "13"', '"unlink-pr", "13", "7"' }) do
+      local seen = false
+      for _, l in ipairs(calls) do
+        if l:find(want, 1, true) then
+          seen = true
+          if not l:find("AZVICLI_WI_HOST=github", 1, true) then return fail("an Issues call went without the switch: " .. l) end
+        end
+      end
+      if not seen then return fail("no " .. want .. " call in the log") end
+    end
+    for _, l in ipairs(calls) do
+      if l:find("AZVICLI_WI_HOST=github", 1, true) and not l:find('%["%-%-wi%-') then
+        return fail("AZVICLI_WI_HOST leaked into a call: " .. l)
+      end
+    end
+    -- gW on gizmos#7: its issue (#3001) opens in the Issues view.
+    local rec
+    for _, p in ipairs((STATE.PR_LIST_CACHE or {}).prs or {}) do
+      if p.host == "github" and p.repo == "gizmos" and tostring(p.id) == "7" then rec = p end
+    end
+    if not rec then return fail("gizmos#7 isn't in the PR list") end
+    require("azure-cli.pr_workitems").choose(rec, require("azure-cli.chat.tools").pr_env(rec))
+    if not choose_popup("#3001  [") then return end
+    local iview
+    ok = vim.wait(15000, function()
+      iview = find_buf("azurecli-issue")
+      return iview ~= nil and text(iview):find("Spin faster on demand", 1, true) ~= nil
+    end, 100)
+    if not ok then return fail("gW's <CR> on gizmos#7's issue didn't open it in the Issues view", iview) end
+    pcall(vim.cmd, "tabclose")
+    -- gP on #12: an agent of its own, whose view names the GitHub board.
+    vim.api.nvim_set_current_tabpage(issue_tab)
+    vim.api.nvim_set_current_win(vim.fn.win_findbuf(iss)[1])
+    at_row(iss, 12)
+    local gp_tab = vim.api.nvim_get_current_tabpage()
+    feed("gP")
+    local AGENTS = require("azure-cli.chat.agents")
+    ok = vim.wait(30000, function()
+      local c = CHAT.find_conversation("wi-12")
+      local en = c and c.entries[#c.entries]
+      return en and en.role == "agent" and en.status == "done" and AGENTS.working() == 0
+    end, 100)
+    local c12 = CHAT.find_conversation("wi-12")
+    local said = c12 and c12.entries[#c12.entries] and c12.entries[#c12.entries].text or ""
+    if not ok or not said:find("planned issue #12 on board github: Doohickey wobbles at speed", 1, true) then
+      return fail("gP on the Issues board's #12: " .. said)
+    end
+    -- The later smokes count the plans waiting for you: #12's isn't one.
+    local PLAN = require("azure-cli.chat.plan")
+    local p12 = PLAN.load("wi-12")
+    if p12 then
+      p12.status = "done"
+      PLAN.save(p12)
+    end
+    for _, tp in ipairs({ gp_tab, issue_tab }) do
+      if vim.api.nvim_tabpage_is_valid(tp) and tp ~= home_tab then
+        pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(tp))
+      end
+    end
+    vim.api.nvim_set_current_tabpage(home_tab)
+    CHAT.sync_active()
+    print("ISSUE-TOOLS-SMOKE-OK")
+  end
+
   -- gM: the other agent, which gets the conversation replayed.
   answer = "Plain"
   vim.api.nvim_set_current_win(wins().log)
@@ -2230,7 +2364,8 @@ do
   end
   local recs = {}
   for _, p in ipairs(require("azure-cli.state").PR_LIST_CACHE.prs) do
-    if p.host == "github" then recs[p.repo] = p end
+    -- The two #7s (the Issues smoke's create_pull_request adds gizmos#8).
+    if p.host == "github" and tostring(p.id) == "7" then recs[p.repo] = p end
   end
   if not (recs.gizmos and recs.doohickeys) then return fail("the GitHub records aren't in the list cache") end
   if #HOSTS.caps(recs.gizmos).votes ~= 3 or HOSTS.ref(recs.gizmos) ~= "gizmos#7" then

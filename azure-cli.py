@@ -3922,7 +3922,9 @@ def boards(config):
         if a.issues:
             p = a.issues.get("project")
             issues.append({"owner": a.owner or "", "project": "" if p is None else str(p),
-                           "scope": str(a.issues.get("scope") or "mine").strip().lower()})
+                           "scope": str(a.issues.get("scope") or "mine").strip().lower(),
+                           # What a GitHub PR's AZVICLI_ORG is (create_pull_request's).
+                           "apiUrl": a.api_url})
     return {"workItems": any(a.work_items for a in config.accounts if not a.is_github()), "issues": issues}
 
 
@@ -4097,6 +4099,9 @@ _GITHUB_ACTIONS = {
     "--delete-comment": lambda a, arg: a.delete_comment(arg(0), arg(1)),
     "--vote": lambda a, arg: a.set_vote(arg(0), arg(1)),
     "--submit-review": lambda a, arg: a.submit_review(arg(0)),
+    # From phase 4, for the Issues board's links (phase 6 stage 3).
+    "--work-items": lambda a, arg: a.work_items(),
+    "--create-pr": lambda a, arg: a.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false")),
 }
 
 
