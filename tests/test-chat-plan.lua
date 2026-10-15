@@ -1101,6 +1101,58 @@ do
     "awk '{print a,\n b > \"f\"}'", "awk '{print a \\\n > \"f\"}'", "awk '{print (a) > \"f\"}'",
     "while read l; do awk \"$l\" f; done < g", "while read l; do awk '{print}' $l; done < g" }, false)
   check("look_only_command: awk that writes, runs or loads something still asks (#104)", wrong == nil, wrong)
+  -- #106: gh api graphql queries; the first ten are #99's own.
+  wrong = again({
+    [=[for n in 42321 42349; do gh api graphql -f query="query { repository(owner:\"neovim\", name:\"neovim\") { pullRequest(number:$n) { author{login} reviews(last: 30) { nodes { state author { login } body comments(first:5) { nodes { replyTo { id } } } } } } } }" --jq ".data.repository.pullRequest | .author.login as \$a | .reviews.nodes[] | select(.author.login != \$a) | {pr:$n, who:.author.login, state, bodyLen:(.body|length), replies:[.comments.nodes[]|(.replyTo!=null)]}"; done]=],
+    [=[gh api graphql -f query='query { repository(owner:"cli", name:"cli") { pullRequest(number:14475) { reviews(author:"williammartin", last: 5) { nodes { state body comments(first:5) { nodes { replyTo { id } } } } } } } }' --jq '.data.repository.pullRequest.reviews.nodes[] | {state, bodyLen:(.body|length), replies:[.comments.nodes[]|(.replyTo!=null)]}']=],
+    [=[gh api graphql -f query='query { repository(owner:"HollowThorn", name:"Wtile") { isPrivate viewerPermission owner { __typename } pullRequest(number:9) { headRefOid latestReviews(first: 50) { totalCount } latestOpinionatedReviews(first:50) { totalCount } reviews(last: 20) { totalCount nodes { state author { __typename login } authorAssociation isMinimized comments { totalCount } } } } } }' --jq .data]=],
+    [=[gh api graphql -f query='query { repository(owner:"HollowThorn", name:"Wtile") { pullRequest(number:9) { author { login } reviews(last: 20) { nodes { state author { login } submittedAt commit { oid } } } latestReviews(first: 50) { nodes { state author { login } } } latestOpinionatedReviews(first:50) { nodes { state author { login } } } } } }' --jq '.data.repository.pullRequest']=],
+    [=[gh api graphql -f query='query { repository(owner:"HollowThorn", name:"Wtile") { pullRequest(number:9) { reviews(last: 20) { nodes { state author { login } body comments(first:5) { nodes { replyTo { id } } } } } } } }' --jq '.data.repository.pullRequest.reviews.nodes[] | {who:.author.login, state, bodyLen:(.body|length), replies:[.comments.nodes[]|(.replyTo!=null)]}']=],
+    [=[gh api graphql -f query='query { repository(owner:"HollowThorn", name:"Wtile") { pullRequests(last: 20) { nodes { number state author { login } reviews(last: 30) { nodes { state author { login } commit { oid } } } latestReviews(first: 50) { nodes { state author { login } commit { oid } } } } } } }' --jq '.data.repository.pullRequests.nodes[] | select((.reviews.nodes|length)>0) | {n:.number, state, author:.author.login, reviews:[.reviews.nodes[]|"\(.author.login) \(.state) \(.commit.oid[0:7])"], latest:[.latestReviews.nodes[]|"\(.author.login) \(.state) \(.commit.oid[0:7])"]}']=],
+    [=[gh api graphql -f query='query { repository(owner:"mosahadish", name:"azure-vicli") { pullRequests { totalCount } } search(query:"is:pr reviewed-by:@me", type:ISSUE, first:30) { issueCount nodes { ... on PullRequest { number repository { nameWithOwner } author { login } reviews(author:"mosahadish", last: 20) { nodes { state submittedAt commit { oid } } } latestReviews(first: 50) { nodes { state author { login } submittedAt commit { oid } } } } } } }' --jq '.data.repository.pullRequests.totalCount, .data.search.issueCount, (.data.search.nodes[] | {pr:"\(.repository.nameWithOwner)#\(.number)", a:.author.login, mine:[.reviews.nodes[]|"\(.state) \(.commit.oid[0:7]) \(.submittedAt)"], latest:[.latestReviews.nodes[]|"\(.author.login) \(.state) \(.commit.oid[0:7]) \(.submittedAt)"]})']=],
+    [=[gh api graphql -f query='query { repository(owner:"neovim", name:"neovim") { pullRequests(last: 100, states:[MERGED]) { nodes { number author { login } reviews(last: 50) { nodes { state author { login } commit { oid } submittedAt } } latestReviews(first: 50) { nodes { state author { login } commit { oid } submittedAt } } } } } }' --jq '
+  .data.repository.pullRequests.nodes[] | . as $p
+  | ([.latestReviews.nodes[].author.login]) as $l
+  | [.reviews.nodes[] | select(.author.login as $a | $l | index($a) | not)] | select(length>0)
+  | {n:$p.number, missing:[.[]|"\(.author.login) \(.state)"]}']=],
+    [=[gh api graphql -f query='query { repository(owner:"neovim", name:"neovim") { pullRequests(last: 30, states:[MERGED,OPEN]) { nodes { number author { login } reviews(last: 30) { nodes { state author { login } commit { oid } } } latestReviews(first: 50) { nodes { state author { login } commit { oid } } } } } } }' --jq '.data.repository.pullRequests.nodes[] | . as $p | [ .reviews.nodes[] | select(.author.login != $p.author.login) ] as $rs | ($rs | group_by(.author.login) | map(select(all(.state=="COMMENTED")) | .[-1])) as $commentOnly | select(($commentOnly|length)>0) | {n:.number, author:.author.login, commentOnly:[$commentOnly[]|"\(.author.login) \(.commit.oid[0:7])"], latest:[.latestReviews.nodes[]|"\(.author.login) \(.state) \(.commit.oid[0:7])"]}' | head -60]=],
+    [=[gh api graphql -f query='query { viewer { login } repository(owner:"mosahadish", name:"azure-vicli") { pullRequests(last: 40, states:[OPEN,MERGED,CLOSED]) { nodes { number author { login } reviews(last: 20) { nodes { state author { login } submittedAt commit { oid } } } latestReviews(first: 50) { nodes { state author { login } submittedAt commit { oid } } } } } } }' --jq '.data.viewer.login as $v | $v, (.data.repository.pullRequests.nodes[] | select((.reviews.nodes|length)>0) | {n:.number, a:.author.login})']=],
+    [=[gh api graphql -f query='query($o:String!,$n:String!) { repository(owner:$o, name:$n) { id } }' -f o=cli -f n=cli]=],
+    [=[gh api graphql -f query='{ viewer { login } }']=], [=[gh api graphql -F query='query { viewer { login } }' -F n=5]=],
+    [=[gh api graphql -X POST -f query='{ viewer { login } }']=], [=[gh api graphql --method=POST --raw-field=query='{ a }']=],
+    [=[gh api graphql --paginate --slurp -f query='query($endCursor: String) { a(after: $endCursor) { b } }']=],
+    [=[gh api graphql -f query='fragment F on User { login } query { viewer { ...F } }']=],
+    [=[gh api graphql -f query='query { a(b: """ } mutation { \""" """) { c } }']=],
+    [=[gh api graphql -f query='query { a(b: "} mutation {") }']=],
+    "gh api graphql -f query='# mutation\nquery { a }'", [=[gh api graphql -f query='query Q($x: Int = 1, $y: [In] = [{a: 1}]) @d(if: true) { a }']=],
+    [=[gh api -X POST graphql -f query='{ a }' -q .data]=], [=[gh api graphql -fquery='{ a }' --jq=.data -t '{{.}}' --cache 1h -i]=],
+    [=[for r in a b; do gh api graphql -f query='query($n: String!) { a(n: $n) }' -f n=$r; done]=],
+  }, true)
+  check("look_only_command: gh api graphql queries, #99's among them (#106)", wrong == nil, wrong)
+  wrong = again({
+    [=[gh api graphql -f query='mutation { addComment(input: {subjectId: "x", body: "y"}) { clientMutationId } }']=],
+    [=[gh api graphql -f query='query { a } mutation { b }']=], [=[gh api graphql -f query='fragment F on X { a } mutation { b }']=],
+    "gh api graphql -f query='{ a }\n# x\nmutation { b }'", [=[gh api graphql -f query='subscription { x }']=],
+    [=[gh api graphql -f query='Mutation { a }']=], [=[gh api graphql -f query='query mutation { a }']=],
+    [=[gh api graphql -f query='fragment F on X { a }']=], [=[gh api graphql -f query='query']=],
+    [=[gh api graphql -F query=@q.graphql]=], [=[gh api graphql -f query=@q.graphql]=],
+    [=[gh api graphql -f query='{ a }' -F body=@f]=], [=[gh api graphql -f query='{ a }' --input q.json]=],
+    [=[gh api graphql --input=- -f query='{ a }']=], [=[gh api graphql -X GET -f query='{ a }']=],
+    [=[gh api graphql --method PUT -f query='{ a }']=], [=[gh api graphql -XDELETE -f query='{ a }']=],
+    [=[gh api graphql -H 'X-HTTP-Method-Override: PUT' -f query='{ a }']=], [=[gh api graphql --hostname h -f query='{ a }']=],
+    [=[gh api graphql -f query='{ a }' > out]=], [=[gh api graphql -f query='query { a(b:"x) }']=],
+    [=[gh api graphql -f query='query { a']=], [=[gh api graphql -f query='query { a }}']=], [=[gh api graphql -f query='']=],
+    [=[gh api graphql -f query='query { a(b: """x) }']=], [=[gh api graphql --jq .]=],
+    [=[gh api graphql -f query='{ a }' -f query='mutation { b }']=], [=[gh api graphql x -f query='{ a }']=],
+    [=[gh api graphql $(cat f)]=], [=[gh api graphql -f query="$(cat f)"]=],
+    [=[while read q; do gh api graphql -f query="$q"; done < f]=],
+    [=[while read q; do gh api graphql -f "$q"; done < f]=], [=[while read q; do gh api $q -f query='{ a }'; done < f]=],
+    [=[gh api repos/o/r -f query='query{a}']=], [=[gh api repos/o/r]=], [=[gh api graphql]=], [=[gh api]=],
+    [=[gh api graphql -f query='{ a }' --paginate=x]=], [=[gh api graphql -f query='{ a }' -p x]=],
+    [=[gh api graphql -f query='{ a }' -if x]=], [=[gh api graphql -f novalue -f query='{ a }']=],
+  }, false)
+  check("look_only_command: gh api graphql mutations, @file, --input, other methods and REST still ask (#106)",
+    wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

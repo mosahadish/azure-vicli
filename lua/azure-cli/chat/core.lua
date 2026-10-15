@@ -176,7 +176,7 @@ local GIT_LOOK_ONLY = {
 -- git worktree list's flags; any other worktree subcommand, or word, asks.
 local WORKTREE_LIST = { ["--porcelain"] = true, ["-v"] = true, ["--verbose"] = true, ["-z"] = true }
 -- gh's that only read, each with the flags that open a browser (gh run
--- list's -w is --workflow).
+-- list's -w is --workflow). gh api is gh_api_reads'.
 local WEB = { "-w", "--web" }
 local GH_LOOK_ONLY = {
   run = { list = { "--web" }, view = WEB, watch = { "--web" } },
@@ -227,6 +227,115 @@ local function remote_reads(words, from)
     if not words[m]:match(REMOTE_NAME) then return false end
   end
   return true
+end
+
+-- Whether GraphQL document `q` only reads: each definition at the top
+-- level a query (`query ...` or a bare `{ ... }`) or a fragment, at
+-- least one of them a query. mutation or subscription anywhere at the
+-- top level, any other definition, an unterminated string or unbalanced
+-- brackets don't count. Strings ("..." and """..."""), # comments and
+-- commas are skipped.
+local BRACKETS = { ["{"] = "}", ["("] = ")", ["["] = "]" }
+local function graphql_reads(q)
+  local i, n, stack, start, ops = 1, #q, {}, true, 0
+  while i <= n do
+    local c = q:sub(i, i)
+    if c:match("[%s,]") then
+      i = i + 1
+    elseif c == "#" then
+      i = (q:find("\n", i, true) or n) + 1
+    elseif q:sub(i, i + 2) == '"""' then
+      -- \""" is a block string's only escape.
+      local e = i + 3
+      repeat
+        e = q:find('"""', e, true)
+        if not e then return false end
+        e = e + 3
+      until q:sub(e - 4, e - 4) ~= "\\"
+      i = e
+    elseif c == '"' then
+      local k = i + 1
+      while q:sub(k, k) ~= '"' do
+        if k > n or q:sub(k, k) == "\n" then return false end
+        k = k + (q:sub(k, k) == "\\" and 2 or 1)
+      end
+      i = k + 1
+    elseif BRACKETS[c] then
+      if start then
+        if c ~= "{" then return false end
+        start, ops = false, ops + 1
+      end
+      stack[#stack + 1] = BRACKETS[c]
+      i = i + 1
+    elseif c == "}" or c == ")" or c == "]" then
+      if stack[#stack] ~= c then return false end
+      stack[#stack] = nil
+      -- A definition ends where its selection set closes.
+      start = #stack == 0 and c == "}"
+      i = i + 1
+    elseif c:match("[%a_]") then
+      local word = q:match("^[%w_]+", i)
+      if #stack == 0 then
+        if word == "mutation" or word == "subscription" then return false end
+        if start then
+          if word ~= "query" and word ~= "fragment" then return false end
+          start, ops = false, ops + (word == "query" and 1 or 0)
+        end
+      end
+      i = i + #word
+    else
+      if start then return false end
+      i = i + 1
+    end
+  end
+  return #stack == 0 and start and ops > 0
+end
+
+-- gh api's flags that only change what it prints: with a value, and
+-- without; its fields' (-f raw, -F typed or @file).
+local GH_API_VALUE = { ["-q"] = true, ["--jq"] = true, ["-t"] = true, ["--template"] = true, ["--cache"] = true }
+local GH_API_SWITCH = {
+  ["--paginate"] = true, ["--slurp"] = true, ["-i"] = true, ["--include"] = true, ["--silent"] = true,
+  ["--verbose"] = true,
+}
+local GH_API_FIELD = { ["-f"] = true, ["--raw-field"] = true, ["-F"] = true, ["--field"] = true }
+
+-- Whether `gh api` with `words` from `from` on only reads: a GraphQL
+-- query (graphql_reads) sent to `graphql` - every query= field one, none
+-- of the fields starting with @ (a file) - the method POST if it's
+-- given, and GH_API_VALUE / GH_API_SWITCH besides. REST paths, --input,
+-- -H, --hostname and any other flag ask. `unknown` (expand's): the
+-- endpoint, a flag, a query or what it prints can't be unknown; another
+-- field's value (a GraphQL variable's) may be "inside" one.
+local function gh_api_reads(words, unknown, from)
+  local endpoint, queries, k = nil, 0, from
+  while words[k] do
+    local w, u = words[k], unknown[k]
+    if u == "free" then return false end
+    if not w:match("^%-") then
+      if u or endpoint then return false end
+      endpoint = w
+    elseif not GH_API_SWITCH[w] then
+      local flag, value = w:match("^(%-%-[%w-]+)=(.*)$")
+      if not flag then flag, value = w:match("^(%-[fFXqt])(.+)$") end
+      flag = flag or w
+      if not (GH_API_FIELD[flag] or GH_API_VALUE[flag] or flag == "-X" or flag == "--method") then return false end
+      if not value then k = k + 1; value, u = words[k], unknown[k] end
+      if not value or u == "free" then return false end
+      if GH_API_FIELD[flag] then
+        local key, v = value:match("^([^=]+)=(.*)$")
+        if not key or v:sub(1, 1) == "@" then return false end
+        if key == "query" then
+          if u or not graphql_reads(v) then return false end
+          queries = queries + 1
+        end
+      elseif u or ((flag == "-X" or flag == "--method") and value ~= "POST") then
+        return false
+      end
+    end
+    k = k + 1
+  end
+  return endpoint == "graphql" and queries > 0
 end
 
 -- A one-letter flag counts inside a cluster too (sort -ro out).
@@ -447,6 +556,7 @@ local function look_only_part(words, unknown)
     return flags ~= nil and not bad_flag(words, i + 1, { "--output", "--ext-diff" }) and not bad_flag(words, i + 1, flags)
   end
   if name == "gh" then
+    if words[2] == "api" then return gh_api_reads(words, unknown, 3) end
     -- GH_LOOK_ONLY's; any other gh command asks.
     local flags = (GH_LOOK_ONLY[words[2] or ""] or {})[words[3] or ""]
     return flags and not free and not bad_flag(words, 4, flags) or false
@@ -950,7 +1060,8 @@ end
 -- Whether shell command `cmd` (a string, or an argv list) only reads:
 -- every command in it - split on |, &&, || and ;, inside for loops,
 -- while read loops and $(...) too - is one of the commands above without a flag
--- that writes (sed and awk with a program that only prints), once the
+-- that writes (sed and awk with a program that only prints, gh api with
+-- a GraphQL query and no mutation), once the
 -- variables the command sets itself (B=x; ... $B),
 -- $? $# $$ (numbers) and its loop variables are filled in (what read reads could be
 -- anything: look_only_part, as is what a $(...) of them prints, but a

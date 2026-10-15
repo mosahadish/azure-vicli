@@ -263,6 +263,8 @@ picks goes through `session/set_config_option`.
   `--upload-pack` or other options, no `x:y` refspecs), `gh run list` /
   `view` / `watch`, `gh pr view` / `checks` / `diff` / `list` /
   `status`, `gh issue view` / `list` / `status` (not with `--web`),
+  `gh api graphql` queries (no mutation, `@file`, `--input` or other
+  method),
   PowerShell's `Get-ChildItem`,
   `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
   of them, throwing errors away or not (`2>$null`, `2>/dev/null`,

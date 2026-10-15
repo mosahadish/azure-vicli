@@ -527,6 +527,42 @@ do
     check("#104 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
   end
 end
+do
+  -- #106: #99's gh api graphql queries, the way Claude Code asks for
+  -- them, again and again; a mutation, a file, --input or GET still ask.
+  local RUN = require("azure-cli.chat.run")
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({
+    [=[gh api graphql -f query='query { repository(owner:"HollowThorn", name:"Wtile") { pullRequest(number:9) { author { login } reviews(last: 20) { nodes { state author { login } submittedAt commit { oid } } } latestReviews(first: 50) { nodes { state author { login } } } } } }' --jq '.data.repository.pullRequest']=],
+    [=[for n in 42321 42349; do gh api graphql -f query="query { repository(owner:\"neovim\", name:\"neovim\") { pullRequest(number:$n) { author{login} reviews(last: 30) { nodes { state author { login } } } } } }" --jq ".data.repository.pullRequest | .author.login as \$a | .reviews.nodes[] | select(.author.login != \$a) | {pr:$n, who:.author.login}"; done]=],
+    [=[gh api graphql -f query='query { search(query:"is:pr reviewed-by:@me", type:ISSUE, first:30) { issueCount nodes { ... on PullRequest { number } } } }' --jq '.data.search.issueCount']=],
+  }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#106 " .. cmd:sub(1, 60) .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "gh api graphql -f query='mutation { addStar(input: {starrableId: \"x\"}) { clientMutationId } }'",
+    "gh api graphql -F query=@q.graphql", "gh api graphql --input q.json", "gh api graphql -X GET -f query='{ a }'" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#106 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
 
 -- Approving a plan: three buttons, p lets it push.
 do
