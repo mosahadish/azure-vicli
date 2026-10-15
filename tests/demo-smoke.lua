@@ -3682,14 +3682,15 @@ section("INNERTABS-PLAN", function()
   -- dd on #3101's row while its tab is open: the tab closes, the list stays.
   vim.api.nvim_set_current_tabpage(atab)
   vim.api.nvim_set_current_win(av.win)
-  local confirm = UI.confirm
-  UI.confirm = function(_, cb) cb(true) end
+  -- (dd's question is Discard / Discard all / Cancel since #122: Discard)
+  local choose = UI.choose
+  UI.choose = function(_, cb) cb(1) end
   for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
     if l:find("#3101 ", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
   end
   feed("dd")
   ok = vim.wait(10000, function() return not vim.api.nvim_tabpage_is_valid(t1) and PLAN.load("wi-3101") == nil end, 50)
-  UI.confirm = confirm
+  UI.choose = choose
   if not ok or cur() ~= atab or #INNER.members(atab) ~= 0 then
     cleanup()
     return fail("dd on #3101 didn't close its tab and stay on the list: " .. vim.inspect({ ok, cur() == atab, INNER.members(atab) }))

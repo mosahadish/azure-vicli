@@ -36,12 +36,19 @@ local FIX = require("azure-cli.chat.tools_fix")
 local STORE = require("azure-cli.chat.store")
 local PD = require("azure-cli.chat.plan_discard")
 
--- The popup answers `answer` (and runs `meanwhile` first); toasts kept.
+-- The popup answers `answer` (true: Discard, false: Cancel, "all":
+-- Discard all) and runs `meanwhile` first; Discard all's second question
+-- answers `answer_all`; toasts kept.
 local asked, answer, meanwhile, said = nil, false, nil, {}
-require("azure-cli.ui").confirm = function(opts, cb)
+local asked_all, answer_all = nil, false
+require("azure-cli.ui").choose = function(opts, cb)
   asked = opts
   if meanwhile then meanwhile() end
-  cb(answer)
+  cb(answer == "all" and 2 or answer and 1 or 3)
+end
+require("azure-cli.ui").confirm = function(opts, cb)
+  asked_all = opts
+  cb(answer_all)
 end
 require("azure-cli.shell").notify = function(msg) said[#said + 1] = msg end
 
@@ -103,6 +110,8 @@ do
   press(key)
   check("cancel: it asked, saying what goes", asked and asked.title:find("#9801", 1, true)
     and table.concat(asked.lines, "\n"):find("its conversation (2 turns, 1 saved file moved too)", 1, true), vim.inspect(asked))
+  check("dd: Discard / Discard all / Cancel, Cancel first", asked and table.concat(asked.buttons, "/") == "Discard/Discard all/Cancel"
+    and asked.default == 3 and asked.cancel == 3, vim.inspect(asked))
   check("cancel: the files, the conversation and the row stay", exists(key) and #discarded(key) == 0
     and CHAT.find_conversation(key) == c and row_of(key) ~= nil
     and vim.fn.filereadable(STORE.root() .. "/conversations/" .. c.conv_id .. ".json") == 1)
@@ -280,6 +289,7 @@ do
   gd()
   check("gD cancel: it asked, saying what goes", asked and asked.title:find("#9806", 1, true)
     and table.concat(asked.lines, "\n"):find("its conversation (2 turns", 1, true), vim.inspect(asked))
+  check("gD: offers Discard all too", asked and asked.buttons and asked.buttons[2] == "Discard all", vim.inspect(asked))
   check("gD cancel: the files, the conversation and the tab stay", exists(key) and #discarded(key) == 0
     and CHAT.find_conversation(key) == c and vim.api.nvim_tabpage_is_valid(tab) and PLAN.open_views()[key] ~= nil)
 
@@ -566,6 +576,56 @@ do
   release()
   check("#119 gD discard: the clean worktree removed, one toast", #removes() == 1 and removes()[1] == gdwt and #said == 1
     and said[1]:find("Removed its worktree " .. gdwt, 1, true), vim.inspect(said))
+
+  -- #122: Discard all - every plan the Agents screen lists whose agent
+  -- isn't working, after a second question (count and labels, No first);
+  -- cancelled there, no git and nothing moves; a working one is skipped
+  -- and named; a changed worktree is kept; one toast.
+  local function all_plan(n, wt)
+    local k = make_plan(n)
+    local c = make_conv(k, n)
+    return k, c, wt and fake_worktree(wt, n)
+  end
+  local k1, _, wclean = all_plan(12201, "allclean")
+  local k2, _, wdirty = all_plan(12202, "alldirty")
+  local k3, c3 = all_plan(12203)
+  local k4 = all_plan(12204)
+  c3.running = true
+
+  calls, held, asked, said, asked_all, answer, answer_all = {}, {}, nil, {}, nil, "all", false
+  PD.ask({ key = k1 })
+  local lines = asked_all and asked_all.lines or {}
+  local listed = {}
+  for _, l in ipairs(lines) do
+    if l == "" then break end
+    if l:match("^  %- ") then listed[#listed + 1] = l:sub(5) end
+  end
+  local n = asked_all and tonumber(asked_all.title:match("^Discard (%d+) plans: "))
+  local text = table.concat(lines, "\n")
+  check("#122 all: asks once more, the count and the labels, No first", n and n == #listed
+    and vim.tbl_contains(listed, "#12201") and vim.tbl_contains(listed, "#12202") and vim.tbl_contains(listed, "#12204")
+    and asked_all.default == "no" and asked_all.title:find("?", 1, true), vim.inspect(asked_all))
+  check("#122 all: the working one is named as skipped, not counted", not vim.tbl_contains(listed, "#12203")
+    and text:find("Skipped, agent working:\n  - #12203", 1, true), text)
+  check("#122 all cancelled: no git, nothing moved, no toast", #calls == 0 and exists(k1) and exists(k2) and exists(k3)
+    and exists(k4) and #discarded(k1) == 0 and row_of(k1) ~= nil and #said == 0, vim.inspect({ calls, said }))
+
+  local redraws = 0
+  calls, held, asked, said, asked_all, answer_all = {}, {}, nil, {}, nil, true
+  PD.ask({ key = k1 }, function() redraws = redraws + 1 end)
+  check("#122 all confirmed: the plans go at once, one redraw, no toast before git answers", redraws == 1
+    and not exists(k1) and not exists(k2) and not exists(k4) and #discarded(k1) == 3 and #discarded(k4) == 3
+    and row_of(k1) == nil and row_of(k4) == nil and #said == 0, vim.inspect({ redraws, said }))
+  check("#122 all: the working agent's plan stays", exists(k3) and CHAT.find_conversation(k3) == c3 and #discarded(k3) == 0)
+  check("#122 all: worktrees checked in parallel", count("status") >= 2 and #removes() == 0, vim.inspect(calls))
+  release()
+  check("#122 all: the clean worktree removed, the changed one kept", vim.tbl_contains(removes(), wclean)
+    and not vim.tbl_contains(removes(), wdirty), vim.inspect(removes()))
+  check("#122 all: exactly one toast, saying what it did", #said == 1 and said[1]:find("^Discarded %d+ plans")
+    and said[1]:find("Skipped #12203 (agent working)", 1, true) and said[1]:find(wclean, 1, true)
+    and said[1]:find(wdirty .. " (1 uncommitted file)", 1, true), vim.inspect(said))
+  c3.running = false
+  answer, answer_all = false, false
 
   meanwhile = nil
   TOOLS.git = real_git

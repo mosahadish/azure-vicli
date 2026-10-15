@@ -7,8 +7,10 @@
 -- the background, all worktrees in parallel, removes the change's worktree
 -- only when git says it has nothing in it - one with uncommitted or
 -- unpushed changes, or one git can't read, is kept - and one toast says
--- which. The main chat's discard_plan (chat/plan.lua) moves an orphan
--- plan's files with M.move_files.
+-- which. Its Discard all (#122) does that to every plan the Agents screen
+-- lists whose agent isn't working, after asking once more, and says what
+-- it did in one toast. The main chat's discard_plan (chat/plan.lua) moves
+-- an orphan plan's files with M.move_files.
 --
 --   M.inspect(key, cb)        what discarding plan `key` touches, no git:
 --                             cb(info), at once
@@ -18,6 +20,9 @@
 --   M.discard(key, on_gone, on_done)  does it: on_gone(err) once the plan
 --                             is gone, on_done(what it did) once the
 --                             worktrees' git jobs have finished
+--   M.discard_all(keys, on_gone, on_done)  M.discard for each, at once:
+--                             on_gone() once they're all gone, on_done(the
+--                             summary) once the last git job has finished
 --   M.ask(row, after)         dd / gD: all of the above, `after` once it's gone
 local M = {}
 
@@ -224,12 +229,14 @@ local function check_then_remove(dir, cb)
 end
 
 -- Discards plan `key`, looking again at what it touches (the question
--- waited for you). The plan goes at once, no git: on_gone(err). Its
--- worktrees are then checked and removed in the background, all in
--- parallel: on_done(what it did) once the last git job has finished.
-function M.discard(key, on_gone, on_done)
+-- waited for you). The plan goes at once, no git: on_gone(err, its label
+-- when refused because its agent is working). Its worktrees are then
+-- checked and removed in the background, all in parallel: on_result({
+-- label, dir, removed = { dir }, kept = { "dir (why)" }, problems }) once
+-- the last git job has finished.
+local function discard_one(key, on_gone, on_result)
   M.inspect(key, function(info)
-    if info.running then return on_gone(refusal(info.label)) end
+    if info.running then return on_gone(refusal(info.label), info.label) end
     require("azure-cli.chat.agents").unqueue(key)
     -- Its plan view's tab closes; from inside it (gD) you go back to the
     -- inner tab before it, as its q does - one in the background stays put.
@@ -254,13 +261,9 @@ function M.discard(key, on_gone, on_done)
       for i, w in ipairs(info.worktrees) do
         local r = results[i]
         if r.ok then removed[#removed + 1] = w.dir
-        else kept[#kept + 1] = "its worktree " .. w.dir .. " (" .. r.why .. ")" end
+        else kept[#kept + 1] = w.dir .. " (" .. r.why .. ")" end
       end
-      local msg = "Discarded the plan for " .. info.label .. " (moved to " .. dir .. ")."
-      if #removed > 0 then msg = msg .. " Removed its worktree " .. table.concat(removed, ", ") .. "." end
-      if #kept > 0 then msg = msg .. " Kept " .. table.concat(kept, "; ") .. "." end
-      if #problems > 0 then msg = msg .. " But: " .. table.concat(problems, "; ") .. "." end
-      if on_done then on_done(msg) end
+      if on_result then on_result({ label = info.label, dir = dir, removed = removed, kept = kept, problems = problems }) end
     end
     if left == 0 then return finish() end
     for i, w in ipairs(info.worktrees) do
@@ -273,18 +276,129 @@ function M.discard(key, on_gone, on_done)
   end)
 end
 
+-- Discards plan `key` (discard_one): on_gone(err), on_done(the toast).
+function M.discard(key, on_gone, on_done)
+  discard_one(key, function(err) on_gone(err) end, function(r)
+    local msg = "Discarded the plan for " .. r.label .. " (moved to " .. r.dir .. ")."
+    if #r.removed > 0 then msg = msg .. " Removed its worktree " .. table.concat(r.removed, ", ") .. "." end
+    if #r.kept > 0 then
+      local kept = {}
+      for i, k in ipairs(r.kept) do kept[i] = "its worktree " .. k end
+      msg = msg .. " Kept " .. table.concat(kept, "; ") .. "."
+    end
+    if #r.problems > 0 then msg = msg .. " But: " .. table.concat(r.problems, "; ") .. "." end
+    if on_done then on_done(msg) end
+  end)
+end
+
+-- Discards every plan in `keys` (discard_one each), all at once: their
+-- files move now, their worktrees' git jobs all run in parallel.
+-- on_gone() once every plan is gone (or refused), on_done(one summary)
+-- once the last git job has finished. `skipped` (labels) are named in it
+-- as refused too.
+function M.discard_all(keys, on_gone, on_done, skipped)
+  local gone, refused, removed, kept, problems, dirs = 0, {}, {}, {}, {}, {}
+  for _, l in ipairs(skipped or {}) do refused[#refused + 1] = l end
+  local waiting_gone, waiting_done = #keys, #keys
+  local function summary()
+    local msg = "Discarded " .. plural(gone, "plan")
+    if dirs[1] then msg = msg .. " (moved to " .. dirs[1] .. ")" end
+    msg = msg .. "."
+    if #refused > 0 then msg = msg .. " Skipped " .. table.concat(refused, ", ") .. " (agent working)." end
+    if #removed > 0 then msg = msg .. " Removed " .. plural(#removed, "worktree") .. ": " .. table.concat(removed, ", ") .. "." end
+    if #kept > 0 then msg = msg .. " Kept " .. plural(#kept, "worktree") .. ": " .. table.concat(kept, "; ") .. "." end
+    if #problems > 0 then msg = msg .. " But: " .. table.concat(problems, "; ") .. "." end
+    if on_done then on_done(msg) end
+  end
+  local function one_done()
+    waiting_done = waiting_done - 1
+    if waiting_done == 0 then summary() end
+  end
+  local function one_gone()
+    waiting_gone = waiting_gone - 1
+    if waiting_gone == 0 and on_gone then on_gone() end
+  end
+  if #keys == 0 then
+    if on_gone then on_gone() end
+    return summary()
+  end
+  for _, key in ipairs(keys) do
+    discard_one(key, function(err, refused_label)
+      if refused_label then
+        refused[#refused + 1] = refused_label
+      elseif err then
+        problems[#problems + 1] = err
+      end
+      one_gone()
+      -- Refused or failed: no git jobs follow.
+      if err then one_done() end
+    end, function(r)
+      gone = gone + 1
+      if not vim.tbl_contains(dirs, r.dir) then dirs[#dirs + 1] = r.dir end
+      vim.list_extend(removed, r.removed)
+      vim.list_extend(kept, r.kept)
+      vim.list_extend(problems, r.problems)
+      one_done()
+    end)
+  end
+end
+
+-- Every plan the Agents screen lists (its rows, in its order - finished
+-- ones it hides until gF left out): the keys and labels of those whose
+-- agent isn't working, and the labels of those whose agent is.
+local function all_plans()
+  local AV = require("azure-cli.chat.agents_view")
+  local rows = AV.rows(CHAT().conversations(), require("azure-cli.chat.agents").queued(), PLAN().load, os.time())
+  local keys, labels, working = {}, {}, {}
+  for _, r in ipairs((AV.arrange(rows, os.time(), false))) do
+    if not r.header then
+      if r.conv and r.conv.running then
+        working[#working + 1] = r.label
+      else
+        keys[#keys + 1] = r.key
+        labels[#labels + 1] = r.label
+      end
+    end
+  end
+  return keys, labels, working
+end
+
+-- Discard all's second question: the count and the labels, No first.
+local function ask_all(after)
+  local keys, labels, working = all_plans()
+  if #keys == 0 then return notify("There's nothing to discard: every agent on the Agents screen is working.") end
+  local shown = {}
+  for i = 1, math.min(5, #labels) do shown[i] = labels[i] end
+  local title = "Discard " .. plural(#keys, "plan") .. ": " .. table.concat(shown, ", ") .. (#labels > 5 and ", ..." or "") .. "?"
+  local lines = { "Goes (each like a single discard - files to plans/discarded/, clean worktrees removed):" }
+  for _, l in ipairs(labels) do lines[#lines + 1] = "  - " .. l end
+  if #working > 0 then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "Skipped, agent working:"
+    for _, l in ipairs(working) do lines[#lines + 1] = "  - " .. l end
+  end
+  require("azure-cli.ui").confirm({ title = title, lines = lines, yes = "Discard all", default = "no" }, function(yes)
+    if not yes then return end
+    M.discard_all(keys, function()
+      if after then after() end
+    end, function(msg) notify(msg) end, working)
+  end)
+end
+
 -- dd on an Agents screen row, gD in a plan view ({ key = its key }):
 -- refused while its agent works, else the question (at once, no git),
 -- then discarded; `after` (a redraw) as soon as the plan is gone, the
--- toast once its worktrees have been dealt with.
+-- toast once its worktrees have been dealt with. Discard all (#122) asks
+-- once more (ask_all) and discards every plan the Agents screen lists.
 function M.ask(row, after)
   if not row then return end
   M.inspect(row.key, function(info)
     if info.running then return notify(refusal(info.label)) end
     if not (info.plan or info.conv or info.queued) then return notify("There's nothing to discard for " .. info.label .. ".") end
-    require("azure-cli.ui").confirm({ title = "Discard the plan for " .. info.label .. "?", lines = M.confirm_lines(info),
-      yes = "Discard", default = "no" }, function(yes)
-      if not yes then return end
+    require("azure-cli.ui").choose({ title = "Discard the plan for " .. info.label .. "?", lines = M.confirm_lines(info),
+      buttons = { "Discard", "Discard all", "Cancel" }, default = 3, keys = { y = 1, a = 2, n = 3 }, cancel = 3 }, function(i)
+      if i == 2 then return ask_all(after) end
+      if i ~= 1 then return end
       M.discard(row.key, function(err)
         if err then notify(err, vim.log.levels.WARN) end
         if after then after() end
