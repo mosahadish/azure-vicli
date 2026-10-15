@@ -241,7 +241,8 @@ function M.restore_plans()
   local adopted = {}
   for _, f in ipairs(vim.fn.glob(PLAN.root() .. "/*.json", false, true)) do
     local key = vim.fn.fnamemodify(f, ":t:r")
-    if (key:match("^wi%-%d+$") or key:match("^pr%-%d+$") or key:match("^pr%-github%-.+~%d+$")) and not main.convs[key] then
+    if (key:match("^wi%-%d+$") or key:match("^pr%-%d+$") or key:match("^pr%-github%-.+~%d+$")
+        or key:match("^wi%-github%-.+~%d+$")) and not main.convs[key] then
       local plan = PLAN.load(key)
       if plan and type(plan.target) == "table"
           and (plan.status == "draft" or plan.status == "changes_requested" or plan.status == "approved") then

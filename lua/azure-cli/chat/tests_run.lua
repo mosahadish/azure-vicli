@@ -26,10 +26,12 @@ M.KEEP_LINES = 400
 local running = {}  -- dir -> true while its tests run
 
 -- The repository of a fix / story worktree: start_fix's <repo>-<pr id>,
--- start_story's <repo>-wi<id>. Pure.
+-- start_story's <repo>-wi<id>, a GitHub PR's or issue's pr-github- /
+-- wi-github-<owner~repo~n>. Pure.
 function M.repo_of(dir)
   local name = ((dir or ""):gsub("[/\\]+$", "")):match("([^/\\]+)$") or ""
-  return name:match("^(.-)%-wi%d+$") or name:match("^(.-)%-%d+$") or name
+  return name:match("^%a+%-github%-[^~]*~(.-)~%d+$") or name:match("^(.-)%-wi%d+$") or name:match("^(.-)%-%d+$")
+    or name
 end
 
 -- Your own test command for `repo` (setup({ chat = { test_cmd = "..." or {

@@ -2092,19 +2092,25 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     local gp_tab = vim.api.nvim_get_current_tabpage()
     feed("gP")
     local AGENTS = require("azure-cli.chat.agents")
+    -- Keyed by the issue's key (#114), wi-github-<owner~repo~12>.
+    local function conv12()
+      for _, c in ipairs(CHAT.conversations()) do
+        if c.plan_key and c.plan_key:match("^wi%-github%-.+~12$") then return c end
+      end
+    end
     ok = vim.wait(30000, function()
-      local c = CHAT.find_conversation("wi-12")
+      local c = conv12()
       local en = c and c.entries[#c.entries]
       return en and en.role == "agent" and en.status == "done" and AGENTS.working() == 0
     end, 100)
-    local c12 = CHAT.find_conversation("wi-12")
+    local c12 = conv12()
     local said = c12 and c12.entries[#c12.entries] and c12.entries[#c12.entries].text or ""
     if not ok or not said:find("planned issue #12 on board github: Doohickey wobbles at speed", 1, true) then
       return fail("gP on the Issues board's #12: " .. said)
     end
     -- The later smokes count the plans waiting for you: #12's isn't one.
     local PLAN = require("azure-cli.chat.plan")
-    local p12 = PLAN.load("wi-12")
+    local p12 = PLAN.load(c12.plan_key)
     if p12 then
       p12.status = "done"
       PLAN.save(p12)

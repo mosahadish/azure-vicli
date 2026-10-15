@@ -332,7 +332,10 @@ do
 
   local TF = require("azure-cli.chat.tools_fix")
   local orig = TF.find_story
-  TF.find_story = function(id) if tostring(id) == "55" then return "/w/r-wi55", "feature/55-x", "develop" end end
+  TF.find_story = function(t)
+    local id = type(t) == "table" and t.work_item_id or t
+    if tostring(id) == "55" then return "/w/r-wi55", "feature/55-x", "develop" end
+  end
   PLAN.save({ key = "wi-55", target = { work_item_id = 55 }, status = "done", allow_push = true, revisions = {}, threads = {} })
   local function allowed(a)
     local r
@@ -763,6 +766,20 @@ do
   check("key: safe as a file name", odd == "pr-github-.._x_y_z~1" and not odd:find("/", 1, true), odd)
   check("target_label: repo#n on GitHub", PLAN.target_label(gh) == "PR a#7"
     and PLAN.target_label({ pr_id = 7, pr_key = "o~b~7" }) == "PR b#7")
+  -- #114: the same for issues.
+  local ia = PLAN.item_target({ id = 7, key = "o~a~7" })
+  check("item_target: Azure is its id, GitHub carries its key", vim.deep_equal(PLAN.item_target({ id = 7 }), { work_item_id = 7 })
+    and vim.deep_equal(ia, { work_item_id = 7, item_key = "o~a~7" }), vim.inspect(ia))
+  check("key: an issue by its key, Azure as before", PLAN.key(ia) == "wi-github-o~a~7"
+    and PLAN.key({ work_item_id = 7, item_key = "o~b~7" }) == "wi-github-o~b~7" and PLAN.key({ work_item_id = 7 }) == "wi-7")
+  check("target_label: repo#n for an issue, #n on Azure", PLAN.target_label(ia) == "a#7"
+    and PLAN.target_label({ work_item_id = 7 }) == "#7")
+  local env_a = { conv = { target = ia } }
+  check("item_target_for: the calling agent's own issue", vim.deep_equal(PLAN.item_target_for(7, env_a), ia)
+    and vim.deep_equal(PLAN.item_target_for(8, env_a), { work_item_id = 8 }))
+  local TR = require("azure-cli.chat.tests_run")
+  check("tests_run.repo_of: GitHub issue and PR worktrees", TR.repo_of("/x/wi-github-o~cli~7") == "cli"
+    and TR.repo_of("/x/pr-github-o~cli~7") == "cli" and TR.repo_of("/x/cli-wi7") == "cli" and TR.repo_of("/x/cli-7") == "cli")
 end
 
 -- --- threads ------------------------------------------------------------------------------

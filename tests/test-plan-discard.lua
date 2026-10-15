@@ -310,5 +310,138 @@ do
   check("discard_plan: an orphan's files still move", res and not exists(key) and #discarded(key) == 2, err)
 end
 
+-- #114: issue plans keyed by the issue's key. Two GitHub #7s in different
+-- repos and an Azure #7 are three plans, rows and worktrees; dd on one
+-- leaves the others.
+local function inspect(key)
+  local info
+  PD.inspect(key, function(i) info = i end)
+  vim.wait(10000, function() return info ~= nil end, 10)
+  return info
+end
+do
+  local a, b, az = { work_item_id = 7, item_key = "o~a~7" }, { work_item_id = 7, item_key = "o~b~7" }, { work_item_id = 7 }
+  local function plan_for(target, title)
+    local key = PLAN.key(target)
+    PLAN.save({ key = key, target = target, title = title, status = "draft",
+      revisions = { { text = md, by = "agent", at = os.time() } }, threads = {}, created = os.time() })
+    vim.fn.writefile(vim.split(md, "\n"), PLAN.path(key))
+    local c = CHAT.conversation(key, { target = target, label = PLAN.target_label(target) })
+    c.entries = { { role = "you", text = "/plan" }, { role = "agent", text = "planned" } }
+    return key
+  end
+  local ka, kb, kz = plan_for(a, "A"), plan_for(b, "B"), plan_for(az, "Azure")
+  check("#114 keys: two GitHub #7s and an Azure #7 are three plans", ka == "wi-github-o~a~7" and kb == "wi-github-o~b~7"
+    and kz == "wi-7" and PLAN.load(ka).title == "A" and PLAN.load(kb).title == "B" and PLAN.load(kz).title == "Azure",
+    vim.inspect({ ka, kb, kz }))
+  local ra, rb, rz = row_of(ka), row_of(kb), row_of(kz)
+  check("#114 Agents rows: one each, labelled by repo", ra and rb and rz and ra.label == "a#7" and rb.label == "b#7"
+    and rz.label == "#7", vim.inspect({ ra and ra.label, rb and rb.label, rz and rz.label }))
+  check("#114 Agents rows: Enter's plan is the row's own", PLAN.load(ra.key).title == "A" and PLAN.load(rb.key).title == "B"
+    and PLAN.load(rz.key).title == "Azure")
+  local function wt_for(target)
+    local wt = FIX.story_path("repo", target)
+    sh({ "git", "-C", clone, "worktree", "add", "-q", "--detach", wt, "origin/main" })
+    vim.fn.writefile({ "feature/7", "main" }, wt .. ".branch")
+    return wt
+  end
+  local wa, wb, wz = wt_for(a), wt_for(b), wt_for(az)
+  check("#114 worktrees: named after the key, Azure's as before", wa == FIX.root() .. "/wi-github-o~a~7"
+    and wb == FIX.root() .. "/wi-github-o~b~7" and wz == FIX.root() .. "/repo-wi7", vim.inspect({ wa, wb, wz }))
+  local ia, ib, iz = inspect(ka), inspect(kb), inspect(kz)
+  check("#114 dd: each plan finds its own worktree only", #ia.worktrees == 1 and ia.worktrees[1].dir == wa
+    and #ib.worktrees == 1 and ib.worktrees[1].dir == wb and #iz.worktrees == 1 and iz.worktrees[1].dir == wz,
+    vim.inspect({ ia.worktrees, ib.worktrees, iz.worktrees }))
+  vim.fn.writefile({ "mine" }, wa .. "/a.txt")
+  answer = true
+  press(ka)
+  check("#114 dd: a#7's plan goes, its changed worktree stays", not exists(ka) and #discarded(ka) == 2
+    and vim.fn.isdirectory(wa) == 1 and row_of(ka) == nil, vim.inspect(said))
+  check("#114 dd: b#7 and Azure #7 are untouched", exists(kb) and exists(kz) and row_of(kb) ~= nil and row_of(kz) ~= nil
+    and vim.fn.isdirectory(wb) == 1 and vim.fn.isdirectory(wz) == 1)
+end
+
+-- #114: gP on two GitHub issues #17 from different repos, and an Azure
+-- #17: three agents, not one.
+do
+  local busy = CHAT.conversation("wi-9890", { target = { work_item_id = 9890 }, label = "#9890" })
+  busy.running = true  -- the one slot is taken: they queue
+  AG.start_for_items({ { id = 17, key = "o~a~17", title = "A" }, { id = 17, key = "o~b~17", title = "B" } }, nil, "github")
+  AG.start_for_items({ { id = 17, title = "Azure" } })
+  local keys = vim.tbl_map(function(q) return q.key .. "=" .. q.label end, AG.queued())
+  check("#114 gP: two GitHub #17s and an Azure #17 are three agents", table.concat(keys, ",")
+    == "wi-github-o~a~17=a#17,wi-github-o~b~17=b#17,wi-17=#17", table.concat(keys, ","))
+  check("#114 gP: each with its own target", AG.queued()[1].target.item_key == "o~a~17"
+    and AG.queued()[2].target.item_key == "o~b~17" and AG.queued()[3].target.item_key == nil)
+  busy.running = false
+  CHAT.drop_conversation("wi-9890")
+  AG.reset()
+end
+
+-- #114: an old plan - a copy of a real wi-88.json, from before issues had
+-- keys of their own - with its <repo>-wi88 worktree and its conversation
+-- (which recorded the issue it was started for) still loads, belongs to
+-- that issue only, shows on the Agents screen, and dd works on it. Nothing
+-- under plans/ is written by looking it up, however often.
+do
+  local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
+  vim.fn.writefile(vim.fn.readfile(here .. "/fixtures/plan-wi88.json"), PLAN.root() .. "/wi-88.json")
+  STORE.save({ id = "20261014-000000-0088", created = os.time(), plan = "wi-88", entries = {
+    { role = "you", text = "/plan GitHub issue #88", view = { work_item = { id = 88, board = "github", key = "o~a~88" } } },
+    { role = "agent", text = "planned" } } })
+  PLAN.reset_recorded()
+  local old = make_worktree(88)
+  vim.fn.writefile({ "unfinished" }, old .. "/a.txt")
+  local function listing()
+    local l = vim.fn.glob(PLAN.root() .. "/**", false, true)
+    table.sort(l)
+    return table.concat(l, "\n")
+  end
+  local before = listing()
+  local mine, other
+  for _ = 1, 2 do
+    mine = PLAN.resolve_item({ work_item_id = 88, item_key = "o~a~88" })
+    other = PLAN.resolve_item({ work_item_id = 88, item_key = "o~b~88" })
+  end
+  check("#114 old plan: its issue resolves to wi-88", PLAN.key(mine) == "wi-88"
+    and PLAN.load(PLAN.key(mine)).title == "Inner tabs, stage 3: plans inside Agents", vim.inspect(mine))
+  check("#114 old plan: the same number in another repo doesn't take it", PLAN.key(other) == "wi-github-o~b~88",
+    vim.inspect(other))
+  check("#114 old plan: its old worktree is still its story", FIX.find_story(mine) == old
+    and PLAN.for_worktree(old) and PLAN.for_worktree(old).key == "wi-88")
+  check("#114 old plan: looking it up twice wrote nothing under plans/", listing() == before)
+  -- Without the conversation: its one <repo>-wi88 worktree says which repo.
+  local saved = STORE.root() .. "/conversations/20261014-000000-0088.json"
+  vim.fn.rename(saved, saved .. ".away")
+  PLAN.reset_recorded()
+  STATE.BOARDS = { workItems = false, issues = { { owner = "o", project = "1" } } }
+  check("#114 old plan, no conversation: the worktree's repo decides",
+    PLAN.legacy_is_for({ work_item_id = 88, item_key = "o~repo~88" })
+    and not PLAN.legacy_is_for({ work_item_id = 88, item_key = "o~a~88" }))
+  STATE.BOARDS = { workItems = true, issues = { { owner = "o", project = "1" } } }
+  check("#114 old plan, no evidence and an Azure board: no issue takes it",
+    not PLAN.legacy_is_for({ work_item_id = 88, item_key = "o~repo~88" }))
+  STATE.BOARDS = nil
+  vim.fn.rename(saved .. ".away", saved)
+  PLAN.reset_recorded()
+
+  -- The Agents screen: restored with its conversation, under its old key.
+  STATE.chat.plans_restored = nil
+  CHAT.restore_plans()
+  local r = row_of("wi-88")
+  check("#114 old plan: its Agents row, label #88, Enter's plan is it", r and r.label == "#88"
+    and PLAN.load(r.key).title == "Inner tabs, stage 3: plans inside Agents", vim.inspect(r and r.label))
+  -- An Azure #88 doesn't start an agent on it.
+  said = {}
+  AG.start_for_items({ { id = 88, title = "Azure 88" } })
+  check("#114 old plan: an Azure #88 doesn't share it", #AG.queued() == 0 and CHAT.find_conversation("wi-88").running ~= true
+    and table.concat(said, "\n"):find("GitHub issue's plan", 1, true), vim.inspect(said))
+  answer = true
+  press("wi-88")
+  check("#114 old plan: dd moves it to plans/discarded/, keeps its changed worktree", not exists("wi-88")
+    and #discarded("wi-88") == 2 and vim.fn.isdirectory(old) == 1 and vim.fn.readfile(old .. "/a.txt")[1] == "unfinished",
+    vim.inspect({ said, discarded("wi-88") }))
+end
+
 print(fails == 0 and "all plan-discard tests passed" or (fails .. " plan-discard test(s) failed"))
 vim.cmd(fails == 0 and "qa!" or "cq!")

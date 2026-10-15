@@ -71,13 +71,15 @@ for k, v in pairs(require("azure-cli.chat.plan_text")) do M[k] = v end
 -- Finding a plan.
 
 -- The plan for the change in worktree `dir` (start_fix's <repo>-<pr id>
--- or, for a GitHub PR, pr-github-<key>; start_story's <repo>-wi<id>): its
--- record, or nil.
+-- or, for a GitHub PR, pr-github-<key>; start_story's <repo>-wi<id> or,
+-- for a GitHub issue, wi-github-<key>): its record, or nil.
 function M.for_worktree(dir)
   local name = vim.fn.fnamemodify((dir or ""):gsub("[/\\]+$", ""), ":t")
-  -- A GitHub PR's worktree is named after its plan (#113); only those
-  -- have a "~".
-  if name:find("~", 1, true) and name:match("^pr%-github%-.") then return M.load(name) end
+  -- A GitHub PR's or issue's worktree is named after its plan (#113,
+  -- #114); only those have a "~".
+  if name:find("~", 1, true) and (name:match("^pr%-github%-.") or name:match("^wi%-github%-.")) then
+    return M.load(name)
+  end
   local wi = name:match("%-wi(%d+)$")
   if wi then return M.load("wi-" .. wi) end
   local pr = name:match("%-(%d+)$")
@@ -111,20 +113,152 @@ function M.pr_target_for(pr_id, env, repo)
   return pr and M.pr_target(pr) or { pr_id = pr_id }
 end
 
+local function is_repo(p)
+  return p ~= "" and (vim.fn.isdirectory(p .. "/.git") == 1 or vim.fn.filereadable(p .. "/.git") == 1)
+end
+
+-- Whether issue key "owner~repo~n" is in `repo` (owner/repo or repo).
+local function key_in_repo(key, repo)
+  local owner, name = tostring(key):match("^([^~]*)~(.-)~%d+$")
+  return owner ~= nil and (tostring(repo) == name or tostring(repo) == owner .. "/" .. name)
+end
+
+-- The GitHub issues numbered `id` listed this session (the Issues board's
+-- list and its sprint tabs), in `repo` when given, once each.
+local function listed_issues(id, repo)
+  local S = require("azure-cli.workitems.board").get("github").state
+  local lists = { (S.WI_LIST_CACHE or {}).items or {} }
+  for _, c in pairs(S.WI_SPRINT_ITEMS or {}) do lists[#lists + 1] = c.items or {} end
+  local out, seen = {}, {}
+  for _, items in ipairs(lists) do
+    for _, it in ipairs(items) do
+      if type(it) == "table" and tostring(it.id) == tostring(id) and it.key and it.key ~= "" and not seen[it.key]
+          and (not repo or key_in_repo(it.key, repo)) then
+        seen[it.key] = true
+        out[#out + 1] = it
+      end
+    end
+  end
+  return out
+end
+
+-- The config has the Issues board and no Azure one (as refs.lua's).
+local function issues_only()
+  local b = require("azure-cli.state").BOARDS
+  return b ~= nil and not b.workItems and require("azure-cli.workitems.board").has_issues() == true
+end
+
+-- Plan `key`'s agent's first view of its work item, { board, key }, or
+-- nil: its live conversation's, else its saved one's (read once).
+local recorded = nil
+local function recorded_view(key)
+  local function from(entries)
+    for _, e in ipairs(entries or {}) do
+      local w = e.role == "you" and type(e.view) == "table" and e.view.work_item
+      if type(w) == "table" then return { board = w.board or "azure", key = w.key } end
+    end
+  end
+  local ok, CHAT = pcall(require, "azure-cli.chat")
+  local conv = ok and CHAT.find_conversation(key)
+  local live = conv and from(conv.entries)
+  if live then return live end
+  if not recorded then
+    recorded = {}
+    for _, s in ipairs(STORE().list()) do  -- newest first
+      if s.plan and recorded[s.plan] == nil then
+        local rec = STORE().load(s.id)
+        recorded[s.plan] = rec and from(rec.entries) or false
+      end
+    end
+  end
+  return recorded[key] or nil
+end
+
+-- For tests: read the saved conversations again.
+function M.reset_recorded() recorded = nil end
+
+-- Before #114 a GitHub issue's plan was keyed wi-<n> like an Azure item's,
+-- with nothing in it saying which. Whether old plan wi-<n> is GitHub issue
+-- `target`'s ({ work_item_id = n, item_key }): the issue key its agent's
+-- conversation recorded; else (a GitHub board's plan) the repository of its
+-- one <repo>-wi<n> worktree; else, with only the Issues board, the one
+-- listed issue #n. Two candidates and nothing to tell them apart: neither
+-- (the plan stays listed under its own key).
+function M.legacy_is_for(target)
+  local n = target and target.item_key and target.work_item_id
+  if not n or not M.load("wi-" .. tostring(n)) then return false end
+  local seen = recorded_view("wi-" .. tostring(n))
+  if seen and seen.key then return tostring(seen.key) == tostring(target.item_key) end
+  if seen and seen.board ~= "github" then return false end
+  if not (seen or issues_only()) then return false end
+  local repos = {}
+  for _, d in ipairs(vim.fn.glob(require("azure-cli.chat.tools_fix").root() .. "/*-wi" .. tostring(n), false, true)) do
+    if is_repo(d) then repos[#repos + 1] = vim.fn.fnamemodify(d, ":t"):match("^(.-)%-wi%d+$") end
+  end
+  if #repos > 0 then return #repos == 1 and key_in_repo(target.item_key, repos[1]) end
+  local listed = listed_issues(n)
+  return #listed == 1 and tostring(listed[1].key) == tostring(target.item_key)
+end
+
+-- Whether old plan wi-<n> is a GitHub issue's by its agent's conversation:
+-- an Azure #n doesn't take it (#114).
+function M.legacy_is_github(n)
+  local seen = recorded_view("wi-" .. tostring(n))
+  return seen ~= nil and seen.board == "github"
+end
+
+-- `target` as its plan is kept: a GitHub issue with no plan or story under
+-- its key yet whose old wi-<n> plan is its own (M.legacy_is_for) is
+-- { work_item_id = n } - that plan, its conversation and its <repo>-wi<n>
+-- worktree, as before #114. Only looked up, never moved.
+function M.resolve_item(target)
+  if not (target and target.item_key) then return target end
+  if M.load(M.key(target)) or is_repo(require("azure-cli.chat.tools_fix").story_path(nil, target)) then
+    return target
+  end
+  if M.legacy_is_for(target) then return { work_item_id = target.work_item_id } end
+  return target
+end
+
+-- The target of work item `id` as a tool call means it (#114, as
+-- pr_target_for): the calling agent's own when it's that number, else
+-- the one GitHub issue listed with it (in `repo` when given; not when
+-- `board` is "azure", or the Azure list has it and no board is given),
+-- else { work_item_id }.
+function M.item_target_for(id, env, repo, board)
+  if id == nil then return nil end
+  local own = env and env.conv and env.conv.target
+  if type(own) == "table" and own.work_item_id and tostring(own.work_item_id) == tostring(id)
+      and not (repo and own.item_key and not key_in_repo(own.item_key, repo)) then
+    return { work_item_id = own.work_item_id, item_key = own.item_key }
+  end
+  if board ~= "azure" then
+    local in_azure = false
+    if board == nil then
+      for _, it in ipairs((require("azure-cli.state").WI_LIST_CACHE or {}).items or {}) do
+        if type(it) == "table" and tostring(it.id) == tostring(id) then in_azure = true end
+      end
+    end
+    local listed = listed_issues(id, repo)
+    if #listed == 1 and not in_azure then return M.resolve_item(M.item_target(listed[1])) end
+  end
+  return { work_item_id = id }
+end
+
 -- The approved (or done) plan behind a pull request: the first of
--- `work_item_ids` with one, else the story whose branch is `source`.
-function M.for_pull_request(work_item_ids, source)
+-- `work_item_ids` with one (as `env`'s agent means them; on GitHub
+-- issues of `repo`), else the story whose branch is `source`.
+function M.for_pull_request(work_item_ids, source, env, repo)
   local function usable(rec) return rec and (rec.status == "approved" or rec.status == "done") end
   for _, id in ipairs(work_item_ids or {}) do
-    local rec = M.load("wi-" .. tostring(id))
+    local rec = M.load(M.key(M.item_target_for(id, env, repo)))
     if usable(rec) then return rec end
   end
   for _, f in ipairs(vim.fn.glob(M.root() .. "/wi-*.json", false, true)) do
-    local id = vim.fn.fnamemodify(f, ":t:r"):match("^wi%-(%d+)$")
-    local _, branch = require("azure-cli.chat.tools_fix").find_story(id)
-    if branch and branch == source then
-      local rec = M.load("wi-" .. id)
-      if usable(rec) then return rec end
+    local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
+    if usable(rec) and type(rec.target) == "table" and rec.target.work_item_id then
+      local _, branch = require("azure-cli.chat.tools_fix").find_story(rec.target)
+      if branch and branch == source then return rec end
     end
   end
   return nil
@@ -132,10 +266,10 @@ end
 
 -- create_pull_request's description: `given` as it is, the plan's when
 -- there's none, or both with `from_plan`.
-function M.description_for(given, from_plan, work_item_ids, source)
+function M.description_for(given, from_plan, work_item_ids, source, env, repo)
   given = given and vim.trim(given) or ""
   if given ~= "" and not from_plan then return given end
-  local rec = M.for_pull_request(work_item_ids, source)
+  local rec = M.for_pull_request(work_item_ids, source, env, repo)
   if not rec then return given end
   local planned = M.pr_description(rec, M.lines(rec))
   return given ~= "" and (given .. "\n\n" .. planned) or planned
@@ -485,10 +619,10 @@ end
 -- started from, linking the work item. cb(ok, why) - why only when the
 -- plan allowed it but this isn't quite it.
 function M.pr_allowed(a, cb)
-  local rec = M.for_pull_request(a.work_item_ids, a.source)
+  local rec = M.for_pull_request(a.work_item_ids, a.source, nil, a.repo)
   if not (rec and rec.allow_push and rec.target and rec.target.work_item_id) then return cb(false) end
   local wi = rec.target.work_item_id
-  local _, branch, base, existing = require("azure-cli.chat.tools_fix").find_story(wi)
+  local _, branch, base, existing = require("azure-cli.chat.tools_fix").find_story(rec.target)
   if existing then return cb(false, "the story for #" .. wi .. " works on the existing branch " .. branch .. " - no PR") end
   local linked = false
   for _, id in ipairs(a.work_item_ids or {}) do if tostring(id) == tostring(wi) then linked = true end end
@@ -512,11 +646,12 @@ end
 
 -- create_pull_request opened PR `pr` ({ id, org, project }): the plans of
 -- `work_item_ids`, and the story's whose branch is `source`, know their PR
--- (the Agents screen shows it, and when it's closed - M.pr_closed).
-function M.link_pr(work_item_ids, source, pr)
+-- (the Agents screen shows it, and when it's closed - M.pr_closed). `env`
+-- and `repo` say which issues the ids mean, as in M.for_pull_request.
+function M.link_pr(work_item_ids, source, pr, env, repo)
   local recs, seen = {}, {}
   for _, id in ipairs(work_item_ids or {}) do
-    local rec = M.load("wi-" .. tostring(id))
+    local rec = M.load(M.key(M.item_target_for(id, env, repo)))
     if rec then recs[#recs + 1] = rec; seen[rec.key] = true end
   end
   local by_branch = M.for_pull_request(nil, source)
@@ -585,10 +720,11 @@ function M.tools(T)
   local target_props = {
     work_item_id = { type = "integer", description = "the work item the plan is for (implementing a story/bug/task)" },
     pr_id = { type = "integer", description = "the pull request the plan is for (fixing a review comment)" },
-    repo = { type = "string", description = "GitHub only: the PR's repository (owner/repo), when two PRs share pr_id" },
+    repo = { type = "string", description = "GitHub only: the PR's or issue's repository (owner/repo), when two "
+      .. "share the number" },
   }
   local function target_of(args, env)
-    if args.work_item_id then return { work_item_id = args.work_item_id } end
+    if args.work_item_id then return M.item_target_for(args.work_item_id, env, args.repo) end
     if args.pr_id then return M.pr_target_for(args.pr_id, env, args.repo) end
     return nil
   end

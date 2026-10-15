@@ -183,14 +183,15 @@ return function(T)
       risk = "ask",
       confirm = function(a) return "open a pull request \"" .. tostring(a.title) .. "\" from " .. tostring(a.source) .. " into " .. tostring(a.target) .. " in " .. tostring(a.repo) end,
       details = function(a, cb)
-        local d = require("azure-cli.chat.plan").description_for(a.description, a.from_plan, a.work_item_ids, a.source)
+        local d = require("azure-cli.chat.plan").description_for(a.description, a.from_plan, a.work_item_ids, a.source,
+          nil, a.repo)
         cb(d ~= "" and vim.list_extend({ "Description:", "" }, vim.split(d, "\n", { plain = true })) or nil)
       end,
       -- The PR of a plan you approved with pushing allowed opens without asking.
       preapproved = function(a, cb) require("azure-cli.chat.plan").pr_allowed(a, cb) end,
       run = function(args, env, done)
         args.description = require("azure-cli.chat.plan").description_for(args.description, args.from_plan,
-          args.work_item_ids, args.source)
+          args.work_item_ids, args.source, env, args.repo)
         -- The repository's org/project: a PR of it on the dashboard, else the
         -- board's account (on GitHub its API root and owner; work_item_ids
         -- then become "Closes #n" lines in the description).
@@ -211,7 +212,7 @@ return function(T)
                 title = args.title, key = d.key, host = d.key and "github" or nil })
               -- The plans it was opened for know it (the Agents screen).
               pcall(require("azure-cli.chat.plan").link_pr, args.work_item_ids, args.source,
-                { id = d.id, org = org, project = project })
+                { id = d.id, org = org, project = project, key = d.key }, env, args.repo)
             end
             done("Opened PR !" .. tostring(id) .. " (" .. ((okd and d.url) or "") .. "). It shows on the dashboard at its next refresh."
               .. ((okd and d.note) and (" Note: " .. d.note .. ".") or ""))

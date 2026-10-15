@@ -67,12 +67,19 @@ function M.fix_dir(pr)
   return old
 end
 
--- The worktree for work item `id` in repository `repo`: <root>/<repo>-wi<id>.
--- Its branch is kept next to it in <dir>.branch: the worktree is on that
--- branch (#59), unless git couldn't put it there (the branch is out in the
--- user's clone or another worktree, or has commits origin hasn't) - then
--- its HEAD is detached, like a fix's.
-function M.story_path(repo, id)
+-- The worktree for work item `target` (a plan target, or an id) in
+-- repository `repo`: <root>/<repo>-wi<id>; for a GitHub issue's target
+-- (#114: a number repeats across repos) <root>/<its plan key>, e.g.
+-- wi-github-o~cli~7, as #113 names a GitHub PR's. Its branch is kept next
+-- to it in <dir>.branch: the worktree is on that branch (#59), unless git
+-- couldn't put it there (the branch is out in the user's clone or another
+-- worktree, or has commits origin hasn't) - then its HEAD is detached,
+-- like a fix's.
+function M.story_path(repo, target)
+  if type(target) == "table" and target.item_key then
+    return M.root() .. "/" .. require("azure-cli.chat.plan").key(target)
+  end
+  local id = type(target) == "table" and target.work_item_id or target
   return M.root() .. "/" .. (tostring(repo) .. "-wi" .. tostring(id)):gsub("[^%w%._%-]", "_")
 end
 
@@ -100,12 +107,27 @@ function M.inside(wt, path)
   return table.concat(parts, "/")
 end
 
--- Work item `id`'s story worktree, whichever repository: dir, branch, the
+-- The worktrees work item `target` (a plan target, or an id) may have: a
+-- GitHub issue's under its key; else <repo>-wi<id>, whichever repository.
+function M.story_dirs(target)
+  if type(target) == "table" and target.item_key then
+    local d = M.story_path(nil, target)
+    return is_repo(d) and { d } or {}
+  end
+  local id = type(target) == "table" and target.work_item_id or target
+  local out = {}
+  for _, d in ipairs(vim.fn.glob(M.root() .. "/*-wi" .. tostring(id), false, true)) do
+    if is_repo(d) then out[#out + 1] = d end
+  end
+  return out
+end
+
+-- Work item `target`'s story worktree (M.story_dirs): dir, branch, the
 -- branch it started from when start_story recorded it, and whether the
 -- branch existed before start_story (then the change is pushed straight to
 -- it, with no PR - #57). <dir>.branch: the branch, its base, "existing".
-function M.find_story(id)
-  for _, d in ipairs(vim.fn.glob(M.root() .. "/*-wi" .. tostring(id), false, true)) do
+function M.find_story(target)
+  for _, d in ipairs(M.story_dirs(target)) do
     if is_repo(d) then
       local ok, lines = pcall(vim.fn.readfile, d .. ".branch")
       local branch = ok and lines[1] and vim.trim(lines[1]) or ""
@@ -217,7 +239,9 @@ function M.open_latest(git, cb)
     local name = vim.fn.fnamemodify(dir, ":t")
     local wi = name:match("%-wi(%d+)$")
     local key = name:find("~", 1, true) and name:match("^pr%-github%-(.+)$")
+    local ikey = name:find("~", 1, true) and name:match("^wi%-github%-(.+)$")
     title = "Proposed change - " .. (wi and ("#" .. wi)
+      or (ikey and require("azure-cli.chat.plan").target_label({ item_key = ikey }))
       or (key and require("azure-cli.chat.plan").target_label({ pr_key = key }))
       or ("PR !" .. (name:match("%-(%d+)$") or name)))
   end
@@ -232,7 +256,7 @@ end
 -- The worktree of the change for `target` ({ work_item_id } / { pr_id,
 -- pr_key }), or nil when none was started.
 function M.dir_for(target)
-  if target.work_item_id then return (M.find_story(target.work_item_id)) end
+  if target.work_item_id then return (M.find_story(target)) end
   local pr = require("azure-cli.chat.tools").pr_record(target.pr_key or target.pr_id)
   local d = pr and M.fix_dir(pr)
   return (d and is_repo(d)) and d or nil
@@ -270,9 +294,11 @@ setmetatable(M, { __call = function(_, T)
   -- PR when two share pr_id (#109).
   local function locate(args, env)
     if args.work_item_id then
-      local dir, branch = M.find_story(args.work_item_id)
-      if not dir then return nil, "no story in progress for #" .. tostring(args.work_item_id) .. " - call start_story first" end
-      return { dir = dir, branch = branch, label = "#" .. tostring(args.work_item_id), wi = args.work_item_id }
+      local PLAN = require("azure-cli.chat.plan")
+      local target = PLAN.item_target_for(args.work_item_id, env)
+      local dir, branch = M.find_story(target)
+      if not dir then return nil, "no story in progress for " .. PLAN.target_label(target) .. " - call start_story first" end
+      return { dir = dir, branch = branch, label = PLAN.target_label(target), wi = args.work_item_id, target = target }
     end
     local target = require("azure-cli.chat.plan").pr_target_for(args.pr_id, env) or { pr_id = args.pr_id }
     local pr = T.pr_record(target.pr_key or args.pr_id)
@@ -286,7 +312,7 @@ setmetatable(M, { __call = function(_, T)
 
   -- The plan target of located change `t`.
   local function target_of_change(t)
-    return t.wi and { work_item_id = t.wi } or t.target
+    return t.target
   end
 
   local target_schema = { type = "object", properties = {
@@ -425,14 +451,17 @@ setmetatable(M, { __call = function(_, T)
       run = function(args, env, done)
         local id = args.work_item_id
         local PLAN = require("azure-cli.chat.plan")
-        local refused = PLAN.main_chat_refusal(env, "start_story", { work_item_id = id })
+        local B = T.board_for(args, env)
+        -- A GitHub issue's by its key (#114), the calling agent's own first.
+        local target = PLAN.item_target_for(id, env, args.item_repo, B.host)
+        local refused = PLAN.main_chat_refusal(env, "start_story", target)
         if refused then return done(nil, refused) end
-        local planned, why = PLAN.gate({ work_item_id = id })
+        local planned, why = PLAN.gate(target)
         -- Not approved yet: a read-only worktree to plan in (#71) - unless
         -- the plan was carried out already, which needs a new one first.
-        local rec = not planned and PLAN.load(PLAN.key({ work_item_id = id }))
+        local rec = not planned and PLAN.load(PLAN.key(target))
         if rec and rec.status == "done" then return done(nil, why) end
-        local existing, ebranch = M.find_story(id)
+        local existing, ebranch = M.find_story(target)
         if existing then
           if not planned then
             return done({ directory = existing, branch = ebranch, read_only = true,
@@ -443,7 +472,6 @@ setmetatable(M, { __call = function(_, T)
           return done({ directory = existing, branch = ebranch, note = "Already started - kept as it was.",
             next = "Edit files under the directory, then call show_fix with work_item_id." })
         end
-        local B = T.board_for(args, env)
         local org, project, clone, tried = T.repo_location(args.repo, B)
         local repo = tostring(args.repo):match("/(.+)$") or args.repo
         if not is_repo(clone) then
@@ -452,7 +480,7 @@ setmetatable(M, { __call = function(_, T)
               or "no clones_dir is known for it")
             .. " (set clones_dir in azure-cli.yml, or open one of its PRs from the dashboard to clone it)")
         end
-        local wt = M.story_path(repo, id)
+        local wt = M.story_path(repo, target)
         if not planned then return preview(clone, wt, args, done) end
         local undo
         local function failed(what)
@@ -659,9 +687,10 @@ setmetatable(M, { __call = function(_, T)
               T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
                 pcall(require("azure-cli.chat.plan").event_for_worktree, wt, "pushed",
                   "Pushed " .. vim.trim(sha) .. " to " .. t.branch .. ": " .. tostring(args.message))
-                local rec = t.wi and require("azure-cli.chat.plan").load("wi-" .. tostring(t.wi))
+                local PLAN = require("azure-cli.chat.plan")
+                local rec = t.wi and PLAN.load(PLAN.key(t.target))
                 local base, existing
-                if t.wi then base, existing = select(3, M.find_story(t.wi)) end
+                if t.wi then base, existing = select(3, M.find_story(t.target)) end
                 local next_step = ""
                 if existing then
                   -- Worked on an existing branch: pushed straight to it, no PR (#57).

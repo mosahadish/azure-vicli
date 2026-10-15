@@ -82,11 +82,13 @@ end
 
 setmetatable(M, { __call = function(_, T)
   -- Where to search: dir, ref (nil = the working tree), label.
-  local function where(args)
+  local function where(args, env)
     local FIX = require("azure-cli.chat.tools_fix")
     if args.work_item_id then
-      local d = FIX.find_story(args.work_item_id)
-      if d then return d, nil, "#" .. tostring(args.work_item_id) .. "'s worktree" end
+      local PLAN = require("azure-cli.chat.plan")
+      local target = PLAN.item_target_for(args.work_item_id, env)
+      local d = FIX.find_story(target)
+      if d then return d, nil, PLAN.target_label(target) .. "'s worktree" end
     end
     if args.pr_id then
       local pr = T.pr_record(args.pr_id)
@@ -132,8 +134,8 @@ setmetatable(M, { __call = function(_, T)
         transitive = { type = "boolean" },
       }), required = { "name" } },
       risk = "read",
-      run = function(args, _, done)
-        local dir, ref, label, why = where(args)
+      run = function(args, env, done)
+        local dir, ref, label, why = where(args, env)
         if not dir then return done(nil, why) end
         local found, seen, queue = {}, { [args.name] = true }, { { name = args.name, depth = 0 } }
         local function step()
@@ -168,8 +170,8 @@ setmetatable(M, { __call = function(_, T)
         name = { type = "string", description = "the name, e.g. AcsGripper or ValidateReadyForFlow" },
       }), required = { "name" } },
       risk = "read",
-      run = function(args, _, done)
-        local dir, ref, label, why = where(args)
+      run = function(args, env, done)
+        local dir, ref, label, why = where(args, env)
         if not dir then return done(nil, why) end
         grep(dir, ref, M.definition_patterns(args.name), args.name, true, function(hits)
           if #hits > 50 then hits = vim.list_slice(hits, 1, 50) end

@@ -22,7 +22,7 @@ return function(T)
   end
 
   local function target_of(args, env)
-    if args.work_item_id then return { work_item_id = args.work_item_id } end
+    if args.work_item_id then return PLAN().item_target_for(args.work_item_id, env, args.repo) end
     if args.pr_id then return PLAN().pr_target_for(args.pr_id, env, args.repo) end
   end
 
@@ -52,7 +52,8 @@ return function(T)
   local target_props = {
     work_item_id = { type = "integer", description = "the agent's work item" },
     pr_id = { type = "integer", description = "the agent's pull request" },
-    repo = { type = "string", description = "GitHub only: the PR's repository (owner/repo), when two PRs share pr_id" },
+    repo = { type = "string", description = "GitHub only: the PR's or issue's repository (owner/repo), when two "
+      .. "share the number" },
   }
 
   return {

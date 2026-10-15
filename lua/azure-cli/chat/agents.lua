@@ -102,9 +102,21 @@ local function with_extra(prompt, extra)
   return extra ~= "" and (prompt .. "\n\nThe user adds: " .. extra) or prompt
 end
 
+-- Keyed by the issue's key, not its number (#114): two GitHub #7s in
+-- different repos are two agents, and an Azure #7 a third. An issue whose
+-- plan began before that keeps its wi-<n> one (plan.resolve_item). Nil
+-- for an Azure item whose wi-<n> is such an old issue plan.
 local function job_for_item(it, extra)
-  return { key = "wi-" .. tostring(it.id), label = "#" .. tostring(it.id), title = it.title,
-    target = { work_item_id = it.id }, prompt = with_extra(M.plan_prompt(it), extra), display = "/plan #" .. tostring(it.id),
+  local PLAN = require("azure-cli.chat.plan")
+  local target = it.board == "github" and PLAN.resolve_item(PLAN.item_target(it)) or { work_item_id = it.id }
+  if not target.item_key and it.board ~= "github" and PLAN.legacy_is_github(it.id) then
+    notify("#" .. tostring(it.id) .. ": plans/wi-" .. tostring(it.id) .. " is a GitHub issue's plan from before "
+      .. "issues had keys of their own - finish or discard it (dd on the Agents screen) first.", vim.log.levels.WARN)
+    return nil
+  end
+  local label = PLAN.target_label(target)
+  return { key = PLAN.key(target), label = label, title = it.title,
+    target = target, prompt = with_extra(M.plan_prompt(it), extra), display = "/plan " .. label,
     snap = snap_for(it) }
 end
 
@@ -145,7 +157,7 @@ local function job_for_pr(pr, threads, extra)
   local owner = PLAN.owner_of_pr(pr, pr.source)
   local wi = owner and owner.target and owner.target.work_item_id
   if wi then
-    return { key = owner.key, label = "#" .. tostring(wi), title = owner.title or pr.title, target = owner.target,
+    return { key = owner.key, label = PLAN.target_label(owner.target), title = owner.title or pr.title, target = owner.target,
       prompt = with_extra(M.pr_followup_prompt(pr, threads, wi), extra),
       display = "/plan PR !" .. tostring(pr.id) .. "'s comments" .. ((threads and #threads > 0) and (" (thread "
         .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),

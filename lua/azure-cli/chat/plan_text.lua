@@ -8,10 +8,13 @@ local M = {}
 
 -- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 },
 -- "pr-github-o~r~7" for { pr_id = 7, pr_key = "o~r~7" } (#109: a GitHub
--- number repeats across repos), nil for neither. A key is a file name
--- under plans/: anything but [%w._~-] becomes "_", so it holds no "/".
+-- number repeats across repos), "wi-github-o~r~7" for { work_item_id = 7,
+-- item_key = "o~r~7" } (#114, the same for issues), nil for none. A key is
+-- a file name under plans/: anything but [%w._~-] becomes "_", so it holds
+-- no "/".
 function M.key(target)
   if type(target) ~= "table" then return nil end
+  if target.item_key then return "wi-github-" .. (tostring(target.item_key):gsub("[^%w%._~%-]", "_")) end
   if target.work_item_id then return "wi-" .. tostring(target.work_item_id) end
   if target.pr_key then return "pr-github-" .. (tostring(target.pr_key):gsub("[^%w%._~%-]", "_")) end
   if target.pr_id then return "pr-" .. tostring(target.pr_id) end
@@ -26,13 +29,23 @@ function M.pr_target(pr)
   return { pr_id = pr.id }
 end
 
--- "repo#7" for a PR key "owner~repo~7", or nil. Pure.
+-- Work item record `item`'s target: { work_item_id } on Azure;
+-- { work_item_id, item_key } for a GitHub issue, whose key (hosts.lua's)
+-- is more than its number (#114). Pure.
+function M.item_target(item)
+  local key = require("azure-cli.hosts").key(item)
+  if key ~= nil and tostring(key) ~= tostring(item.id) then return { work_item_id = item.id, item_key = tostring(key) } end
+  return { work_item_id = item.id }
+end
+
+-- "repo#7" for a PR or issue key "owner~repo~7", or nil. Pure.
 local function key_ref(key)
   local repo, n = tostring(key or ""):match("^[^~]*~(.-)~(%d+)$")
   return repo and (repo .. "#" .. n) or nil
 end
 
 function M.target_label(target)
+  if target.item_key and key_ref(target.item_key) then return key_ref(target.item_key) end
   if target.work_item_id then return "#" .. tostring(target.work_item_id) end
   local ref = target.pr_key and key_ref(target.pr_key)
   if ref then return "PR " .. ref end

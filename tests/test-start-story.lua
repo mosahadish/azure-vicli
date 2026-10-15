@@ -246,6 +246,44 @@ do
   require("azure-cli.config").setup({ chat = { plan_first = false } })
 end
 
+-- #114: two GitHub issues #7 in different repos, each its own agent's: two
+-- story worktrees, named after their keys, each finding and pushing its
+-- own; an Azure #7's is <repo>-wi7 as before; an old <repo>-wi<n> story is
+-- still its issue's.
+do
+  local GH = require("azure-cli.workitems.board").get("github").state
+  GH.WI_LIST_CACHE = { items = { { id = 7, key = "o~repo~7", title = "A" }, { id = 7, key = "o~other~7", title = "B" } } }
+  local a, b = { work_item_id = 7, item_key = "o~repo~7" }, { work_item_id = 7, item_key = "o~other~7" }
+  local function as_agent(target, name, args)
+    env.conv = { target = target, plan_key = PLAN.key(target) }
+    local res, err = call(name, args)
+    env.conv = nil
+    return res, err
+  end
+  local ra, ea = as_agent(a, "start_story", { work_item_id = 7, repo = "o/repo", from = "main", name = "feature/7-a", board = "github" })
+  local rb, eb = as_agent(b, "start_story", { work_item_id = 7, repo = "o/repo", from = "main", name = "feature/7-b", board = "github" })
+  check("#114 two #7s: two worktrees, named after their keys", ra and rb
+    and ra.directory == FIX.root() .. "/wi-github-o~repo~7" and rb.directory == FIX.root() .. "/wi-github-o~other~7"
+    and head(ra.directory) == "feature/7-a" and head(rb.directory) == "feature/7-b", tostring(ea) .. " " .. tostring(eb))
+  check("#114 two #7s: each finds its own", FIX.find_story(a) == ra.directory and FIX.find_story(b) == rb.directory)
+  local again = call("start_story", { work_item_id = 7, item_repo = "o/other", repo = "o/repo", from = "main",
+    name = "feature/7-b", board = "github" })
+  check("#114 item_repo picks the issue without an agent", again and again.directory == rb.directory, vim.inspect(again))
+  vim.fn.writefile({ "b7" }, rb.directory .. "/b7.txt")
+  local out, perr = as_agent(b, "commit_and_push_fix", { work_item_id = 7, message = "b7" })
+  check("#114 two #7s: pushing one pushes its own branch only", out and sh({ "git", "-C", origin, "rev-parse", "feature/7-b" })
+    == sh({ "git", "-C", rb.directory, "rev-parse", "HEAD" }) and sh({ "git", "-C", origin, "rev-parse", "feature/7-a" })
+    ~= sh({ "git", "-C", rb.directory, "rev-parse", "HEAD" }), perr)
+  check("#114 Azure #7: <repo>-wi7 as before", FIX.story_path("repo", { work_item_id = 7 }) == FIX.root() .. "/repo-wi7"
+    and FIX.story_path("repo", 7) == FIX.root() .. "/repo-wi7")
+  -- #1's story (above) began as an old one: <repo>-wi1, plan wi-1.
+  GH.WI_LIST_CACHE = { items = { { id = 1, key = "o~repo~1", title = "Old" } } }
+  local t = PLAN.item_target_for(1, nil, nil, "github")
+  check("#114 an old story: still its issue's, plan and worktree", PLAN.key(t) == "wi-1"
+    and FIX.find_story(t) == FIX.story_path("repo", 1), vim.inspect(t))
+  GH.WI_LIST_CACHE = nil
+end
+
 -- #64: not cloned - the error names the path it tried.
 do
   ST.BOARDS.issues[1].clonesDir = tmp .. "/elsewhere"

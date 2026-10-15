@@ -888,7 +888,10 @@ do
   check("owner_of_pr: the plan that opened it", (PL.owner_of_pr(610) or {}).key == "wi-91" and PL.owner_of_pr(611) == nil)
   local TF = require("azure-cli.chat.tools_fix")
   local orig_find = TF.find_story
-  TF.find_story = function(id) if tostring(id) == "92" then return "/w/r-wi92", "feature/92-old" end end
+  TF.find_story = function(t)
+    local id = type(t) == "table" and t.work_item_id or t
+    if tostring(id) == "92" then return "/w/r-wi92", "feature/92-old" end
+  end
   PL.save({ key = "wi-92", target = { work_item_id = 92 }, status = "done", revisions = {}, threads = {} })
   check("owner_of_pr: an older PR, by its story's branch", (PL.owner_of_pr(700, "feature/92-old") or {}).key == "wi-92"
     and PL.owner_of_pr(700, "feature/other") == nil)

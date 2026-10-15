@@ -1057,7 +1057,8 @@ function M.describe_view(win)
   local snap = { screen = "plan", plan = { key = rec.key, title = rec.title, status = rec.status,
     revision = PLAN().rev_count(rec), viewing_revision = view.old, file = PLAN().path(rec.key) } }
   if rec.target.work_item_id then
-    snap.work_item = { id = rec.target.work_item_id }
+    snap.work_item = { id = rec.target.work_item_id, board = rec.target.item_key and "github" or nil,
+      key = rec.target.item_key }
   else
     snap.pr = require("azure-cli.chat.tools").pr_record(rec.target.pr_key or rec.target.pr_id) or { id = rec.target.pr_id }
   end

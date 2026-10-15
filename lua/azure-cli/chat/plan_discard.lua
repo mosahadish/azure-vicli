@@ -58,9 +58,7 @@ end
 local function worktree_dirs(target)
   local out = {}
   if target.work_item_id then
-    for _, d in ipairs(vim.fn.glob(FIX().root() .. "/*-wi" .. tostring(target.work_item_id), false, true)) do
-      if is_repo(d) then out[#out + 1] = d end
-    end
+    out = FIX().story_dirs(target)
   elseif target.pr_id then
     local d = FIX().dir_for(target)
     if d then out[#out + 1] = d end
