@@ -1165,6 +1165,10 @@ def to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
         "author": ((pr.get("createdBy") or {}).get("displayName")) or "",
         "updatedIso": iso_format(updated),
         "updatedHuman": humanize(updated),
+        # The source commit the PR's latest merge was computed from: unlike
+        # updatedIso it moves on every push, and the list call already
+        # returns it - the dashboard keys its branch warm on it (#124).
+        "sourceCommit": ((pr.get("lastMergeSourceCommit") or {}).get("commitId")) or "",
         "isDraft": bool(pr.get("isDraft") or False),
         "state": state,
         "autoComplete": pr.get("autoCompleteSetBy") is not None,

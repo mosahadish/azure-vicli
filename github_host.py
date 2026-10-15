@@ -376,6 +376,7 @@ def ado_pr(node):
         "sourceRefName": "refs/heads/" + source_branch(node),
         "targetRefName": "refs/heads/" + (node.get("baseRefName") or ""),
         "creationDate": node.get("createdAt"),
+        "lastMergeSourceCommit": {"commitId": node.get("headRefOid") or ""},
         "reviewers": reviewers,
         "autoCompleteSetBy": {"displayName": _name((auto or {}).get("enabledBy"))} if auto else None,
         "mergeStatus": "conflicts" if node.get("mergeable") == "CONFLICTING" else "succeeded",

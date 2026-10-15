@@ -813,6 +813,9 @@ $out"
   smoke_check "smoke: gr and the agent's requeue_build on a GitHub #7 re-run that PR's checks with its own env, never Azure's --requeue" GH_REQUEUE
   smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
   smoke_check "smoke: after a push (updatedIso unchanged), a deleted file is D with only deletions, and every row's counts match its diff" PUSHDIFF
+  smoke_check "smoke: a push to an Azure PR (updatedIso unchanged) re-warms it on the next list load, keyed on its source commit" REWARM
+  smoke_check "smoke: GitHub PRs are marked warm under their key at their head commit, never under their number" REWARM-GH
+  smoke_check "smoke: a dashboard warm callback queued while the reviewer fetches runs once, with the fetch's success" REWARM-REVIEW
   # Every check above got its own result only if the script ran to its end:
   # a crash, a hang (demo.sh's timeout) or a Lua error outside a check
   # stops it short, and shows here with the end of the output.

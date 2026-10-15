@@ -3567,9 +3567,17 @@ EXT.fetch_new_commits = function()
   if EXT.fetch_inflight then return end
   EXT.fetch_inflight = true
   if warming then warming[KEY] = true end
-  local function done()
+  -- While this held warming[KEY], a dashboard open or hover prefetch of
+  -- this PR queued its callback in warm_cbs[KEY] instead of fetching; hand
+  -- it this fetch's result (#125). Taken out before running, as the
+  -- dashboard's own fetch does, so each runs once.
+  local function done(fetched)
     EXT.fetch_inflight = false
     if warming then warming[KEY] = nil end
+    local cbs = warm and warm.warm_cbs and warm.warm_cbs[KEY]
+    if not cbs then return end
+    warm.warm_cbs[KEY] = nil
+    for _, f in ipairs(cbs) do vim.schedule(function() f(fetched) end) end
   end
   local ok = pcall(EXT.rpc.run, EXT.provider({}), {
     env = {
@@ -3583,11 +3591,11 @@ EXT.fetch_new_commits = function()
       AZVICLI_REPO_PATH = REPO_PATH,
     },
     on_exit = function(_, code)
-      done()
+      done(code == 0)
       if code == 0 then EXT.check_source_sha() end
     end,
   })
-  if not ok then done() end
+  if not ok then done(false) end
 end
 
 -- True while pulling the view out from under the user would lose something

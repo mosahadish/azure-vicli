@@ -733,6 +733,17 @@ def others_comments(threads, only_mine):
     return n
 
 
+def source_commit(ws, pr):
+    """The origin's current tip of the PR's source branch - what the real
+    providers send as sourceCommit (Azure's lastMergeSourceCommit, GitHub's
+    headRefOid), so a push in a smoke moves it while updatedIso stays put."""
+    try:
+        return git(ws.clone_url(pr["repo"]), "rev-parse", "--verify", "-q",
+                   "refs/heads/" + pr["source"]).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+
+
 def to_record(ws, pr, threads):
     active, total, my_active, mention, mention_total = thread_counts(threads)
     signed = sum(1 for r in pr["reviewers"] if int(r["vote"]) in (10, 5))
@@ -740,6 +751,7 @@ def to_record(ws, pr, threads):
         "id": pr["id"], "title": pr["title"], "repo": pr["repo"], "project": PROJECT, "org": ORG,
         "source": pr["source"], "target": pr["target"], "author": PEOPLE[pr["author"]]["displayName"],
         "updatedIso": pr["updatedIso"], "updatedHuman": humanize(pr["updatedIso"]),
+        "sourceCommit": source_commit(ws, pr),
         "isDraft": pr["isDraft"], "state": classify(pr),
         "autoComplete": pr["autoComplete"], "autoCompleteSetBy": pr["autoCompleteSetBy"],
         "voteRatio": "{0} / {1}".format(signed, len(pr["reviewers"])),

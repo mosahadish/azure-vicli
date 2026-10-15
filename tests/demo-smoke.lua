@@ -4393,5 +4393,132 @@ section("PUSHDIFF", function()
   print(text(list))
   smoke_ok("PUSHDIFF")
 end)
+
+-- #124: the dashboard re-warms (fetches) a PR after a push. Azure's
+-- updatedIso is its creation date, so the warm is keyed on the record's
+-- sourceCommit - the fake sends the origin's tip, like
+-- lastMergeSourceCommit / GitHub's headRefOid, and keeps updatedIso put.
+-- GitHub PRs are marked warm under their key, not their number (two #7s
+-- here). #125: a dashboard callback queued while the reviewer's own fetch
+-- holds warming[KEY] runs once, when that fetch ends.
+section({ "REWARM", "REWARM-GH", "REWARM-REVIEW" }, function()
+  reset()
+  ensure_dashboard()
+  local STATE = require("azure-cli.state")
+  local ws = vim.env.AZVICLI_FAKE_WS
+  local origin = ws .. "/origin/widgets.git"
+  local clone = ws .. "/clones/widgets"
+  local branch = "feature/login-throttle"
+  local function sh(args)
+    local out = vim.fn.system(args)
+    if vim.v.shell_error ~= 0 then return fail(table.concat(args, " ") .. " failed: " .. out) end
+    return vim.trim(out)
+  end
+  -- A push from a clone of its own, so the dashboard's clone has to fetch
+  -- to see it. Returns the new tip.
+  local function push(name)
+    local tmp = vim.fn.tempname()
+    sh({ "git", "clone", "-q", "-b", branch, origin, tmp })
+    vim.fn.writefile({ name }, tmp .. "/" .. name .. ".txt")
+    sh({ "git", "-C", tmp, "add", name .. ".txt" })
+    sh({ "git", "-C", tmp, "-c", "user.email=agent@example.com", "-c", "user.name=agent", "commit", "-q", "-m", name })
+    sh({ "git", "-C", tmp, "push", "-q", "origin", "HEAD:refs/heads/" .. branch })
+    local tip = sh({ "git", "-C", tmp, "rev-parse", "HEAD" })
+    vim.fn.delete(tmp, "rf")
+    return tip
+  end
+  -- r on the dashboard until `cond` holds (a warm pass still running
+  -- skips the next one, so ask again).
+  local function reload_until(cond)
+    return vim.wait(30000, function()
+      if cond() then return true end
+      if not STATE.warm.running then
+        goto_buf(dash)
+        feed("r")
+      end
+      return cond()
+    end, 1500)
+  end
+
+  local tip = push("rewarm-a")
+  ok = reload_until(function()
+    return STATE.warm.warmed["101"] == tip
+  end)
+  if not ok then
+    return fail("a push to !101 never re-warmed it: warmed " .. tostring(STATE.warm.warmed["101"]) .. ", tip " .. tip)
+  end
+  local fetched = sh({ "git", "-C", clone, "rev-parse", "origin/" .. branch })
+  if fetched ~= tip then return fail("the re-warm didn't fetch the push: origin/" .. branch .. " is " .. fetched) end
+  smoke_ok("REWARM")
+
+  -- GitHub: its PRs warm under their own keys at their head commits (the
+  -- GITHUB smoke may have completed one of the #7s by now).
+  local gh = {}
+  for _, p in ipairs((STATE.PR_LIST_CACHE or {}).prs or {}) do
+    if p.host == "github" then gh[#gh + 1] = p end
+  end
+  if #gh == 0 then return fail("no GitHub PR in the list") end
+  for _, p in ipairs(gh) do
+    local dir = p.clonesDir .. "/" .. p.repo
+    if vim.fn.isdirectory(dir .. "/.git") == 0 then sh({ "git", "clone", "-q", p.cloneUrl, dir }) end
+    p.tip = vim.split(sh({ "git", "ls-remote", p.cloneUrl, "refs/heads/" .. p.source }), "%s")[1]
+  end
+  ok = reload_until(function()
+    for _, p in ipairs(gh) do
+      if STATE.warm.warmed[p.key] ~= p.tip then return false end
+    end
+    return true
+  end)
+  if not ok then
+    return fail("the GitHub PRs aren't warm under their keys: " .. vim.inspect(STATE.warm.warmed))
+  end
+  for _, p in ipairs(gh) do
+    if STATE.warm.warmed[tostring(p.id)] ~= nil then
+      return fail("GitHub " .. p.key .. " was marked warm under its number, " .. p.id)
+    end
+  end
+  smoke_ok("REWARM-GH")
+
+  -- #125: the reviewer opens on an iteration its clone hasn't got, so it
+  -- fetches itself; a dashboard callback queued meanwhile runs once.
+  vim.wait(15000, function() return not STATE.warm.warming["101"] and not STATE.warm.running end, 100)
+  tip = push("rewarm-b")
+  sh({ "python3", "-c", table.concat({
+    "import json, sys",
+    "p, sha = sys.argv[1:]",
+    "s = json.load(open(p))",
+    "its = s['iterations']['101']",
+    "its.append(dict(its[-1], id=len(its) + 1, sourceRefCommit={'commitId': sha}))",
+    "json.dump(s, open(p, 'w'))",
+  }, "\n"), ws .. "/state.json", tip })
+  local RPC = require("azure-cli.rpc")
+  local real_run = RPC.run
+  local calls, queued = {}, false
+  RPC.run = function(argv, opts)
+    local e = (opts or {}).env or {}
+    if not queued and e.AZVICLI_PREFETCH == "1" and tostring(e.AZVICLI_PR) == "101"
+        and debug.traceback():find("review/init.lua", 1, true) then
+      queued = true
+      local cbs = STATE.warm.warm_cbs
+      cbs["101"] = cbs["101"] or {}
+      table.insert(cbs["101"], function(fetched) calls[#calls + 1] = fetched end)
+    end
+    return real_run(argv, opts)
+  end
+  require("azure-cli").open_review(101)
+  ok = vim.wait(30000, function() return #calls > 0 end, 100)
+  RPC.run = real_run
+  if not queued then return fail("the reviewer never fetched the iteration its clone lacked") end
+  if not ok then return fail("the reviewer's fetch never ran the dashboard's queued warm callback") end
+  if calls[1] ~= true then return fail("the queued callback got " .. tostring(calls[1]) .. ", not the fetch's success") end
+  -- A later dashboard warm of the PR doesn't run it again.
+  reset()
+  ensure_dashboard()
+  ok = reload_until(function() return STATE.warm.warmed["101"] == tip end)
+  if not ok then return fail("the dashboard never re-warmed !101 after the second push") end
+  vim.wait(500, function() return false end, 50)
+  if #calls ~= 1 then return fail("the queued callback ran " .. #calls .. " times") end
+  smoke_ok("REWARM-REVIEW")
+end)
 print("SMOKE-DONE")
 vim.cmd("qa!")

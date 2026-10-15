@@ -1113,7 +1113,7 @@ EXPECTED_FIELDS = {
     "closedThreads", "totalThreads", "myActiveThreads", "mentionThreads",
     "mentionTotal", "description", "buildStatus", "queuePosition", "buildUrl",
     "policies", "missingReviewers", "mergeConflict", "url", "cloneUrl",
-    "clonesDir", "myId", "myName", "reviewers",
+    "clonesDir", "myId", "myName", "reviewers", "sourceCommit",
 }
 
 
@@ -1128,6 +1128,19 @@ class SerializationTests(unittest.TestCase):
             USER, "Me Reviewer",
         )
         self.assertEqual(set(record.keys()), EXPECTED_FIELDS)
+
+    def test_source_commit_is_the_last_merge_source_commit(self):
+        # The dashboard keys its branch warm on it (#124): updatedIso is the
+        # creation date, so only this moves on a push.
+        def rec(pr):
+            return ac.to_record(pr, make_account(), "Actionable", (1, 2, 1, 0, 0),
+                                ("succeeded", None, "http://build", [], []), USER, "Me Reviewer")
+        pr = make_pr()
+        pr["lastMergeSourceCommit"] = {"commitId": "abc123"}
+        self.assertEqual(rec(pr)["sourceCommit"], "abc123")
+        pr = make_pr()
+        pr.pop("lastMergeSourceCommit", None)
+        self.assertEqual(rec(pr)["sourceCommit"], "")
 
     def test_record_is_json_serializable_as_ndjson_line(self):
         pr = make_pr()

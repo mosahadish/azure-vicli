@@ -1068,7 +1068,7 @@ end
 -- next open wait behind it. Shared tables let an in-flight pass's
 -- callbacks and the new instance see one truth.
 STATE.warm = STATE.warm or {
-  warmed = {},          -- id -> updatedIso the branches were last fetched for
+  warmed = {},          -- id -> warm_stamp (source commit) the branches were last fetched for
   warming = {},         -- id -> true while a branch fetch is in flight
   warm_cbs = {},        -- id -> pending callbacks to run once the fetch completes
   cloning = {},         -- id -> true while an auto-clone is in flight
@@ -1175,6 +1175,17 @@ local warm_cbs = STATE.warm.warm_cbs
 local cloning = STATE.warm.cloning
 local clone_cbs = STATE.warm.clone_cbs
 
+-- What warmed[id] remembers a PR's branches were fetched at: its source
+-- commit (the record's sourceCommit, which moves on every push), or its
+-- updatedIso when the host didn't send one. On Azure DevOps/TFS updatedIso
+-- is the PR's creation date, so keying on it alone never re-fetched a
+-- pushed PR (#124).
+local function warm_stamp(pr)
+  local c = pr.sourceCommit
+  if c and c ~= "" then return c end
+  return pr.updatedIso
+end
+
 -- Only this PR's own work counts as "syncing": its branch warm, its clone,
 -- or its content prefetch. The repository-wide fetch warm_all runs first
 -- (one per clone) is deliberately NOT reflected per row - it used to be,
@@ -1187,7 +1198,7 @@ pr_sync_state = function(pr)
   if warming[id] or cloning[id] or CACHE.is_syncing(key) then
     return "syncing"
   end
-  if warmed[id] == pr.updatedIso and CACHE.is_complete(key) then
+  if warmed[id] == warm_stamp(pr) and CACHE.is_complete(key) then
     return "ready"
   end
   return nil
@@ -1213,7 +1224,7 @@ local function ensure_warm(pr, cb, allow_clone)
   if id == "" then if cb then cb(true) end return end
 
   local function continue_warm()
-    if warmed[id] == pr.updatedIso then
+    if warmed[id] == warm_stamp(pr) then
       if cb then cb(true) end
       return
     end
@@ -1254,7 +1265,7 @@ local function ensure_warm(pr, cb, allow_clone)
       env = vim.tbl_extend("force", pr_env(pr), { AZVICLI_PREFETCH = "1" }),
       on_exit = function(_, code)
         warming[id] = nil
-        if code == 0 then warmed[id] = pr.updatedIso end  -- only cache a successful fetch
+        if code == 0 then warmed[id] = warm_stamp(pr) end  -- only cache a successful fetch
         schedule_render()
         local cbs = warm_cbs[id] or {}
         warm_cbs[id] = nil
@@ -1368,7 +1379,7 @@ local function warm_all(list)
   local clone_state = {}
   local function clone_needs_fetch(path)
     for _, pr in ipairs(queue) do
-      if clone_for(pr) == path and warmed[tostring(HOSTS.key(pr))] ~= pr.updatedIso then return true end
+      if clone_for(pr) == path and warmed[tostring(HOSTS.key(pr))] ~= warm_stamp(pr) then return true end
     end
     return false
   end
@@ -1401,7 +1412,9 @@ local function warm_all(list)
         clone_state[path] = code == 0 and "ok" or "failed"
         if code == 0 then
           for _, q in ipairs(queue) do
-            if clone_for(q) == path then warmed[tostring(q.id)] = q.updatedIso end
+            -- HOSTS.key, as everywhere else warmed is read: a GitHub PR's
+            -- key isn't its number (q.id).
+            if clone_for(q) == path then warmed[tostring(HOSTS.key(q))] = warm_stamp(q) end
           end
         end
         for _, f in ipairs(waiting) do f(code == 0) end
@@ -1427,7 +1440,11 @@ local function warm_all(list)
       if active == 0 then STATE.warm.running = false end
       return
     end
-    if CACHE.is_complete(CACHE.key(HOSTS.key(pr), pr.updatedIso)) then
+    -- A complete cache isn't enough on its own: after a push the branches
+    -- need fetching first (prefetch_content then rebuilds the entry for
+    -- the moved refs, see cache.lua).
+    if warmed[tostring(HOSTS.key(pr))] == warm_stamp(pr)
+        and CACHE.is_complete(CACHE.key(HOSTS.key(pr), pr.updatedIso)) then
       worker()
       return
     end

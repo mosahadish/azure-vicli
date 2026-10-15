@@ -130,6 +130,12 @@ class AdoPrTests(unittest.TestCase):
         self.assertEqual(ado["mergeStatus"], "conflicts")
         self.assertEqual(ado["autoCompleteSetBy"], {"displayName": "Bob B"})
 
+    def test_the_head_commit_is_the_records_source_commit(self):
+        # createdAt is all updatedIso gets, so the dashboard's branch warm
+        # follows a push through this (#124).
+        node = pr_node(1, headRefOid="d00dfeed")
+        self.assertEqual(gh.ado_pr(node)["lastMergeSourceCommit"], {"commitId": "d00dfeed"})
+
 
 class ThreadTests(unittest.TestCase):
     def comment(self, cid, login="bob", body="hi"):
