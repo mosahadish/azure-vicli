@@ -121,5 +121,17 @@ lines = MG.lines({ id = 8, host = "github", ref = "r#8", work_items = false, aut
 check("github: no auto row when the repo disallows it", #lines == 9 and lines[5]:find("Delete source branch", 1, true) ~= nil
   and lines[6]:find("^\u{2500}") ~= nil, table.concat(lines, "|"))
 
+-- pr_words: the reviewer's texts name the PR and its merge the host's way.
+local aw = MG.pr_words({ id = 101, repo = "widgets" }, "101")
+check("pr_words: azure name", aw.name == "PR #101", aw.name)
+check("pr_words: azure words", aw.ing == "Completing" and aw.done == "completed" and aw.verb == "complete"
+  and aw.auto_verb == "auto-complete")
+local gw = MG.pr_words({ host = "github", id = 7, repo = "owner/repo" }, "7")
+check("pr_words: github name", gw.name == "owner/repo#7", gw.name)
+check("pr_words: github words", gw.ing == "Merging" and gw.done == "merged" and gw.verb == "merge"
+  and gw.auto_verb == "auto-merge")
+local nw = MG.pr_words(nil, "5")
+check("pr_words: no record reads as Azure", nw.name == "PR #5" and nw.ing == "Completing", nw.name)
+
 if fails > 0 then os.exit(1) end
 print("all ok")

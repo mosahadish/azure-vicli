@@ -171,9 +171,15 @@ local function leave(force)
   local what = {}
   if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") .. " (gS submits)" end
   if drafts > 0 then what[#what + 1] = drafts .. " unsent draft" .. (drafts == 1 and "" or "s") end
+  -- How this PR is named (merge.lua's pr_words): current_pr_record and
+  -- EXT.pr_words come further down, so its cache lookup is done here.
+  local rec
+  for _, p in ipairs(STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs or {}) do
+    if tostring(require("azure-cli.hosts").key(p)) == KEY then rec = p break end
+  end
   require("azure-cli.prompt").confirm({
     title = EMBED and "Close the reviewer?" or "Quit?",
-    prompt = "PR #" .. ID .. " has " .. table.concat(what, " and ")
+    prompt = require("azure-cli.merge").pr_words(rec, ID).name .. " has " .. table.concat(what, " and ")
       .. (EMBED and " - kept until Neovim exits." or " - they will be lost."),
   }, function(yes) if yes then go() end end)
 end
@@ -605,7 +611,7 @@ local function notify_new_comments(events)
       or "a PR-level comment"
     local msg = "New comment from " .. e.author .. " on " .. where .. "."
     notify(msg)
-    if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+    if EXT.notify then EXT.notify.toast(EXT.pr_words().name, msg) end
     return
   end
   local authors = {}
@@ -615,7 +621,7 @@ local function notify_new_comments(events)
   table.sort(names)
   local msg = #events .. " new comments (" .. table.concat(names, ", ") .. ") on threads involving you."
   notify(msg)
-  if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+  if EXT.notify then EXT.notify.toast(EXT.pr_words().name, msg) end
 end
 
 
@@ -658,6 +664,13 @@ local function current_pr_record()
     return cur
   end
   return cur
+end
+
+-- This PR's name and its host's merge words for the texts below:
+-- "PR #101" / "Completing" on Azure, "owner/repo#7" / "Merging" on
+-- GitHub (merge.lua's pr_words). A field, not a top-level local.
+EXT.pr_words = function()
+  return require("azure-cli.merge").pr_words(current_pr_record(), ID)
 end
 
 -- Whether I authored this PR, computed once (state doesn't change during a
@@ -729,7 +742,7 @@ end
 -- Auto-complete label for the winbar, or nil when it isn't set on this PR.
 local function auto_complete_label()
   local pr = current_pr_record()
-  if pr and pr.autoComplete then return "auto-complete" end
+  if pr and pr.autoComplete then return EXT.pr_words().auto_verb end
   return nil
 end
 
@@ -863,7 +876,7 @@ local function run_write(args, on_ok, on_fail)
       -- with a pointer back to the rest - see shell.lua's job_error, which
       -- both dashboards' write helpers share now, log.lua's own header
       -- comment and README's Troubleshooting.
-      on_fail(require("azure-cli.shell").job_error("PR #" .. ID, code, out))
+      on_fail(require("azure-cli.shell").job_error(EXT.pr_words().name, code, out))
     end,
   })
 end
@@ -1720,7 +1733,8 @@ local function cast_vote()
   local rec = current_pr_record()
   local PRS = require("azure-cli.prs")
   local cur = rec and PRS.my_vote_key(rec) or nil
-  require("azure-cli.prompt").select({ prompt = "Your vote on PR #" .. ID .. ((rec and rec.title) and ("  " .. rec.title) or ""),
+  local W = EXT.pr_words()
+  require("azure-cli.prompt").select({ prompt = "Your vote on " .. W.name .. ((rec and rec.title) and ("  " .. rec.title) or ""),
     items = require("azure-cli.hosts").caps(rec).votes,
     current = function(o) return cur ~= nil and tostring(o.key) == cur end },
     function(vote)
@@ -1736,7 +1750,7 @@ local function cast_vote()
     on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
       if code == 0 then
-        notify("PR #" .. ID .. " vote set: " .. vote.label .. ".")
+        notify(W.name .. " vote set: " .. vote.label .. ".")
         -- Reflect it now: the Overview's Votes line and the winbar badges
         -- read the shared cached record, which only the dashboard's next
         -- poll would otherwise update.
@@ -1746,7 +1760,7 @@ local function cast_vote()
       else
         local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
         local LOG = require("azure-cli.log")
-        LOG.record("PR #" .. ID .. " vote", raw)
+        LOG.record(W.name .. " vote", raw)
         notify("Vote failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
           vim.log.levels.ERROR)
       end
@@ -1754,7 +1768,7 @@ local function cast_vote()
   })
   end
   if vote.confirm then
-    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?" },
+    require("azure-cli.prompt").confirm({ title = "Reject " .. W.name .. "?" },
       function(yes) if yes then go() end end)
   elseif vote.reason then
     require("azure-cli.prompt").input({ prompt = vote.label .. " - what needs changing?" },
@@ -1778,6 +1792,7 @@ local function complete_pr(m)
       complete_pr(state or false)
     end)
   end
+  local W = EXT.pr_words()
   local unresolved = 0
   local function count(list)
     for _, t in ipairs(list or {}) do
@@ -1791,8 +1806,8 @@ local function complete_pr(m)
   -- --auto-complete on/off; on success the shared record (and so this
   -- winbar's [auto-complete] tag and the dashboard's A badge) follows.
   local function set_auto(on, args)
-    local what = on and "Setting auto-complete on" or "Cancelling auto-complete on"
-    notify(what .. " PR #" .. ID .. "...")
+    local what = (on and "Setting " or "Cancelling ") .. W.auto_verb .. " on " .. W.name
+    notify(what .. "...")
     local out = {}
     EXT.rpc.run(EXT.provider(args), {
       detach = true,
@@ -1804,13 +1819,13 @@ local function complete_pr(m)
         local LOG = require("azure-cli.log")
         if code ~= 0 then
           local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
-          LOG.record("PR #" .. ID .. " auto-complete", raw)
-          notify("Auto-complete failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+          LOG.record(W.name .. " " .. W.auto_verb, raw)
+          notify(W.auto_verb:gsub("^%l", string.upper) .. " failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
             vim.log.levels.ERROR)
           return
         end
         if rec then rec.autoComplete, rec.autoCompleteSetBy = on, on and (rec.myName or "") or "" end
-        notify(what .. " PR #" .. ID .. ": done.")
+        notify(what .. ": done.")
         if set_list_winbar then pcall(set_list_winbar) end
       end,
     })
@@ -1834,7 +1849,7 @@ local function complete_pr(m)
       set_auto(true, { "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) })
       return
     end
-    notify("Completing PR #" .. ID .. " (" .. mt.label .. ")...")
+    notify(W.ing .. " " .. W.name .. " (" .. mt.label .. ")...")
     local out = {}
     EXT.rpc.run(EXT.provider({
       "--complete", mt.key,
@@ -1847,7 +1862,7 @@ local function complete_pr(m)
       on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
       on_exit = function(_, code)
         if code == 0 then
-          notify("PR #" .. ID .. " completed (" .. mt.label .. ").")
+          notify(W.name .. " " .. W.done .. " (" .. mt.label .. ").")
           -- It's gone from the active list: drop it from the dashboard's
           -- cache and close this reviewer rather than leaving it open on a
           -- PR that no longer exists.
@@ -1864,8 +1879,8 @@ local function complete_pr(m)
         else
           local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
           local LOG = require("azure-cli.log")
-          LOG.record("PR #" .. ID .. " complete", raw)
-          notify("Complete failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+          LOG.record(W.name .. " " .. W.verb, raw)
+          notify(W.verb:gsub("^%l", string.upper) .. " failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
             vim.log.levels.ERROR)
         end
       end,
@@ -1967,7 +1982,7 @@ local function build_overview()
   local comment_map = {}
 
   local title = pr and pr.title or ""
-  lines[#lines + 1] = "PR #" .. ID .. (title ~= "" and ("  " .. title) or "")
+  lines[#lines + 1] = EXT.pr_words().name .. (title ~= "" and ("  " .. title) or "")
   lines[#lines + 1] = SOURCE .. " -> " .. TARGET
   if pr then
     local meta = "Author: " .. ((pr.author and pr.author ~= "") and pr.author or "?")
@@ -2140,7 +2155,7 @@ HELP.overview_help = {
 
 local function set_overview_winbar()
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
-  UI.wo(diff_win, "winbar", UI.winbar({ "Overview", "PR #" .. ID }, EXT.mode_tags and EXT.mode_tags() or {}))
+  UI.wo(diff_win, "winbar", UI.winbar({ "Overview", EXT.pr_words().name }, EXT.mode_tags and EXT.mode_tags() or {}))
 end
 
 -- Overview keys, shown by `?` there.
@@ -2620,7 +2635,7 @@ local function set_list_winbar_impl()
   local clabel = merge_conflict_label()
   local alabel = auto_complete_label()
 
-  local parts = { "PR #" .. ID, SOURCE .. " \u{2192} " .. TARGET }
+  local parts = { EXT.pr_words().name, SOURCE .. " \u{2192} " .. TARGET }
   if files_loaded then
     local viewed = EXT.viewed_count and EXT.viewed_count() or nil
     parts[#parts + 1] = #files .. " files" .. (viewed and (", " .. viewed .. " viewed") or "")
@@ -3148,7 +3163,7 @@ local function apply_files(list, status)
   EXT.refresh_file_list()
   set_list_winbar()
   prefetch_all_diffs()
-  notify("PR #" .. ID .. ": " .. #files
+  notify(EXT.pr_words().name .. ": " .. #files
     .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
 end
 -- `git diff --name-status` (not just --name-only) so the file list can show
@@ -3175,7 +3190,7 @@ local function load_files()
         if not vim.api.nvim_buf_is_valid(list_buf) then return end
         if code ~= 0 then
           if cached then return end  -- already showing the cached list; the status refresh alone failing isn't fatal
-          notify("Cannot diff PR #" .. ID .. " (" .. range .. "): branch not found in "
+          notify("Cannot diff " .. EXT.pr_words().name .. " (" .. range .. "): branch not found in "
             .. (REPO_PATH ~= "" and REPO_PATH or "the current repo")
             .. ". It may be deleted, or repo '" .. (EXT.pr_env.AZVICLI_REPO ~= "" and EXT.pr_env.AZVICLI_REPO or "?")
             .. "' isn't cloned here.", vim.log.levels.ERROR)
@@ -3396,7 +3411,7 @@ refresh_threads = function(opts)
         local LOG = require("azure-cli.log")
         local shown
         if raw ~= "" then
-          LOG.record("PR #" .. ID .. " comments", raw)
+          LOG.record(EXT.pr_words().name .. " comments", raw)
           shown = ": " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)"
         else
           shown = " - check azure-cli.yml (PAT/org_url) and connectivity."

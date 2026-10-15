@@ -18,8 +18,7 @@ local M = {}
 
 -- How a linked PR is named: "!101" on Azure, "repo#12" on GitHub.
 function M.label(pr, host)
-  if host == "github" then return (pr.repo or "") .. "#" .. tostring(pr.id) end
-  return "!" .. tostring(pr.id)
+  return require("azure-cli.hosts").ref({ host = host, id = pr.id, repo = pr.repo })
 end
 
 -- The dashboard row's marker: "" / "!101" / "!101 +2".
@@ -266,7 +265,8 @@ function M.link(item_id, pr_id, item, where, B)
   end
   local shown = "#" .. (item_id:match("~(%d+)$") or item_id)
   local function go()
-    notify("Linking PR !" .. pr_id .. " to " .. shown .. " \u{2026}")
+    local pr_name = M.label({ id = pr_id, repo = repo }, host)
+    notify("Linking PR " .. pr_name .. " to " .. shown .. " \u{2026}")
     local out, err = {}, {}
     run(B, { "--wi-edit", "link-pr", item_id, org or "", project or "", repo or "", pr_id }, {
       detach = true,  -- finish the ADO write even if the user quits before it returns
@@ -278,11 +278,11 @@ function M.link(item_id, pr_id, item, where, B)
         if code == 0 then
           local ok, res = pcall(vim.json.decode, table.concat(out, ""))
           local note = ok and type(res) == "table" and res.note or nil
-          notify("Linked PR !" .. pr_id .. " to " .. shown .. "." .. (note and (" " .. note .. ".") or ""),
+          notify("Linked PR " .. pr_name .. " to " .. shown .. "." .. (note and (" " .. note .. ".") or ""),
             note and vim.log.levels.WARN or nil)
           M.link_changed(item_id, pr_id, true, item, B, repo)
         else
-          notify("Link PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item " .. shown, code, err),
+          notify("Link PR " .. pr_name .. " failed: " .. SHELL.job_error("work item " .. shown, code, err),
             vim.log.levels.ERROR)
         end
       end,
@@ -312,7 +312,8 @@ function M.unlink(item_id, pr_id, item, B, pr_repo)
   local notify = SHELL.notify
   item_id, pr_id = tostring(item_id), tostring(pr_id)
   local shown = "#" .. (item_id:match("~(%d+)$") or item_id)
-  notify("Unlinking PR !" .. pr_id .. " from " .. shown .. " \u{2026}")
+  local pr_name = M.label({ id = pr_id, repo = pr_repo }, B and B.host)
+  notify("Unlinking PR " .. pr_name .. " from " .. shown .. " \u{2026}")
   local err = {}
   local args = { "--wi-edit", "unlink-pr", item_id, pr_id }
   if B and B.host == "github" and pr_repo and pr_repo ~= "" then args[#args + 1] = pr_repo end
@@ -323,10 +324,10 @@ function M.unlink(item_id, pr_id, item, B, pr_repo)
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
       if code == 0 then
-        notify("Unlinked PR !" .. pr_id .. " from " .. shown .. ".")
+        notify("Unlinked PR " .. pr_name .. " from " .. shown .. ".")
         M.link_changed(item_id, pr_id, false, item, B)
       else
-        notify("Unlink PR !" .. pr_id .. " failed: " .. SHELL.job_error("work item " .. shown, code, err),
+        notify("Unlink PR " .. pr_name .. " failed: " .. SHELL.job_error("work item " .. shown, code, err),
           vim.log.levels.ERROR)
       end
     end,

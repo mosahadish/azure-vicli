@@ -19,11 +19,23 @@ local function methods(st) return st.methods or M.MERGE_TYPES end
 -- The dialog's words per host: Azure completes a PR, GitHub merges one.
 local WORDS = {
   azure = { verb = "complete", title = "Complete PR ", auto = "Auto-complete when policies pass",
-    auto_verb = "auto-complete" },
+    auto_verb = "auto-complete", ing = "Completing", done = "completed" },
   github = { verb = "merge", title = "Merge PR ", auto = "Auto-merge when requirements pass",
-    auto_verb = "auto-merge" },
+    auto_verb = "auto-merge", ing = "Merging", done = "merged" },
 }
 local function words(spec) return WORDS[spec and spec.host or "azure"] or WORDS.azure end
+
+-- The same words for texts outside the dialog (the reviewer's notifies and
+-- winbars), plus `name`, how they name the PR: the host's ref where it has
+-- one ("owner/repo#7" on GitHub, lua/azure-cli/hosts.lua), else "PR #<id>".
+-- `pr` is the PR's record (nil: unknown, read as Azure), `id` its number.
+function M.pr_words(pr, id)
+  local HOSTS = require("azure-cli.hosts")
+  local w = {}
+  for k, v in pairs(words({ host = HOSTS.host(pr) })) do w[k] = v end
+  w.name = (type(pr) == "table" and HOSTS.caps(pr).ref) and HOSTS.ref(pr) or ("PR #" .. tostring(id))
+  return w
+end
 
 -- Which dialog row holds what, so <Space> on a row knows what to toggle.
 -- A row the PR's host doesn't have (spec.work_items / spec.auto false:

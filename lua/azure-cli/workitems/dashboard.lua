@@ -1232,7 +1232,7 @@ local function pick_pr(prompt, cb)
   local items = {}
   for _, pr in ipairs(cache) do
     if (pr.host == "github") == (B.host == "github") then
-      items[#items + 1] = { label = "!" .. tostring(pr.id) .. "  " .. (pr.title or "") .. "  (" .. (pr.repo or "") .. ")",
+      items[#items + 1] = { label = LINKED_PRS.label(pr, B.host) .. "  " .. (pr.title or "") .. "  (" .. (pr.repo or "") .. ")",
         id = tostring(pr.id), rec = pr }
     end
   end
