@@ -20,7 +20,8 @@
 --
 -- Kept under stdpath("data")/azure-cli-chat/plans/: <key>.md (the plan's
 -- text, the file gf edits) and <key>.json (its title, status, revisions
--- and questions), key = "wi-<id>" or "pr-<id>". Only the last
+-- and questions), key = "wi-<id>", "pr-<id>" (Azure) or
+-- "pr-github-<owner~repo~number>" (plan_text.lua's key). Only the last
 -- chat.plan_revisions (3) revisions are kept, and the one last approved;
 -- each keeps its real number (M.save, plan_text.lua's prune_revisions).
 --
@@ -76,7 +77,34 @@ function M.for_worktree(dir)
   local wi = name:match("%-wi(%d+)$")
   if wi then return M.load("wi-" .. wi) end
   local pr = name:match("%-(%d+)$")
-  return pr and M.load("pr-" .. pr) or nil
+  if not pr then return nil end
+  -- A GitHub PR's plan is under its key (#109): the listed PR whose fix
+  -- worktree this is.
+  local STATE = require("azure-cli.state")
+  local TF = require("azure-cli.chat.tools_fix")
+  local cands = vim.list_extend({}, (STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs) or {})
+  if STATE.PR_CURRENT then cands[#cands + 1] = STATE.PR_CURRENT end
+  for _, p in ipairs(cands) do
+    if tostring(p.id) == pr and vim.fn.fnamemodify(TF.path(p), ":t") == name then
+      local rec = M.load(M.key(M.pr_target(p)))
+      if rec then return rec end
+    end
+  end
+  return M.load("pr-" .. pr)
+end
+
+-- The target of PR `pr_id` as a tool call means it: the calling agent's
+-- own PR when it's that number (so an agent on one GitHub #7 never means
+-- another), else the listed PR (in `repo`, owner/repo or repo, when
+-- given), else { pr_id } (#109).
+function M.pr_target_for(pr_id, env, repo)
+  if pr_id == nil then return nil end
+  local own = env and env.conv and env.conv.target
+  if type(own) == "table" and own.pr_id and tostring(own.pr_id) == tostring(pr_id) and not repo then
+    return { pr_id = own.pr_id, pr_key = own.pr_key }
+  end
+  local pr = require("azure-cli.chat.tools").pr_record(pr_id, repo)
+  return pr and M.pr_target(pr) or { pr_id = pr_id }
 end
 
 -- The approved (or done) plan behind a pull request: the first of
@@ -419,7 +447,9 @@ end
 -- per work item or PR (#86). `target` = { work_item_id } or { pr_id }.
 function M.main_chat_refusal(env, name, target)
   if not (env and env.main_chat) then return nil end
-  local which = (target and target.pr_id) and ("pr_id = " .. tostring(target.pr_id))
+  local repo = target and target.pr_key and tostring(target.pr_key):match("^(.-~.-)~%d+$")
+  local which = (target and target.pr_id) and ("pr_id = " .. tostring(target.pr_id)
+      .. (repo and (", repo = \"" .. repo:gsub("~", "/") .. "\"") or ""))
     or (target and target.work_item_id) and ("work_item_ids = { " .. tostring(target.work_item_id) .. " }")
     or "work_item_ids or pr_id"
   return name .. " isn't available in the main chat: planning and changing code is done by an agent of its own, one "
@@ -487,39 +517,56 @@ function M.link_pr(work_item_ids, source, pr)
   end
   local by_branch = M.for_pull_request(nil, source)
   if by_branch and not seen[by_branch.key] then recs[#recs + 1] = by_branch end
+  local key = M.pr_target(pr).pr_key
   for _, rec in ipairs(recs) do
-    rec.pr = { id = pr.id, org = pr.org, project = pr.project }
+    rec.pr = { id = pr.id, org = pr.org, project = pr.project, key = key }
     rec.pr_state, rec.closed_at = nil, nil
     M.add_event(rec, "pr", "Opened PR !" .. tostring(pr.id))
     VIEW().changed(rec)
   end
 end
 
--- The work item's plan that opened PR `id` (link_pr) while that PR is
--- still open: its agent is the one to fix what reviewers say. A PR opened
--- before plans recorded theirs is found by its `source` branch being the
--- story's. Or nil.
-function M.owner_of_pr(id, source)
+-- `pr` (a PR record, or a bare id) as a target.
+local function as_target(pr)
+  if type(pr) == "table" then return M.pr_target(pr) end
+  return { pr_id = pr }
+end
+
+-- Whether a plan's linked PR `linked` ({ id, key }) is `target`'s: by key
+-- when either has one (a GitHub number repeats across repos), else by id.
+local function same_pr(linked, target)
+  if type(linked) ~= "table" then return false end
+  if linked.key or target.pr_key then return tostring(linked.key) == tostring(target.pr_key) end
+  return tostring(linked.id) == tostring(target.pr_id)
+end
+
+-- The work item's plan that opened PR `pr` (a record, or an Azure id;
+-- link_pr) while that PR is still open: its agent is the one to fix what
+-- reviewers say. A PR opened before plans recorded theirs is found by its
+-- `source` branch being the story's. Or nil.
+function M.owner_of_pr(pr, source)
+  local target = as_target(pr)
   for _, f in ipairs(vim.fn.glob(M.root() .. "/wi-*.json", false, true)) do
     local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
-    if rec and type(rec.pr) == "table" and tostring(rec.pr.id) == tostring(id) and not rec.pr_state then return rec end
+    if rec and same_pr(rec.pr, target) and not rec.pr_state then return rec end
   end
   local rec = source and source ~= "" and M.for_pull_request(nil, source) or nil
   if rec and rec.pr == nil and not rec.pr_state then return rec end
   return nil
 end
 
--- PR `id` was completed or abandoned (`state`; chat/watch.lua saw it): the
--- plans behind it - the PR's own, and the stories it was opened for - are
--- finished. Returns how many it marked.
-function M.pr_closed(id, state)
+-- PR `pr` (a record, or an Azure id) was completed or abandoned (`state`;
+-- chat/watch.lua saw it): the plans behind it - the PR's own, and the
+-- stories it was opened for - are finished. Returns how many it marked.
+function M.pr_closed(pr, state)
+  local target = as_target(pr)
+  local own = M.key(target)
   local n = 0
   for _, f in ipairs(vim.fn.glob(M.root() .. "/*.json", false, true)) do
     local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
-    if rec and rec.key and not rec.pr_state
-        and (rec.key == "pr-" .. tostring(id) or (type(rec.pr) == "table" and tostring(rec.pr.id) == tostring(id))) then
+    if rec and rec.key and not rec.pr_state and (rec.key == own or same_pr(rec.pr, target)) then
       rec.pr_state, rec.closed_at = state, os.time()
-      M.add_event(rec, "closed", "PR !" .. tostring(id) .. (state == "completed" and " was merged" or " was abandoned"))
+      M.add_event(rec, "closed", M.target_label(target) .. (state == "completed" and " was merged" or " was abandoned"))
       VIEW().changed(rec)
       n = n + 1
     end
@@ -534,10 +581,11 @@ function M.tools(T)
   local target_props = {
     work_item_id = { type = "integer", description = "the work item the plan is for (implementing a story/bug/task)" },
     pr_id = { type = "integer", description = "the pull request the plan is for (fixing a review comment)" },
+    repo = { type = "string", description = "GitHub only: the PR's repository (owner/repo), when two PRs share pr_id" },
   }
-  local function target_of(args)
+  local function target_of(args, env)
     if args.work_item_id then return { work_item_id = args.work_item_id } end
-    if args.pr_id then return { pr_id = args.pr_id } end
+    if args.pr_id then return M.pr_target_for(args.pr_id, env, args.repo) end
     return nil
   end
   return {
@@ -556,7 +604,7 @@ function M.tools(T)
       }, required = { "title", "markdown" } },
       risk = "write",
       run = function(args, env, done)
-        local target = target_of(args)
+        local target = target_of(args, env)
         local refused = M.main_chat_refusal(env, "submit_plan", target)
         if refused then return done(nil, refused) end
         if not target then return done(nil, "give work_item_id or pr_id") end
@@ -599,8 +647,8 @@ function M.tools(T)
         .. "status (draft, approved, changes_requested, done) and the questions the user asked about its lines.",
       schema = { type = "object", properties = target_props },
       risk = "read",
-      run = function(args, _, done)
-        local target = target_of(args)
+      run = function(args, env, done)
+        local target = target_of(args, env)
         if not target then return done(nil, "give work_item_id or pr_id") end
         local rec = M.load(M.key(target))
         if not rec then return done(nil, "no plan for " .. M.target_label(target) .. " - write one with submit_plan") end
@@ -626,7 +674,7 @@ function M.tools(T)
       end,
       run = function(args, env, done)
         if not (env and env.main_chat) then return done(nil, "only the main chat discards plans") end
-        local target = target_of(args)
+        local target = target_of(args, env)
         if not target then return done(nil, "give work_item_id or pr_id") end
         local key = M.key(target)
         if not M.load(key) then return done(nil, "no plan for " .. M.target_label(target)) end

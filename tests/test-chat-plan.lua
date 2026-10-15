@@ -394,6 +394,19 @@ do
   by = AV.by_pr({ { key = "old", pr_id = 9, group = 3, at = 5 }, { key = "new", pr_id = 9, group = 3, at = 8 },
     { key = "you", pr_id = 10, group = 3, at = 9 }, { key = "waits", pr_id = 10, group = 1, at = 1 } })
   check("by_pr: with several, the one that needs you, then the latest", by["9"].key == "new" and by["10"].key == "waits")
+  -- #109: two GitHub #7s and an Azure !7 are three PRs.
+  local sevens = AV.rows({
+    { plan_key = "pr-github-o~a~7", target = { pr_id = 7, pr_key = "o~a~7" }, entries = {} },
+    { plan_key = "pr-github-o~b~7", target = { pr_id = 7, pr_key = "o~b~7" }, entries = {} },
+    { plan_key = "wi-12", entries = {} },
+  }, {}, function(k) return k == "wi-12" and { status = "done", pr = { id = 70, key = "o~c~70" } } or nil end, 100)
+  by = AV.by_pr(sevens)
+  check("by_pr: keyed by PR key", by["o~a~7"] == sevens[1] and by["o~b~7"] == sevens[2] and by["o~c~70"] == sevens[3]
+    and by["7"] == nil, vim.tbl_keys(by))
+  check("for_pr: each #7 its own agent, an Azure !7 none",
+    AV.for_pr(by, { host = "github", id = 7, key = "o~a~7" }).key == "pr-github-o~a~7"
+    and AV.for_pr(by, { host = "github", id = 7, key = "o~b~7" }).key == "pr-github-o~b~7"
+    and AV.for_pr(by, { id = 7 }) == nil and AV.for_pr(by, nil) == nil)
   -- Grouped: what needs you first, the most recent first in each group.
   local day = 86400
   local list = {
@@ -738,6 +751,18 @@ do
     m:find('On its lines:\n- line 8 (Approach) "- two": drop it', 1, true) ~= nil, m)
   check("key / target_label", PLAN.key({ pr_id = 5 }) == "pr-5" and PLAN.key({}) == nil
     and PLAN.target_label({ pr_id = 5 }) == "PR !5")
+  -- #109: a PR's key, not its number - a GitHub #7 repeats across repos.
+  check("pr_target: Azure is its id", vim.deep_equal(PLAN.pr_target({ id = 101 }), { pr_id = 101 })
+    and vim.deep_equal(PLAN.pr_target({ id = 101, key = 101 }), { pr_id = 101 }))
+  local gh = PLAN.pr_target({ host = "github", id = 7, key = "o~a~7" })
+  check("pr_target: GitHub carries its key", vim.deep_equal(gh, { pr_id = 7, pr_key = "o~a~7" }), vim.inspect(gh))
+  check("key: GitHub by key, Azure as before", PLAN.key(gh) == "pr-github-o~a~7"
+    and PLAN.key(PLAN.pr_target({ id = 7 })) == "pr-7"
+    and PLAN.key({ pr_id = 7, pr_key = "o~b~7" }) ~= PLAN.key(gh))
+  local odd = PLAN.key({ pr_id = 1, pr_key = "../x/y z~1" })
+  check("key: safe as a file name", odd == "pr-github-.._x_y_z~1" and not odd:find("/", 1, true), odd)
+  check("target_label: repo#n on GitHub", PLAN.target_label(gh) == "PR a#7"
+    and PLAN.target_label({ pr_id = 7, pr_key = "o~b~7" }) == "PR b#7")
 end
 
 -- --- threads ------------------------------------------------------------------------------

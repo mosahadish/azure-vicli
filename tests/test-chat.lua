@@ -910,6 +910,91 @@ do
   pcall(vim.fn.delete, PL.root() .. "/wi-91.json")
 end
 
+-- --- #109: two GitHub #7s in different repos are two agents and two plans --------------
+do
+  local PL = require("azure-cli.chat.plan")
+  local PV = require("azure-cli.chat.plan_view")
+  local AG = require("azure-cli.chat.agents")
+  local AV = require("azure-cli.chat.agents_view")
+  local CH = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local a7 = { id = 7, host = "github", key = "o~a~7", repo = "a", title = "A seven", source = "fa" }
+  local b7 = { id = 7, host = "github", key = "o~b~7", repo = "b", title = "B seven", source = "fb" }
+  local orig = { send = CH.send, agent = CH.current_agent, alert = CH.alert, open = PL.open, show = PV.show,
+    cache = STATE.PR_LIST_CACHE }
+  STATE.PR_LIST_CACHE = { prs = { a7, b7, { id = 7, title = "Azure seven", repo = "web" } } }
+  local sent = {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.send = function(text, o) sent[#sent + 1] = { text = text, key = o.conv.plan_key } return {} end
+  CH.alert, PL.open, PV.show = function() end, function() end, function() end
+  AG.reset()
+  AG.start_for_prs({ a7, b7 })
+  local keys = {}
+  for _, s in ipairs(sent) do keys[#keys + 1] = s.key end
+  table.sort(keys)
+  check("#109 start_for_prs: one agent per #7", table.concat(keys, "|") == "pr-github-o~a~7|pr-github-o~b~7",
+    vim.inspect(sent))
+  local ca, cb = CH.find_conversation("pr-github-o~a~7"), CH.find_conversation("pr-github-o~b~7")
+  check("#109 their conversations: separate, labelled by repo", ca and cb and ca ~= cb and ca.label == "PR a#7"
+    and cb.label == "PR b#7" and ca.target.pr_key == "o~a~7", ca and ca.label)
+  check("#109 the prompt names the repo", sent[1].text:find(" in o/", 1, true) ~= nil, sent[1].text)
+  -- Each agent's submit_plan / get_plan (pr_id 7 alone) is its own PR's.
+  local tools = {}
+  for _, t in ipairs(PL.tools({})) do tools[t.name] = t end
+  local function call(name, args, conv)
+    local res, err
+    tools[name].run(args, { conv = conv, background = function() return true end }, function(r, e) res, err = r, e end)
+    return res, err
+  end
+  call("submit_plan", { pr_id = 7, title = "Plan A", markdown = "# A\n\n## Goal\nfor a" }, ca)
+  call("submit_plan", { pr_id = 7, title = "Plan B", markdown = "# B\n\n## Goal\nfor b" }, cb)
+  local ra, rb = PL.load("pr-github-o~a~7"), PL.load("pr-github-o~b~7")
+  check("#109 submit_plan: two plan files", ra and rb and ra.title == "Plan A" and rb.title == "Plan B"
+    and vim.fn.filereadable(PL.root() .. "/pr-github-o~a~7.json") == 1 and PL.load("pr-7") == nil)
+  local ga_ = call("get_plan", { pr_id = 7 }, ca)
+  local gb_ = call("get_plan", { pr_id = 7 }, cb)
+  check("#109 get_plan: each its own", ga_ and gb_ and ga_.title == "Plan A" and gb_.title == "Plan B")
+  check("#109 pr_target_for: the main chat picks by repo", PL.pr_target_for(7, {}, "o/b").pr_key == "o~b~7"
+    and PL.pr_target_for(7, {}, "a").pr_key == "o~a~7")
+  -- The agent column and ga: chat/agents_view.lua's lookup, by key.
+  local by = AV.by_pr(AV.rows(CH.conversations(), {}, PL.load, os.time()))
+  check("#109 agent column / ga: each #7 to its own agent",
+    (AV.for_pr(by, a7) or {}).key == "pr-github-o~a~7" and (AV.for_pr(by, b7) or {}).key == "pr-github-o~b~7"
+    and AV.for_pr(by, { id = 7 }) == nil)
+  -- Linked and closed by key: closing a's #7 leaves b's.
+  PL.save({ key = "wi-95", target = { work_item_id = 95 }, status = "done", revisions = {}, threads = {} })
+  PL.link_pr({ 95 }, nil, a7)
+  check("#109 link_pr keeps the key; owner_of_pr matches only that #7", (PL.owner_of_pr(a7) or {}).key == "wi-95"
+    and PL.owner_of_pr(b7) == nil and PL.owner_of_pr(7) == nil)
+  PL.pr_closed(a7, "completed")
+  check("#109 pr_closed: only a's #7", PL.load("pr-github-o~a~7").pr_state == "completed"
+    and PL.load("wi-95").pr_state == "completed" and PL.load("pr-github-o~b~7").pr_state == nil)
+  -- An Azure plan written the old way (pr-<id>) still loads.
+  vim.fn.writefile({ vim.json.encode({ key = "pr-101", target = { pr_id = 101 }, title = "Old", status = "draft",
+    revisions = { { by = "agent", markdown = "# Old" } }, threads = {} }) }, PL.root() .. "/pr-101.json")
+  STATE.PR_LIST_CACHE.prs[#STATE.PR_LIST_CACHE.prs + 1] = { id = 101, repo = "web" }
+  check("#109 an old Azure pr-101 plan: loads by its PR",
+    (PL.load(PL.key(PL.pr_target({ id = 101 }))) or {}).title == "Old"
+    and (PL.load(PL.key(PL.pr_target_for(101, {}))) or {}).title == "Old")
+  check("#109 for_worktree: the old Azure one, and a GitHub one by its listed PR",
+    (PL.for_worktree(require("azure-cli.chat.tools_fix").root() .. "/web-101") or {}).title == "Old"
+    and (PL.for_worktree(require("azure-cli.chat.tools_fix").path(b7)) or {}).title == "Plan B")
+  CH.drop_conversation("pr-github-o~a~7")
+  CH.drop_conversation("pr-github-o~b~7")
+  require("azure-cli.state").chat.plans_restored = nil
+  CH.restore_plans()
+  check("#109 restore_plans: the old Azure plan and a GitHub one get agents again",
+    CH.find_conversation("pr-101") ~= nil and CH.find_conversation("pr-github-o~b~7") ~= nil)
+  for _, k in ipairs({ "pr-101", "pr-github-o~a~7", "pr-github-o~b~7" }) do CH.drop_conversation(k) end
+  for _, k in ipairs({ "pr-101", "pr-github-o~a~7", "pr-github-o~b~7", "wi-95" }) do
+    pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".json")
+    pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".md")
+  end
+  CH.send, CH.current_agent, CH.alert, PL.open, PV.show = orig.send, orig.agent, orig.alert, orig.open, orig.show
+  STATE.PR_LIST_CACHE = orig.cache
+  AG.reset()
+end
+
 -- --- max_agents counts plan agents only: the main chat's turn takes no slot (#83) -----
 do
   local AG = require("azure-cli.chat.agents")

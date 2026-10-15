@@ -29,14 +29,28 @@ local function CONFIG() return require("azure-cli.config") end
 -- record (the provider's --get-pr, the same shape as a dashboard row).
 M.fetched = {}
 
-function M.pr_record(id)
+-- The PR whose id or key (hosts.lua's) is `id`; in `repo` (owner/repo or
+-- repo) when given - GitHub numbers repeat across repos (#109).
+function M.pr_record(id, repo)
+  local want = tostring(id)
+  local function matches(p)
+    if type(p) ~= "table" then return false end
+    if tostring(p.id) ~= want and tostring(p.key or "") ~= want then return false end
+    if not repo or repo == "" then return true end
+    local owner_repo = tostring(p.key or ""):match("^(.-~.-)~%d+$")
+    return repo == p.repo or (owner_repo ~= nil and repo:gsub("/", "~") == owner_repo)
+  end
   local cache = STATE().PR_LIST_CACHE
   for _, p in ipairs((cache and cache.prs) or {}) do
-    if tostring(p.id) == tostring(id) then return p end
+    if matches(p) then return p end
   end
   local cur = STATE().PR_CURRENT
-  if cur and tostring(cur.id) == tostring(id) then return cur end
-  return M.fetched[tostring(id)]
+  if matches(cur) then return cur end
+  if matches(M.fetched[want]) then return M.fetched[want] end
+  for _, p in pairs(M.fetched) do
+    if matches(p) then return p end
+  end
+  return nil
 end
 
 -- Looks PR `id` up on the server when it isn't on the dashboard, trying

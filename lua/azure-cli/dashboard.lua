@@ -157,15 +157,13 @@ local ROW_FIXED_WIDTH = 25 + 1 + 1 + 17 + 2
 -- Dropped after the reviewer summary and the updated time, before the
 -- author, when the window is narrow.
 local AGENT_COLUMN = { key = "agent", min = 12, ideal = 26, weight = 1, priority = 2.5 }
--- PR id -> its agent's row (chat/agents_view.lua's M.by_pr), as of the last
--- render.
+-- PR key -> its agent's row (chat/agents_view.lua's M.by_pr), as of the
+-- last render.
 local agent_of = {}
--- The agent chat keys its conversations "pr-<id>" (chat/agents.lua), which
--- is only unique on Azure - a GitHub number repeats across repositories -
--- so only an Azure PR is matched to one until the chat learns PR keys.
+-- By the PR's key (hosts.lua's), not its number: a GitHub number repeats
+-- across repositories (#109).
 local function agent_for(map, pr)
-  if HOSTS.host(pr) ~= "azure" then return nil end
-  return map[tostring(pr.id)]
+  return require("azure-cli.chat.agents_view").for_pr(map, pr)
 end
 local function agents_by_pr()
   local ok, map = pcall(function()
@@ -1986,7 +1984,7 @@ KEYS.bind(buf, "dashboard", "agent_chat", function()
   if not pr then return notify("Put the cursor on a pull request.") end
   local a = agent_for(agents_by_pr(), pr)
   if not a then
-    return notify("No agent on PR !" .. tostring(pr.id) .. " (the agent column shows the ones that have one).")
+    return notify("No agent on PR " .. HOSTS.ref(pr) .. " (the agent column shows the ones that have one).")
   end
   require("azure-cli.chat").popup(a.key)
 end, { desc = "its agent's chat, in a popup" })

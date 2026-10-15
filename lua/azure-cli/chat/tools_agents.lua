@@ -21,9 +21,9 @@ return function(T)
     end
   end
 
-  local function target_of(args)
+  local function target_of(args, env)
     if args.work_item_id then return { work_item_id = args.work_item_id } end
-    if args.pr_id then return { pr_id = args.pr_id } end
+    if args.pr_id then return PLAN().pr_target_for(args.pr_id, env, args.repo) end
   end
 
   -- Work item `id` for start_agents, with the board its agent reads it
@@ -52,6 +52,7 @@ return function(T)
   local target_props = {
     work_item_id = { type = "integer", description = "the agent's work item" },
     pr_id = { type = "integer", description = "the agent's pull request" },
+    repo = { type = "string", description = "GitHub only: the PR's repository (owner/repo), when two PRs share pr_id" },
   }
 
   return {
@@ -66,6 +67,7 @@ return function(T)
       schema = { type = "object", properties = {
         work_item_ids = { type = "array", items = { type = "integer" } },
         pr_id = { type = "integer" },
+        repo = target_props.repo,
         thread_ids = { type = "array", items = { type = "integer" } },
         instructions = { type = "string" },
         board = T.board_props.board,
@@ -81,7 +83,7 @@ return function(T)
         end
         if #items > 0 then said[#said + 1] = (AGENTS().start_for_items(items, args.instructions)) end
         if args.pr_id then
-          local pr = T.pr_record(args.pr_id)
+          local pr = T.pr_record(args.pr_id, args.repo)
           if not pr then return done(nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request first") end
           local threads = type(args.thread_ids) == "table" and #args.thread_ids > 0 and args.thread_ids or nil
           said[#said + 1] = (AGENTS().start_for_prs({ pr }, { [pr.id] = threads }, args.instructions))
@@ -117,14 +119,14 @@ return function(T)
         .. "list_agents / get_plan show what came of it. While that agent is mid-turn the message is queued, and "
         .. "goes to it (in order, one turn each) when the turn ends.",
       schema = { type = "object", properties = {
-        work_item_id = target_props.work_item_id, pr_id = target_props.pr_id,
+        work_item_id = target_props.work_item_id, pr_id = target_props.pr_id, repo = target_props.repo,
         message = { type = "string" },
       }, required = { "message" } },
       risk = "write",
       run = function(args, env, done)
         local why = main_only(env)
         if why then return done(nil, why) end
-        local target = target_of(args)
+        local target = target_of(args, env)
         if not target then return done(nil, "give work_item_id or pr_id") end
         if type(args.message) ~= "string" or vim.trim(args.message) == "" then return done(nil, "the message is empty") end
         local key = PLAN().key(target)

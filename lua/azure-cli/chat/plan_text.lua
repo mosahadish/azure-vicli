@@ -6,17 +6,36 @@
 -- tests keep using require("azure-cli.chat.plan").
 local M = {}
 
--- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 }, nil
--- for neither.
+-- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 },
+-- "pr-github-o~r~7" for { pr_id = 7, pr_key = "o~r~7" } (#109: a GitHub
+-- number repeats across repos), nil for neither. A key is a file name
+-- under plans/: anything but [%w._~-] becomes "_", so it holds no "/".
 function M.key(target)
   if type(target) ~= "table" then return nil end
   if target.work_item_id then return "wi-" .. tostring(target.work_item_id) end
+  if target.pr_key then return "pr-github-" .. (tostring(target.pr_key):gsub("[^%w%._~%-]", "_")) end
   if target.pr_id then return "pr-" .. tostring(target.pr_id) end
   return nil
 end
 
+-- PR record `pr`'s target: { pr_id } on Azure, where its key is its id;
+-- { pr_id, pr_key } where the key is more than that (hosts.lua's key). Pure.
+function M.pr_target(pr)
+  local key = pr.key
+  if key ~= nil and tostring(key) ~= tostring(pr.id) then return { pr_id = pr.id, pr_key = tostring(key) } end
+  return { pr_id = pr.id }
+end
+
+-- "repo#7" for a PR key "owner~repo~7", or nil. Pure.
+local function key_ref(key)
+  local repo, n = tostring(key or ""):match("^[^~]*~(.-)~(%d+)$")
+  return repo and (repo .. "#" .. n) or nil
+end
+
 function M.target_label(target)
   if target.work_item_id then return "#" .. tostring(target.work_item_id) end
+  local ref = target.pr_key and key_ref(target.pr_key)
+  if ref then return "PR " .. ref end
   return "PR !" .. tostring(target.pr_id)
 end
 

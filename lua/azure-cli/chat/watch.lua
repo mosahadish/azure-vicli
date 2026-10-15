@@ -141,7 +141,7 @@ poll_one = function(rec, done)
       list[tostring(rec.id)] = nil
       save()
       -- Its agents are finished (the Agents screen).
-      pcall(require("azure-cli.chat.plan").pr_closed, rec.id, pr.state)
+      pcall(require("azure-cli.chat.plan").pr_closed, pr.key and pr or rec.id, pr.state)
       return done()
     end
     TOOLS().fetched[tostring(rec.id)] = TOOLS().pr_record(rec.id) or pr

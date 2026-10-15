@@ -1059,7 +1059,7 @@ function M.describe_view(win)
   if rec.target.work_item_id then
     snap.work_item = { id = rec.target.work_item_id }
   else
-    snap.pr = require("azure-cli.chat.tools").pr_record(rec.target.pr_id) or { id = rec.target.pr_id }
+    snap.pr = require("azure-cli.chat.tools").pr_record(rec.target.pr_key or rec.target.pr_id) or { id = rec.target.pr_id }
   end
   snap.note = "Looking at your plan for " .. PLAN().target_label(rec.target) .. " \"" .. tostring(rec.title) .. "\" ("
     .. (PLAN().status_label(rec)):gsub("^%S+ ", "") .. ", revision " .. snap.plan.revision .. ", file " .. snap.plan.file .. ")"

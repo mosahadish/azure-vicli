@@ -26,7 +26,8 @@
 --
 --   M.rows(convs, queued, plan_of, now)  the rows (pure)
 --   M.arrange(rows, now, all)            grouped and sorted (pure)
---   M.by_pr(rows)                        PR id -> its agent's row (pure)
+--   M.by_pr(rows)                        PR key -> its agent's row (pure)
+--   M.for_pr(map, pr)                    a PR record's row in that map
 --   M.open()
 local M = {}
 
@@ -88,7 +89,9 @@ function M.rows(convs, queued, plan_of, now, frame)
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
         target = c.target, conv = c, group = group,
-        pr_id = (rec and type(rec.pr) == "table" and rec.pr.id) or (c.target and c.target.pr_id) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
+        pr_id = (rec and type(rec.pr) == "table" and rec.pr.id) or (c.target and c.target.pr_id) or nil,
+        pr_key = (rec and type(rec.pr) == "table" and (rec.pr.key or rec.pr.id))
+          or (c.target and (c.target.pr_key or c.target.pr_id)) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
         requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
         waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
     end
@@ -103,14 +106,15 @@ function M.rows(convs, queued, plan_of, now, frame)
   return rows
 end
 
--- PR id (a string) -> the row of the agent working on it: one started on
--- the PR (a review comment's fix) or one whose plan opened it. With
--- several, the one that needs you first, then the latest. Pure.
+-- PR key (hosts.lua's, a string: the id on Azure, owner~repo~number on
+-- GitHub) -> the row of the agent working on it: one started on the PR (a
+-- review comment's fix) or one whose plan opened it. With several, the
+-- one that needs you first, then the latest. Pure.
 function M.by_pr(rows)
   local out = {}
   for _, r in ipairs(rows) do
-    if r.pr_id then
-      local id = tostring(r.pr_id)
+    if r.pr_key or r.pr_id then
+      local id = tostring(r.pr_key or r.pr_id)
       local had = out[id]
       if not had or (r.group or 3) < (had.group or 3) or ((r.group or 3) == (had.group or 3) and (r.at or 0) > (had.at or 0)) then
         out[id] = r
@@ -118,6 +122,13 @@ function M.by_pr(rows)
     end
   end
   return out
+end
+
+-- PR record `pr`'s agent row in `map` (M.by_pr), or nil: the dashboard's
+-- agent column and ga both look it up here (#109).
+function M.for_pr(map, pr)
+  if type(pr) ~= "table" then return nil end
+  return map[tostring(require("azure-cli.hosts").key(pr))]
 end
 
 -- The screen's groups, in order: what needs you first.

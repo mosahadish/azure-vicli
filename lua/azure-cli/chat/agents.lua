@@ -115,7 +115,9 @@ function M.pr_prompt(pr, threads)
     and ("the review comment" .. (#threads == 1 and "" or "s") .. " in thread" .. (#threads == 1 and " " or "s ")
       .. table.concat(vim.tbl_map(tostring, threads), ", "))
     or "its open review comments (every active thread)"
-  return "/plan PR !" .. tostring(pr.id) .. (pr.title and (" \"" .. pr.title .. "\"") or "") .. ": plan how to fix "
+  local repo = pr.key and tostring(pr.key):match("^(.-~.-)~%d+$")
+  return "/plan PR !" .. tostring(pr.id) .. (repo and (" in " .. repo:gsub("~", "/")) or "")
+    .. (pr.title and (" \"" .. pr.title .. "\"") or "") .. ": plan how to fix "
     .. which .. ". Read them with get_pr_threads and look at the code they're on, then write one plan for the fix "
     .. "with submit_plan (pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
 end
@@ -139,7 +141,8 @@ end
 local function job_for_pr(pr, threads, extra)
   -- A PR one of the agents opened goes back to that agent, with its plan
   -- and its conversation.
-  local owner = require("azure-cli.chat.plan").owner_of_pr(pr.id, pr.source)
+  local PLAN = require("azure-cli.chat.plan")
+  local owner = PLAN.owner_of_pr(pr, pr.source)
   local wi = owner and owner.target and owner.target.work_item_id
   if wi then
     return { key = owner.key, label = "#" .. tostring(wi), title = owner.title or pr.title, target = owner.target,
@@ -149,8 +152,11 @@ local function job_for_pr(pr, threads, extra)
       snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. " got review comments)",
         pr = pr } }
   end
-  return { key = "pr-" .. tostring(pr.id), label = "PR !" .. tostring(pr.id), title = pr.title,
-    target = { pr_id = pr.id }, prompt = with_extra(M.pr_prompt(pr, threads), extra),
+  -- Keyed by the PR's key, not its number (#109): two GitHub #7s in
+  -- different repos are two agents.
+  local target = PLAN.pr_target(pr)
+  return { key = PLAN.key(target), label = PLAN.target_label(target), title = pr.title,
+    target = target, prompt = with_extra(M.pr_prompt(pr, threads), extra),
     display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "
       .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
     snap = { screen = "pull request (this agent was started for one PR's review comments)", pr = pr } }

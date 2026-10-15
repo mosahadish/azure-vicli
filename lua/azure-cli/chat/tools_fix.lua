@@ -197,11 +197,11 @@ function M.open_latest(git, cb)
   end)
 end
 
--- The worktree of the change for `target` ({ work_item_id } / { pr_id }),
--- or nil when none was started.
+-- The worktree of the change for `target` ({ work_item_id } / { pr_id,
+-- pr_key }), or nil when none was started.
 function M.dir_for(target)
   if target.work_item_id then return (M.find_story(target.work_item_id)) end
-  local pr = require("azure-cli.chat.tools").pr_record(target.pr_id)
+  local pr = require("azure-cli.chat.tools").pr_record(target.pr_key or target.pr_id)
   local d = pr and M.path(pr)
   return (d and is_repo(d)) and d or nil
 end
@@ -233,20 +233,27 @@ setmetatable(M, { __call = function(_, T)
     return pr, clone
   end
 
-  -- What show/commit/discard act on: { dir, branch, label, wi }, or nil and
-  -- the reason.
-  local function locate(args)
+  -- What show/commit/discard act on: { dir, branch, label, wi, target },
+  -- or nil and the reason. `env` (optional) picks the calling agent's own
+  -- PR when two share pr_id (#109).
+  local function locate(args, env)
     if args.work_item_id then
       local dir, branch = M.find_story(args.work_item_id)
       if not dir then return nil, "no story in progress for #" .. tostring(args.work_item_id) .. " - call start_story first" end
       return { dir = dir, branch = branch, label = "#" .. tostring(args.work_item_id), wi = args.work_item_id }
     end
-    local pr = T.pr_record(args.pr_id)
+    local target = require("azure-cli.chat.plan").pr_target_for(args.pr_id, env) or { pr_id = args.pr_id }
+    local pr = T.pr_record(target.pr_key or args.pr_id)
     if not pr then
       return nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request for it first."
     end
     if not is_repo(M.path(pr)) then return nil, "no fix in progress - call start_fix first" end
-    return { dir = M.path(pr), branch = pr.source, label = "PR !" .. pr.id }
+    return { dir = M.path(pr), branch = pr.source, label = "PR !" .. pr.id, target = target }
+  end
+
+  -- The plan target of located change `t`.
+  local function target_of_change(t)
+    return t.wi and { work_item_id = t.wi } or t.target
   end
 
   local target_schema = { type = "object", properties = {
@@ -321,9 +328,10 @@ setmetatable(M, { __call = function(_, T)
       schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
       risk = "write",
       run = function(args, env, done)
-        local refused = require("azure-cli.chat.plan").main_chat_refusal(env, "start_fix", { pr_id = args.pr_id })
+        local target = require("azure-cli.chat.plan").pr_target_for(args.pr_id, env)
+        local refused = require("azure-cli.chat.plan").main_chat_refusal(env, "start_fix", target)
         if refused then return done(nil, refused) end
-        local planned, why = require("azure-cli.chat.plan").gate({ pr_id = args.pr_id })
+        local planned, why = require("azure-cli.chat.plan").gate(target)
         if not planned then return done(nil, why) end
         local pr, clone = need_clone(args, done)
         if not pr then return end
@@ -479,9 +487,9 @@ setmetatable(M, { __call = function(_, T)
       } },
       risk = "read",
       run = function(args, env, done)
-        local t, why = locate(args)
+        local t, why = locate(args, env)
         if not t then return done(nil, why) end
-        local target = t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id }
+        local target = target_of_change(t)
         local linked = args.steps and require("azure-cli.chat.plan").set_links(target, args.steps) or nil
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
@@ -501,8 +509,7 @@ setmetatable(M, { __call = function(_, T)
           for _, f in ipairs(require("azure-cli.chat.changes").files(vim.split(diff, "\n", { plain = true }))) do
             paths[#paths + 1] = f.path
           end
-          local check = PLAN.check_change(PLAN.load(PLAN.key(t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id })),
-            paths)
+          local check = PLAN.check_change(PLAN.load(PLAN.key(target)), paths)
           local plan_check
           if check and (#check.unplanned > 0 or #check.missing > 0) then
             plan_check = { not_in_plan = check.unplanned, planned_not_changed = check.missing,
@@ -558,13 +565,13 @@ setmetatable(M, { __call = function(_, T)
       preapproved = function(a, cb)
         local t = locate(a)
         if not t then return cb(false) end
-        local target = t.wi and { work_item_id = t.wi } or { pr_id = a.pr_id }
+        local target = target_of_change(t)
         require("azure-cli.chat.plan").push_allowed(target, t.dir, function(ok, why)
           cb(ok, ok and "the approved plan (pushing allowed, tests passed)" or why)
         end)
       end,
       run = function(args, env, done)
-        local t, why = locate(args)
+        local t, why = locate(args, env)
         if not t then return done(nil, why) end
         local wt = t.dir
         local remote = "refs/remotes/origin/" .. t.branch
@@ -610,11 +617,11 @@ setmetatable(M, { __call = function(_, T)
                 return done(nil, "push failed (the branch may have moved since): " .. vim.trim(perr or ""):gsub("%s*\n%s*", " "))
               end
               -- The plan behind it is done: the next change needs its own.
-              pcall(require("azure-cli.chat.plan").mark_done,
-                t.wi and { work_item_id = t.wi } or { pr_id = args.pr_id })
+              local target = target_of_change(t)
+              pcall(require("azure-cli.chat.plan").mark_done, target)
               -- Its reviewers' answers to the fix (chat/watch.lua).
               if not t.wi and args.pr_id then
-                pcall(require("azure-cli.chat.watch").add, T.pr_record(args.pr_id) or { id = args.pr_id })
+                pcall(require("azure-cli.chat.watch").add, T.pr_record(target.pr_key or args.pr_id) or { id = args.pr_id })
               end
               T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
                 pcall(require("azure-cli.chat.plan").event_for_worktree, wt, "pushed",
@@ -678,7 +685,7 @@ setmetatable(M, { __call = function(_, T)
         cb(source == "config", source == "config" and "your chat.test_cmd" or nil)
       end,
       run = function(args, env, done)
-        local t, why = locate(args)
+        local t, why = locate(args, env)
         if not t then return done(nil, why) end
         local PLAN = require("azure-cli.chat.plan")
         local TR = require("azure-cli.chat.tests_run")
@@ -704,8 +711,8 @@ setmetatable(M, { __call = function(_, T)
       schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
         work_item_id = target_schema.properties.work_item_id, path = { type = "string" } }, required = { "path" } },
       risk = "write",
-      run = function(args, _, done)
-        local t, why = locate(args)
+      run = function(args, env, done)
+        local t, why = locate(args, env)
         if not t then return done(nil, why) end
         local rel = M.inside(t.dir, args.path)
         if not rel then return done(nil, tostring(args.path) .. " isn't inside " .. t.dir .. " - refused") end
@@ -740,8 +747,8 @@ setmetatable(M, { __call = function(_, T)
         .. "a fix, work_item_id for a story.",
       schema = target_schema,
       risk = "write",
-      run = function(args, _, done)
-        local t, why = locate(args)
+      run = function(args, env, done)
+        local t, why = locate(args, env)
         if not t then return done(why) end
         local wt = t.dir
         T.git({ "git", "-C", wt, "reset", "-q", "--hard" }, function()

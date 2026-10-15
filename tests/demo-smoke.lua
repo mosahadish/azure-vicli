@@ -3815,19 +3815,27 @@ section("GITHUB", function()
     return false
   end, 100)
   if not ok then return fail("the dashboard never listed the two GitHub PR #7s", dash) end
-  -- The chat keys agents "pr-<number>", which two GitHub #7s share: no
-  -- agent is shown against a GitHub row until it keys by PR key.
-  for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
-    if l:find("Gizmo: spin faster", 1, true) and l:find("plan waits", 1, true) then
-      return fail("a GitHub row shows an agent keyed by its bare number: " .. l)
-    end
-  end
   local recs = {}
   for _, p in ipairs(require("azure-cli.state").PR_LIST_CACHE.prs) do
     -- The two #7s (the Issues smoke's create_pull_request adds gizmos#8).
     if p.host == "github" and tostring(p.id) == "7" then recs[p.repo] = p end
   end
   if not (recs.gizmos and recs.doohickeys) then return fail("the GitHub records aren't in the list cache") end
+  -- #109: agents are keyed by PR key, so each GitHub #7's row shows its
+  -- own agent (gizmos#7 has one from the chat smoke) and never the other's.
+  do
+    local PL = require("azure-cli.chat.plan")
+    local CH = require("azure-cli.chat")
+    for title, p in pairs({ ["Gizmo: spin faster"] = recs.gizmos, ["Doohickey: stop the wobble"] = recs.doohickeys }) do
+      local own = CH.find_conversation(PL.key(PL.pr_target(p))) ~= nil
+      for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+        if l:find(title, 1, true) and (l:find("plan waits", 1, true) ~= nil) ~= own then
+          return fail("#109: " .. p.repo .. "#7's row " .. (own and "doesn't show its agent" or "shows another PR's agent")
+            .. ": " .. l)
+        end
+      end
+    end
+  end
   if #HOSTS.caps(recs.gizmos).votes ~= 3 or HOSTS.ref(recs.gizmos) ~= "gizmos#7" then
     return fail("a GitHub PR doesn't get GitHub's votes/ref: " .. HOSTS.ref(recs.gizmos))
   end
