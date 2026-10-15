@@ -1080,6 +1080,27 @@ do
     "echo $!", "echo $-", "git log $-", "echo $@", "echo $*", "echo $1", "echo ${#x}", "echo ${?}",
     "C=$?; $C", "echo $? > f", "echo \"$-\"" }, false)
   check("look_only_command: other git remote, other nvim, $- $! $@ $1 still ask (#84)", wrong == nil, wrong)
+  -- #104: awk whose program only prints.
+  wrong = again({ "awk 'NR==21' f | grep -o x", "sed -n 1,9p f | awk '{print $2}'",
+    "awk -F: -v n=3 '$1 == n {print $2}' f", "awk -F'\\t' '{print $1}' a b", "awk 'NR>=10 && NR<=20' f",
+    "awk 'length > 80' f", "awk '/a|b/ {print}' f", "awk '{printf \"%s\\n\", $1}' f",
+    "awk 'BEGIN{x=1} {s+=$1} END{print s/NR}' f", "awk '{print (a > b)}' f", "awk '{n++} END{print n}' f",
+    "awk -- '{print}' f", "gawk '{print}' f", "git show x:f | awk 'NR==5'", "awk '{print $1}' f 2>/dev/null",
+    "awk '{print}' n=1 f", "for f in a b; do awk 'END{print NR}' $f; done", "awk -vn=1 --assign=m=2 '{print n m}' f",
+    "awk '/[/]x|y/ {print}' f", "awk '{print \"a > b | c\"} # > out' f", "awk '{getline; print}' f",
+    "awk 'NR > 1 {\n  print $1,\n    $2\n}' f" }, true)
+  check("look_only_command: awk that only prints (#104)", wrong == nil, wrong)
+  wrong = again({ "awk -i inplace '{print}' f", "gawk --inplace '{print}' f", "awk -i ext.awk '{print}' f",
+    "awk --include x '{print}' f", "awk -f s.awk f", "awk --file=s.awk f", "awk -l x '{print}' f", "awk -E s f",
+    "awk -e '{print}' f", "awk -o out '{print}' f", "awk -p '{print}' f", "awk -d '{print}' f",
+    "awk 'BEGIN{system(\"rm x\")}'", "awk '{\"date\" | getline d}'", "awk '{getline l < \"/inet/tcp/0/h/80\"}'",
+    "awk '{print > \"out\"}' f", "awk '{print $1 >> \"out\"}' f", "awk '{printf(\"%s\", $1) > \"o\"}' f",
+    "awk '{print | \"sh\"}' f", "awk '{print |& \"sh\"}' f", "awk '{x = a++ / 2 | \"sh\"}'",
+    "awk '@load \"x\"; {print}'", "awk '{print}' f > out", "awk '{print}' f | tee out",
+    "awk 'unterminated", "awk '{print \"x}'", "awk '/x'", "awk", "awk -F:", "awk -x '{print}' f",
+    "awk '{print a,\n b > \"f\"}'", "awk '{print a \\\n > \"f\"}'", "awk '{print (a) > \"f\"}'",
+    "while read l; do awk \"$l\" f; done < g", "while read l; do awk '{print}' $l; done < g" }, false)
+  check("look_only_command: awk that writes, runs or loads something still asks (#104)", wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

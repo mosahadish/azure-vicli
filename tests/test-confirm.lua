@@ -494,6 +494,39 @@ do
     check("#76 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
   end
 end
+do
+  -- #104: awk that only prints, the way Claude Code asks for it, again
+  -- and again; awk that writes or runs something still asks.
+  local RUN = require("azure-cli.chat.run")
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({ "awk 'NR==21' f | grep -o x", "sed -n 1,9p f | awk '{print $2}'",
+    "awk -F: -v n=3 '$1 == n {print $2}' f", "awk 'length > 80' f", "awk '/a|b/ {print}' f" }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#104 " .. cmd .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "awk -i inplace '{print}' f", "awk -f s.awk f", "awk 'BEGIN{system(\"rm x\")}'",
+    "awk '{\"date\" | getline d}'", "awk '{print > \"out\"}' f", "awk '{print}' f > out" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#104 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
 
 -- Approving a plan: three buttons, p lets it push.
 do

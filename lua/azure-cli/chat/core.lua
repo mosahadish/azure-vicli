@@ -323,6 +323,104 @@ local function sed_reads(s)
   end
 end
 
+-- Whether awk program `p` only reads and prints to stdout: outside its
+-- strings, regexes and comments, no system, no | (|| is fine: "cmd" |
+-- getline, print | "cmd", |&), no @ (gawk's @load, @include, indirect
+-- calls), no < in a statement with getline (gawk opens /inet/ sockets
+-- that way), and no > or >> in a print or printf statement but inside
+-- its parentheses (print > f, printf(...) > f; not $3 > 5). A / where an
+-- operand would go starts a regex, anywhere else (after a name, number,
+-- ), ], string, ++ or --) it divides: a wrong guess scans more of it as
+-- code, and asks. Jumps with find, as sed_reads' past does (#62).
+local function awk_reads(p)
+  local i, n = 1, #p
+  -- operand: the last token ends one. depth: of ( and [. print_at: the
+  -- depth the statement's print began at. getline: the statement has one.
+  local operand, depth, print_at, getline = false, 0, nil, false
+  local function stmt_end() operand, print_at, getline = false, nil, false end
+  -- Past the string or regex closed by `d` at i, from just inside it
+  -- (a regex's [...] too); false when it doesn't close on its line.
+  local function past(d)
+    local stop = d == "/" and "[/\\\n%[]" or '["\\\n]'
+    i = i + 1
+    while true do
+      local k = p:find(stop, i)
+      local c = k and p:sub(k, k)
+      if not k or c == "\n" then return false end
+      if c == d then i = k + 1; return true end
+      if c == "\\" then
+        i = k + 2
+      else
+        -- [ ... ]: a ] first (or after ^) is one of its characters.
+        i = k + 1
+        if p:sub(i, i) == "^" then i = i + 1 end
+        if p:sub(i, i) == "]" then i = i + 1 end
+        while true do
+          local e = p:find("[%]\\\n]", i)
+          if not e or p:sub(e, e) == "\n" then return false end
+          if p:sub(e, e) == "]" then i = e + 1; break end
+          i = e + 2
+        end
+      end
+    end
+  end
+  while true do
+    i = p:find("[^ \t\r]", i)
+    if not i then return true end
+    local c = p:sub(i, i)
+    if c == '"' or (c == "/" and not operand) then
+      if not past(c) then return false end
+      operand = true
+    elseif c == "#" then
+      i = p:find("\n", i) or n + 1
+    elseif c == "\n" then
+      -- Ends the statement unless it's left open (after , && { ...).
+      if operand then stmt_end() end
+      i = i + 1
+    elseif c == "\\" then
+      -- Only a line continued.
+      local nl = p:match("^\r?\n", i + 1)
+      if not nl then return false end
+      i = i + 1 + #nl
+    elseif c:match("[%a_]") then
+      local e = p:find("[^%w_]", i) or n + 1
+      local word = p:sub(i, e - 1)
+      if word == "system" then return false end
+      if word == "print" or word == "printf" then print_at = print_at or depth end
+      if word == "getline" then getline = true end
+      operand, i = true, e
+    elseif c:match("[%d.]") then
+      operand, i = true, p:find("[^%w.]", i) or n + 1
+    elseif c == "(" or c == "[" then
+      depth, operand, i = depth + 1, false, i + 1
+    elseif c == ")" or c == "]" then
+      depth, operand, i = depth - 1, true, i + 1
+      if depth < 0 then return false end
+    elseif c == ";" or c == "{" or c == "}" then
+      stmt_end()
+      i = i + 1
+    elseif c == "|" then
+      if p:sub(i + 1, i + 1) ~= "|" then return false end
+      operand, i = false, i + 2
+    elseif c == ">" then
+      if print_at and depth <= print_at then return false end
+      operand, i = false, i + 1
+    elseif c == "<" then
+      if getline then return false end
+      operand, i = false, i + 1
+    elseif (c == "+" or c == "-") and p:sub(i + 1, i + 1) == c then
+      operand, i = true, i + 2
+    elseif c:match("^[,!~&?:=+%-*%%^$]$") then
+      operand, i = false, i + 1
+    elseif c == "/" then
+      operand, i = false, i + 1
+    else
+      -- @, ` and anything else.
+      return false
+    end
+  end
+end
+
 -- `words`: one command, after the shell's quoting and expansion.
 -- `unknown` (expand's): the words with a value read from a file in them -
 -- "free" when it could make them anything, a flag included. Those can't
@@ -381,6 +479,27 @@ local function look_only_part(words, unknown)
       k = k + 1
     end
     return next(unknown) == nil and (given or (script ~= nil and sed_reads(script)))
+  end
+  if name == "awk" or name == "gawk" or name == "mawk" or name == "nawk" then
+    -- -F and -v only, then a program that only prints (awk_reads); then
+    -- files and var=val. Any other flag asks: -i inplace, -f, -l, -E,
+    -- -e, and -o / -p / -d write a file.
+    if next(unknown) ~= nil then return false end
+    local k = 2
+    while words[k] do
+      local w = words[k]
+      if w == "--" then k = k + 1; break end
+      if w == "-F" or w == "-v" or w == "--field-separator" or w == "--assign" then
+        k = k + 2
+      elseif w:match("^%-[Fv].") or w:match("^%-%-field%-separator=") or w:match("^%-%-assign=") then
+        k = k + 1
+      elseif w:match("^%-.") then
+        return false
+      else
+        break
+      end
+    end
+    return words[k] ~= nil and awk_reads(words[k])
   end
   local flags = LOOK_ONLY[name]
   return flags ~= nil and not (free and #flags > 0) and not bad_flag(words, 2, flags)
@@ -831,7 +950,8 @@ end
 -- Whether shell command `cmd` (a string, or an argv list) only reads:
 -- every command in it - split on |, &&, || and ;, inside for loops,
 -- while read loops and $(...) too - is one of the commands above without a flag
--- that writes, once the variables the command sets itself (B=x; ... $B),
+-- that writes (sed and awk with a program that only prints), once the
+-- variables the command sets itself (B=x; ... $B),
 -- $? $# $$ (numbers) and its loop variables are filled in (what read reads could be
 -- anything: look_only_part, as is what a $(...) of them prints, but a
 -- lone git rev-parse's); and nothing in it redirects - but a while
