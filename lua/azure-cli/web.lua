@@ -7,7 +7,7 @@
 --                          shows its URL, token included, in a float
 --   :AzureCli web status   the URL again, or that it isn't running
 --   :AzureCli web stop     stops it
---   :AzureCli web rotate   a new token: the old URL and signed-in phones
+--   :AzureCli web rotate   a new token: the old URL and open phone pages
 --                          get 401 at once (#105)
 --
 -- The token (#105): with dashboard_web.persist_token (the default) it is
@@ -197,7 +197,7 @@ function M.start()
       if s.error then notify("The phone-dashboard token " .. s.error, vim.log.levels.WARN) end
       if s.rotating then
         s.rotating = nil
-        notify("Phone dashboard token rotated: the old link and signed-in phones get 401 now.")
+        notify("Phone dashboard token rotated: the old link and open phone pages get 401 now.")
       end
       show()
     end)
@@ -280,9 +280,9 @@ function M.status()
   notify("The phone dashboard isn't running (:AzureCli web start). " .. token)
 end
 
--- A new token. Running: the server swaps it at once (old cookies get 401),
--- saves it and sends the new URL, which on_line shows. Stopped: the stored
--- file goes, so the next start makes a new one.
+-- A new token. Running: the server swaps it at once (old links, cookies and
+-- open pages get 401), saves it and sends the new URL, which on_line shows.
+-- Stopped: the stored file goes, so the next start makes a new one.
 function M.rotate()
   if srv and srv.job and srv.url then
     srv.rotating = true

@@ -112,9 +112,11 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(self.rc, [0])
         self.assertNotIn(TOKEN, self.err.getvalue())
 
-    def request(self, method, path, cookie=None, host=None):
+    def request(self, method, path, cookie=None, host=None, headers=None):
         conn = http.client.HTTPConnection(host or self.bind, self.port, timeout=5)
-        headers = {"Cookie": cookie} if cookie else {}
+        headers = dict(headers or {})
+        if cookie:
+            headers["Cookie"] = cookie
         conn.request(method, path, headers=headers)
         resp = conn.getresponse()
         body = resp.read()
@@ -140,15 +142,53 @@ class WebServerTests(unittest.TestCase):
             self.assertEqual(resp.status, 401, (path, cookie))
             self.assertNotIn(TOKEN.encode(), body)
 
-    def test_the_token_sets_a_strict_cookie_and_redirects_it_away(self):
+    def test_the_token_link_serves_the_page_itself(self):
+        # #130: no redirect - a link tapped in another app on an iPhone
+        # lost the Strict cookie on the redirected request.
         resp, body = self.request("GET", "/?token=" + TOKEN)
-        self.assertEqual(resp.status, 303)
-        self.assertEqual(resp.getheader("Location"), "/")
+        self.assertEqual(resp.status, 200)
+        self.assertIsNone(resp.getheader("Location"))
+        self.assertTrue(resp.getheader("Content-Type").startswith("text/html"))
+        self.assertIn(b"<main id=\"rows\">", body)
+        self.assertNotIn(TOKEN.encode(), body)
+        self.assertEqual(resp.getheader("Content-Security-Policy"), ac.WEB_CSP)
+        self.assertEqual(resp.getheader("Referrer-Policy"), "no-referrer")
         cookie = resp.getheader("Set-Cookie")
         self.assertIn("azvicli_web=" + TOKEN, cookie)
         self.assertIn("HttpOnly", cookie)
-        self.assertIn("SameSite=Strict", cookie)
-        self.assertNotIn(TOKEN.encode(), body)
+        self.assertIn("SameSite=Lax", cookie)
+
+    def test_the_page_keeps_the_token_in_memory_and_sends_it_in_a_header(self):
+        script = ac._WEB_SCRIPT
+        self.assertIn('history.replaceState(null,"","/")', script)
+        self.assertIn('"X-Azvicli-Token":token', script)
+        self.assertIn('fetch("/rows.json",', script)  # the token never goes into the URL
+        self.assertNotIn("localStorage", script)
+        self.assertNotIn("sessionStorage", script)
+        self.assertLess(script.index("replaceState"), script.index("getElementById"))
+
+    def test_rows_json_with_the_header_and_no_cookie(self):
+        resp, body = self.request("GET", "/rows.json", headers={"X-Azvicli-Token": TOKEN})
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(json.loads(body)["items"], [])
+        resp, _ = self.request("GET", "/", headers={"X-Azvicli-Token": TOKEN})
+        self.assertEqual(resp.status, 200)
+
+    def test_a_wrong_header_is_refused_even_with_a_good_cookie(self):
+        for value in ("wrong", "", TOKEN[:-1]):
+            resp, body = self.request("GET", "/rows.json", self.cookie(), headers={"X-Azvicli-Token": value})
+            self.assertEqual(resp.status, 401, value)
+            self.assertNotIn(TOKEN.encode(), body)
+
+    def test_the_token_counts_in_the_query_on_the_page_only(self):
+        resp, _ = self.request("GET", "/rows.json?token=" + TOKEN)
+        self.assertEqual(resp.status, 401)
+        self.assertIsNone(resp.getheader("Set-Cookie"))
+
+    def test_the_cookie_path_still_works(self):
+        for path in ("/", "/rows.json"):
+            resp, _ = self.request("GET", path, self.cookie())
+            self.assertEqual(resp.status, 200, path)
 
     def test_served_with_the_cookie(self):
         resp, body = self.request("GET", "/", self.cookie())
@@ -234,9 +274,12 @@ class Served:
     def send(self, obj):
         self.w.sendall((json.dumps(obj) + "\n").encode("utf-8"))
 
-    def get(self, path, cookie=None):
+    def get(self, path, cookie=None, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        conn.request("GET", path, headers={"Cookie": cookie} if cookie else {})
+        headers = dict(headers or {})
+        if cookie:
+            headers["Cookie"] = cookie
+        conn.request("GET", path, headers=headers)
         resp = conn.getresponse()
         resp.read()
         conn.close()
@@ -341,7 +384,7 @@ class WebTokenFileTests(unittest.TestCase):
         first = s.line(0)
         self.assertFalse(first["stored"])
         self.assertIn("can't save the token", first["error"])
-        self.assertEqual(s.get("/?token=" + first["token"]), 303)
+        self.assertEqual(s.get("/?token=" + first["token"]), 200)
         self.assertEqual(s.stop(), [0])
 
 
@@ -357,15 +400,18 @@ class WebRotateTests(unittest.TestCase):
             try:
                 old = s.line(0)["token"]
                 self.assertEqual(s.get("/rows.json", "azvicli_web=" + old), 200)
+                self.assertEqual(s.get("/rows.json", headers={"X-Azvicli-Token": old}), 200)
                 s.send({"control": "rotate"})
                 new = s.line(1)
                 self.assertNotEqual(new["token"], old)
                 self.assertEqual(new["port"], s.port)
                 self.assertTrue(new["stored"])
                 self.assertEqual(s.get("/rows.json", "azvicli_web=" + old), 401)
+                self.assertEqual(s.get("/rows.json", headers={"X-Azvicli-Token": old}), 401)
                 self.assertEqual(s.get("/?token=" + old), 401)
                 self.assertEqual(s.get("/rows.json", "azvicli_web=" + new["token"]), 200)
-                self.assertEqual(s.get("/?token=" + new["token"]), 303)
+                self.assertEqual(s.get("/rows.json", headers={"X-Azvicli-Token": new["token"]}), 200)
+                self.assertEqual(s.get("/?token=" + new["token"]), 200)
                 with open(path) as fh:
                     self.assertEqual(fh.read().strip(), new["token"])
                 s.send({"items": [{"label": "#1", "title": "still fed", "group": 2}]})
@@ -383,7 +429,7 @@ class WebRotateTests(unittest.TestCase):
             new = s.line(1)["token"]
             self.assertNotEqual(new, old)
             self.assertEqual(s.get("/?token=" + old), 401)
-            self.assertEqual(s.get("/?token=" + new), 303)
+            self.assertEqual(s.get("/?token=" + new), 200)
         finally:
             self.assertEqual(s.stop(), [0])
 

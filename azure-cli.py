@@ -5941,14 +5941,25 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
 # Security, as #97 asks:
 #  - a bind that listens everywhere (0.0.0.0, ::) is refused, not warned;
 #  - the token is printed only on stdout, one {"port", "token"} line per
-#    token (to Lua); ?token= sets an HttpOnly, SameSite=Strict cookie and
-#    redirects it out of the address bar; compared with
-#    hmac.compare_digest; missing or wrong = 401;
+#    token (to Lua); compared with hmac.compare_digest; missing or wrong =
+#    401;
+#  - / with the right ?token= serves the page itself (200, no redirect,
+#    #130): a link tapped in another app is a cross-site navigation, and
+#    Safari dropped the old SameSite=Strict cookie on the redirected
+#    request. The page reads the token from its URL into memory, takes it
+#    out of the address bar with history.replaceState, and sends it with
+#    each /rows.json in an X-Azvicli-Token header (never in a URL). The
+#    same response sets an HttpOnly, SameSite=Lax cookie, only so a reload
+#    works. A request with the header is judged by it alone (a wrong one is
+#    401 even with a good cookie), else by the cookie; ?token= counts on /
+#    only;
 #  - GET only (405 otherwise), no CORS headers, a CSP that allows only the
 #    page's own inline script and style (by hash), and the page builds every
 #    row with textContent - the row text comes from issues and agents;
 #  - no request logging (the token is in the first URL), and the token is
-#    never written to stderr, which Neovim keeps in :AzureCli log.
+#    never written to stderr, which Neovim keeps in :AzureCli log; no
+#    Referer either: Referrer-Policy: no-referrer on every response, the
+#    same in a <meta>, and the page loads and links nothing else.
 # web_page_json keeps only the fields the Agents screen shows, whatever
 # arrives on stdin.
 #
@@ -5960,9 +5971,9 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
 # and not trusted when it's a symlink, malformed, readable by others or
 # someone else's: then a new token replaces it and the port line says why
 # ("replaced"). A {"control": "rotate"} line on stdin makes a new token,
-# saves it and drops the old one at once (old cookies get 401), then prints
-# a new port line. Another Neovim's server using the same file keeps the
-# token it read until it restarts.
+# saves it and drops the old one at once (old links, cookies and open pages
+# get 401), then prints a new port line. Another Neovim's server using the
+# same file keeps the token it read until it restarts.
 
 _WEB_ROW_FIELDS = ("label", "title", "state", "ago", "cost", "detail")
 _WEB_COOKIE = "azvicli_web"
@@ -5986,8 +5997,14 @@ _WEB_STYLE = (
     ".detail{margin-top:4px;font-size:.85rem;color:var(--muted);font-family:ui-monospace,monospace}"
 )
 
+_WEB_HEADER = "X-Azvicli-Token"
+
+# First, before anything that could throw: the token from ?token= into
+# memory, and out of the address bar (#130).
 _WEB_SCRIPT = (
-    '"use strict";(function(){'
+    '"use strict";(function(){var token=null;'
+    'try{token=new URLSearchParams(location.search).get("token");'
+    'if(token!==null)history.replaceState(null,"","/");}catch(e){}'
     'var rowsEl=document.getElementById("rows"),totalsEl=document.getElementById("totals"),'
     'statusEl=document.getElementById("status"),last=0,failed=false,out=false;'
     'function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;'
@@ -6006,7 +6023,8 @@ _WEB_SCRIPT = (
     'statusEl.textContent=out?"Signed out - open the URL from :AzureCli web again."'
     ':failed?("Can\\u2019t reach Neovim"+(last?" - last updated "+s+"s ago":""))'
     ':last?"Updated "+s+"s ago":"Loading\\u2026";statusEl.className=(failed||out)?"stale":"";}'
-    'function poll(){fetch("/rows.json",{cache:"no-store",credentials:"same-origin"}).then(function(r){'
+    'function poll(){fetch("/rows.json",{cache:"no-store",credentials:"same-origin",'
+    'headers:token?{"' + _WEB_HEADER + '":token}:{}}).then(function(r){'
     'if(r.status===401){out=true;throw 0;}if(!r.ok)throw 0;return r.json();})'
     '.then(function(d){render(d);last=Date.now();failed=false;tick();})'
     '.catch(function(){failed=true;tick();});}'
@@ -6258,17 +6276,26 @@ def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=
                     return value
             return None
 
+        def _given(self):
+            # The page's header when there is one - judged alone, so a
+            # rotated token in an open page is 401 even with a good
+            # cookie - else the reload cookie.
+            header = self.headers.get(_WEB_HEADER)
+            return header if header is not None else self._cookie()
+
         def do_GET(self):
             token = current["token"]
             url = urllib.parse.urlsplit(self.path)
-            given = urllib.parse.parse_qs(url.query).get("token")
+            given = urllib.parse.parse_qs(url.query, keep_blank_values=True).get("token") \
+                if url.path == "/" else None
             if given is not None:
+                # The page itself, not a redirect (#130): its script keeps
+                # the token in memory; the cookie only serves reloads.
                 if not authorised(given[0], token):
                     return self._send(401, b"unauthorized\n")
-                return self._send(303, headers=(
-                    ("Location", "/"),
-                    ("Set-Cookie", "{0}={1}; HttpOnly; SameSite=Strict; Path=/".format(_WEB_COOKIE, token))))
-            if not authorised(self._cookie(), token):
+                return self._send(200, _WEB_PAGE, "text/html; charset=utf-8", headers=(
+                    ("Set-Cookie", "{0}={1}; HttpOnly; SameSite=Lax; Path=/".format(_WEB_COOKIE, token)),))
+            if not authorised(self._given(), token):
                 return self._send(401, b"unauthorized\n")
             if url.path == "/":
                 return self._send(200, _WEB_PAGE, "text/html; charset=utf-8")
