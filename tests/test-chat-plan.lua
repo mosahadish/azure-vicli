@@ -1564,6 +1564,99 @@ do
   pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
 end
 
+-- --- #120: plans and changes never open by themselves, even for the foreground agent ---------
+do
+  local CHAT = require("azure-cli.chat")
+  local SHELL = require("azure-cli.shell")
+  local TOOLS = require("azure-cli.chat.tools")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local PC = require("azure-cli.chat.plan_changes")
+  local function call(name, args, env)
+    local res, err, finished
+    TOOLS.by_name[name].run(args, env, function(r, e) res, err, finished = r, e, true end)
+    vim.wait(5000, function() return finished end, 10)
+    return res, err
+  end
+  local notified, alerted, poked = {}, {}, 0
+  local real = { notify = SHELL.notify, alert = CHAT.alert, poke = PC.poke }
+  SHELL.notify = function(m) notified[#notified + 1] = m end
+  CHAT.alert = function(t) alerted[#alerted + 1] = t end
+  PC.poke = function() poked = poked + 1 end
+  local function screen()
+    return { tab = vim.api.nvim_get_current_tabpage(), win = vim.api.nvim_get_current_win(),
+      tabs = #vim.api.nvim_list_tabpages(), mode = vim.api.nvim_get_mode().mode }
+  end
+  -- Again once the scheduled callbacks (the old focus() ones) have run.
+  local function same(before)
+    vim.wait(200, function() return false end, 20)
+    return vim.deep_equal(screen(), before), vim.inspect({ before = before, after = screen() })
+  end
+  local key = "wi-9120"
+  local conv = CHAT.conversation(key, { target = { work_item_id = 9120 }, label = "#9120" })
+  local env = { conv = conv, background = function() return false end, log = function() end }
+  local md = function(n) return "# R" .. n .. "\n\n## Goal\nrev " .. n .. "\n\n## Files\n- `a.lua` - x" end
+
+  -- submit_plan, nothing open: nothing opens, it says it's ready.
+  local before = screen()
+  local res, err = call("submit_plan", { work_item_id = 9120, title = "Quiet", markdown = md(1) }, env)
+  local ok, detail = same(before)
+  check("#120 submit_plan in the foreground: no tab, window or mode change", res and ok, detail .. tostring(err))
+  check("#120 submit_plan: no plan view opened", PLAN.open_views()[key] == nil)
+  check("#120 submit_plan: a notification and the desktop alert", #notified == 1 and #alerted == 1
+    and notified[1]:find("ready for you", 1, true) ~= nil, vim.inspect({ notified, alerted }))
+  check("#120 submit_plan: shown is false, the note says it waits", res and res.shown == false
+    and tostring(res.note):find("Agents screen", 1, true) ~= nil, vim.inspect(res))
+
+  -- Its plan already open (an inner tab), the user elsewhere: refreshed in place, not focused.
+  PLAN.open(key)
+  local v = PLAN.open_views()[key]
+  vim.wait(200, function() return false end, 20)  -- open's own scheduled focus
+  vim.cmd("tabnew")
+  local other = vim.api.nvim_get_current_tabpage()
+  local elsewhere = screen()
+  res = call("submit_plan", { work_item_id = 9120, title = "Quiet", markdown = md(2) }, env)
+  ok, detail = same(elsewhere)
+  check("#120 submit_plan with its plan open: the user's tab and window stay", res and ok, detail)
+  check("#120 ... and the open view shows the new revision",
+    v and PLAN.rev_count(v.rec) == 2 and v.old == nil
+      and table.concat(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false), "\n") == md(2),
+    v and vim.inspect({ PLAN.rev_count(v.rec), v.old }))
+  for _, t in ipairs({ other, v and v.tab }) do
+    if t and vim.api.nvim_tabpage_is_valid(t) then pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(t)) end
+  end
+
+  -- show_fix on a story worktree with a change: nothing opens either.
+  local wt = FIX.root() .. "/azure-vicli-wi9120"
+  vim.fn.delete(wt, "rf")
+  vim.fn.mkdir(wt, "p")
+  vim.fn.writefile({ "feature/9120-x", "main" }, wt .. ".branch")
+  local function sh(args) return vim.fn.system(vim.list_extend({ "git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t" }, args)) end
+  sh({ "init", "-q" })
+  vim.fn.writefile({ "return 1" }, wt .. "/a.lua")
+  sh({ "add", "-A" })
+  sh({ "commit", "-q", "-m", "base" })
+  vim.fn.writefile({ "return 2" }, wt .. "/a.lua")
+  notified, alerted, poked = {}, {}, 0
+  local last = FIX.last
+  before = screen()
+  res, err = call("show_fix", { work_item_id = 9120 }, env)
+  ok, detail = same(before)
+  check("#120 show_fix in the foreground: no tab, window or mode change", res and ok, detail .. tostring(err))
+  check("#120 show_fix: a notification and the desktop alert", #notified == 1 and #alerted == 1,
+    vim.inspect({ notified, alerted }))
+  check("#120 show_fix: shown is false, the diff returned, gd's change set",
+    res and res.shown == false and tostring(res.diff):find("+return 2", 1, true) ~= nil
+      and FIX.last and FIX.last.dir == wt, vim.inspect({ res, FIX.last }))
+  check("#120 show_fix: the plan view's Changes section is poked", poked >= 1, poked)
+
+  FIX.last = last
+  SHELL.notify, CHAT.alert, PC.poke = real.notify, real.alert, real.poke
+  vim.fn.delete(wt, "rf")
+  vim.fn.delete(wt .. ".branch")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
+end
+
 -- --- the azure-vicli palette in plugin mode ----------------------------------------------------
 do
   require("azure-cli").setup({ ui = { palette = "azure-vicli" } })

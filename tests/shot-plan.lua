@@ -31,7 +31,8 @@ rec.threads = {
     question = "Why not change login() itself?", status = "asking", agent = "Copilot", at = os.time() },
 }
 PLAN.save(rec)
-PLAN.refresh()
+-- submit_plan doesn't open it (#120): Enter on its Agents row does.
+PLAN.open("wi-3001")
 local st = require("azure-cli.state")
 local CHAT = require("azure-cli.chat")
 CHAT.agents = function() return { copilot = { label = "Copilot" } } end

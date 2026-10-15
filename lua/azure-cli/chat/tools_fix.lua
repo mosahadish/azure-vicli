@@ -533,10 +533,10 @@ setmetatable(M, { __call = function(_, T)
     },
     {
       name = "show_fix",
-      description = "Shows the user the change made in the start_fix or start_story directory (in a tab, file by file) and "
-        .. "returns the diff, plus plan_check when the change and its plan's Files section disagree (files changed "
-        .. "that the plan doesn't list, files it lists that weren't changed). Give pr_id for a fix, work_item_id for "
-        .. "a story.",
+      description = "Makes the change in the start_fix or start_story directory ready for the user to review (they're "
+        .. "told it's waiting on the Agents screen; nothing opens by itself) and returns the diff, plus plan_check "
+        .. "when the change and its plan's Files section disagree (files changed that the plan doesn't list, files it "
+        .. "lists that weren't changed). Give pr_id for a fix, work_item_id for a story.",
       schema = { type = "object", properties = {
         pr_id = target_schema.properties.pr_id, work_item_id = target_schema.properties.work_item_id,
         steps = { type = "array", description = "optional: which lines of the change carry out which lines of the "
@@ -554,15 +554,14 @@ setmetatable(M, { __call = function(_, T)
         local linked = args.steps and require("azure-cli.chat.plan").set_links(target, args.steps) or nil
         M.diff(t.dir, function(ok, diff, stat)
           if not ok then return done(nil, diff) end
-          local hidden = env.background and env.background()
-          if hidden then
-            M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
-            require("azure-cli.shell").notify(t.label .. "'s change is ready for you - the Agents screen opens it.")
-            pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
-              "Waiting for your review on the Agents screen") end)
-          else
-            M.show("Proposed change - " .. t.label, t.dir, diff)
-          end
+          -- Never opened by itself, not even for the agent in the
+          -- foreground (#120): it says it's ready (gd opens M.last), and an
+          -- open plan view's Changes section picks the change up.
+          M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
+          require("azure-cli.shell").notify(t.label .. "'s change is ready for you - the Agents screen opens it.")
+          pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
+            "Waiting for your review on the Agents screen") end)
+          pcall(function() require("azure-cli.chat.plan_changes").poke() end)
           -- Against the plan: what it changed that the plan doesn't list,
           -- and what the plan lists that it didn't change.
           local PLAN = require("azure-cli.chat.plan")
@@ -580,9 +579,9 @@ setmetatable(M, { __call = function(_, T)
           end
           if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
           done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked,
-            shown = not hidden, ci = M.ci(args.pr_id, t.branch),
-            note = hidden and ("The user is looking at something else: the change isn't on screen, but it waits for "
-              .. "them on the Agents screen - say it's ready, not that you opened it.") or nil })
+            shown = false, ci = M.ci(args.pr_id, t.branch),
+            note = "The change isn't on screen: it waits for the user on the Agents screen - say it's ready, not "
+              .. "that you opened it." })
         end, T.git)
       end,
     },

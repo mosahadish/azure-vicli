@@ -37,6 +37,28 @@ local function fail(why, buf)
   error(FAILED, 0)
 end
 
+-- #120: show_fix never opens the change viewer by itself - this checks it
+-- didn't, then opens it as the user does (gd: tools_fix.open_latest).
+local function open_change()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(b):find("azure-cli://changes/", 1, true) and #vim.fn.win_findbuf(b) > 0 then
+      fail("#120: show_fix opened the change viewer by itself")
+    end
+  end
+  local done, err = false, nil
+  require("azure-cli.chat.tools_fix").open_latest(require("azure-cli.chat.tools").git, function(e) done, err = true, e end)
+  vim.wait(10000, function() return done end, 20)
+  if err then fail("opening the change (gd) failed: " .. tostring(err)) end
+end
+
+-- Nor submit_plan the plan view: checks it didn't, then opens it (Enter on
+-- the Agents row: plan.open).
+local function open_plan(key)
+  local PLAN = require("azure-cli.chat.plan")
+  if PLAN.open_views()[key] then fail("#120: submit_plan opened the plan " .. key .. " by itself") end
+  PLAN.open(key)
+end
+
 -- <MARKER>-SMOKE-OK - unless this section already failed somewhere that
 -- swallowed the error (a pcall, a callback).
 local function smoke_ok(marker)
@@ -1769,8 +1791,10 @@ section("CHATPLUS", function()
   as_agent("pr-101", { target = { pr_id = 101 }, label = "PR !101" })
   e, why = ask("fix it please")
   if not need(e, why, "start_fix:", "show_fix:", "commit_and_push_fix: Pushed") then return end
-  -- show_fix opened the change in its own tab, like the reviewer: files on
-  -- the left, the diff on the right, ]c through it, q closes.
+  -- show_fix left it waiting (#120); gd opens the change in its own tab,
+  -- like the reviewer: files on the left, the diff on the right, ]c
+  -- through it, q closes.
+  open_change()
   local function diff_focused()
     vim.wait(500, function() return false end, 50)  -- the chat follows into the tab meanwhile
     local b = vim.api.nvim_get_current_buf()
@@ -1857,6 +1881,7 @@ section("CHATPLUS", function()
   if tree:find("SCRATCH.md", 1, true) or tree:find("README.md", 1, true) then
     return fail("delete_fix_file's deletions aren't in the pushed story: " .. tree)
   end
+  open_change()
   cbuf = vim.fn.bufnr("azure-cli://changes")
   if cbuf < 0 or not table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n"):find("A  STORY.md", 1, true) then
     return fail("show_fix didn't list the story's new file")
@@ -2218,9 +2243,10 @@ section("PLAN", function()
   if previews ~= 2 or e.text:find("3002-planned", 1, true) then
     return fail("start_story before approval wasn't a read-only worktree both times:\n" .. e.text)
   end
+  open_plan("wi-3002")
   local v = PLAN.current()
   if not (v and vim.api.nvim_tabpage_is_valid(v.tab) and vim.api.nvim_win_is_valid(v.plan_win)) then
-    return fail("submit_plan didn't open the plan")
+    return fail("the plan didn't open")
   end
   if not CHAT.strip():find("plan #3002 waits for you", 1, true)
       or not require("azure-cli.ui").tabline():find("plan #3002 waits for you", 1, true) then
@@ -2426,9 +2452,10 @@ section("PLAN", function()
     return fail("the approval didn't carry your answer: " .. e.text)
   end
   -- ga in the change viewer, on the agent's new line.
+  open_change()
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
-  if not cwin then return fail("show_fix didn't open the change viewer") end
+  if not cwin then return fail("gd didn't open the change viewer") end
   local clist = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
   for _, s in ipairs({ "In the diff:", " ga  ask about a line", " gy  accept a hunk", " gb  run the plan's tests", " ?   all keys" }) do
     if not clist:find(s, 1, true) then return fail("the change list's keys lack " .. s .. ":\n" .. clist) end

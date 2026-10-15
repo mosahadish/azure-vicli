@@ -771,18 +771,15 @@ function M.tools(T)
         rec.title = args.title
         M.add_revision(rec, args.markdown, "agent")
         M.save(rec)
-        -- An agent working in the background (one of several) doesn't pull
-        -- you into its plan; it says it's ready instead.
-        if env and env.background and env.background() then
-          notify("The plan for " .. M.target_label(target) .. " is ready for you - the Agents screen opens it.")
-          pcall(function() require("azure-cli.chat").alert("azure-vicli: plan " .. M.target_label(target) .. " is ready",
-            tostring(args.title or "") .. " - waiting for your review") end)
-          VIEW().show(key, rec)
-        else
-          M.open(key)
-        end
+        -- No agent pulls you into its plan, not even the one in the
+        -- foreground (#120): it says it's ready, and a view of the plan
+        -- that's already open shows the new revision where it is.
+        notify("The plan for " .. M.target_label(target) .. " is ready for you - the Agents screen opens it.")
+        pcall(function() require("azure-cli.chat").alert("azure-vicli: plan " .. M.target_label(target) .. " is ready",
+          tostring(args.title or "") .. " - waiting for your review") end)
+        VIEW().show(key, rec)
         done({
-          shown = true, revision = M.rev_count(rec), file = M.path(key),
+          shown = false, revision = M.rev_count(rec), file = M.path(key),
           missing_sections = M.missing(args.markdown, M.template()),
           -- How the tests run: without one the user can't run them (gb)
           -- and every test run of yours asks.
@@ -793,7 +790,8 @@ function M.tools(T)
               .. "you can run it (with more arguments, after its build step) without asking." or nil,
           next = "Stop here and wait for the user: they read the plan, may ask about lines of it, then approve it "
             .. "(you'll get a message) or ask for changes. Don't call start_fix / start_story before it's approved.",
-          shown = not (env and env.background and env.background()),
+          note = "The plan isn't on screen: it waits for the user on the Agents screen - say it's ready, not that "
+            .. "you opened it.",
         })
       end,
     },
