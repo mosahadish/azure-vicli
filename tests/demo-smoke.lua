@@ -3201,8 +3201,12 @@ section("INNERTABS", function()
   if listed(t101) or listed(t102) or not listed(dash_tab) or line:find("PR !", 1, true) then
     return fail("the tab line lists the reviews: " .. line)
   end
-  -- The strip, in the widest window of #102's tab.
+  -- The strip, in the widest window of #102's tab - wide enough for both
+  -- reviews next to the review's own winbar (which comes first, #107).
   local strip
+  local cols = vim.o.columns
+  vim.o.columns = 200
+  vim.cmd("redraw")
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(t102)) do
     local bar = vim.wo[w].winbar
     if bar ~= "" then
@@ -3210,6 +3214,7 @@ section("INNERTABS", function()
       if s:find("Pull requests", 1, true) then strip = s end
     end
   end
+  vim.o.columns = cols
   if not (strip and strip:find("!101", 1, true) and strip:find("[!102", 1, true)) then
     return fail("no strip with both reviews, #102 current: " .. tostring(strip))
   end
@@ -3302,7 +3307,7 @@ section("INNERTABS-WI", function()
       local bar = vim.wo[w].winbar
       if bar ~= "" then
         local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
-        if s:find("\u{2502}", 1, true) then return s end
+        if s:find("\u{2503}", 1, true) then return s end  -- the strip's end, at every width
       end
     end
   end
@@ -3468,7 +3473,7 @@ section("INNERTABS-PLAN", function()
       local bar = vim.wo[w].winbar
       if bar ~= "" then
         local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
-        if s:find("\u{2502}", 1, true) then return s end
+        if s:find("\u{2503}", 1, true) then return s end  -- the strip's end, at every width
       end
     end
   end
@@ -3542,7 +3547,13 @@ section("INNERTABS-PLAN", function()
     return fail("the plans aren't inner tabs of Agents: " .. vim.inspect(INNER.members(atab)))
   end
   if listed(t1) or listed(t2) or not listed(atab) then cleanup() return fail("the tab line lists the plans: " .. UI.tabline()) end
+  -- Wide enough for both plans next to the plan's own status (which comes
+  -- first, #107).
+  local cols = vim.o.columns
+  vim.o.columns = 200
+  vim.cmd("redraw")
   local strip = strip_of(t2)
+  vim.o.columns = cols
   if not (strip and strip:find("Agents", 1, true) and strip:find("#3101", 1, true) and strip:find("[#3102", 1, true)) then
     cleanup()
     return fail("no strip with both plans, #3102 current: " .. tostring(strip))
@@ -3679,6 +3690,105 @@ section("INNERTABS-PLAN", function()
   cleanup()
   vim.api.nvim_set_current_tabpage(dash_tab)
   smoke_ok("INNERTABS-PLAN")
+end)
+
+-- The strip gives way to the plan's own status (#107): with 1, 3 and 4
+-- plans open, at 80 and 120 columns, the plan pane's winbar shows its
+-- [draft] [2 to answer] in full, and the current plan stays identifiable -
+-- marked [#id] in the strip, or, when the status leaves the strip no room,
+-- named by the status itself. Its own plans (#3111-#3114).
+section("INNERTABS-FIT", function()
+  local INNER = require("azure-cli.innertabs")
+  local HOME = require("azure-cli.home")
+  local UI = require("azure-cli.ui")
+  local PLAN = require("azure-cli.chat.plan")
+  local PV = require("azure-cli.chat.plan_view")
+  local ids = { 3111, 3112, 3113, 3114 }
+  local function md(id)
+    return "# Plan " .. id .. "\n\n## Goal\ngoal\n\n## Open questions\n- First question?\n- Second question?"
+  end
+  for _, id in ipairs(ids) do
+    local rec = { key = "wi-" .. id, target = { work_item_id = id }, title = "Fit " .. id, status = "draft",
+      threads = {}, revisions = {} }
+    PLAN.add_revision(rec, md(id), "agent")
+    PLAN.save(rec)
+  end
+  local cols = vim.o.columns
+  local function cleanup()
+    vim.o.columns = cols
+    for _, id in ipairs(ids) do
+      local v = PLAN.open_views()["wi-" .. id]
+      if v and vim.api.nvim_tabpage_is_valid(v.tab) then
+        pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(v.tab))
+      end
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".json")
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".md")
+    end
+    if vim.api.nvim_tabpage_is_valid(dash_tab) then vim.api.nvim_set_current_tabpage(dash_tab) end
+  end
+  -- The plan pane's winbar as drawn (the strip evaluated in it), and its
+  -- own status alone.
+  local function drawn(v)
+    return vim.api.nvim_eval_statusline(vim.wo[v.plan_win].winbar, { winid = v.plan_win, use_winbar = true }).str
+  end
+  local function own(v) return UI.strip_hl(UI.own_winbar(v.plan_win)) end
+
+  ensure_dashboard()
+  HOME.go("agents")
+  local atab = HOME.tab("agents")
+  if not atab then cleanup() return fail("A didn't open the Agents screen") end
+  local views = {}
+  for n, id in ipairs(ids) do
+    PV.open("wi-" .. id)
+    views[n] = PLAN.open_views()["wi-" .. id]
+    if not (views[n] and INNER.home_of(views[n].tab) == atab) then
+      cleanup()
+      return fail("plan #" .. id .. " didn't open as an inner tab of Agents")
+    end
+    if n ~= 2 then
+      for _, w in ipairs({ 80, 120 }) do
+        vim.o.columns = w
+        vim.cmd("redraw")
+        local v = views[n]
+        local bar, status = drawn(v), own(v)
+        local pane = vim.api.nvim_win_get_width(v.plan_win)
+        local what = n .. " plan(s) at " .. w .. " columns: "
+        if not (status:find("[draft]", 1, true) and status:find("[2 to answer]", 1, true)) then
+          cleanup()
+          return fail(what .. "the plan's status has no [draft] [2 to answer]: " .. status)
+        end
+        if vim.api.nvim_strwidth(status) + 1 > pane then
+          cleanup()
+          return fail(what .. "the status alone is wider than its pane (" .. pane .. "): " .. status)
+        end
+        if not bar:find(status, 1, true) then
+          cleanup()
+          return fail(what .. "the plan's status isn't shown in full: " .. bar)
+        end
+        local marked = bar:find("[#" .. id, 1, true) ~= nil
+        local stripless = not bar:find("\u{2503}", 1, true) and bar:find("Plan #" .. id, 1, true) ~= nil
+        if not (marked or stripless) or (w == 120 and not marked) then
+          cleanup()
+          return fail(what .. "the current plan isn't identifiable: " .. bar)
+        end
+      end
+    end
+  end
+  -- Switching moves the mark (120 columns, 4 plans open).
+  INNER.pick(2)
+  vim.cmd("redraw")
+  if vim.api.nvim_get_current_tabpage() ~= views[1].tab or not drawn(views[1]):find("[#3111", 1, true) then
+    cleanup()
+    return fail("g2 didn't go to #3111 with it marked: " .. drawn(views[1]))
+  end
+  INNER.cycle(1)
+  vim.cmd("redraw")
+  if vim.api.nvim_get_current_tabpage() ~= views[2].tab or not drawn(views[2]):find("[#3112", 1, true) then
+    cleanup()
+    return fail("]r didn't go to #3112 with it marked: " .. drawn(views[2]))
+  end
+  cleanup()
+  smoke_ok("INNERTABS-FIT")
 end)
 
 -- A GitHub account (github_host.py): the fake lists PR #7 from two

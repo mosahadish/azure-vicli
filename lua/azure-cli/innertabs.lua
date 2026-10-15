@@ -8,7 +8,10 @@
 --
 --   Pull requests │ !101 Fix auth │ [!102 Cache] ┃ <the window's own winbar>
 --
--- (ui.lua's M.wo puts M.bar() in front of every winbar). ]r / [r go to the
+-- (ui.lua's M.wo puts M.bar() in front of every winbar). The window's own
+-- winbar always shows in full: the strip takes what it leaves (at most 60%
+-- of the window), shortening step by step - ids, then +N - down to just
+-- the current one (M.strip_text). ]r / [r go to the
 -- next / previous one, g1..g9 to the n-th (g1 the home list), and closing
 -- one (q) goes to the one before it, the list when there's none. Opening
 -- an item that's already open goes to its inner tab.
@@ -67,43 +70,124 @@ function M.close_target(i)
 end
 
 -- Display cells of a UTF-8 string, close enough for titles (one per
--- character). Pure.
+-- character): the width function under plain luajit; M.bar passes
+-- Neovim's own (a wide character is two). Pure.
 local function cells(s)
   return #(s:gsub("[\128-\191]", ""))
 end
 
--- `s` cut to `n` cells, an ellipsis marking the cut. Pure.
-local function cut(s, n)
-  if cells(s) <= n then return s end
+-- `s` cut to `n` cells by `wfn`, an ellipsis marking the cut - on a
+-- character boundary, never inside one. Pure.
+local function cut(s, n, wfn)
+  if wfn(s) <= n then return s end
   local out, w = {}, 0
   for ch in s:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
-    if w + 1 > n - 1 then break end
+    local cw = wfn(ch)
+    if w + cw > n - 1 then break end
     out[#out + 1] = ch
-    w = w + 1
+    w = w + cw
   end
   return table.concat(out) .. "\u{2026}"
 end
 
+-- A label's id: its first word when that's one (#103, !101), else the
+-- whole label (the home's). Pure.
+local function id_of(l)
+  local first = l:match("^([#!][^%s]+)")
+  return first or l
+end
+
 local SEP = " \u{2502} "
 
--- The strip for `labels` (the home first) with entry `cur` marked [..],
--- fitted to `width` cells: every label gets an equal share, at least 8
--- cells, the current one never less than its own. Returns the 'winbar'
--- text (highlight groups, "%" escaped) and the plain text. Pure.
-function M.strip_text(labels, cur, width)
+-- The strip for `labels` (the home first) with entry `cur` marked [..], in
+-- at most `room` cells all told (its leading pad and closing bar too),
+-- measured by `wfn` (display cells; one per character by default). It
+-- takes the first of these that fits, so the window's own winbar after it
+-- never has to give way (#107):
+--   1. the labels, an equal share each (at least 8 cells), the current one
+--      keeping up to 30 of its own
+--   2. the others as their ids (#99), the home's in full, the current one
+--      with as much of its title as fits
+--   3. the current one as its id too
+--   4. the home, +N before the current one, it, +M after it
+--   5. the current one alone
+--   6. nothing
+-- The current one stays marked [..] (in the title group) at every step.
+-- Returns the 'winbar' text (highlight groups, "%" escaped) and the plain
+-- text. Pure.
+function M.strip_text(labels, cur, room, wfn)
+  wfn = wfn or cells
   local n = #labels
   if n == 0 then return "", "" end
-  local room = math.max(20, width) - (n - 1) * cells(SEP) - 2
-  local share = math.max(8, math.floor(room / n))
-  local fmt, plain = {}, {}
-  for i, l in ipairs(labels) do
-    local t = cut(l, i == cur and math.max(share, math.min(cells(l), 30)) or share)
-    if i == cur then t = "[" .. t .. "]" end
-    plain[i] = t
-    fmt[i] = (i == cur and "%#AzureCliWinbarTitle#" or "%#AzureCliWinbar#") .. t:gsub("%%", "%%%%")
+  local pad = 3  -- the leading " " and the closing " ┃"
+  local avail = room - pad - (n - 1) * wfn(SEP) - 2  -- 2: the current one's [ ]
+  -- Each step's pieces: { text, current? }.
+  local function total(pieces)
+    local w = pad + (#pieces - 1) * wfn(SEP)
+    for _, p in ipairs(pieces) do w = w + wfn(p[1]) + (p[2] and 2 or 0) end
+    return w
   end
-  return " " .. table.concat(fmt, "%#AzureCliWinbarSep#" .. SEP) .. "%#AzureCliWinbarSep# \u{2503}%#AzureCliWinbar#",
-    table.concat(plain, SEP)
+  local steps = {
+    function()
+      local own = math.min(wfn(labels[cur]), 30)
+      local share = n > 1 and math.floor(avail / n) or avail
+      local mine = share
+      if share < own then
+        mine = own
+        share = n > 1 and math.floor((avail - own) / (n - 1)) or 0
+      end
+      if n > 1 and share < 8 then return end
+      local out = {}
+      for i, l in ipairs(labels) do out[i] = { cut(l, i == cur and mine or share, wfn), i == cur } end
+      return out
+    end,
+    function()
+      local out, used = {}, 0
+      for i, l in ipairs(labels) do
+        if i ~= cur then
+          out[i] = { i == 1 and l or id_of(l), false }
+          used = used + wfn(out[i][1])
+        end
+      end
+      local left, l = avail - used, labels[cur]
+      if wfn(l) <= left then
+        out[cur] = { l, true }
+      elseif left >= wfn(id_of(l)) + 3 then
+        out[cur] = { cut(l, left, wfn), true }
+      else
+        return
+      end
+      return out
+    end,
+    function()
+      local out = {}
+      for i, l in ipairs(labels) do out[i] = { (i == 1 and i ~= cur) and l or id_of(l), i == cur } end
+      return out
+    end,
+    function()
+      local out = {}
+      if cur ~= 1 then out[#out + 1] = { labels[1], false } end
+      if cur > 2 then out[#out + 1] = { "+" .. (cur - 2), false } end
+      out[#out + 1] = { id_of(labels[cur]), true }
+      if cur < n then out[#out + 1] = { "+" .. (n - cur), false } end
+      return out
+    end,
+    function() return { { id_of(labels[cur]), true } } end,
+  }
+  for _, step in ipairs(steps) do
+    local pieces = step()
+    if pieces and total(pieces) <= room then
+      local fmt, plain = {}, {}
+      for i, p in ipairs(pieces) do
+        local t = p[2] and ("[" .. p[1] .. "]") or p[1]
+        plain[i] = t
+        fmt[i] = (p[2] and "%#AzureCliWinbarTitle#" or "%#AzureCliWinbar#") .. t:gsub("%%", "%%%%")
+      end
+      return " " .. table.concat(fmt, "%#AzureCliWinbarSep#" .. SEP) .. "%#AzureCliWinbarSep# \u{2503}%#AzureCliWinbar#",
+        table.concat(plain, SEP)
+    end
+  end
+  return "", ""
 end
 
 -- Everything below needs Neovim.
@@ -352,7 +436,12 @@ function M.bar()
       end
     end
     if #labels < 2 then return "" end
-    return (M.strip_text(labels, cur, math.floor(width * 0.6)))
+    -- What the window's own winbar needs comes first (#107): the strip
+    -- gets what's left of it, at most 60% of the window.
+    local UI = require("azure-cli.ui")
+    local own = vim.api.nvim_strwidth(UI.strip_hl(UI.own_winbar(win))) + 1  -- + its leading pad
+    local room = math.min(math.floor(width * 0.6), width - own)
+    return (M.strip_text(labels, cur, room, vim.api.nvim_strwidth))
   end)
   return ok and s or ""
 end

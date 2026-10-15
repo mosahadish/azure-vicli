@@ -484,6 +484,13 @@ function M.wo(win, name, value)
   vim.api.nvim_set_option_value(name, value, { win = win, scope = "local" })
 end
 
+-- `win`'s own winbar: its 'winbar' without the strip M.wo put in front.
+function M.own_winbar(win)
+  local v = vim.api.nvim_get_option_value("winbar", { win = win, scope = "local" })
+  if v:sub(1, #M.STRIP) == M.STRIP then v = v:sub(#M.STRIP + 1) end
+  return v
+end
+
 -- Pads `s` to exactly `n` display cells, or truncates it to n-1 cells plus
 -- an ellipsis. Truncation counts cells, never bytes, so a multi-byte or
 -- double-width character is never cut in half (which used to leave a row
