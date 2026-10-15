@@ -45,12 +45,12 @@ require("azure-cli.ui").confirm = function(opts, cb)
 end
 require("azure-cli.shell").notify = function(msg) said[#said + 1] = msg end
 
--- dd on plan `key`'s row: waits until it has said something.
+-- dd on plan `key`'s row: waits until it has said something - after a
+-- Discard, the toast once its worktrees' git jobs are done (#119).
 local function press(key)
   asked, said = nil, {}
-  local finished = false
-  PD.ask({ key = key }, function() finished = true end)
-  vim.wait(10000, function() return finished or #said > 0 or (asked and not answer) end, 10)
+  PD.ask({ key = key })
+  vim.wait(10000, function() return #said > 0 or (asked and not answer) end, 10)
 end
 
 local md = "# T\n\n## Goal\nx\n\n## Approach\nx\n\n## Files\n- `a`\n\n## Risks\nx\n\n## Test plan\nx\n\n## Open questions\nNone"
@@ -140,8 +140,11 @@ do
   press(key)
   local moved = discarded(key)
   table.sort(moved)
-  check("confirm: the question lists the clean worktree as removed",
-    asked and table.concat(asked.lines, "\n"):find("(nothing in it) - removed", 1, true), vim.inspect(asked and asked.lines))
+  check("confirm: the question lists the worktree, looked at after you answer",
+    asked and table.concat(asked.lines, "\n"):find("After you answer:\n  - its worktree repo-wi9801 - removed if clean, kept if it has changes", 1, true),
+    vim.inspect(asked and asked.lines))
+  check("confirm: the toast says the clean worktree was removed", said[1] and said[1]:find("Removed its worktree " .. wt, 1, true),
+    vim.inspect(said))
   check("confirm: plan and conversation files moved to plans/discarded/", not exists(key) and #moved == 3
     and moved[1]:match("%.conversation%.json$") and vim.fn.filereadable(conv_file) == 0, vim.inspect(moved))
   check("confirm: the conversation and the row are gone", CHAT.find_conversation(key) == nil and row_of(key) == nil)
@@ -159,19 +162,18 @@ do
   vim.fn.writefile({ "two" }, wt .. "/a.txt")
   answer = true
   press(key)
-  local q = asked and table.concat(asked.lines, "\n") or ""
-  check("uncommitted: the question says it's kept", q:find("1 uncommitted file: kept", 1, true), q)
   check("uncommitted: kept, the plan discarded", vim.fn.isdirectory(wt) == 1 and vim.fn.readfile(wt .. "/a.txt")[1] == "two"
     and not exists(key) and #discarded(key) == 3, vim.inspect(said))
-  check("uncommitted: the toast says it was kept", said[1] and said[1]:find("Kept its worktree", 1, true), vim.inspect(said))
+  check("uncommitted: the toast says it was kept, and why", said[1]
+    and said[1]:find("Kept its worktree " .. wt .. " (1 uncommitted file)", 1, true), vim.inspect(said))
 
   key = make_plan(9803)
   wt = make_worktree(9803)
   vim.fn.writefile({ "three" }, wt .. "/a.txt")
   sh({ "git", "-C", wt, "commit", "-q", "-am", "three" })
   press(key)
-  q = asked and table.concat(asked.lines, "\n") or ""
-  check("unpushed: the question says it's kept", q:find("1 unpushed commit: kept", 1, true), q)
+  check("unpushed: the toast says it was kept, and why", said[1]
+    and said[1]:find("Kept its worktree " .. wt .. " (1 unpushed commit)", 1, true), vim.inspect(said))
   check("unpushed: kept, the plan discarded", vim.fn.isdirectory(wt) == 1 and not exists(key), vim.inspect(said))
 end
 
@@ -211,15 +213,14 @@ end
 -- confirm_lines (pure): what goes, what stays.
 do
   local lines = PD.confirm_lines({ key = "wi-1", label = "#1", plan = {}, turns = 0, conversations = {}, queued = false,
-    worktrees = { { dir = "/w", dirty = 2, unpushed = 1, keep = true } } })
+    worktrees = { { dir = "/w" } } })
   local text = table.concat(lines, "\n")
-  check("confirm_lines: goes / stays", lines[1] == "Goes:" and text:find("plans/wi-1.json, .md", 1, true)
-    and text:find("Stays:\n  - #1 itself, and its branch on the server", 1, true)
-    and text:find("  - its worktree w - 2 uncommitted files, 1 unpushed commit: kept\n    /w", 1, true), text)
-  lines = PD.confirm_lines({ key = "wi-1", label = "#1", turns = 1, conversations = {}, queued = true,
-    worktrees = { { dir = "/w", dirty = 0, unpushed = 0, unknown = true, keep = true } } })
+  check("confirm_lines: goes / stays / after you answer", lines[1] == "Goes:" and text:find("plans/wi-1.json, .md", 1, true)
+    and text:find("Stays:\n  - #1 itself, and its branch on the server\n\nAfter you answer:\n"
+      .. "  - its worktree w - removed if clean, kept if it has changes\n    /w", 1, true), text)
+  lines = PD.confirm_lines({ key = "wi-1", label = "#1", turns = 1, conversations = {}, queued = true, worktrees = {} })
   text = table.concat(lines, "\n")
-  check("confirm_lines: git couldn't tell - kept", text:find("git couldn't tell what's in it: kept", 1, true)
+  check("confirm_lines: no worktree - no after-you-answer part", not text:find("After you answer", 1, true)
     and text:find("its conversation (1 turn)", 1, true) and not text:find("the plan (", 1, true), text)
 end
 
@@ -230,10 +231,11 @@ do
   local long = vim.env.HOME .. "/.cache/nvim/azure-cli/fix-worktrees/azure-vicli-wi19-with-a-rather-long-name"
   local lines = PD.confirm_lines({ key = "wi-github-mosahadish~azure-vicli~19", label = "#19 in mosahadish/azure-vicli",
     plan = {}, turns = 12, conversations = { "a", "b" }, queued = false,
-    worktrees = { { dir = long, dirty = 3, unpushed = 2, keep = true }, { dir = long .. "-2", dirty = 0, unpushed = 0 } } })
+    worktrees = { { dir = long }, { dir = long .. "-2" } } })
   local bad = {}
   for _, l in ipairs(lines) do
-    if l ~= "" and l ~= "Goes:" and l ~= "Stays:" and not (l:match("^  %- %S") or l:match("^    %S")) then
+    if l ~= "" and l ~= "Goes:" and l ~= "Stays:" and l ~= "After you answer:"
+      and not (l:match("^  %- %S") or l:match("^    %S")) then
       bad[#bad + 1] = l
     end
   end
@@ -247,7 +249,7 @@ do
   local shown = UI.choose_lines(lines, { "Discard", "Cancel" }, 2, 60)
   local whole, shallow, item = false, {}, nil
   for _, l in ipairs(shown) do
-    if l == " Goes:" or l == " Stays:" or l == "" then item = nil
+    if l == " Goes:" or l == " Stays:" or l == " After you answer:" or l == "" then item = nil
     elseif l:match("^   %- ") then item = true
     elseif item and not l:match("^     %S") then shallow[#shallow + 1] = l end
     if l:find(path, 1, true) then whole = true end
@@ -441,6 +443,132 @@ do
   check("#114 old plan: dd moves it to plans/discarded/, keeps its changed worktree", not exists("wi-88")
     and #discarded("wi-88") == 2 and vim.fn.isdirectory(old) == 1 and vim.fn.readfile(old .. "/a.txt")[1] == "unfinished",
     vim.inspect({ said, discarded("wi-88") }))
+end
+
+-- #119: the question comes at once, with no git; Cancel runs none; after
+-- Discard the plan is gone before any git job answers; all worktrees are
+-- checked in parallel, a clean one removed, a changed one and one git
+-- failed on kept, one toast naming them; none removed twice. git stubbed:
+-- every call counted, its answer held until release().
+do
+  local TOOLS = require("azure-cli.chat.tools")
+  local real_git = TOOLS.git
+  local calls, held = {}, {}
+  TOOLS.git = function(argv, cb)
+    calls[#calls + 1] = argv
+    held[#held + 1] = { argv = argv, cb = cb }
+  end
+  local function count(word)
+    local n = 0
+    for _, a in ipairs(calls) do if vim.tbl_contains(a, word) then n = n + 1 end end
+    return n
+  end
+  local removes = function()
+    local out = {}
+    for _, a in ipairs(calls) do if a[4] == "worktree" and a[5] == "remove" then out[#out + 1] = a[6] end end
+    return out
+  end
+  -- What git would say: a worktree named *dirty* has a changed file, git
+  -- fails on one named *broken*; everything else is clean and pushed.
+  local function reply(argv)
+    local dir = argv[3]
+    if vim.tbl_contains(argv, "status") then
+      if dir:find("broken", 1, true) then return false, "", "fatal: boom" end
+      return true, dir:find("dirty", 1, true) and " M a.txt" or "", ""
+    elseif vim.tbl_contains(argv, "rev-list") then return true, "0", ""
+    elseif vim.tbl_contains(argv, "rev-parse") then return true, "/x/.git", ""
+    end
+    return true, "", ""
+  end
+  local function release()
+    while #held > 0 do
+      local h = table.remove(held, 1)
+      h.cb(reply(h.argv))
+    end
+  end
+  local function fake_worktree(name, id)
+    local d = FIX.story_path(name, id)
+    vim.fn.mkdir(d, "p")
+    vim.fn.writefile({ "gitdir: /x/.git/worktrees/" .. name }, d .. "/.git")
+    return d
+  end
+  local at_question
+  meanwhile = function() at_question = #calls end
+
+  local id = 11901
+  local key = make_plan(id)
+  make_conv(key, id)
+  local clean, dirty, broken = fake_worktree("clean", id), fake_worktree("dirty", id), fake_worktree("broken", id)
+
+  -- Cancel.
+  calls, held, asked, said, at_question, answer = {}, {}, nil, {}, nil, false
+  PD.ask({ key = key })
+  local q = asked and table.concat(asked.lines, "\n") or ""
+  check("#119 question: shown with no git run first", asked ~= nil and at_question == 0, vim.inspect(calls))
+  check("#119 question: each worktree, removed if clean, kept if it has changes", q:find("After you answer:", 1, true)
+    and q:find("its worktree clean-wi11901 - removed if clean, kept if it has changes", 1, true)
+    and q:find("its worktree dirty-wi11901 -", 1, true) and q:find("its worktree broken-wi11901 -", 1, true), q)
+  check("#119 cancel: no git at all, everything stays", #calls == 0 and exists(key) and row_of(key) ~= nil, vim.inspect(calls))
+
+  -- Discard.
+  local finished = false
+  calls, held, asked, said, at_question, answer = {}, {}, nil, {}, nil, true
+  PD.ask({ key = key }, function() finished = true end)
+  check("#119 discard: the question still came with no git", asked ~= nil and at_question == 0, vim.inspect(calls))
+  check("#119 discard: the plan is gone before any git job answers", finished and #held > 0 and not exists(key)
+    and #discarded(key) == 3 and CHAT.find_conversation(key) == nil and row_of(key) == nil and #said == 0,
+    vim.inspect({ finished, #held, said }))
+  check("#119 discard: all worktrees checked in parallel", count("status") == 3 and #held == 3 and #removes() == 0,
+    vim.inspect(calls))
+  release()
+  check("#119 discard: only the clean worktree is removed", #removes() == 1 and removes()[1] == clean, vim.inspect(removes()))
+  check("#119 discard: one toast, removed and kept, and why", #said == 1
+    and said[1]:find("Removed its worktree " .. clean, 1, true)
+    and said[1]:find("its worktree " .. dirty .. " (1 uncommitted file)", 1, true)
+    and said[1]:find("its worktree " .. broken .. " (git couldn't tell what's in it)", 1, true), vim.inspect(said))
+
+  -- Discarding again while the first discard's jobs run: never twice.
+  id = 11902
+  key = make_plan(id)
+  local again = fake_worktree("again", id)
+  calls, held, said = {}, {}, {}
+  PD.ask({ key = key })
+  check("#119 twice: the first discard is checking it", count("status") == 1 and #said == 0, vim.inspect(calls))
+  make_plan(id)  -- a new plan under the same key, discarded while the first's jobs run
+  PD.ask({ key = key })
+  check("#119 twice: the second leaves it to the first", count("status") == 1 and #said == 1
+    and said[1]:find("its worktree " .. again .. " (an earlier discard is still checking it)", 1, true), vim.inspect(said))
+  release()
+  check("#119 twice: removed once", #removes() == 1 and removes()[1] == again and #said == 2
+    and said[2]:find("Removed its worktree " .. again, 1, true), vim.inspect({ removes(), said }))
+
+  -- gD goes through the same flow: no git before the question or on
+  -- Cancel; the tab closes before any git job answers.
+  id = 11903
+  key = make_plan(id)
+  make_conv(key, id)
+  local gdwt = fake_worktree("gd", id)
+  PLAN.open(key)
+  local tab = PLAN.current().tab
+  local function gd()
+    vim.api.nvim_set_current_win(PLAN.current().plan_win)
+    calls, held, asked, said, at_question = {}, {}, nil, {}, nil
+    vim.api.nvim_feedkeys(require("azure-cli.keys").first("plan", "discard"), "x", false)
+  end
+  answer = false
+  gd()
+  check("#119 gD cancel: asked with no git, none after", asked ~= nil and at_question == 0 and #calls == 0
+    and vim.api.nvim_tabpage_is_valid(tab) and exists(key), vim.inspect(calls))
+  answer = true
+  gd()
+  check("#119 gD discard: asked with no git, the tab closed before git answers", asked ~= nil and at_question == 0
+    and not vim.api.nvim_tabpage_is_valid(tab) and not exists(key) and #held == 1 and #said == 0, vim.inspect(calls))
+  release()
+  check("#119 gD discard: the clean worktree removed, one toast", #removes() == 1 and removes()[1] == gdwt and #said == 1
+    and said[1]:find("Removed its worktree " .. gdwt, 1, true), vim.inspect(said))
+
+  meanwhile = nil
+  TOOLS.git = real_git
 end
 
 print(fails == 0 and "all plan-discard tests passed" or (fails .. " plan-discard test(s) failed"))

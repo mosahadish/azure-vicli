@@ -1,18 +1,23 @@
 -- lua/azure-cli/chat/plan_discard.lua: throwing a plan away yourself (#98) -
 -- dd on an Agents screen row, gD in its plan view (#103, which closes that
--- view's tab). It asks first, saying what goes and what
--- stays; refuses while that agent is working; moves the plan's files and
--- its conversation's into plans/discarded/<key>-<time>.* (put them back by
--- hand to undo); and removes the change's worktree only when it has
--- nothing in it - one with uncommitted or unpushed changes is kept, and
--- the question says so. The main chat's discard_plan (chat/plan.lua) moves
--- an orphan plan's files with M.move_files.
+-- view's tab). It asks first, at once - nothing before the question runs
+-- git (#119) - saying what goes and what stays; refuses while that agent
+-- is working; moves the plan's files and its conversation's into
+-- plans/discarded/<key>-<time>.* (put them back by hand to undo); then, in
+-- the background, all worktrees in parallel, removes the change's worktree
+-- only when git says it has nothing in it - one with uncommitted or
+-- unpushed changes, or one git can't read, is kept - and one toast says
+-- which. The main chat's discard_plan (chat/plan.lua) moves an orphan
+-- plan's files with M.move_files.
 --
---   M.inspect(key, cb)        what discarding plan `key` touches: cb(info)
+--   M.inspect(key, cb)        what discarding plan `key` touches, no git:
+--                             cb(info), at once
 --   M.confirm_lines(info)     the question: what goes, what stays (pure)
 --   M.move_files(key, stamp)  plans/<key>.json/.md into plans/discarded/:
 --                             the directory and stamp, or nil and why
---   M.discard(key, cb)        does it: cb(err, what it did)
+--   M.discard(key, on_gone, on_done)  does it: on_gone(err) once the plan
+--                             is gone, on_done(what it did) once the
+--                             worktrees' git jobs have finished
 --   M.ask(row, after)         dd / gD: all of the above, `after` once it's gone
 local M = {}
 
@@ -83,9 +88,10 @@ local function worktree_state(dir, cb)
   end)
 end
 
--- What discarding plan `key` touches: cb({ key, label, target, plan (its
--- record or nil), conv, running, turns (yours and the agent's), queued,
--- conversations (files), worktrees (worktree_state's) }).
+-- What discarding plan `key` touches, from what needs no git: cb({ key,
+-- label, target, plan (its record or nil), conv, running, turns (yours and
+-- the agent's), queued, conversations (files), worktrees ({ dir }s - what's
+-- in them is looked at after you answer) }), at once.
 function M.inspect(key, cb)
   local rec = PLAN().load(key)
   local conv = CHAT().find_conversation(key)
@@ -98,18 +104,10 @@ function M.inspect(key, cb)
   local info = { key = key, target = target, plan = rec, conv = conv, running = conv and conv.running or false,
     turns = turns, queued = job ~= nil, conversations = conversation_files(key, conv), worktrees = {},
     label = target and PLAN().target_label(target) or (conv and conv.label) or (job and job.label) or key }
-  if info.running or not target then return cb(info) end
-  local dirs = worktree_dirs(target)
-  local i = 0
-  local function next_dir()
-    i = i + 1
-    if i > #dirs then return cb(info) end
-    worktree_state(dirs[i], function(w)
-      info.worktrees[#info.worktrees + 1] = w
-      next_dir()
-    end)
+  if not info.running and target then
+    for _, d in ipairs(worktree_dirs(target)) do info.worktrees[#info.worktrees + 1] = { dir = d } end
   end
-  next_dir()
+  cb(info)
 end
 
 local function plural(n, word) return n .. " " .. word .. (n == 1 and "" or "s") end
@@ -128,8 +126,9 @@ local function worktree_item(w, what)
   return { "its worktree " .. vim.fn.fnamemodify(w.dir, ":t") .. " " .. what, vim.fn.fnamemodify(w.dir, ":~") }
 end
 
--- The question's lines (UI.confirm): what goes, what stays - every item
--- "  - ", its extra lines (a path) "    " under its text. Pure.
+-- The question's lines (UI.confirm): what goes, what stays, and the
+-- worktrees git looks into after you answer - every item "  - ", its extra
+-- lines (a path) "    " under its text. Pure.
 function M.confirm_lines(info)
   local goes, stays = {}, {}
   if info.plan then
@@ -142,12 +141,10 @@ function M.confirm_lines(info)
     goes[#goes + 1] = { "no conversation: the main chat wrote this plan before planning moved to agents" }
   end
   if info.queued then goes[#goes + 1] = { "its place in the queue" } end
-  for _, w in ipairs(info.worktrees) do
-    if not w.keep then goes[#goes + 1] = worktree_item(w, "(nothing in it) - removed") end
-  end
   stays[#stays + 1] = { info.label .. " itself, and its branch on the server" }
+  local later = {}
   for _, w in ipairs(info.worktrees) do
-    if w.keep then stays[#stays + 1] = worktree_item(w, "- " .. changes_of(w) .. ": kept") end
+    later[#later + 1] = worktree_item(w, "- removed if clean, kept if it has changes")
   end
   local lines = {}
   local function list(title, items)
@@ -159,6 +156,10 @@ function M.confirm_lines(info)
   list("Goes:", goes)
   lines[#lines + 1] = ""
   list("Stays:", stays)
+  if #later > 0 then
+    lines[#lines + 1] = ""
+    list("After you answer:", later)
+  end
   return lines
 end
 
@@ -198,11 +199,37 @@ local function refusal(label)
     .. " first."
 end
 
+-- The worktrees a discard's git jobs are looking at or removing right now:
+-- a second discard (a new plan under the same key) leaves them alone, so
+-- none is checked or removed twice.
+local busy = {}
+
+-- Worktree `dir` after its plan went: checked first, removed only when
+-- git says it's clean, kept on anything else - changes, or git failing.
+-- cb(removed, why kept).
+local function check_then_remove(dir, cb)
+  if busy[dir] then return cb(false, "an earlier discard is still checking it") end
+  busy[dir] = true
+  local function done(ok, why)
+    busy[dir] = nil
+    cb(ok, why)
+  end
+  worktree_state(dir, function(w)
+    if w.keep then return done(false, changes_of(w)) end
+    remove_worktree(dir, function(ok, err)
+      if ok then return done(true) end
+      done(false, "git wouldn't remove it: " .. err)
+    end)
+  end)
+end
+
 -- Discards plan `key`, looking again at what it touches (the question
--- waited for you). cb(err, what it did).
-function M.discard(key, cb)
+-- waited for you). The plan goes at once, no git: on_gone(err). Its
+-- worktrees are then checked and removed in the background, all in
+-- parallel: on_done(what it did) once the last git job has finished.
+function M.discard(key, on_gone, on_done)
   M.inspect(key, function(info)
-    if info.running then return cb(refusal(info.label)) end
+    if info.running then return on_gone(refusal(info.label)) end
     require("azure-cli.chat.agents").unqueue(key)
     -- Its plan view's tab closes; from inside it (gD) you go back to the
     -- inner tab before it, as its q does - one in the background stays put.
@@ -212,42 +239,44 @@ function M.discard(key, cb)
       pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(view.tab))
     end
     local dir, stamp = M.move_files(key)
-    if not dir then return cb(stamp) end
+    if not dir then return on_gone(stamp) end
     local problems = {}
     for i, f in ipairs(info.conversations) do
       local to = dir .. "/" .. key .. "-" .. stamp .. ".conversation" .. (i > 1 and ("-" .. i) or "") .. ".json"
       if vim.fn.rename(f, to) ~= 0 then problems[#problems + 1] = "couldn't move " .. f end
     end
     CHAT().drop_conversation(key)
-    local kept, removed = {}, {}
-    local i = 0
-    local function next_worktree()
-      i = i + 1
-      local w = info.worktrees[i]
-      if not w then
-        local msg = "Discarded the plan for " .. info.label .. " (moved to " .. dir .. ")."
-        if #removed > 0 then msg = msg .. " Removed its worktree " .. table.concat(removed, ", ") .. "." end
-        if #kept > 0 then msg = msg .. " Kept " .. table.concat(kept, "; ") .. "." end
-        if #problems > 0 then msg = msg .. " But: " .. table.concat(problems, "; ") .. "." end
-        return cb(nil, msg)
+    on_gone(nil)
+    -- In the worktrees' order, whichever job finishes first.
+    local results, left = {}, #info.worktrees
+    local function finish()
+      local kept, removed = {}, {}
+      for i, w in ipairs(info.worktrees) do
+        local r = results[i]
+        if r.ok then removed[#removed + 1] = w.dir
+        else kept[#kept + 1] = "its worktree " .. w.dir .. " (" .. r.why .. ")" end
       end
-      if w.keep then
-        kept[#kept + 1] = "its worktree " .. w.dir .. " (" .. changes_of(w) .. ")"
-        return next_worktree()
-      end
-      remove_worktree(w.dir, function(ok, err)
-        if ok then removed[#removed + 1] = w.dir
-        else kept[#kept + 1] = "its worktree " .. w.dir .. " (git wouldn't remove it: " .. err .. ")" end
-        next_worktree()
+      local msg = "Discarded the plan for " .. info.label .. " (moved to " .. dir .. ")."
+      if #removed > 0 then msg = msg .. " Removed its worktree " .. table.concat(removed, ", ") .. "." end
+      if #kept > 0 then msg = msg .. " Kept " .. table.concat(kept, "; ") .. "." end
+      if #problems > 0 then msg = msg .. " But: " .. table.concat(problems, "; ") .. "." end
+      if on_done then on_done(msg) end
+    end
+    if left == 0 then return finish() end
+    for i, w in ipairs(info.worktrees) do
+      check_then_remove(w.dir, function(ok, why)
+        results[i] = { ok = ok, why = why }
+        left = left - 1
+        if left == 0 then finish() end
       end)
     end
-    next_worktree()
   end)
 end
 
 -- dd on an Agents screen row, gD in a plan view ({ key = its key }):
--- refused while its agent works, else the question, then discarded;
--- `after` (a redraw) once it's done.
+-- refused while its agent works, else the question (at once, no git),
+-- then discarded; `after` (a redraw) as soon as the plan is gone, the
+-- toast once its worktrees have been dealt with.
 function M.ask(row, after)
   if not row then return end
   M.inspect(row.key, function(info)
@@ -256,10 +285,10 @@ function M.ask(row, after)
     require("azure-cli.ui").confirm({ title = "Discard the plan for " .. info.label .. "?", lines = M.confirm_lines(info),
       yes = "Discard", default = "no" }, function(yes)
       if not yes then return end
-      M.discard(row.key, function(err, msg)
-        notify(err or msg, err and vim.log.levels.WARN or nil)
+      M.discard(row.key, function(err)
+        if err then notify(err, vim.log.levels.WARN) end
         if after then after() end
-      end)
+      end, function(msg) notify(msg) end)
     end)
   end)
 end
