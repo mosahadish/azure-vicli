@@ -544,6 +544,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-watchdog.lua (headless nvim)" "$out"
   fi
 
+  # The reviewer Overview's highlighting (review/overview_syntax.lua, #135):
+  # Markdown only in the description and comment bodies, no markdownError.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-review-overview-syntax.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all overview syntax tests passed"* ]]; then
+    pass "test-review-overview-syntax.lua (headless nvim)"
+  else
+    fail "test-review-overview-syntax.lua (headless nvim)" "$out"
+  fi
+
   # poll.lua (#93): the network polls slow while unfocused or idle and
   # refresh once on return, on a clock the test turns by hand; the phone
   # dashboard's feed keeps its pace.

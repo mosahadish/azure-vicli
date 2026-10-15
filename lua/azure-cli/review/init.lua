@@ -2209,7 +2209,8 @@ local function open_overview(focus)
   if not overview_buf or not vim.api.nvim_buf_is_valid(overview_buf) then
     overview_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[overview_buf].buftype = "nofile"
-    vim.bo[overview_buf].filetype = "markdown"
+    -- Markdown only in the description and comment bodies (#135).
+    require("azure-cli.review.overview_syntax").attach(overview_buf)
     setup_overview_keymaps(overview_buf)
   end
   render_overview()
