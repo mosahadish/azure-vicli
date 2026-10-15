@@ -215,6 +215,10 @@ your dotfiles repo instead:
   anything else asks, showing the exact command - unless you allowed the
   skill doing it, or set `chat.permissions` (`all = "allow"` for an
   autopilot where nothing asks). `/skills` opens a popup of the agent's skills to allow them or start a message with one.
+- **[Phone dashboard](docs/chat.md#phone-dashboard)** - `:AzureCli web start`
+  serves a read-only page of the Agents screen, to watch your agents from a
+  phone. It's off until you turn it on, and its token link survives
+  restarts.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`

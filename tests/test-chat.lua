@@ -170,7 +170,7 @@ do
   check("simplify_threads", #th == 1 and th[1].file == "a.py" and th[1].side == "R" and th[1].line == 3)
   check("clone_path", TOOLS.clone_path({ clonesDir = "C:\\src", repo = "w" }) == "C:/src/w")
 
-  -- Which board a tool works on (GITHUB_PLAN.md phase 6 stage 3): board=,
+  -- Which board a tool works on: board=,
   -- else the view's, else the only board, else Azure's.
   local ST = require("azure-cli.state")
   local saved_boards = ST.BOARDS

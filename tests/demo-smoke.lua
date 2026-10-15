@@ -2132,9 +2132,8 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
   if not ok then return fail("gr's reply wasn't queued") end
 
-  -- The agent's board tools on the Issues board (GITHUB_PLAN.md phase 6
-  -- stage 3): i on #12 in the I tab, so calls without board= go to
-  -- GitHub; start_story makes feature/12-wobble in gizmos, linked to #12;
+  -- The agent's board tools on the Issues board: i on #12 in the I tab,
+  -- so calls without board= go to GitHub; start_story makes feature/12-wobble in gizmos, linked to #12;
   -- create_pull_request closes #12; linking gizmos#7 to #13 asks, adds
   -- "Closes #13" to its description, and u in gH takes it out again. Then
   -- gW on gizmos#7 opens its issue in the I view, and gP on #12 starts an

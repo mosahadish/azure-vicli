@@ -595,7 +595,7 @@ their line when the text around them changes.
 | `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
-| `gD` | Discard this plan, as `dd` on the Agents screen: asks first, refused while its agent works, a worktree with changes stays; the files move to `plans/discarded/` and the plan's tab closes |
+| `gD` | Discard this plan, as `dd` on the Agents screen: the question appears at once (with Discard all too), refused while its agent works; the files move to `plans/discarded/` and the plan's tab closes, then its worktree is checked in the background - removed if clean, kept if it has changes |
 | `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles) |
 | `gh` | Open an older revision, read-only (on one: back to the current one) |
 | `ga` | Ask about this line (in visual mode: these lines) |
@@ -801,7 +801,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
 | `<C-c>` | Stop what it's doing |
-| `dd` | Discard its plan, any plan (an agent's too). It asks first, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is removed only when there's nothing in it: one with uncommitted or unpushed changes is kept, and the question says so. The main chat's `discard_plan` still only discards a plan no agent worked on |
+| `dd` | Discard its plan, any plan (an agent's too). It asks at once, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is looked at only after you answer, in the background: removed when there's nothing in it, kept when it has uncommitted or unpushed changes (or git can't tell), and a toast says which. The question also offers **Discard all**: it asks once more with the count and the names, then discards every plan the screen lists whose agent isn't working (finished ones hidden after 7 days are left out), keeping worktrees with changes, with one toast for all. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `r` / `q` / `?` | Redraw / close / keys |
 
@@ -850,9 +850,14 @@ require("azure-cli").setup({
 ```
 
 `start` shows the URL, token included, in a float - open it on the phone
-(`status` shows it again). The first visit swaps the token for a cookie
-and drops it from the address bar, and a request without it gets 401.
-`:AzureCli web stop` stops it (so does leaving Neovim).
+(`status` shows it again). The link serves the page itself, with no
+redirect, so it works whether you tap it in another app or paste it. The
+page keeps the token in memory, takes it out of the address bar
+(`history.replaceState`), and sends it with each update in an
+`X-Azvicli-Token` header, never in a URL. The same response sets an
+HttpOnly, SameSite=Lax cookie, only so that a reload works. A request
+without the token gets 401, and so does one with a wrong header, even if
+its cookie is good. `:AzureCli web stop` stops it (so does leaving Neovim).
 
 The token is kept across restarts, so a bookmarked link keeps working:
 it's stored in `stdpath("state")/azure-cli/web-token` (e.g.
@@ -869,7 +874,7 @@ permission check is skipped). `dashboard_web.persist_token = false` keeps
 the token in memory only, new every start, as before.
 
 `:AzureCli web rotate` makes a new token. While the dashboard runs, the old
-link and every phone signed in with it get 401 at once; the new token is
+link, open pages and their cookies get 401 at once; the new token is
 saved, and the float shows the new URL. While it's stopped, rotate deletes
 the stored token, so the next `start` makes a new URL. `status` says
 whether a token is stored.

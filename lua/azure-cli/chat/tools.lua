@@ -134,7 +134,7 @@ function M.repo_location(repo, B)
 end
 
 -- ---------------------------------------------------------------------------
--- Which work-item board a tool works on (GITHUB_PLAN.md phase 6 stage 3).
+-- Which work-item board a tool works on.
 
 function M.issues_account() return require("azure-cli.workitems.board").issues_account() end
 
