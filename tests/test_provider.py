@@ -415,6 +415,44 @@ class HttpErrorMessageTests(unittest.TestCase):
 
 class DoctorTests(unittest.TestCase):
     GOOD = "accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n    pat: t\n"
+    TWO = ("accounts:\n"
+           "  - project_name: a\n    org_url: https://dev.azure.com/o\n    pat: t\n    work_items:\n      team: TA\n"
+           "  - project_name: b\n    org_url: https://dev.azure.com/o\n    pat: t\n")
+
+    def setUp(self):
+        # The developer's shell mustn't pick the work-items account.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("AZVICLI_WI_ACCOUNT", "AZVICLI_WI_TEAM"):
+            os.environ.pop(k, None)
+
+    def _work_items(self, text, **env):
+        os.environ.update(env)
+        with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id1", "J")):
+            checks = ac._doctor_config_checks(ac.Config.from_string(text))
+        return next(c for c in checks if c["check"] == "work items")
+
+    def test_work_items_checks_the_account_AZVICLI_WI_ACCOUNT_picks(self):
+        with_b = self.TWO + "    work_items:\n      team: TB\n"
+        row = self._work_items(with_b)
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["detail"], "team 'TA' on a")
+        row = self._work_items(with_b, AZVICLI_WI_ACCOUNT="b")
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["detail"], "team 'TB' on b (AZVICLI_WI_ACCOUNT)")
+
+    def test_work_items_fails_when_AZVICLI_WI_ACCOUNT_matches_nothing(self):
+        row = self._work_items(self.TWO, AZVICLI_WI_ACCOUNT="nope")
+        self.assertFalse(row["ok"])
+        self.assertIn("'nope'", row["detail"])
+
+    def test_work_items_takes_the_team_from_AZVICLI_WI_TEAM(self):
+        row = self._work_items(self.TWO, AZVICLI_WI_ACCOUNT="b", AZVICLI_WI_TEAM="T")
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["detail"], "team 'T' on b (AZVICLI_WI_ACCOUNT)")
+        row = self._work_items(self.TWO, AZVICLI_WI_ACCOUNT="b", AZVICLI_WI_TEAM="")
+        self.assertIn("not configured", row["detail"])
 
     def _write(self, td, text):
         path = os.path.join(td, "azure-cli.yml")
@@ -1276,6 +1314,28 @@ class PatFileTests(unittest.TestCase):
                 checks = ac._doctor_config_checks(cfg)
             where = next(c for c in checks if c["check"].startswith("pat_file location"))
             self.assertTrue(where["ok"], where)
+
+    @unittest.skipIf(os.name == "nt", "no POSIX mode bits on Windows")
+    def test_doctor_names_the_account_on_its_pat_file_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "pat")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("t\n")
+            os.chmod(path, 0o600)
+            # A GitHub account has no project_name: its label, not "?".
+            gh = ac.Config.from_string("accounts:\n  - host: github\n    owner: octo\n    pat_file: {0}\n".format(path))
+            fake = mock.Mock()
+            fake.account_token.return_value = None
+            with mock.patch.object(ac, "github", return_value=fake):
+                names = [c["check"] for c in ac._doctor_config_checks(gh)]
+            self.assertIn("pat_file for GitHub (octo)", names)
+            self.assertIn("pat_file location for GitHub (octo)", names)
+            self.assertFalse(any("?" in n for n in names), names)
+            # Azure: unchanged, its project_name.
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")):
+                names = [c["check"] for c in ac._doctor_config_checks(self._cfg(path))]
+            self.assertIn("pat_file for p", names)
+            self.assertIn("pat_file location for p", names)
 
 
 class AccountsFromSetupTests(unittest.TestCase):

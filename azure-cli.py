@@ -5186,7 +5186,7 @@ def _doctor_config_checks(config):
     for a in config.accounts:
         if not a.pat_file or (isinstance(a.pat, str) and a.pat.strip()):
             continue
-        name = "pat_file for {0}".format(a.project or a.org_url or "?")
+        name = "pat_file for {0}".format(a.label())
         loose = a.pat_file_permission_problem()
         if loose:
             checks.append({"check": name, "ok": False, "detail": loose})
@@ -5196,7 +5196,7 @@ def _doctor_config_checks(config):
         # inside the plugin clone or a dotfiles repo is still a commit away
         # from leaking.
         misplaced = a.pat_file_location_problem()
-        name = "pat_file location for {0}".format(a.project or a.org_url or "?")
+        name = "pat_file location for {0}".format(a.label())
         if misplaced:
             checks.append({"check": name, "ok": False, "detail": misplaced})
         elif os.path.isfile(a.pat_file_path()):
@@ -5243,16 +5243,24 @@ def _doctor_config_checks(config):
         except Exception as ex:  # noqa: BLE001
             checks.append({"check": name, "ok": False, "detail": "{0}".format(ex)})
 
-    wi = next((a for a in config.accounts if a.work_items), None)
-    if wi is None:
+    # The account the W tab uses (WorkItemActions): AZVICLI_WI_ACCOUNT
+    # picks it by project_name, AZVICLI_WI_TEAM can stand in for team:.
+    want = os.environ.get("AZVICLI_WI_ACCOUNT")
+    wi = _wi_select_account(config, os.environ)
+    team = (os.environ.get("AZVICLI_WI_TEAM") or ((wi.work_items or {}).get("team") if wi else "") or "").strip()
+    via = " (AZVICLI_WI_ACCOUNT)" if want else ""
+    if want and wi is None:
+        checks.append({"check": "work items", "ok": False,
+                       "detail": "AZVICLI_WI_ACCOUNT='{0}' matches no Azure account's project_name".format(want)})
+    elif wi is None or (not wi.work_items and not team):
         checks.append({"check": "work items", "ok": True,
                        "detail": "not configured (optional - add a work_items: block with team: to enable W)"})
-    elif not (wi.work_items.get("team") or "").strip():
+    elif not team:
         checks.append({"check": "work items", "ok": False,
                        "detail": "work_items: block on {0} has no team: - it's required".format(wi.project)})
     else:
         checks.append({"check": "work items", "ok": True,
-                       "detail": "team '{0}' on {1}".format(wi.work_items.get("team"), wi.project)})
+                       "detail": "team '{0}' on {1}{2}".format(team, wi.project, via)})
     return checks
 
 
