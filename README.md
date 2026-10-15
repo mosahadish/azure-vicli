@@ -1,6 +1,7 @@
 # azure-vicli
 
-A terminal dashboard for Azure DevOps that lives entirely inside Neovim.
+A terminal dashboard for Azure DevOps (and GitHub) that lives entirely
+inside Neovim.
 
 It shows the pull requests waiting on you, lets you review and comment on them
 with vim navigation, and has a second dashboard for the work items assigned to
@@ -59,9 +60,12 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - git.
 - bash, for `install.sh` and the standalone `azure-cli` launcher (Git for
   Windows provides one on Windows). The plugin install doesn't need it.
-- An Azure DevOps personal access token (PAT) with Code read/write and Work
-  Items read/write scopes, on every account in the config file. A PAT is
-  always required; there is no Azure AD sign-in.
+- For an Azure DevOps (or TFS) account: a personal access token (PAT) with
+  Code read/write and Work Items read/write scopes. A PAT is always
+  required there; there is no Azure AD sign-in.
+- For a [GitHub account](docs/configuration.md#github-accounts): a token
+  with the `repo` scope (plus `project` for the Issues tab), or just the
+  GitHub CLI signed in (`gh auth login`).
 - Optional, for the [chat](docs/chat.md): an agent CLI - Claude Code or the
   GitHub Copilot CLI (or any command that reads a prompt and prints an
   answer).
@@ -150,7 +154,9 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
    writes a template to its platform location (`~/.config/azure-cli.yml`,
    `%APPDATA%\azure-cli.yml` on Windows) and opens it. Fill in `org_url`,
    `project_name` and a PAT with Code (read & write) and Work Items (read &
-   write) scopes, then save - the dashboard opens.
+   write) scopes, then save - the dashboard opens. For GitHub, add an
+   account with `host: github` instead or as well
+   ([GitHub accounts](docs/configuration.md#github-accounts)).
 2. `./azure-cli --doctor` (or `:AzureCli doctor`) whenever something looks
    off: it confirms the file parses and signs in to every organization in
    it.
@@ -183,11 +189,14 @@ your dotfiles repo instead:
 
 - **[Pull request dashboard](docs/dashboard.md)** - the PRs waiting on
   you, grouped by what they need, with build state, votes, unread activity
-  and mentions; vote, complete and re-queue builds from the list.
+  and mentions; vote, complete and re-queue builds from the list. GitHub
+  PRs sit in the same list ([what differs](docs/dashboard.md#github-pull-requests)).
 - **[Reviewer](docs/reviewer.md)** - a two-pane review with an old/new
   gutter, folded context, inline threads, viewed-file tracking, comments
   and replies that appear instantly, batch review, "since my last review"
-  and follow-up views, per-commit diffs and no-LSP code navigation.
+  and follow-up views, per-commit diffs and no-LSP code navigation. On
+  GitHub, review verdicts and the repository's merge types
+  ([what differs](docs/reviewer.md#on-github)).
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
   assignee, priority, sprint moves, discussion and PR links. With a GitHub
   account's `issues:` block, an [Issues tab](docs/work-items.md#issues-github)
@@ -236,10 +245,11 @@ directly):
 | Flag | Output |
 |---|---|
 | `--list` | Every relevant PR as newline-delimited JSON. |
-| `--requeue <id>` | Re-queue expired or failed build validation for a PR. |
-| `--print-pat --org <url> [--project <name>]` | The configured PAT for that account. |
+| `--init-config` | Write the config file template (with `TODO`s) if there isn't one, and print its path. |
+| `--requeue <id>` | Re-queue expired or failed build validation for an Azure DevOps PR. |
+| `--print-pat --org <url> [--project <name>]` | The configured PAT for that Azure DevOps account. |
 | `--whoami --org <url> [--project <name>]` | The authenticated identity as JSON. |
-| `--doctor [--json]` | Check the setup (config file, its fields, sign-in per organization, work items); exit 1 if anything fails. `--json` prints one object per check. |
+| `--doctor [--json]` | Check the setup (config file, its fields, sign-in per organization and GitHub account, work items, a GitHub project); exit 1 if anything fails. `--json` prints one object per check. |
 
 ## License
 

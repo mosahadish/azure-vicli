@@ -60,7 +60,7 @@ solves the widths; see its own header comment for the exact rules).
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
-| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't) |
+| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't). Azure DevOps only for now |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
 | `zM` | Collapse every section |
@@ -72,6 +72,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gq` | Show/hide the [chat panel](chat.md); the agent knows which PR is under the cursor |
 | `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
 | `W` | Switch to the work-items dashboard |
+| `I` | Switch to the [Issues tab](work-items.md#issues-github) - only when a GitHub account has `issues:` |
 | `q` | Quit |
 
 Press `?` for a popup with these keys plus the badge legend below.
@@ -128,6 +129,37 @@ work items are completed and the source branch deleted (both on by
 default), whether to set auto-complete instead of completing now, and the
 build state, unresolved thread count and votes, with a warning when any of
 them argue against merging.
+
+### GitHub pull requests
+
+With a GitHub account (see [GitHub accounts](configuration.md#github-accounts))
+its PRs join the same list, in the same sections, beside the Azure DevOps
+ones - every account is fetched at once, and one that fails is named in a
+"Some accounts failed" warning while the rest still show. What differs:
+
+- **Which PRs.** The open PRs you're asked to review, have reviewed or
+  opened (in unarchived repositories), only under the account's `owner:`
+  when it has one. A PR whose branch is gone is skipped.
+- **Names.** A PR is `repo#12` rather than `!101`.
+- **Votes are reviews.** An approving review counts as an approval and
+  "changes requested" as Azure's wait-for-author (`✗` in the reviewer
+  column), so they sort into the same sections. Asking someone to
+  review again clears their old verdict. `gv` offers GitHub's verdicts
+  (see [Reviewer: On GitHub](reviewer.md#on-github)).
+- **Checks are the build.** The build column is the latest commit's checks:
+  `✓` passed, `✗` failed, `●` pending - never `↻` or a queue position.
+  `gb` opens the PR's Checks page; `gr` doesn't apply yet.
+- **`gd`** has no Policies section (GitHub's branch protection shows in
+  `gm` instead).
+- **`gm`** opens GitHub's merge dialog: the repository's own merge types,
+  the checks, and what blocks the merge - see
+  [Reviewer: On GitHub](reviewer.md#on-github).
+- **Mentions** are `@login`; one in the PR's Conversation tab doesn't put
+  it under Mentions.
+- **Issues, not work items.** `gW`, `gl` and `gL` work on the issues the PR
+  closes, through `Closes #n` lines in its description (see
+  [Linking](work-items.md#issues-github)). The issues live on the Issues
+  tab (`I`), which appears only when a GitHub account has `issues:`.
 
 ### Desktop notifications
 

@@ -383,7 +383,8 @@ python3 tests/screenshots.py            # rewrites docs/images/*.png
 The images under `docs/images/` are generated, not hand-taken: the script
 runs `tests/demo.sh --standalone` in a fixed-size detached `tmux` pane,
 walks through the fake provider's fixtures (dashboard, PR #101, its diff,
-the inline thread, the complete dialog, work items, a work item, then the
+the inline thread, the complete dialog, a GitHub PR's merge dialog, work
+items, a work item, then the
 chat's plan window, a question under a line of a change, the Agents
 screen and the `/skills` popup - those scenes are seeded by
 `tests/shot-{plan,change,agents,skills}.lua` through `:luafile`, since no agent runs), captures each screen with its colours and rasterises it through ImageMagick's

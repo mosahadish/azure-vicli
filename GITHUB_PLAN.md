@@ -272,9 +272,11 @@ is simpler.
      conflict), hides the work-items row, and says auto-merge deletes the
      branch only by the repo's own setting. The agent's
      `complete_pull_request` takes only the repo's methods.
-   - Still to do: requeue (re-run failed jobs), build log, the agent's
-     create PR / add reviewer / set description on GitHub; "update branch"
-     for a PR behind its base, and an admin bypass, if wanted.
+   - The agent's create PR, add reviewer and set description (done, #110:
+     `--create-pr`, `--add-reviewer`, `--set-description` on GitHub).
+   - Still to do: requeue (re-run failed jobs), build log, test results;
+     "update branch" for a PR behind its base, and an admin bypass, if
+     wanted.
    - Agent tools built from caps (enums, descriptions, tools that are
      absent).
    - The chat keys conversations and plans by PR key (`pr-<key>`), not

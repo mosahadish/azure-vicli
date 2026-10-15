@@ -40,9 +40,9 @@ accounts:
 | `org_url` | account | Organization or collection URL. Several accounts may share one. |
 | `pat` | account | Personal access token. Required (or `pat_file`) - there is no Azure AD sign-in. |
 | `pat_file` | account | Instead of `pat`: the path of a file holding nothing but the token (`~` expands). Keeps the secret out of a config you might commit; `chmod 600` it and keep it outside any git checkout - `:AzureCli doctor` flags a file other users can read, and one inside the plugin folder or any git working tree (a dotfiles repo, say). |
-| `hide_ancient` | account | Drop PRs whose latest commit is older than `hide_ancient_days` (default 30 - see [setup() options](#setup-options) below, `setup({hide_ancient_days=...})`). |
+| `hide_ancient` | account | Drop PRs whose latest commit is older than `hide_ancient_days` (default 30 - see [setup() options](#setup-options) below, `setup({hide_ancient_days=...})`). Off when absent. |
 | `clones_dir` | account | Directory holding one clone per repository, named after the repo. Repos are cloned here on demand when you open a PR. |
-| `work_items` | account | Enables the [work-item screens](work-items.md#work-items) for this account: `org_url`/`project_name` become the work-item collection/project. Absent by default - no account's work items are queried until one account has this block. `team` (required) is a team under that project; `assignee` (optional) defaults to your own signed-in display name; `types` (optional, a YAML list or a plain comma-separated string) defaults to `User Story, Bug`; `states` (optional, a YAML list or a plain comma-separated string - see [Work items](work-items.md#work-items)) defaults to `[Active, New, Implemented, Resolved, Closed, Removed]`; `sprint_scope` (optional, `parent` or `all` - see [Work items](work-items.md#work-items)) defaults to `parent`. |
+| `work_items` | account | Enables the [work-item screens](work-items.md#work-items) for this account: `org_url`/`project_name` become the work-item collection/project. Absent by default - no account's work items are queried until one account has this block. `team` (required) is a team under that project; `assignee` (optional) defaults to your own signed-in display name; `types` (optional, a YAML list or a plain comma-separated string) defaults to `User Story, Bug`; `states` (optional, a YAML list or a plain comma-separated string - see [Work items](work-items.md#work-items)) defaults to `[Active, New, Implemented, Resolved, Closed, Removed]` (with `In Progress` ranked as `Active`); `sprint_scope` (optional, `parent` or `all` - see [Work items](work-items.md#work-items)) defaults to `parent`. |
 
 The config file is the only source of credentials. Ambient `AZURE_DEVOPS_EXT_PAT`
 or `ADO_PAT` variables in your shell are never consulted.
@@ -74,14 +74,16 @@ accounts:
 | `host` | `github` (an account without it is Azure DevOps). |
 | `owner` | Optional. Limit the account to one user's or organization's repositories; without it, every PR you're asked to review, have reviewed or opened, anywhere. |
 | `api_url` | Optional. The REST root of a GitHub Enterprise Server (`https://<host>/api/v3`); default `https://api.github.com`. |
-| `pat` / `pat_file` | Optional. A token with the `repo` scope. Without one, the provider asks the GitHub CLI (`gh auth token`, for the account's host) - so after `gh auth login` nothing else is needed. |
+| `pat` / `pat_file` | Optional. A token with the `repo` scope (and `project` for `issues:`). Without one, the provider asks the GitHub CLI (`gh auth token`, for the account's host) - so after `gh auth login` nothing else is needed. It asks once per session: after a new `gh auth login`, restart Neovim. |
 | `clones_dir`, `hide_ancient` | As for an Azure account. |
 | `issues` | Optional. Turns on the [Issues tab](work-items.md#issues-github) (`I`) for a GitHub Projects v2 project; see below. |
 
-`project_name`, `org_url` and `work_items` don't apply. `:AzureCli doctor`
-checks the sign-in, and with `issues:` that the project can be read.
+`project_name`, `org_url` and `work_items` don't apply (`work_items:` on a
+GitHub account is an error). `:AzureCli doctor` checks the sign-in, and
+with `issues:` that the project can be read.
 
-**`issues:`** shows the issues in one of the owner's Projects v2 projects on
+**`issues:`** shows the issues in one of the owner's Projects v2 projects
+(yours, when the account has no `owner:`) on
 the work-items screens, as a tab of their own (`I`), next to the Azure work
 items (`W`):
 
@@ -95,29 +97,24 @@ items (`W`):
 | Field | Meaning |
 |---|---|
 | `project` | Required. The project, by its number (`github.com/orgs/<owner>/projects/<number>`) or its title. |
-| `repo` | Optional. The repository new issues go into. It defaults to the project's only linked repository; with several linked and none set, `n` says to set it. |
-| `scope` | Optional. `mine` (default) lists the issues assigned to you in each iteration; `all` lists everyone's. |
+| `repo` | Optional. The repository new issues go into, as `name` (under the owner) or `owner/name`. It defaults to the project's only linked repository; with several linked and none set, `n` says to set it. |
+| `scope` | Optional. `mine` (default) lists the issues assigned to you (or to `AZVICLI_WI_ASSIGNEE` when it's set) in each iteration; `all` lists everyone's. Anything else is an error. |
 
 The short form `issues: { project: 3 }` works too, and `issues:` goes in
 `setup({ accounts = ... })` the same way. On an Azure account it's an error.
 Reading and changing a project needs the token's `project` scope; with the
 GitHub CLI, add it with `gh auth refresh -s project`. Without a GitHub
-account that has `issues:`, there's no `I` key and no Issues tab.
+account that has `issues:`, there's no `I` key and no Issues tab. With
+several, the Issues tab uses the first, unless `AZVICLI_WI_ACCOUNT` names
+another by its `owner`.
 
-On the dashboard a GitHub PR sits in the same sections (asked to review,
-waiting, signed off, drafts, created by me). The reviewer shows its files,
-diffs, commits and conversations - review threads on their lines, the
-Conversation tab as one thread - and takes comments, replies, edits and
-deletes as on Azure. `s` resolves a conversation or opens it again, and `gv`
-offers GitHub's verdicts: Approve, Request changes (it asks what needs
-changing - GitHub wants a reason) and Dismiss my review (GitHub allows that
-with write access to the repository). A batch review (`gB`, then `gS`) goes
-to GitHub as one review - its line comments and thread replies, the PR-level
-comments and Conversation replies as its text, and the verdict you pick (or
-Comment only) - so the author gets one notification, and a review that fails
-leaves the whole queue queued. GitHub takes a line comment only on a
-changed line or the few around one; elsewhere, comment on the file. Merging,
-builds and the agent's tools on a GitHub PR are still to come; trying one
+On the dashboard a GitHub PR sits in the same sections, and the reviewer
+reviews, comments on and merges it as it does an Azure DevOps one; the
+agent's tools work on it too. What differs - verdicts instead of votes,
+resolving instead of thread statuses, the repository's merge types and
+checks - is in [Pull request dashboard](dashboard.md#github-pull-requests)
+and [Reviewer](reviewer.md#on-github). A build's log, its test results and
+re-queuing a build are Azure DevOps only for now; trying one on a GitHub PR
 says so.
 
 ### Accounts in setup() instead of a file (plugin)
@@ -158,7 +155,10 @@ applies the defaults below until it's called - and every option can be set
 independently; leaving one out never resets another. `opts` is validated
 immediately: an unknown `keys`/`timing` field, or a value of the wrong
 type, raises an error at `setup()` time naming the field, rather than
-failing silently or only surfacing later.
+failing silently or only surfacing later. (`azure-cli.yml` isn't checked
+that strictly: an account field it doesn't know - a misspelt `pat_file`, or
+a `token:` that doesn't exist - is ignored, so check the names against the
+tables above.)
 
 **Standalone launcher users** have no `init.lua` to call `setup()` from.
 Put an `azure-cli.lua` next to your `azure-cli.yml` (same directory) that
@@ -213,7 +213,7 @@ Optional overrides:
 
 | Variable | Meaning |
 |---|---|
-| `AZVICLI_WI_ACCOUNT` | Selects which account's `work_items:` block backs the work-item screens, by `project_name`, when more than one account has one (default: the first account in `accounts:` that has one). |
+| `AZVICLI_WI_ACCOUNT` | Selects which account's `work_items:` block backs the work-item screens, by `project_name`, when more than one account has one (default: the first account in `accounts:` that has one). For the Issues tab it names a GitHub account's `issues:` by its `owner`. |
 | `AZVICLI_WI_COLLECTION`, `AZVICLI_WI_PROJECT`, `AZVICLI_WI_TEAM`, `AZVICLI_WI_ASSIGNEE`, `AZVICLI_WI_TYPES` | Override the selected account's `org_url`/`project_name`/`work_items:` fields (see [Configuration](#configuration)) one at a time, without editing azure-cli.yml. |
 | `AZVICLI_PREFETCH_DIR` | Where branch-prefetch markers and the `.userid` cache are written. Default: the plugin sets this to Neovim's own cache directory (`stdpath("cache") .. "/azure-cli"`) for every provider call, so a plain `azure-cli.py` invocation with no Lua session around it (headless `--list`/`--print-pat`/...) falls back to the platform cache directory's own `azure-cli/` subfolder instead - `%LOCALAPPDATA%\azure-cli\cache` on Windows, `$XDG_CACHE_HOME/azure-cli` (default `~/.cache/azure-cli`) elsewhere. |
 | `AZVICLI_CONFIG` | Overrides the config file path entirely (`~` expanded), ahead of the platform default - see [setup() options](#setup-options)' `config`, which sets this. The `--serve` daemon reads it once, at start-up: a changed value takes effect after a Neovim restart. |
