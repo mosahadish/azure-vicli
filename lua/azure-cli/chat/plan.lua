@@ -70,22 +70,26 @@ for k, v in pairs(require("azure-cli.chat.plan_text")) do M[k] = v end
 -- ---------------------------------------------------------------------------
 -- Finding a plan.
 
--- The plan for the change in worktree `dir` (start_fix's <repo>-<pr id>,
--- start_story's <repo>-wi<id>): its record, or nil.
+-- The plan for the change in worktree `dir` (start_fix's <repo>-<pr id>
+-- or, for a GitHub PR, pr-github-<key>; start_story's <repo>-wi<id>): its
+-- record, or nil.
 function M.for_worktree(dir)
   local name = vim.fn.fnamemodify((dir or ""):gsub("[/\\]+$", ""), ":t")
+  -- A GitHub PR's worktree is named after its plan (#113); only those
+  -- have a "~".
+  if name:find("~", 1, true) and name:match("^pr%-github%-.") then return M.load(name) end
   local wi = name:match("%-wi(%d+)$")
   if wi then return M.load("wi-" .. wi) end
   local pr = name:match("%-(%d+)$")
   if not pr then return nil end
-  -- A GitHub PR's plan is under its key (#109): the listed PR whose fix
-  -- worktree this is.
+  -- A GitHub PR's fix begun before #113 is in <repo>-<id>, its plan under
+  -- its key (#109): the listed PR whose old fix worktree this is.
   local STATE = require("azure-cli.state")
   local TF = require("azure-cli.chat.tools_fix")
   local cands = vim.list_extend({}, (STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs) or {})
   if STATE.PR_CURRENT then cands[#cands + 1] = STATE.PR_CURRENT end
   for _, p in ipairs(cands) do
-    if tostring(p.id) == pr and vim.fn.fnamemodify(TF.path(p), ":t") == name then
+    if tostring(p.id) == pr and vim.fn.fnamemodify(TF.legacy_path(p), ":t") == name then
       local rec = M.load(M.key(M.pr_target(p)))
       if rec then return rec end
     end

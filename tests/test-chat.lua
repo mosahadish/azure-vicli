@@ -995,6 +995,114 @@ do
   AG.reset()
 end
 
+-- --- #113: two GitHub cli#7s get a fix worktree each; old <repo>-<id> ones still work --
+do
+  local PL = require("azure-cli.chat.plan")
+  local TF = require("azure-cli.chat.tools_fix")
+  local STATE = require("azure-cli.state")
+  local c1 = { id = 7, host = "github", key = "o1~cli~7", repo = "cli", source = "f1" }
+  local c2 = { id = 7, host = "github", key = "o2~cli~7", repo = "cli", source = "f2" }
+  local az = { id = 101, repo = "web" }
+  local orig_cache = STATE.PR_LIST_CACHE
+  STATE.PR_LIST_CACHE = { prs = { c1, c2, az } }
+  local root = TF.root()
+  check("#113 path: a dir per GitHub #7, named by its plan key",
+    TF.path(c1) == root .. "/pr-github-o1~cli~7" and TF.path(c2) == root .. "/pr-github-o2~cli~7")
+  check("#113 path: an Azure PR's is still <repo>-<id>", TF.path(az) == root .. "/web-101"
+    and TF.legacy_path(c1) == root .. "/cli-7")
+  -- Each finds its own approved plan, by its dir name alone.
+  local function plan(key, target, title)
+    PL.save({ key = key, target = target, title = title, status = "approved", approved_rev = 1, threads = {},
+      revisions = { { by = "agent", markdown = "# " .. title .. "\n\n## Files\n- `src/x.lua` - x" } } })
+  end
+  plan("pr-github-o1~cli~7", PL.pr_target(c1), "One")
+  plan("pr-github-o2~cli~7", PL.pr_target(c2), "Two")
+  plan("pr-101", { pr_id = 101 }, "Azure")
+  check("#113 for_worktree: each #7's own plan", (PL.for_worktree(TF.path(c1)) or {}).title == "One"
+    and (PL.for_worktree(TF.path(c2) .. "/") or {}).title == "Two")
+  local s1, r1 = PL.edit_check({ TF.path(c1) .. "/src/x.lua" })
+  local s2, r2 = PL.edit_check({ TF.path(c2) .. "/src/x.lua" })
+  check("#113 edit_check: a file in each worktree is under its own plan", s1 == "planned" and s2 == "planned"
+    and r1.key == "pr-github-o1~cli~7" and r2.key == "pr-github-o2~cli~7")
+  check("#113 for_worktree: an Azure <repo>-<id> worktree still finds its plan",
+    (PL.for_worktree(root .. "/web-101") or {}).title == "Azure")
+  -- fix_dir: an Azure worktree as it was; a GitHub fix begun before #113
+  -- only while one listed PR could own it - never moved either way.
+  vim.fn.mkdir(root .. "/web-101/.git", "p")
+  vim.fn.mkdir(root .. "/cli-7/.git", "p")
+  check("#113 fix_dir: the existing Azure worktree", TF.fix_dir(az) == root .. "/web-101")
+  check("#113 fix_dir: an old GitHub cli-7 with both #7s listed is neither's",
+    TF.fix_dir(c1) == TF.path(c1) and TF.fix_dir(c2) == TF.path(c2))
+  STATE.PR_LIST_CACHE = { prs = { c1, az } }
+  check("#113 fix_dir: an old GitHub cli-7 with one #7 listed is its", TF.fix_dir(c1) == root .. "/cli-7")
+  check("#113 for_worktree: the old GitHub cli-7 finds that PR's plan",
+    (PL.for_worktree(root .. "/cli-7") or {}).title == "One")
+  vim.fn.mkdir(TF.path(c1) .. "/.git", "p")
+  check("#113 fix_dir: its key dir once there is one", TF.fix_dir(c1) == TF.path(c1)
+    and vim.fn.isdirectory(root .. "/cli-7/.git") == 1)
+  for _, d in ipairs({ "web-101", "cli-7", "pr-github-o1~cli~7" }) do vim.fn.delete(root .. "/" .. d, "rf") end
+  for _, k in ipairs({ "pr-github-o1~cli~7", "pr-github-o2~cli~7", "pr-101" }) do
+    pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".json")
+  end
+  STATE.PR_LIST_CACHE = orig_cache
+end
+
+-- --- #113: the watch list keeps two GitHub #7s apart; old entries still work ---------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    cache = ST.PR_LIST_CACHE }
+  local closed, asked = {}, {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.note, CH.alert = function() end, function() end
+  ST.PR_LIST_CACHE = { prs = {} }
+  T.provider = function(argv, env, cb)
+    if argv[1] == "--get-pr" then
+      asked[#asked + 1] = env.AZVICLI_REPO
+      local repo = env.AZVICLI_REPO
+      if env.AZVICLI_PROJECT == "p" then
+        return cb(true, vim.json.encode({ id = 500, title = "Az", state = "active", org = "o", project = "p", repo = "r" }), "")
+      end
+      return cb(true, vim.json.encode({ id = 7, host = "github", key = "o~" .. repo .. "~7", repo = repo, org = "api",
+        project = "o", title = repo, state = closed[repo] and "completed" or "active" }), "")
+    end
+    cb(true, vim.json.encode({ value = {} }), "")
+  end
+  ST.whoami = { ["o|p"] = { id = "me" }, ["api|o"] = { id = "me" } }
+  local file = require("azure-cli.chat.store").root() .. "/watched.json"
+  W._reset()
+  -- Written before #113: an Azure PR and a GitHub #7 under their numbers.
+  vim.fn.mkdir(vim.fn.fnamemodify(file, ":h"), "p")
+  vim.fn.writefile({ vim.json.encode({
+    ["500"] = { id = 500, org = "o", project = "p", repo = "r", seen = { ["1:1"] = true } },
+    ["7"] = { id = 7, org = "api", project = "o", repo = "a", seen = { ["9:9"] = true } } }) }, file)
+  check("#113 watch: an old Azure entry still loads", W.watched(500) and W.watched({ id = 500 }))
+  W.poll()
+  local saved = vim.json.decode(table.concat(vim.fn.readfile(file), ""))
+  check("#113 watch: an old GitHub entry moves to its key, keeping what it saw", saved["o~a~7"] ~= nil
+    and saved["7"] == nil and saved["o~a~7"].seen["9:9"] == true and saved["500"] ~= nil, vim.inspect(saved))
+  W.add({ id = 7, host = "github", key = "o~b~7", org = "api", project = "o", repo = "b", title = "b" })
+  local a7, b7 = { id = 7, host = "github", key = "o~a~7" }, { id = 7, host = "github", key = "o~b~7" }
+  check("#113 watch: two #7s, two entries", W.watched(a7) and W.watched(b7)
+    and not W.watched({ id = 7, host = "github", key = "o~c~7" }))
+  asked = {}
+  W.poll()
+  table.sort(asked)
+  check("#113 watch: each is fetched in its own repo", table.concat(asked, ",") == "a,b,r", vim.inspect(asked))
+  closed.a = true
+  W.poll()
+  check("#113 watch: closing a's #7 leaves b's watched", not W.watched(a7) and W.watched(b7) and W.watched(500))
+  check("#113 watch: fetched by key", T.fetched["o~b~7"] ~= nil and T.fetched["7"] == nil)
+  W._reset()
+  pcall(vim.fn.delete, file)
+  T.fetched = {}
+  CH.current_agent, CH.note, CH.alert, T.provider = orig.agent, orig.note, orig.alert, orig.provider
+  ST.PR_LIST_CACHE = orig.cache
+end
+
 -- --- max_agents counts plan agents only: the main chat's turn takes no slot (#83) -----
 do
   local AG = require("azure-cli.chat.agents")

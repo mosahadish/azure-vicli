@@ -91,7 +91,8 @@ setmetatable(M, { __call = function(_, T)
     if args.pr_id then
       local pr = T.pr_record(args.pr_id)
       if not pr then return nil, nil, nil, "PR !" .. tostring(args.pr_id) .. " isn't known yet - call get_pull_request first" end
-      if is_repo(FIX.path(pr)) then return FIX.path(pr), nil, "PR !" .. pr.id .. "'s fix worktree" end
+      local wt = FIX.fix_dir(pr)
+      if is_repo(wt) then return wt, nil, "PR !" .. pr.id .. "'s fix worktree" end
       local clone = T.clone_path(pr)
       if is_repo(clone) then return clone, "origin/" .. tostring(pr.source), "PR !" .. pr.id .. " (" .. tostring(pr.source) .. ")" end
       return nil, nil, nil, "PR !" .. pr.id .. "'s repository isn't cloned locally"

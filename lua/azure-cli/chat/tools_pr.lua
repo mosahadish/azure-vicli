@@ -208,7 +208,7 @@ return function(T)
             -- Its reviewers' comments (chat/watch.lua).
             if okd and d.id then
               pcall(require("azure-cli.chat.watch").add, { id = d.id, org = org, project = project, repo = repo,
-                title = args.title })
+                title = args.title, key = d.key, host = d.key and "github" or nil })
               -- The plans it was opened for know it (the Agents screen).
               pcall(require("azure-cli.chat.plan").link_pr, args.work_item_ids, args.source,
                 { id = d.id, org = org, project = project })

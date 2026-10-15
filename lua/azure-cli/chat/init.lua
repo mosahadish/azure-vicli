@@ -1233,7 +1233,7 @@ end
 function M.on_new_comments(pr, count)
   if config().suggest_on_new_comments == false or not M.current_agent() then return end
   -- The chat's own PRs: chat/watch.lua says it (or plans the fix) itself.
-  if require("azure-cli.chat.watch").watched(pr.id) then return end
+  if require("azure-cli.chat.watch").watched(pr) then return end
   M.note("!" .. tostring(pr.id) .. " \"" .. tostring(pr.title or "") .. "\" got " .. tostring(count)
     .. " new comment" .. (count == 1 and "" or "s") .. " - open it and send /triage, or ask here.")
 end

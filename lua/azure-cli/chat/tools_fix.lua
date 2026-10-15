@@ -29,13 +29,42 @@ function M.root()
   return vim.fn.stdpath("cache") .. "/azure-cli/fix-worktrees"
 end
 
--- The worktree for PR `pr`: <root>/<repo>-<id>.
+-- The worktree for PR `pr`: <root>/<repo>-<id> on Azure; where the PR's key
+-- is more than its id (GitHub: owner~repo~n), <root>/<its plan key>, e.g.
+-- pr-github-o~cli~7 (#113: a GitHub number repeats across repos). That name
+-- holds only [%w._~-] (plan_text.key), and an Azure one never a "~".
 function M.path(pr)
+  local PLAN = require("azure-cli.chat.plan")
+  local target = PLAN.pr_target(pr)
+  if target.pr_key then return M.root() .. "/" .. PLAN.key(target) end
+  return M.legacy_path(pr)
+end
+
+-- <root>/<repo>-<id>: every PR's worktree before #113, Azure's still.
+function M.legacy_path(pr)
   return M.root() .. "/" .. (tostring(pr.repo or "repo") .. "-" .. tostring(pr.id)):gsub("[^%w%._%-]", "_")
 end
 
 local function is_repo(p)
   return p ~= "" and (vim.fn.isdirectory(p .. "/.git") == 1 or vim.fn.filereadable(p .. "/.git") == 1)
+end
+
+-- The worktree PR `pr`'s fix is in: M.path(pr) - or, for a GitHub PR whose
+-- fix began before #113, its <repo>-<id> one when no other listed PR has
+-- that name (then neither claims it). Only looked up, never moved.
+function M.fix_dir(pr)
+  local p = M.path(pr)
+  if is_repo(p) then return p end
+  local old = M.legacy_path(pr)
+  if old == p or not is_repo(old) then return p end
+  local STATE = require("azure-cli.state")
+  local cands = vim.list_extend({}, (STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs) or {})
+  if STATE.PR_CURRENT then cands[#cands + 1] = STATE.PR_CURRENT end
+  local HOSTS = require("azure-cli.hosts")
+  for _, o in ipairs(cands) do
+    if tostring(HOSTS.key(o)) ~= tostring(HOSTS.key(pr)) and M.legacy_path(o) == old then return p end
+  end
+  return old
 end
 
 -- The worktree for work item `id` in repository `repo`: <root>/<repo>-wi<id>.
@@ -187,7 +216,10 @@ function M.open_latest(git, cb)
     if not dir then return cb("The agent hasn't started a change yet (start_fix / start_story).") end
     local name = vim.fn.fnamemodify(dir, ":t")
     local wi = name:match("%-wi(%d+)$")
-    title = "Proposed change - " .. (wi and ("#" .. wi) or ("PR !" .. (name:match("%-(%d+)$") or name)))
+    local key = name:find("~", 1, true) and name:match("^pr%-github%-(.+)$")
+    title = "Proposed change - " .. (wi and ("#" .. wi)
+      or (key and require("azure-cli.chat.plan").target_label({ pr_key = key }))
+      or ("PR !" .. (name:match("%-(%d+)$") or name)))
   end
   title = title:gsub(" %(last commit%)$", "")
   M.load(dir, git, function(ok, diff, last)
@@ -202,7 +234,7 @@ end
 function M.dir_for(target)
   if target.work_item_id then return (M.find_story(target.work_item_id)) end
   local pr = require("azure-cli.chat.tools").pr_record(target.pr_key or target.pr_id)
-  local d = pr and M.path(pr)
+  local d = pr and M.fix_dir(pr)
   return (d and is_repo(d)) and d or nil
 end
 
@@ -247,8 +279,9 @@ setmetatable(M, { __call = function(_, T)
     if not pr then
       return nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request for it first."
     end
-    if not is_repo(M.path(pr)) then return nil, "no fix in progress - call start_fix first" end
-    return { dir = M.path(pr), branch = pr.source, label = "PR !" .. pr.id, target = target }
+    local dir = M.fix_dir(pr)
+    if not is_repo(dir) then return nil, "no fix in progress - call start_fix first" end
+    return { dir = dir, branch = pr.source, label = "PR !" .. pr.id, target = target }
   end
 
   -- The plan target of located change `t`.
@@ -335,7 +368,7 @@ setmetatable(M, { __call = function(_, T)
         if not planned then return done(nil, why) end
         local pr, clone = need_clone(args, done)
         if not pr then return end
-        local wt = M.path(pr)
+        local wt = M.fix_dir(pr)
         local ref = "origin/" .. tostring(pr.source)
         env.log("git fetch " .. pr.source)
         T.git({ "git", "-C", clone, "fetch", "-q", "origin", pr.source }, function(fok, _, ferr)
