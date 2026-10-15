@@ -1325,13 +1325,13 @@ end)
 
 -- The chat panel (lua/azure-cli/chat/): tests/fake-chat-agent.py stands in
 -- for Claude Code and speaks real MCP to `azure-cli.py --mcp`, which relays
--- to the panel's bridge. From auth.py's diff, on bob's thread: gq opens the
+-- to the panel's bridge. From auth.py's diff, on bob's thread: i opens the
 -- panel; "triage" sees the view (PR, file, line, thread), reads the threads
 -- and drafts a reply into the batch queue (not posted); gm picks a model;
 -- "branch" creates a branch on the fake origin linked to #3001 (no
 -- question asked); "vote" asks first and the "Deny" goes back to the agent.
--- The panel follows into the dashboard's tab; gq there jumps into it, and
--- gq from inside it hides it.
+-- The panel follows into the dashboard's tab; i there jumps into it, and
+-- q from inside it hides it; gq does nothing any more (issue #118).
 section("CHAT", function()
   local CHAT = require("azure-cli.chat")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
@@ -1409,11 +1409,14 @@ section("CHAT", function()
     return e
   end
 
-  feed("gq")
   local st = require("azure-cli.state").chat
+  -- gq is gone (issue #118): nothing opens.
+  feed("gq<Esc>")  -- (Vim's own gq waits for a motion: <Esc> drops it)
+  if st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq in the diff still opened the chat") end
+  feed("i")
   local wins = st.wins[vim.api.nvim_get_current_tabpage()]
   if not (wins and vim.api.nvim_win_is_valid(wins.log) and vim.api.nvim_get_current_win() == wins.input) then
-    return fail("gq didn't open the chat panel with the input focused")
+    return fail("i didn't open the chat panel with the input focused")
   end
   -- > / < resize the panel.
   local w0 = vim.api.nvim_win_get_width(wins.log)
@@ -1429,7 +1432,7 @@ section("CHAT", function()
   if vim.api.nvim_win_get_position(wins.log)[2] <= vim.api.nvim_win_get_position(diff_win)[2] then
     return fail("the chat panel isn't on the right")
   end
-  -- Straight from the input box gq focused, the way a user types: the
+  -- Straight from the input box i focused, the way a user types: the
   -- view must still be the diff's, not the panel's own windows.
   local e, why = ask("triage this PR's comments")
   if not e then return fail(why) end
@@ -1503,23 +1506,23 @@ section("CHAT", function()
   print("== chat ==")
   print(text(vim.api.nvim_win_get_buf(wins.log)))
 
-  -- Follows into the PR dashboard's tab; gq there hides it.
+  -- Follows into the PR dashboard's tab.
   vim.cmd("tab sbuffer " .. dash)
   ok = vim.wait(3000, function()
     local w = st.wins[vim.api.nvim_get_current_tabpage()]
     return w and vim.api.nvim_win_is_valid(w.log)
   end, 50)
   if not ok then return fail("the chat panel didn't follow into the dashboard's tab") end
-  -- gq from the dashboard while the panel shows: into its input box; gq
-  -- again from there: hidden.
+  -- i from the dashboard while the panel shows: into its input box; q
+  -- from there (in normal mode): hidden.
   vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
-  feed("gq")
+  feed("i")
   vim.cmd("stopinsert")
   if vim.api.nvim_get_current_win() ~= st.wins[vim.api.nvim_get_current_tabpage()].input then
-    return fail("gq on a screen didn't jump into the showing chat's input box")
+    return fail("i on a screen didn't jump into the showing chat's input box")
   end
-  feed("gq")
-  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq inside the chat didn't hide it") end
+  feed("q")
+  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("q inside the chat didn't hide it") end
   vim.ui.select = real_select
   smoke_ok("CHAT")
 end)
@@ -1563,6 +1566,11 @@ section("CHATI", function()
   end
   check("the PR dashboard", ensure_dashboard())
   check("the work-items board", ensure_workitems())
+  -- And where gq used to go to the chat (issue #118): the reviewer's file
+  -- list, when it's open (the diff, the change viewer, a plan and the
+  -- Issues board have their own checks further on).
+  local fl = find_buf("azurecli-files")
+  if fl and vim.fn.win_findbuf(fl)[1] then check("the reviewer's file list", fl) end
   if require("azure-cli.workitems.board").has_issues() then
     require("azure-cli.home").go("issues")
     local ib = shown_buf("azurecli-issues")
@@ -1675,11 +1683,11 @@ section("CHATPLUS", function()
   end, 100)
   if not ok then return fail("the opener didn't land on auth.py's line 12") end
 
-  -- A selection of two lines + gq, then a message naming !102.
+  -- A selection of two lines + <CR>, then a message naming !102.
   CHAT.new_chat(true)
   feed("Vj")
-  feed("gq")
-  if not st.selection or st.selection.to - st.selection.from ~= 1 then return fail("gq in visual mode didn't capture the selection") end
+  feed("<CR>")
+  if not st.selection or st.selection.to - st.selection.from ~= 1 then return fail("<CR> in visual mode didn't capture the selection") end
   local e, why = ask("explain this, and compare with !102")
   if not need(e, why, "selection: 12-13", "refs: yes", "model: fast") then return end
   local streamed_tool = false
@@ -1806,10 +1814,10 @@ section("CHATPLUS", function()
   if vim.api.nvim_get_current_win() ~= dwin or vim.api.nvim_win_get_cursor(dwin)[1] ~= before_line then
     return fail("r moved off the line: " .. before_line .. " -> " .. vim.api.nvim_win_get_cursor(dwin)[1])
   end
-  -- gq goes to the chat from here.
-  feed("gq")
+  -- i goes to the chat from here.
+  feed("i")
   local cw = require("azure-cli.state").chat.wins[ctab]
-  if not (cw and vim.api.nvim_get_current_win() == cw.input) then return fail("gq in the change viewer didn't go to the chat") end
+  if not (cw and vim.api.nvim_get_current_win() == cw.input) then return fail("i in the change viewer didn't go to the chat") end
   vim.cmd("stopinsert")
   vim.api.nvim_set_current_win(dwin)
   feed("q")
@@ -1951,7 +1959,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   if not ok then return fail("gr's reply wasn't queued") end
 
   -- The agent's board tools on the Issues board (GITHUB_PLAN.md phase 6
-  -- stage 3): gq on #12 in the I tab, so calls without board= go to
+  -- stage 3): i on #12 in the I tab, so calls without board= go to
   -- GitHub; start_story makes feature/12-wobble in gizmos, linked to #12;
   -- create_pull_request closes #12; linking gizmos#7 to #13 asks, adds
   -- "Closes #13" to its description, and u in gH takes it out again. Then
@@ -1988,7 +1996,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
     if not iss then return fail("the Issues tab is gone before the agent's board tools") end
     at_row(iss, 12)
     local issue_tab = vim.api.nvim_get_current_tabpage()
-    feed("gq")
+    feed("i")
     answer = "Allow"
     -- #12's own agent: it makes the story branch (start_story).
     as_agent("wi-12", { target = { work_item_id = 12 }, label = "#12" })
@@ -2677,16 +2685,31 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
       if l:find(label, 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) return true end
     end
   end
-  -- <CR> (and gq, the same) on #3001's row: its plan's tab, with that
-  -- agent's conversation in the chat; back on the Agents screen, the main
-  -- chat is as it was (issue #87).
-  for _, key in ipairs({ "<CR>", "gq" }) do
+  -- <CR> on #3001's row: its plan's tab, with that agent's conversation in
+  -- the chat, the focus on the plan; back on the Agents screen, the main
+  -- chat is as it was (issue #87). gq is no longer the same. (That it
+  -- stays in normal mode needs the main loop: test-agents-enter-mode.lua.)
+  for _, key in ipairs({ "<CR>" }) do
     to_row("#3001")
     feed(key)
     if not (PLAN.current() and PLAN.current().key == "wi-3001" and vim.api.nvim_get_current_tabpage() == PLAN.current().tab) then
       return fail(key .. " on #3001's row didn't open its plan")
     end
     vim.wait(1000, function() return STATE.chat.wins[vim.api.nvim_get_current_tabpage()] ~= nil end, 20)
+    vim.wait(100)
+    if PLAN.current() and vim.api.nvim_get_current_win() ~= PLAN.current().plan_win then
+      return fail(key .. " on #3001's row didn't leave the focus on the plan")
+    end
+    -- i there (the plan, as on every screen): the chat's input, typing.
+    _G.__agents_mode = nil
+    feed("i<Cmd>lua _G.__agents_mode = { vim.api.nvim_get_mode().mode, vim.api.nvim_buf_get_name(0) }<CR>")
+    pcall(vim.cmd, "stopinsert")
+    local got = _G.__agents_mode or { "?", "?" }
+    _G.__agents_mode = nil
+    if got[1] ~= "i" or not got[2]:find("azure-cli://chat", 1, true) or not got[2]:find("input", 1, true) then
+      return fail("i on the plan didn't go into the chat's input in insert mode: " .. vim.inspect(got))
+    end
+    vim.api.nvim_set_current_win(PLAN.current().plan_win)
     CHAT.sync_active()
     if STATE.chat.active ~= "wi-3001" or not STATE.chat.wins[vim.api.nvim_get_current_tabpage()] then
       return fail(key .. " on #3001's row didn't show that agent's conversation in the chat: " .. tostring(STATE.chat.active))
@@ -2714,6 +2737,9 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
     return fail("the popup doesn't show that agent's conversation")
   end
   if STATE.chat.active ~= nil or #STATE.chat.entries ~= main_turns then return fail("the popup changed the main chat") end
+  if vim.api.nvim_get_current_win() ~= pw.log then
+    return fail("<CR> on an agent without a plan didn't put the focus on its conversation")
+  end
   vim.api.nvim_set_current_win(pw.log)
   CHAT.hide()
   vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)

@@ -234,11 +234,11 @@ re-opening the same PR within one nvim session.
 
 ### Chat
 
-`gq` (file list, diff pane, Overview, revision buffers) shows or hides the
-[chat panel](chat.md). The agent is told which file, line, code and comment
+`i` (file list, diff pane, Overview, revision buffers) takes you to the
+[chat panel](chat.md)'s input box, opening it if it's hidden. The agent is told which file, line, code and comment
 thread is under your cursor, so "what do you think about this comment?" or
 "triage this PR's comments" need no further explanation; with lines
-selected, `gq` sends the selection along. Replies it drafts land in this PR's
+selected, `<CR>` sends the selection along. Replies it drafts land in this PR's
 batch-review queue, tagged "(queued)", for `gS`. Notes it leaves on lines
 (`annotate_code`) show as virtual lines under them and are still there
 after a restart - `]a` / `[a` jump to the next / previous one, on into the

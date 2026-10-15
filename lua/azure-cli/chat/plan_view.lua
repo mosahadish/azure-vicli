@@ -52,7 +52,7 @@ local LIST_HELP = {
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "refresh", "reload it" },
-  { "chat", "go to the chat" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   "Window",
   { "resize_less", "shrink the section list" }, { "resize_more", "grow the section list" },
   { "quit", "close" }, { "help", "this help" },
@@ -90,7 +90,8 @@ local PLAN_HELP = {
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "refresh", "reload it" },
-  { "chat", "go to the chat (in visual mode: send the selected lines)" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
+  { "chat_selection", "in visual mode: send the selected lines to the chat" },
   "Window",
   { "quit", "close" }, { "help", "this help" },
 }
@@ -791,8 +792,9 @@ local function bind_common(buf)
   bind(buf, "revise", revise, { desc = "ask for changes / send your answers" })
   bind(buf, "open_file", open_file, { desc = "edit the plan by hand" })
   bind(buf, "refresh", function() M.refresh() end, { desc = "reload the plan" })
-  bind(buf, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
-  bind(buf, "chat", function() require("azure-cli.chat").capture_selection() end,
+  bind(buf, "chat_input", function() require("azure-cli.chat").show(true) end,
+    { desc = "type in the chat (opens the panel; a draft stays)" })
+  bind(buf, "chat_selection", function() require("azure-cli.chat").capture_selection() end,
     { desc = "send the selected lines to the chat", mode = "x" })
   bind(buf, "resize_less", function() resize(-5) end, { desc = "shrink the section list" })
   bind(buf, "resize_more", function() resize(5) end, { desc = "grow the section list" })

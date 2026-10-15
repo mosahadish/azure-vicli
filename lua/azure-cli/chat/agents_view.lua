@@ -17,7 +17,7 @@
 -- Grouped by what needs you first (M.arrange), the most recent first in
 -- each group; finished means its PR was merged or abandoned
 -- (plan.pr_closed), and those over M.FINISHED_DAYS old hide until gF.
--- <CR> (or gq) opens the row's agent: its plan as an inner tab of this one
+-- <CR> opens the row's agent: its plan as an inner tab of this one
 -- (innertabs.lua; again: back to it as you left it) with that agent's
 -- conversation in the chat, or - before it has planned - its conversation
 -- in a popup; gd its change, gH its run log; <C-c> stops what it's doing;
@@ -321,19 +321,22 @@ local function row_here()
   return view and view.rows[vim.api.nvim_win_get_cursor(0)[1]]
 end
 
--- <CR> / gq: the row's agent. With a plan, its plan's inner tab (already
+-- <CR>: the row's agent. With a plan, its plan's inner tab (already
 -- open: that tab, as it was; q there comes back here) - the chat there
 -- shows that plan's own conversation (chat's sync_active) - and the panel
 -- opened on it; before it has planned, its conversation in the popup ga
 -- opens on the PR dashboard, the panel keeping the main one (issue #87).
+-- Either way in normal mode: only i types (issue #118).
 local function open_agent(r)
   if not r then return end
   local PLAN = require("azure-cli.chat.plan")
   if PLAN.load(r.key) then
     PLAN.open(r.key)
     -- A plan with no conversation of its own: just the plan, not the main
-    -- chat passed off as its agent's.
-    if CHAT().find_conversation(r.key) then vim.schedule(function() CHAT().show(true) end) end
+    -- chat passed off as its agent's. The panel opens without the focus:
+    -- show(true) would start insert mode, which outlives the plan taking
+    -- the focus back.
+    if CHAT().find_conversation(r.key) then vim.schedule(function() CHAT().show(false) end) end
     return
   end
   if r.conv then return CHAT().popup(r.key) end
@@ -344,7 +347,6 @@ local HELP = {
   "This agent",
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
-  { "chat", "the same: the row's agent" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
@@ -372,8 +374,6 @@ local function setup(buf)
     local r = row_here()
     if r then require("azure-cli.chat.plan").open_run_log(r.key) end
   end, { desc = "its run log" })
-  K.bind(buf, "agents", "chat", function() open_agent(row_here()) end,
-    { desc = "the row's agent (as Enter)" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "type in the chat (opens the panel; a draft stays)" })

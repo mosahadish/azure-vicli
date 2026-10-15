@@ -185,7 +185,8 @@ end
 
 show_help = function()
   local KEYS = require("azure-cli.keys")
-  local screen_chat = KEYS.name("dashboard", "chat")  -- the chat key on a screen (each has one)
+  local screen_chat = KEYS.name("dashboard", "chat_input")  -- the chat key on a screen (each has one)
+  local screen_sel = KEYS.name("dashboard", "chat_selection")  -- and on a selection
   local lines = KEYS.help_lines("chat", "Chat keys", {
     "Talk",
     { "send", "send the message (in the input box)" }, { "send_insert", "send while typing" },
@@ -213,12 +214,11 @@ show_help = function()
     { "agent", "choose the agent" }, { "model", "choose the model" },
     "Panel",
     { "back", "back to the screen next to the chat" }, { "hide", "hide the chat (" .. screen_chat .. " shows it again)" },
-    { "toggle", "hide the chat - the same key on a screen takes you back to it" },
     { "resize_less", "make the chat smaller" }, { "resize_more", "make the chat bigger" },
     { "help", "this help" },
   }, { notes = {
     "The agent sees what you're looking at - the PR, work item, file, line, comment thread or selection "
-      .. "(" .. screen_chat .. " in visual mode) under the cursor - and the !PRs and #work items you name. Type ! or # for completion.",
+      .. "(" .. screen_sel .. " in visual mode) under the cursor - and the !PRs and #work items you name. Type ! or # for completion.",
   } })
   require("azure-cli.ui").open_float(lines, { min_width = 60 })
 end

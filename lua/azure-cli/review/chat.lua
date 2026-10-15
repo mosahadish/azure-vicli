@@ -2,9 +2,10 @@
 -- reviewer-feature module (see docs/development.md, "Extending the
 -- reviewer").
 --
---   gq           goes to the chat panel (lua/azure-cli/chat/) from the file
---                list, the diff pane, the Overview and the revision buffers;
---                on a visual selection it sends the selected lines along
+--   i            goes to the chat panel's input box (lua/azure-cli/chat/)
+--                from the file list, the diff pane, the Overview and the
+--                revision buffers; <CR> on a visual selection sends the
+--                selected lines along
 --   describer    what the chat is told the reviewer shows (chat/view.lua):
 --                the PR, and the file, line, code, change and comment thread
 --                under the cursor - or the selection, mapped to file lines
@@ -103,8 +104,9 @@ local function setup(ctx)
   local ID = tostring(ctx.ID)
   local notes_ns = vim.api.nvim_create_namespace("azure_cli_chat_notes")
   for _, kind in ipairs({ "list", "diff", "overview", "nav" }) do
-    ctx.add_key(kind, "chat", function() require("azure-cli.chat").toggle() end, "go to the chat panel")
-    ctx.add_key(kind, "chat", function() require("azure-cli.chat").capture_selection() end,
+    ctx.add_key(kind, "chat_input", function() require("azure-cli.chat").show(true) end,
+      "type in the chat (opens the panel; a draft stays)")
+    ctx.add_key(kind, "chat_selection", function() require("azure-cli.chat").capture_selection() end,
       "ask the chat about the selected lines", "x")
     -- gP: an agent plans the fix of this PR's review comments - on a
     -- thread, that one; elsewhere every active one (chat/agents.lua).

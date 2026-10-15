@@ -12,7 +12,7 @@ Installed as a plugin, everything goes through one user command:
 | `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, as an inner tab of Pull requests (see Inner tabs below) - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
 | `:AzureCli workitems` | Open the [work-items dashboard](work-items.md#work-items), in a new tab. |
 | `:AzureCli issues` | Open the [issues dashboard](work-items.md#issues-github), in a new tab: a GitHub account's `issues:` project. With no such account it says so instead. |
-| `:AzureCli chat` | Show or hide the [chat panel](chat.md) - the same as `gq` on any azure-vicli screen. |
+| `:AzureCli chat` | Show or hide the [chat panel](chat.md) - `i` on any azure-vicli screen goes to its input box. |
 | `:AzureCli agents` | Every plan's agent - what each is doing ([Chat](chat.md#several-agents-at-once)) |
 | `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
 | `:AzureCli toasts` | Toggle [desktop notifications](dashboard.md#desktop-notifications) for the rest of this session - the same switch the dashboard's own `gN` key flips. |
@@ -119,8 +119,8 @@ paste the output here after changing a default.
 | `agent_chat` | `ga` |
 | `agents` | `A` |
 | `browser` | `o` |
-| `chat` | `gq` |
 | `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `collapse_all` | `zM` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -156,7 +156,8 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment_file` | `C` |
 | `commits` | `gc` |
 | `complete` | `gm` |
@@ -197,7 +198,8 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment` | `c` |
 | `comment_file` | `C` |
 | `comment_range` | `c` |
@@ -250,7 +252,8 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment` | `c` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -283,7 +286,8 @@ paste the output here after changing a default.
 |---|---|
 | `back` | `<BS>` |
 | `back_to_diff` | `q` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `config` | `gO` |
 | `find_references` | `gr` |
 | `goto_definition` | `gd` |
@@ -300,8 +304,8 @@ paste the output here after changing a default.
 | `agents` | `A` |
 | `assign` | `ga` |
 | `browser` | `o` |
-| `chat` | `gq` |
 | `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `click` | `<LeftMouse>` |
 | `collapse_all` | `zM` |
 | `config` | `gO` |
@@ -339,7 +343,8 @@ paste the output here after changing a default.
 | `assign` | `ga` |
 | `back` | `<BS>` |
 | `browser` | `o` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment` | `gc` |
 | `copy_link` | `gy` |
 | `description` | `gE` |
@@ -386,7 +391,6 @@ paste the output here after changing a default.
 | `resize_more` | `>` |
 | `send` | `<CR>` |
 | `send_insert` | `<CR>` / `<C-s>` |
-| `toggle` | `gq` |
 | `use_as_reply` | `gr` |
 | `why` | `ga` |
 
@@ -398,7 +402,8 @@ paste the output here after changing a default.
 | `approve` | `gA` |
 | `ask` | `ga` |
 | `back` | `<BS>` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `delete_thread` | `dd` |
 | `discard` | `gD` |
 | `edit_request` | `cc` |
@@ -428,7 +433,6 @@ paste the output here after changing a default.
 | `approve` | `gA` |
 | `cancel` | `<C-c>` |
 | `changes` | `gd` |
-| `chat` | `gq` |
 | `chat_input` | `i` |
 | `discard` | `dd` |
 | `help` | `?` |

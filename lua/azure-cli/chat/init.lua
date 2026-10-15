@@ -4,9 +4,9 @@
 --
 -- The panel is a split next to whatever azure-vicli screen you're on (the
 -- conversation on top, an input box below) that follows you into every
--- azure-vicli tab while shown. gq on a screen takes you to it (opening it
--- if needed); gq/q inside it hides it. gq on a visual selection sends the
--- selected lines along with the next message.
+-- azure-vicli tab while shown. i on a screen takes you to its input box
+-- (opening it if needed); q inside it hides it. <CR> on a visual selection
+-- sends the selected lines along with the next message.
 --
 -- The chosen agent (chat.agent, or one of chat.agents - gM switches) runs
 -- headless and stays running for the whole conversation: either a CLI
@@ -68,7 +68,7 @@ local function MAIN()
     models = {},         -- agent name -> model picked with gm
     agent_name = nil,    -- picked with gM
     sent = {},           -- what was sent, for <Up>/<Down> in the input box
-    selection = nil,     -- { win, buf, from, to, text } from gq in visual mode
+    selection = nil,     -- { win, buf, from, to, text } from <CR> in visual mode
     restored = false,
     convs = {},          -- plan key -> that plan's own conversation
     active = nil,        -- the plan key whose conversation the panel shows, or nil (the main one)
@@ -547,7 +547,6 @@ local function make_bufs(name)
     KEYS.bind(b, "chat", "new_chat", function() new_chat() end, { desc = "start a new conversation" })
     KEYS.bind(b, "chat", "cancel", function() cancel() end, { desc = "stop the agent" })
     KEYS.bind(b, "chat", "hide", function() M.hide() end, { desc = "hide the chat" })
-    KEYS.bind(b, "chat", "toggle", function() M.hide() end, { desc = "hide the chat" })
     KEYS.bind(b, "chat", "help", function() show_help() end, { desc = "chat keys" })
     KEYS.bind(b, "chat", "model", function() pick_model() end, { desc = "choose the model" })
     KEYS.bind(b, "chat", "agent", function() pick_agent() end, { desc = "choose the agent" })
@@ -703,7 +702,7 @@ local function open_here(focus)
   UI.wo(input, "winfixheight", true)
   st.wins[tab] = { log = log, input = input }
   -- The splits above fired WinEnter while still showing the screen's
-  -- buffer: what the chat describes is the window gq was pressed in.
+  -- buffer: what the chat describes is the window i was pressed in.
   if not is_chat_buf(vim.api.nvim_win_get_buf(prev)) then st.main_win[tab] = prev end
   render()
   if focus then
@@ -858,8 +857,9 @@ function M.hide()
   if main and vim.api.nvim_win_is_valid(main) then pcall(vim.api.nvim_set_current_win, main) end
 end
 
--- gq: from a screen, opens the panel - or, when it's already showing,
--- jumps into its input box - ready to type; from inside the panel, hides it.
+-- :AzureCli chat: from a screen, opens the panel - or, when it's already
+-- showing, jumps into its input box - ready to type; from inside the panel,
+-- hides it.
 function M.toggle()
   local st = STATE()
   if st.visible and panel_open_in(vim.api.nvim_get_current_tabpage())
@@ -869,7 +869,7 @@ function M.toggle()
   M.show(true)
 end
 
--- gq in visual mode: remember the selected lines for the next message,
+-- <CR> in visual mode (chat_selection): remember the selected lines for the next message,
 -- then go to the chat.
 function M.capture_selection()
   local buf = vim.api.nvim_get_current_buf()
@@ -1173,13 +1173,15 @@ pick_prompt = function() return ACT().pick_prompt() end
 pick_history = function() return ACT().pick_history() end
 show_audit = function() return ACT().show_audit() end
 
--- Binds the chat key on a screen's buffer (every azure-vicli screen calls
--- this for its own surface): normal mode goes to the chat, visual mode
--- sends the selection along with the next message.
+-- Binds the chat keys on a screen's buffer (every azure-vicli screen calls
+-- this for its own surface): i goes to the chat's input box (the panel
+-- opened if it's hidden, a draft kept), <CR> on a visual selection sends
+-- the selection along with the next message.
 function M.bind_toggle(buf, surface)
   local KEYS = require("azure-cli.keys")
-  KEYS.bind(buf, surface, "chat", function() M.toggle() end, { desc = "go to the chat panel (opening it if needed)" })
-  KEYS.bind(buf, surface, "chat", function() M.capture_selection() end,
+  KEYS.bind(buf, surface, "chat_input", function() M.show(true) end,
+    { desc = "type in the chat (opens the panel; a draft stays)" })
+  KEYS.bind(buf, surface, "chat_selection", function() M.capture_selection() end,
     { desc = "ask the chat about the selected lines", mode = "x" })
   -- gP (the PR dashboard and the reviewer; the work-items board binds its
   -- own): an agent plans the fix of the PR's review comments.
@@ -1253,7 +1255,7 @@ function M.on_dashboard_loaded(dash_win)
   pcall(vim.fn.writefile, { today }, stamp)
   new_chat(true)
   send("/standup", { view_win = dash_win, on_done = function()
-    notify("Your daily summary is ready in the chat (" .. require("azure-cli.keys").name("dashboard", "chat") .. ").")
+    notify("Your daily summary is ready in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input") .. ").")
   end })
 end
 

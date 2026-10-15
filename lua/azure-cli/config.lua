@@ -21,8 +21,8 @@ local DEFAULT_KEYS = {
     workitems = "W", issues = "I", toasts = "gN", help = "?", palette = "g.", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
-    agent_chat = "ga", chat_input = "i",
+    link_workitem = "gl", unlink_workitem = "gL", agents = "A", plan_agents = "gP",
+    agent_chat = "ga", chat_input = "i", chat_selection = "<CR>",
   },
   -- Reviewer file list.
   list = {
@@ -34,7 +34,8 @@ local DEFAULT_KEYS = {
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq", plan_agents = "gP",
+    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP",
+    chat_input = "i", chat_selection = "<CR>",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
@@ -52,8 +53,8 @@ local DEFAULT_KEYS = {
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
-    plan_agents = "gP",
+    expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
+    plan_agents = "gP", chat_input = "i", chat_selection = "<CR>",
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
     goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
@@ -70,13 +71,14 @@ local DEFAULT_KEYS = {
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", plan_agents = "gP",
+    link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP",
+    chat_input = "i", chat_selection = "<CR>",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
     goto_definition = "gd", find_references = "gr", search = "g/",
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
-    resize_more = ">", help = "?", palette = "g.", chat = "gq",
+    resize_more = ">", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
   },
   -- Work-items dashboard - and the issues dashboard (I), the same screen
   -- on a GitHub account's project. workitems (W) is bound on the issues
@@ -89,15 +91,15 @@ local DEFAULT_KEYS = {
     goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P", workitems = "W", issues = "I",
     copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
-    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
-    plan_agents = "gP", agents = "A", chat_input = "i",
+    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
+    plan_agents = "gP", agents = "A", chat_input = "i", chat_selection = "<CR>",
   },
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
     edit_title = "ge", description = "gE", move_sprint = "gi", set_parent = "gU", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
-    back = "<BS>", quit = "q", help = "?", palette = "g.", chat = "gq",
+    back = "<BS>", quit = "q", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
   },
   -- The chat panel (both its conversation and its input box).
   chat = {
@@ -106,14 +108,14 @@ local DEFAULT_KEYS = {
     focus_input = { "i", "a" }, new_chat = "gn",
     cancel = "<C-c>", model = "gm", agent = "gM", prompts = "gp", history = "gh", audit = "gH",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
-    back = "<BS>", hide = "q", toggle = "gq", help = "?", palette = "g.", resize_less = "<", resize_more = ">",
+    back = "<BS>", hide = "q", help = "?", palette = "g.", resize_less = "<", resize_more = ">",
     changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
     -- On a message queued while the agent answers (conversation only).
     queue_drop = "dd", queue_edit = "cc",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
-    open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
+    open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF", chat_input = "i", discard = "dd",
   },
@@ -121,7 +123,7 @@ local DEFAULT_KEYS = {
   plan = {
     open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
-    refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
+    refresh = "r", chat_input = "i", chat_selection = "<CR>", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
     edit_request = "cc",
     revisions = "gh",
@@ -142,7 +144,13 @@ local DEFAULT_KEYS = {
 -- warning when it was remapped, since that binding is gone.
 local REMOVED_KEYS = {
   ["dashboard.auto_complete"] = { default = "ga", why = "auto-complete is a checkbox in gm's dialog now" },
+  ["chat.toggle"] = { default = "gq", why = "q hides the chat" },
+  ["agents.chat"] = { default = "gq", why = "Enter (keys.agents.open) opens the row's agent" },
 }
+-- gq (issue #118): i opens the chat on every screen now.
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "plan" }) do
+  REMOVED_KEYS[s .. ".chat"] = { default = "gq", why = "i opens the chat now (keys." .. s .. ".chat_input)" }
+end
 
 -- setup({timing=...}) tunables - each replaces one hard-coded constant a UI
 -- file used to own outright:
@@ -868,7 +876,7 @@ function M.render_options()
   end
   w("  },")
   w("")
-  w("  -- The chat panel (gq) and its agents - docs/chat.md. No agent by default;")
+  w("  -- The chat panel (i) and its agents - docs/chat.md. No agent by default;")
   w("  -- the commented lines are examples, not defaults.")
   w("  chat = {")
   w("    position = " .. lua_literal(DEFAULTS.chat.position) .. ",  -- \"right\", \"left\", \"bottom\" or \"top\"")

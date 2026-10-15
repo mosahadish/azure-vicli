@@ -408,7 +408,7 @@ local function diff_buf(v, st, path)
   require("azure-cli.review.pane").register(buf, map)
   st.bufs[path] = buf
   st.maps[buf] = { path = path, map = map }
-  -- The plan's own keys first (gA, gq, <BS>, q, ...), then the diff's.
+  -- The plan's own keys first (gA, i, <BS>, q, ...), then the diff's.
   if M.hooks.bind then M.hooks.bind(v, buf) end
   bind_diff(v, buf, path, map)
   return buf

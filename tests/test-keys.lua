@@ -242,12 +242,47 @@ do
   config.setup({})
 end
 
--- 12. i types in the chat on the home screens only (the PR dashboard, the
--- boards, Agents); everywhere else it's still Vim's own i.
-check("chat_input is i on the home screens", keys.resolve("dashboard", "chat_input") == "i"
-  and keys.resolve("workitems", "chat_input") == "i" and keys.resolve("agents", "chat_input") == "i")
-for _, s in ipairs({ "diff", "list", "workitem_view" }) do
-  check("no chat_input on " .. s, config.get().keys[s].chat_input == nil)
+-- 12. i types in the chat on every screen (issue #118: gq is gone) - they
+-- are all read-only views, where Vim's own i can't edit anything; <CR> on
+-- a visual selection sends it along. Agents opens a row's agent on <CR>.
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "plan", "agents" }) do
+  check("chat_input is i on " .. s, keys.resolve(s, "chat_input") == "i")
+  if s ~= "agents" then check("chat_selection is <CR> on " .. s, keys.resolve(s, "chat_selection") == "<CR>") end
+end
+do
+  local gq = {}
+  for surface, t in pairs(config.get().keys) do
+    if surface ~= "prefix" then
+      for action in pairs(t) do
+        local spec = keys.resolve(surface, action)
+        for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
+          if k == "gq" then gq[#gq + 1] = surface .. "." .. action end
+        end
+      end
+    end
+  end
+  check("no default binds gq", #gq == 0, table.concat(gq, ", "))
+  check("no chat / toggle action left", config.get().keys.dashboard.chat == nil and config.get().keys.agents.chat == nil
+    and config.get().keys.chat.toggle == nil)
+  check("Enter opens an Agents row's agent", keys.resolve("agents", "open") == "<CR>")
+  -- An old config: gq as it was is skipped quietly (a generated
+  -- azure-cli.lua has it); remapped, a warning names the new key.
+  -- (merge_keys' REMOVED_KEYS path needs these three; plain values here.)
+  vim.deep_equal = function(a, b) return a == b end
+  vim.log = { levels = { WARN = 3 } }
+  local warned = {}
+  vim.notify = function(msg) warned[#warned + 1] = msg end
+  local ok, err = pcall(config.setup, { keys = { dashboard = { chat = "gq" }, chat = { toggle = "gq" }, agents = { chat = "gq" } } })
+  check("an old config with gq loads, quietly", ok and #warned == 0, tostring(err) .. " " .. table.concat(warned, "\n"))
+  warned = {}
+  ok, err = pcall(config.setup, { keys = { diff = { chat = "<leader>c" }, agents = { chat = "x" } } })
+  local text = tostring(err) .. "\n" .. table.concat(warned, "\n")
+  check("a remapped gq warns and names the replacement", ok and #warned == 2
+    and text:find("keys.diff.chat no longer exists (i opens the chat now (keys.diff.chat_input))", 1, true) ~= nil
+    and text:find("Enter (keys.agents.open)", 1, true) ~= nil, text)
+  check("and binds nothing", config.get().keys.diff.chat == nil and keys.resolve("diff", "chat_input") == "i")
+  vim.notify, vim.deep_equal, vim.log = nil, nil, nil
+  config.setup({})
 end
 
 -- 13. Inner tabs (innertabs.lua): ]r / [r, and g1..g9 for the strip's

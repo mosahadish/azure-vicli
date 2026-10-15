@@ -2,14 +2,14 @@
 -- pause, and a small float lists the g keys that screen has and what each
 -- does (↑ before the ones that change Azure DevOps), until the next key -
 -- which then does what it always did. On those buffers g is a key of its
--- own. Every screen also has longer g keys (gq, g., ...), so Neovim waits
+-- own. Every screen also has longer g keys (gP, g., ...), so Neovim waits
 -- 'timeoutlen' after a g before it settles on the plain one - that wait is
 -- the pause: when this g runs with no key typed after it, you paused, and
 -- the float goes up. (Nothing can be shown from outside: Neovim runs no
 -- timers or scheduled callbacks while a mapping is still pending.) The key
 -- you then type, or the one already waiting, is replayed with this g out
 -- of the way, after the count and register: Vim's own g commands, your g
--- mappings (gcc, grn, ...) and the screen's (gq, gA, ...) all do what
+-- mappings (gcc, grn, ...) and the screen's (gP, gA, ...) all do what
 -- they did.
 --
 -- ui.key_hints: "auto" (the default) - on unless which-key or mini.clue is

@@ -39,7 +39,7 @@ local WORDS = {
 }
 
 -- What a board can do: linking PRs (gl/gL - on GitHub a "Closes #n" line
--- in the PR's description), the chat (gq) and planning agents (gP). Both
+-- in the PR's description), the chat (i) and planning agents (gP). Both
 -- boards can since GITHUB_PLAN.md phase 6 stage 3; a key a board can't do
 -- isn't bound there at all. Editing the description (gE, and a body with
 -- n) is GitHub's only: an issue body is Markdown, but Azure's comes back

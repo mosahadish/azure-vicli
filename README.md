@@ -202,7 +202,7 @@ your dotfiles repo instead:
   account's `issues:` block, an [Issues tab](docs/work-items.md#issues-github)
   (`I`) does the same for a GitHub Projects v2 project.
 - **[Chat](docs/chat.md)** - an AI agent (Claude Code, the Copilot CLI, ...)
-  in a panel next to every screen (`gq`). It sees the PR, work item, file
+  in a panel next to every screen (`i`). It sees the PR, work item, file
   or comment under your cursor, so "triage this PR's comments" or "create
   a branch from develop for this work item" just work. Before it changes
   code it writes a plan you review like a PR: ask it why about any line,

@@ -40,7 +40,7 @@ local function screen()
   vim.cmd("normal! G")
   local buf = vim.api.nvim_get_current_buf()
   KEYS.bind(buf, "dashboard", "vote", function() ran[#ran + 1] = "vote" end, { desc = "vote" })
-  KEYS.bind(buf, "dashboard", "chat", function() ran[#ran + 1] = "chat" end, { desc = "go to the chat" })
+  KEYS.bind(buf, "dashboard", "plan_agents", function() ran[#ran + 1] = "plan" end, { desc = "an agent plans it" })
   return buf
 end
 local function g_mapped(buf)
@@ -84,7 +84,7 @@ local steps = {
           text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false), "\n")
         end
       end
-      if not (text:find("\u{2191} gv  vote", 1, true) and text:find("gq  go to the chat", 1, true)) then
+      if not (text:find("\u{2191} gv  vote", 1, true) and text:find("gP  an agent plans it", 1, true)) then
         return "the float doesn't list the keys: " .. text
       end
     end

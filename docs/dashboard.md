@@ -69,7 +69,7 @@ solves the widths; see its own header comment for the exact rules).
 | `r` | Refresh |
 | `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view, `gs` changes its state, `gl` links another and `gL` unlinks the one under the cursor. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
-| `gq` | Show/hide the [chat panel](chat.md); the agent knows which PR is under the cursor |
+| `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which PR is under the cursor. `<CR>` on a visual selection sends it along |
 | `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
 | `W` | Switch to the work-items dashboard |
 | `I` | Switch to the [Issues tab](work-items.md#issues-github) - only when a GitHub account has `issues:` |

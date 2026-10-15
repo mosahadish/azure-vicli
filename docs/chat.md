@@ -35,15 +35,16 @@ azure-vicli ships no agent configuration; you choose the agent and model
 
 ## Using it
 
-`gq` on any azure-vicli screen (or `:AzureCli chat`) takes you to the chat:
+`i` on any azure-vicli screen (or `:AzureCli chat`) takes you to the chat:
 it opens the panel, or jumps into it if it's already showing, and puts you
-in its input box. `gq` (or `q`) inside the panel hides it, and `<BS>` goes
-back to the screen next to it while leaving it open. Once shown, the panel
-appears in every azure-vicli tab you visit (dashboard, reviewer, work items)
-until you hide it. The conversation is the same in every tab. On the PR
-dashboard, the Work items / Issues boards and the Agents screen, `i` goes
-straight into the input box too (opening the panel if it's hidden), keeping
-whatever you had typed there.
+in its input box, typing - keeping whatever you had typed there. The
+screens are read-only views, so `i` there has nothing else to do. `q`
+inside the panel hides it, and `<BS>` goes back to the screen next to it
+while leaving it open. Once shown, the panel appears in every azure-vicli
+tab you visit (dashboard, reviewer, work items) until you hide it. The
+conversation is the same in every tab. (`gq` did this before; it's gone -
+a `gq` left in your `setup()` is skipped, with a warning when you had
+changed it.)
 
 | Key (in the panel) | Action |
 |---|---|
@@ -65,7 +66,7 @@ whatever you had typed there.
 | `<C-c>` | Stop the agent's answer - its session stays for your next message (what you queued is held until you send it) |
 | `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
 | `<BS>` | Back to the screen next to the panel |
-| `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
+| `q` | Hide the panel (`i` on a screen brings you back to it) |
 | `?` | These keys |
 
 Every message is sent together with a description of what you're looking at:
@@ -146,7 +147,7 @@ back the same way. In the conversation, `<CR>` on one opens the PR in the
 reviewer or the work item in its view.
 
 **Selections.** Select lines (in a diff, the Overview, a work item), then
-press `gq`: the panel opens and the next message carries the selected text
+press `<CR>`: the panel opens and the next message carries the selected text
 and, in a diff, which file lines it covers. The winbar shows
 `[selection: N lines]` until it's sent. Without a selection, a message from
 a diff carries the change (the run of added/removed lines) around the cursor.
@@ -491,7 +492,7 @@ couldn't confirm.
    the examples in this file: `chat = { agent = { label, acp, models, cmd } }`.
    Use `{model}` where the model flag goes (not for `acp`), and list the
    model names from step 2 in `models`.
-5. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `gq`
+5. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `i`
    on the PR dashboard and ask "what am I looking at?", then something
    else. The first answer should name the PR under the cursor, which shows
    the azure-vicli tools work; the second should come back without the
@@ -605,7 +606,7 @@ their line when the text around them changes.
 | `gf` | Edit the plan's file yourself; saving it makes your version the one the agent gets (and it needs approving again) |
 | `<CR>` (section list) | Go to the section; moving through the list scrolls the plan (a file under Changes: its diff in the plan pane) |
 | `<BS>` | Back to the section list |
-| `r` / `gq` / `<` `>` / `q` / `?` | Reload / the chat / resize / close / keys |
+| `r` / `i` / `<` `>` / `q` / `?` | Reload / type in the chat / resize / close / keys |
 
 **The change against the plan.** When the agent shows its change
 (`show_fix`, `gd`), the change viewer compares it with the plan's Files
@@ -725,7 +726,7 @@ waiting for you.
 
 ### The main chat coordinates
 
-The main chat (`gq` anywhere outside a plan) hands planning and code
+The main chat (`i` anywhere outside a plan) hands planning and code
 changes to agents rather than doing them itself:
 
 - **`/plan`** there starts an agent - for the work item or PR on screen (on a
@@ -744,7 +745,7 @@ changes to agents rather than doing them itself:
 - It's a lock, not a default: `submit_plan`, `start_story` and `start_fix`
   refuse the main chat's calls and tell it to `start_agents` instead, even
   when you ask it to do the work itself. To work hands-on, talk to the
-  agent in its own conversation (`gq` on its row).
+  agent in its own conversation (`<CR>` on its row on the Agents screen).
 - **A plan with no agent** - one the main chat wrote before this, or whose
   conversation was pruned - gets an idle agent conversation of its own when
   the plans are restored, so the Agents screen lists it. Approve it (`gA`)
@@ -799,7 +800,6 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
-| `gq` | The same as `<CR>` |
 | `<C-c>` | Stop what it's doing |
 | `dd` | Discard its plan, any plan (an agent's too). It asks first, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is removed only when there's nothing in it: one with uncommitted or unpushed changes is kept, and the question says so. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
@@ -977,8 +977,8 @@ tasks and pushes can't be undone from here; the list says so.
    right with the reviewer's keys - `]c` / `[c` jump between changes and on
    into the next file, `<BS>` goes back to the files, `gf` opens the file in
    the worktree to edit it yourself, `<` / `>` resize, `q` closes. The chat
-   comes along into that tab: `gq` goes to it (in visual mode, with the
-   selected lines), and it knows the file and line you're on. The view
+   comes along into that tab: `i` goes to it (`<CR>` in visual mode, with
+   the selected lines), and it knows the file and line you're on. The view
    doesn't follow the agent's edits by itself - `r` refreshes it, staying on
    the same file and line.
 4. `commit_and_push_fix` asks you, with the diff next to the question, then
@@ -1022,7 +1022,7 @@ With a GitHub account's `issues:` block (the [Issues tab](work-items.md#issues-g
 the same board tools work on its project. Each takes `board` (`azure` or
 `github`) and, on GitHub, `repo` (`owner/repo`) when the project spans
 several repositories and the number alone is ambiguous. Without `board`,
-a tool uses the board you're looking at: `gq` on the Issues tab or an
+a tool uses the board you're looking at: `i` on the Issues tab or an
 issue's view, a `gP` agent started for an issue, a `#12` only the Issues
 tab lists, or the only board your config has. Otherwise it's Azure's.
 

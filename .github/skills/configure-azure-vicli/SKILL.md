@@ -222,7 +222,7 @@ Run these here, in the repository, and fix what they report:
   `setup()` is checked when their Neovim starts.)
 
 Then tell the user to start azure-vicli (`./azure-cli`, `azure-cli.cmd`,
-or `:AzureCli`), or restart it if it was running. For the chat: `gq` on
+or `:AzureCli`), or restart it if it was running. For the chat: `i` on
 the PR dashboard and ask "what am I looking at?" - the answer should name
 the PR under the cursor.
 

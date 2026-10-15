@@ -21,7 +21,7 @@ local function show_help()
     "  :AzureCli review <id> open the reviewer for pull request <id>",
     "  :AzureCli workitems   open the work-items dashboard",
     "  :AzureCli issues      open the issues dashboard (a GitHub account's issues: project)",
-    "  :AzureCli chat        show/hide the chat panel (gq on any azure-cli screen)",
+    "  :AzureCli chat        show/hide the chat panel (i on any azure-cli screen)",
     "  :AzureCli agents      every plan's agent: what each is doing",
     "  :AzureCli doctor      check the setup: Neovim, python, config, sign-in per organization",
     "  :AzureCli toasts      toggle desktop notifications for this session",

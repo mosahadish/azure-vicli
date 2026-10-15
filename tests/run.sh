@@ -586,6 +586,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-insert-send.lua (headless nvim, real input)" "$out"
   fi
 
+  # Enter on an Agents row opens its agent in normal mode; i types (#118).
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-agents-enter-mode.lua" 2>&1)"
+  if [[ "$out" == *AGENTS-ENTER-MODE-OK* ]]; then
+    pass "test-agents-enter-mode.lua (headless nvim, real input)"
+  else
+    fail "test-agents-enter-mode.lua (headless nvim, real input)" "$out"
+  fi
+
   # The chat bridge over a real socket: the token, and the request size cap.
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-bridge.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all bridge tests passed"* ]]; then

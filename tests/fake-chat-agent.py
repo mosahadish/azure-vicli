@@ -27,7 +27,7 @@ What it does depends on the message:
   "Make a plan for this ... GitHub issue #N"  (gP on the Issues board)
             get_work_item without a board (its view says github), then
             submit_plan for #N
-  "work the issue"  (gq on the Issues board's #12) the board tools on
+  "work the issue"  (i on the Issues board's #12) the board tools on
             GitHub: list, read, state, comment, a sub-issue, start_story in
             gizmos, create_pull_request closing #12, and linking gizmos#7
             to #13
@@ -164,7 +164,7 @@ def answer_turn(mcp, init, message, turn, model, session):
             "- `src/auth.py` - x"])})
         out[:] = ["planned PR !{0} for {1}".format(pid, threads.group(1).strip() if threads else "every active thread")]
     elif "work the issue" in asked:
-        # gq on the Issues board's #12: calls without board= go to GitHub
+        # i on the Issues board's #12: calls without board= go to GitHub
         # because the view says so; the rest name it.
         out.append("view board: {0}, item {1}".format(view.get("board"), (view.get("work_item") or {}).get("id")))
         call("list_work_items")

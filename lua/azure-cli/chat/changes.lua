@@ -17,7 +17,7 @@
 --   M.jump_to(path, line)        file `path` at line `line` of its new version
 --                             (the plan's gd)
 --
--- gq goes to the chat, as on every other screen, and the chat describes
+-- i goes to the chat, as on every other screen, and the chat describes
 -- the file and line under the cursor here (M.describe). ga on a line asks
 -- the agent about it ("why did you choose this here?"); the answer shows
 -- under the line (chat/threads.lua) - <Tab> unfolds it, K shows it whole,
@@ -131,7 +131,7 @@ local LIST_HELP = {
   "The change",
   { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
   { "refresh", "refresh (the agent may have changed more)" },
-  { "chat", "go to the chat" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   "Window",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
@@ -151,7 +151,8 @@ local DIFF_HELP = {
   { "comment", "queue a change on this line (in visual mode: these lines) for the agent" },
   { "batch_submit", "send the queued changes to the agent, in one message" },
   { "delete_thread", "forget the question or queued change under this line" },
-  { "chat", "go to the chat (in visual mode: send the selected lines)" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
+  { "chat_selection", "in visual mode: send the selected lines to the chat" },
   "The change",
   { "accept_hunk", "accept the change under the cursor - a \u{2713} beside it (again: take it back)" },
   { "reject_hunk", "take the change under the cursor out of the worktree (asks)" },
@@ -654,10 +655,11 @@ end
 
 local jump  -- forward
 
--- gq / r on both panes.
+-- i / r on both panes.
 local function bind_common(buf, surface)
-  bind(buf, surface, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
-  bind(buf, surface, "chat", function() require("azure-cli.chat").capture_selection() end,
+  bind(buf, surface, "chat_input", function() require("azure-cli.chat").show(true) end,
+    { desc = "type in the chat (opens the panel; a draft stays)" })
+  bind(buf, surface, "chat_selection", function() require("azure-cli.chat").capture_selection() end,
     { desc = "send the selected lines to the chat", mode = "x" })
   bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
   bind(buf, surface, "run_tests", function() run_tests() end, { desc = "run the plan's tests on the change" })

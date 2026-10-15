@@ -756,7 +756,7 @@ KEYS.bind(buf, "workitem_view", "help", show_help, { desc = "this help" })
 -- The chat (B.caps.chat): on GitHub its board tools then take board =
 -- "github", which the snapshot names.
 if B.caps.chat then
--- gq: the chat panel, told which work item this view shows.
+-- i: the chat panel's input box, told which work item this view shows.
 require("azure-cli.chat").bind_toggle(buf, "workitem_view")
 -- One describer per filetype, but several of these views open at once
 -- (inner tabs): it asks the one in the window being described.

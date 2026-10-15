@@ -36,7 +36,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `{n}gt` | Jump to sprint n |
 | `r` | Refresh |
 | `P` | Back to the PR dashboard |
-| `gq` | Show/hide the [chat panel](chat.md); the agent knows which work item is under the cursor ("create a branch from develop for this work item") |
+| `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which work item is under the cursor ("create a branch from develop for this work item") |
 | `q` | Quit |
 
 Press `?` for a popup with these keys. `ga`, `gp`, `ge` and `gi` apply to the
@@ -294,7 +294,7 @@ What's different on GitHub:
   branch you're told the line won't link it. On the PR dashboard and in the
   reviewer, `gW` on a GitHub PR lists the issues it closes and opens them
   here.
-- **`gq` and `gP`** work as on `W`: the chat's board tools then work on the
+- **`i` and `gP`** work as on `W`: the chat's board tools then work on the
   issue (see [the chat](chat.md#issues-on-github)), and each `gP` agent plans
   its issue.
 
