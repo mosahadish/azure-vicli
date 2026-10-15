@@ -1,5 +1,6 @@
 -- lua/azure-cli/chat/plan_discard.lua: throwing a plan away yourself (#98) -
--- dd on an Agents screen row. It asks first, saying what goes and what
+-- dd on an Agents screen row, gD in its plan view (#103, which closes that
+-- view's tab). It asks first, saying what goes and what
 -- stays; refuses while that agent is working; moves the plan's files and
 -- its conversation's into plans/discarded/<key>-<time>.* (put them back by
 -- hand to undo); and removes the change's worktree only when it has
@@ -12,7 +13,7 @@
 --   M.move_files(key, stamp)  plans/<key>.json/.md into plans/discarded/:
 --                             the directory and stamp, or nil and why
 --   M.discard(key, cb)        does it: cb(err, what it did)
---   M.ask(row, after)         dd: all of the above, `after` once it's gone
+--   M.ask(row, after)         dd / gD: all of the above, `after` once it's gone
 local M = {}
 
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
@@ -123,31 +124,43 @@ local function changes_of(w)
   return table.concat(parts, ", ")
 end
 
--- The question's lines (UI.confirm): what goes, what stays. Pure.
+-- A worktree as an item: its folder's name, the whole path (~ for your
+-- home) on a line of its own under it, so the popup never breaks it.
+local function worktree_item(w, what)
+  return { "its worktree " .. vim.fn.fnamemodify(w.dir, ":t") .. " " .. what, vim.fn.fnamemodify(w.dir, ":~") }
+end
+
+-- The question's lines (UI.confirm): what goes, what stays - every item
+-- "  - ", its extra lines (a path) "    " under its text. Pure.
 function M.confirm_lines(info)
   local goes, stays = {}, {}
   if info.plan then
-    goes[#goes + 1] = "the plan (plans/" .. info.key .. ".json, .md) - moved to plans/discarded/"
+    goes[#goes + 1] = { "the plan (plans/" .. info.key .. ".json, .md) - moved to plans/discarded/" }
   end
   if info.turns > 0 or #info.conversations > 0 then
-    goes[#goes + 1] = "its conversation (" .. plural(info.turns, "turn")
-      .. (#info.conversations > 0 and (", " .. plural(#info.conversations, "saved file") .. " moved too") or "") .. ")"
+    goes[#goes + 1] = { "its conversation (" .. plural(info.turns, "turn")
+      .. (#info.conversations > 0 and (", " .. plural(#info.conversations, "saved file") .. " moved too") or "") .. ")" }
   else
-    goes[#goes + 1] = "no conversation: the main chat wrote this plan before planning moved to agents"
+    goes[#goes + 1] = { "no conversation: the main chat wrote this plan before planning moved to agents" }
   end
-  if info.queued then goes[#goes + 1] = "its place in the queue" end
+  if info.queued then goes[#goes + 1] = { "its place in the queue" } end
   for _, w in ipairs(info.worktrees) do
-    if not w.keep then goes[#goes + 1] = "its worktree " .. w.dir .. " (nothing in it) - removed" end
+    if not w.keep then goes[#goes + 1] = worktree_item(w, "(nothing in it) - removed") end
   end
-  stays[#stays + 1] = info.label .. " itself, and its branch on the server"
+  stays[#stays + 1] = { info.label .. " itself, and its branch on the server" }
   for _, w in ipairs(info.worktrees) do
-    if w.keep then stays[#stays + 1] = "its worktree " .. w.dir .. " - " .. changes_of(w) .. ": kept" end
+    if w.keep then stays[#stays + 1] = worktree_item(w, "- " .. changes_of(w) .. ": kept") end
   end
-  local lines = { "Goes:" }
-  for _, l in ipairs(goes) do lines[#lines + 1] = "  - " .. l end
+  local lines = {}
+  local function list(title, items)
+    lines[#lines + 1] = title
+    for _, item in ipairs(items) do
+      for i, l in ipairs(item) do lines[#lines + 1] = (i == 1 and "  - " or "    ") .. l end
+    end
+  end
+  list("Goes:", goes)
   lines[#lines + 1] = ""
-  lines[#lines + 1] = "Stays:"
-  for _, l in ipairs(stays) do lines[#lines + 1] = "  - " .. l end
+  list("Stays:", stays)
   return lines
 end
 
@@ -193,8 +206,11 @@ function M.discard(key, cb)
   M.inspect(key, function(info)
     if info.running then return cb(refusal(info.label)) end
     require("azure-cli.chat.agents").unqueue(key)
+    -- Its plan view's tab closes; from inside it (gD) you go back to the
+    -- inner tab before it, as its q does - one in the background stays put.
     local view = PLAN().open_views()[key]
     if view and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then
+      if vim.api.nvim_get_current_tabpage() == view.tab then pcall(require("azure-cli.innertabs").closing) end
       pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(view.tab))
     end
     local dir, stamp = M.move_files(key)
@@ -231,8 +247,9 @@ function M.discard(key, cb)
   end)
 end
 
--- dd on an Agents screen row: refused while its agent works, else the
--- question, then discarded; `after` (a redraw) once it's done.
+-- dd on an Agents screen row, gD in a plan view ({ key = its key }):
+-- refused while its agent works, else the question, then discarded;
+-- `after` (a redraw) once it's done.
 function M.ask(row, after)
   if not row then return end
   M.inspect(row.key, function(info)

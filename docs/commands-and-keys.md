@@ -400,6 +400,7 @@ paste the output here after changing a default.
 | `back` | `<BS>` |
 | `chat` | `gq` |
 | `delete_thread` | `dd` |
+| `discard` | `gD` |
 | `edit_request` | `cc` |
 | `expand_thread` | `<Tab>` |
 | `goto_code` | `gd` |

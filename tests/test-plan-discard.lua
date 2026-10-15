@@ -1,5 +1,6 @@
 -- test-plan-discard.lua: dd on the Agents screen discards a row's plan
--- (#98, chat/plan_discard.lua) - asks first and Cancel leaves everything;
+-- (#98, chat/plan_discard.lua), gD in its plan view too (#103, closing
+-- its tab) - asks first and Cancel leaves everything;
 -- refused while its agent works (also when it starts while you answer);
 -- a worktree with uncommitted or unpushed changes is kept, a clean one
 -- removed; the plan's and its conversation's files move to
@@ -214,12 +215,87 @@ do
   local text = table.concat(lines, "\n")
   check("confirm_lines: goes / stays", lines[1] == "Goes:" and text:find("plans/wi-1.json, .md", 1, true)
     and text:find("Stays:\n  - #1 itself, and its branch on the server", 1, true)
-    and text:find("/w - 2 uncommitted files, 1 unpushed commit: kept", 1, true), text)
+    and text:find("  - its worktree w - 2 uncommitted files, 1 unpushed commit: kept\n    /w", 1, true), text)
   lines = PD.confirm_lines({ key = "wi-1", label = "#1", turns = 1, conversations = {}, queued = true,
     worktrees = { { dir = "/w", dirty = 0, unpushed = 0, unknown = true, keep = true } } })
   text = table.concat(lines, "\n")
   check("confirm_lines: git couldn't tell - kept", text:find("git couldn't tell what's in it: kept", 1, true)
     and text:find("its conversation (1 turn)", 1, true) and not text:find("the plan (", 1, true), text)
+end
+
+-- The question's layout (#103, wi-19's): every item indented alike, also
+-- once the popup wraps it, and a long worktree path in one piece, ~ for
+-- your home, on its own line under its item.
+do
+  local long = vim.env.HOME .. "/.cache/nvim/azure-cli/fix-worktrees/azure-vicli-wi19-with-a-rather-long-name"
+  local lines = PD.confirm_lines({ key = "wi-github-mosahadish~azure-vicli~19", label = "#19 in mosahadish/azure-vicli",
+    plan = {}, turns = 12, conversations = { "a", "b" }, queued = false,
+    worktrees = { { dir = long, dirty = 3, unpushed = 2, keep = true }, { dir = long .. "-2", dirty = 0, unpushed = 0 } } })
+  local bad = {}
+  for _, l in ipairs(lines) do
+    if l ~= "" and l ~= "Goes:" and l ~= "Stays:" and not (l:match("^  %- %S") or l:match("^    %S")) then
+      bad[#bad + 1] = l
+    end
+  end
+  check("layout: items are '  - ', their path lines '    '", #bad == 0, vim.inspect(lines))
+  local path = vim.fn.fnamemodify(long, ":~")
+  check("layout: the path is ~/..., on a line of its own", path:sub(1, 2) == "~/"
+    and vim.tbl_contains(lines, "    " .. path), vim.inspect(lines))
+  -- Through the popup, narrower than the items: wrapped lines keep their
+  -- item's indent, and the path is never split.
+  local UI = require("azure-cli.ui")
+  local shown = UI.choose_lines(lines, { "Discard", "Cancel" }, 2, 60)
+  local whole, shallow, item = false, {}, nil
+  for _, l in ipairs(shown) do
+    if l == " Goes:" or l == " Stays:" or l == "" then item = nil
+    elseif l:match("^   %- ") then item = true
+    elseif item and not l:match("^     %S") then shallow[#shallow + 1] = l end
+    if l:find(path, 1, true) then whole = true end
+    if l:match("^%s*Discard") then break end
+  end
+  check("layout: wrapped lines hang under their item's text", #shallow == 0, vim.inspect(shown))
+  check("layout: the path is in one piece in the popup", whole, vim.inspect(shown))
+end
+
+-- gD in a plan view (#103): the same question as dd on Agents; Cancel
+-- leaves it all, refused while its agent works, Discard moves the files
+-- and closes the plan's tab.
+do
+  local key = make_plan(9806)
+  local c = make_conv(key, 9806)
+  local function feed(k) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "x", false) end
+  local function gd()
+    local v = PLAN.current()
+    vim.api.nvim_set_current_win(v.plan_win)
+    asked, said = nil, {}
+    feed(require("azure-cli.keys").first("plan", "discard"))
+    vim.wait(10000, function() return #said > 0 or (asked and not answer) end, 10)
+  end
+  check("gD: the plan's discard key", require("azure-cli.keys").first("plan", "discard") == "gD")
+  PLAN.open(key)
+  local tab = PLAN.current() and PLAN.current().tab
+  answer = false
+  gd()
+  check("gD cancel: it asked, saying what goes", asked and asked.title:find("#9806", 1, true)
+    and table.concat(asked.lines, "\n"):find("its conversation (2 turns", 1, true), vim.inspect(asked))
+  check("gD cancel: the files, the conversation and the tab stay", exists(key) and #discarded(key) == 0
+    and CHAT.find_conversation(key) == c and vim.api.nvim_tabpage_is_valid(tab) and PLAN.open_views()[key] ~= nil)
+
+  c.running = true
+  answer = true
+  gd()
+  check("gD working: refused, <C-c> named, not asked", asked == nil and said[1]
+    and said[1]:find("<C-c>", 1, true), vim.inspect(said))
+  check("gD working: everything stays", exists(key) and CHAT.find_conversation(key) == c
+    and vim.api.nvim_tabpage_is_valid(tab))
+  c.running = false
+
+  gd()
+  vim.wait(1000, function() return not vim.api.nvim_tabpage_is_valid(tab) end, 10)
+  check("gD discard: files moved, conversation gone", not exists(key) and #discarded(key) == 3
+    and CHAT.find_conversation(key) == nil, vim.inspect({ said, discarded(key) }))
+  check("gD discard: the plan's tab is closed", not vim.api.nvim_tabpage_is_valid(tab)
+    and PLAN.open_views()[key] == nil, vim.inspect(said))
 end
 
 -- The main chat's discard_plan still moves an orphan's files, through

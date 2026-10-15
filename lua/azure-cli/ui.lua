@@ -671,18 +671,23 @@ end
 function M.choose_lines(body, labels, focused, width, hint, waiting, stack)
   local lines, hls = {}, {}
   -- `l` as lines of the popup: as it is when it fits (spacing and all),
-  -- else wrapped at word boundaries, one cell of margin on each side.
+  -- else wrapped at word boundaries, one cell of margin on each side. The
+  -- wrapped lines keep its indent - under the text of a "- " item - and a
+  -- word too long for the rest of a line starts the next one, never split.
   local function add(l)
     if l == "" then lines[#lines + 1] = "" return end
     if vim.fn.strdisplaywidth(l) <= width - 2 then lines[#lines + 1] = " " .. l return end
-    local cur = ""
+    local lead = l:match("^%s*")
+    local hang = lead .. (l:sub(#lead + 1):match("^[-*] ") and "  " or "")
+    local cur, empty = lead, true
     for word in l:gmatch("%S+") do
-      if cur ~= "" and vim.fn.strdisplaywidth(cur .. " " .. word) > width - 2 then
+      if not empty and vim.fn.strdisplaywidth(cur .. " " .. word) > width - 2 then
         lines[#lines + 1] = " " .. cur
-        cur = word
+        cur = hang .. word
       else
-        cur = cur == "" and word or (cur .. " " .. word)
+        cur = empty and (cur .. word) or (cur .. " " .. word)
       end
+      empty = false
     end
     lines[#lines + 1] = " " .. cur
   end

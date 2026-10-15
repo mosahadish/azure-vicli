@@ -125,6 +125,7 @@ local DEFAULT_KEYS = {
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
     edit_request = "cc",
     revisions = "gh",
+    discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to

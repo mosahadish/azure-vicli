@@ -592,6 +592,7 @@ their line when the text around them changes.
 | `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
+| `gD` | Discard this plan, as `dd` on the Agents screen: asks first, refused while its agent works, a worktree with changes stays; the files move to `plans/discarded/` and the plan's tab closes |
 | `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles) |
 | `gh` | Open an older revision, read-only (on one: back to the current one) |
 | `ga` | Ask about this line (in visual mode: these lines) |
@@ -745,9 +746,9 @@ changes to agents rather than doing them itself:
 - **A plan with no agent** - one the main chat wrote before this, or whose
   conversation was pruned - gets an idle agent conversation of its own when
   the plans are restored, so the Agents screen lists it. Approve it (`gA`)
-  to hand it to that agent, or discard it: `dd` on its row, or ask the main
-  chat to `discard_plan` it (both ask first; the files move to
-  `plans/discarded/`).
+  to hand it to that agent, or discard it: `dd` on its row, `gD` in the
+  plan itself, or ask the main chat to `discard_plan` it (all ask first;
+  the files move to `plans/discarded/`).
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
   tab. The main chat can't approve a plan, and an agent can't start or
   message other agents.

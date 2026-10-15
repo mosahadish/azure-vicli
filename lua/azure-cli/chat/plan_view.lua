@@ -47,6 +47,7 @@ local LIST_HELP = {
   { "approve", "approve it - the agent goes ahead" },
   { "revise", "ask for changes or send your answers (you say what; your unsent answers go along)" },
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
+  { "discard", "discard this plan - asks first; a worktree with changes stays (as dd on Agents)" },
   "See",
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
@@ -83,6 +84,7 @@ local PLAN_HELP = {
       .. KEYS().name("plan", "request") .. ") and your unsent answers"
   end },
   { "open_file", "edit the plan by hand" },
+  { "discard", "discard this plan - asks first; a worktree with changes stays (as dd on Agents)" },
   "See",
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles)" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
@@ -365,6 +367,7 @@ local function render_list()
       hints[#hints + 1] = { "plan", "run_log", "what happened so far" }
     else
       hints[#hints + 1] = { "plan", "open_file", "edit it yourself" }
+      hints[#hints + 1] = { "plan", "discard", "discard the plan" }
     end
     if count > 1 then hints[#hints + 1] = { "plan", "revisions", "open an older revision" } end
   end
@@ -795,6 +798,9 @@ local function bind_common(buf)
   bind(buf, "resize_more", function() resize(5) end, { desc = "grow the section list" })
   bind(buf, "quit", close, { desc = "close" })
   bind(buf, "run_log", function() PLAN().open_run_log(view.key) end, { desc = "everything that happened, as one page" })
+  -- gD: Agents' dd from here (#103) - asks first, then closes this tab.
+  bind(buf, "discard", function() require("azure-cli.chat.plan_discard").ask({ key = view.key }) end,
+    { desc = "discard this plan (asks first)" })
 end
 
 local function goto_section(s, focus)

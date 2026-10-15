@@ -185,7 +185,7 @@ end
 do
   local ACTS = {}
   for surface, t in pairs(keys.WRITES) do for action in pairs(t) do ACTS[surface .. "." .. action] = true end end
-  ACTS["plan.approve"], ACTS["agents.approve"], ACTS["agents.discard"] = true, true, true
+  ACTS["plan.approve"], ACTS["agents.approve"], ACTS["agents.discard"], ACTS["plan.discard"] = true, true, true, true
   -- Acting keys that ask first (a dialog, an editor, a picker or a confirm).
   local ASKS_FIRST = {
     ["dashboard.complete"] = "the complete dialog", ["list.complete"] = "the complete dialog",
@@ -197,7 +197,7 @@ do
     ["overview.delete_comment"] = "confirms",
     ["plan.approve"] = "asks how (and whether to let it push)", ["agents.approve"] = "asks how",
     ["dashboard.requeue_build"] = "confirms (UI.confirm's popup)",
-    ["agents.discard"] = "confirms (UI.confirm's popup)",
+    ["agents.discard"] = "confirms (UI.confirm's popup)", ["plan.discard"] = "confirms (UI.confirm's popup)",
   }
   local function find_clashes()
     local by_key = {}
