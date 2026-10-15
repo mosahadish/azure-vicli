@@ -2707,6 +2707,10 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   if not screen():find("gA approve (2 waiting)", 1, true) then
     return fail("the Agents screen's keys don't offer approving both:\n" .. screen())
   end
+  -- #129: the hint line's short labels.
+  for _, s in ipairs({ "<CR> chat", "gd changes", "gH logs", "i main chat", "? all keys" }) do
+    if not screen():find(s, 1, true) then return fail("the Agents screen's hint line lacks '" .. s .. "':\n" .. screen()) end
+  end
   local function to_row(label)
     for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
       if l:find(label, 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) return true end

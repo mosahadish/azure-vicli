@@ -251,11 +251,11 @@ local function render()
   if #rows > 0 then
     local waiting = 0
     for _, r in ipairs(rows) do if r.waiting then waiting = waiting + 1 end end
-    local hints = { { "agents", "open", "its agent" } }
+    local hints = { { "agents", "open", "chat" } }
     if waiting > 0 then hints[#hints + 1] = { "agents", "approve", "approve (" .. waiting .. " waiting)" } end
-    hints[#hints + 1] = { "agents", "changes", "its change" }
-    hints[#hints + 1] = { "agents", "run_log", "what happened" }
-    hints[#hints + 1] = { "agents", "chat_input", "type in the chat" }
+    hints[#hints + 1] = { "agents", "changes", "changes" }
+    hints[#hints + 1] = { "agents", "run_log", "logs" }
+    hints[#hints + 1] = { "agents", "chat_input", "main chat" }
     hints[#hints + 1] = { "agents", "help", "all keys" }
     local text, hhls = require("azure-cli.keys").hint_line(hints, "  ")
     lines[#lines + 1] = ""
@@ -362,21 +362,21 @@ local HELP = {
 local function setup(buf)
   local K = require("azure-cli.keys")
   K.bind(buf, "agents", "open", function() open_agent(row_here()) end,
-    { desc = "the row's agent: its plan and conversation" })
+    { desc = "chat" })
   K.bind(buf, "agents", "changes", function()
     local r = row_here()
     if not r then return end
     require("azure-cli.chat.tools_fix").open_at(r.target, "", nil, function(err)
       if err and not err:find("isn't part of the change", 1, true) then notify(err) end
     end)
-  end, { desc = "its change" })
+  end, { desc = "changes" })
   K.bind(buf, "agents", "run_log", function()
     local r = row_here()
     if r then require("azure-cli.chat.plan").open_run_log(r.key) end
-  end, { desc = "its run log" })
+  end, { desc = "logs" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
-    { desc = "type in the chat (opens the panel; a draft stays)" })
+    { desc = "main chat" })
   K.bind(buf, "agents", "cancel", function()
     local r = row_here()
     if not (r and r.conv and r.conv.running) then return notify("That agent isn't doing anything.") end
