@@ -563,6 +563,48 @@ do
     check("#106 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
   end
 end
+do
+  -- #108: #99's loop, trimming its loop variable with ${r%/*} ${r#*/},
+  -- the way Claude Code asks for it, again and again; other ${...}
+  -- forms, an unset name and a trim that writes still ask.
+  local RUN = require("azure-cli.chat.run")
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({
+    [=[for r in cli/cli home-assistant/core; do o=${r%/*}; n=${r#*/}; echo "== $r"; gh api graphql -f query='query($o:String!,$n:String!) { repository(owner:$o, name:$n) { pullRequests(last: 60, states:[MERGED]) { nodes { number author { login } reviews(last: 50) { nodes { state author { login } commit { oid } submittedAt } } latestReviews(first: 50) { nodes { state author { login } commit { oid } submittedAt } } } } } }' -f o=$o -f n=$n --jq '
+.data.repository.pullRequests.nodes[] | . as $p
+| .reviews.nodes | group_by(.author.login)[] | select(.[0].author.login != $p.author.login)
+| select((map(.state) | (index("APPROVED") or index("CHANGES_REQUESTED"))) and .[-1].state=="COMMENTED")
+| . as $rs | ($p.latestReviews.nodes | map(select(.author.login==$rs[0].author.login))) as $lr
+| {n:$p.number, who:$rs[0].author.login, history:[$rs[]|"\(.state) \(.commit.oid[0:7])"], latest:[$lr[]|"\(.state) \(.commit.oid[0:7])"]}' | head -8; done]=],
+    "B=origin/x:lua/a.lua; git show ${B%%:*}:f",
+  }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#108 " .. cmd:sub(1, 60) .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "x=a; ls ${x:=y}", "x=a; ls ${!x}", "x=a; ls ${x%$(rm f)}", "ls ${HOME%/*}",
+    "B=x--output=o; git log ${B#x}", "while read l; do git log ${l%x}; done < f",
+    "for r in a/b; do o=${r%/*}; rm $o; done" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#108 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
 
 -- Approving a plan: three buttons, p lets it push.
 do

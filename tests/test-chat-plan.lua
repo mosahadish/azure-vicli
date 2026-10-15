@@ -1153,6 +1153,29 @@ do
   }, false)
   check("look_only_command: gh api graphql mutations, @file, --input, other methods and REST still ask (#106)",
     wrong == nil, wrong)
+  -- #108: ${NAME%pat} ${NAME%%pat} ${NAME#pat} ${NAME##pat} of a variable
+  -- the command set; the first is #99's own loop, as its agent ran it.
+  local loop99 = [=[for r in cli/cli home-assistant/core; do o=${r%/*}; n=${r#*/}; echo "== $r"; gh api graphql -f query='query($o:String!,$n:String!) { repository(owner:$o, name:$n) { pullRequests(last: 60, states:[MERGED]) { nodes { number author { login } reviews(last: 50) { nodes { state author { login } commit { oid } submittedAt } } latestReviews(first: 50) { nodes { state author { login } commit { oid } submittedAt } } } } } }' -f o=$o -f n=$n --jq '
+.data.repository.pullRequests.nodes[] | . as $p
+| .reviews.nodes | group_by(.author.login)[] | select(.[0].author.login != $p.author.login)
+| select((map(.state) | (index("APPROVED") or index("CHANGES_REQUESTED"))) and .[-1].state=="COMMENTED")
+| . as $rs | ($p.latestReviews.nodes | map(select(.author.login==$rs[0].author.login))) as $lr
+| {n:$p.number, who:$rs[0].author.login, history:[$rs[]|"\(.state) \(.commit.oid[0:7])"], latest:[$lr[]|"\(.state) \(.commit.oid[0:7])"]}' | head -8; done]=]
+  wrong = again({ loop99, "B=origin/x:lua/a.lua; git show ${B%%:*}:f", "f=a/b/c.lua; wc -l \"${f##*/}\" ${f%.lua}.txt",
+    "x=abc; echo ${x%?} ${x#} ${x%}", "for r in a/b c/d; do git log --oneline \"${r%/*}\"; done",
+    "while read l; do grep -n \"x${l%.lua}\" f; done < list", "B=--output=x/y; git log ${B#*=}",
+    "B=a--output; git log ${B%--output}", "B=a.b.c; echo \"${B%%.*}\" ${B##*.}" }, true)
+  check("look_only_command: ${x%pat} ${x#pat} of a variable the command set, #99's loop among them (#108)",
+    wrong == nil, wrong)
+  wrong = again({ "x=a; ls ${x:-y}", "x=a; ls ${x:=y}", "x=a; ls ${x/a/b}", "x=a; ls ${!x}", "x=a; ls ${#x}",
+    "x=a; ls ${x@Q}", "x=a; ls ${x^^}", "x=a; ls ${x%$(rm f)}", "x=a; ls ${x%`rm f`}", "x=a; ls ${x%${y}}",
+    "x=a; ls ${x%\"$y\"}", "x=a; ls \"${x%\"$y\"}\"", "x=a; ls ${x%[ab]}", "x=a; ls ${x%@(a)}", "x=a; ls ${x%\\*}",
+    "ls ${HOME%/*}", "ls ${UNSET#x}", "git log ${1%x}", "B=x--output=o; git log ${B#x}",
+    "while read l; do git log ${l%x}; done < f", "while read l; do git log \"${l#x}\"; done < f",
+    "sha=$(git rev-parse HEAD); gh run list --commit ${sha#x}", "for r in a/b; do o=${r%/*}; rm $o; done",
+    loop99 .. " > out", "x=a; ls ${x%a" }, false)
+  check("look_only_command: other ${...} forms, a pattern that runs something, an unset name, a trim that writes still ask (#108)",
+    wrong == nil, wrong)
 end
 
 -- --- hunks ------------------------------------------------------------------------------------

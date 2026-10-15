@@ -686,7 +686,8 @@ end
 -- `cmd` split the way the shell would: statements (split on |, &&, ||,
 -- ; and newlines), each a list of words, each word a list of pieces -
 -- { text, quoted } or { var = NAME, quoted } for $NAME / ${NAME} (and
--- for $? $# $$, NAME ? # or $: value_of's SPECIAL), or
+-- for $? $# $$, NAME ? # or $: value_of's SPECIAL; with op and pat for
+-- ${NAME%pat} ${NAME%%pat} ${NAME#pat} ${NAME##pat}: ref's), or
 -- { sub = TREE, refs, quoted } for $(...), quoted or not: its commands
 -- as shell_tree's nodes (look_only_tree checks them), refs when
 -- rev_parse_refs. nil when it has anything else that runs or writes:
@@ -717,6 +718,14 @@ local function shell_words(cmd)
     if name then return name, i + 1 + #name end
     name = cmd:match("^%${([%a_][%w_]*)}", i)
     if name then return name, i + 3 + #name end
+    -- ${NAME%pat} ${NAME%%pat} ${NAME#pat} ${NAME##pat}: pat only plain
+    -- characters, * and ? (no quotes, \, [...], extglob or expansion).
+    local op, pat
+    name, op, pat = cmd:match("^%${([%a_][%w_]*)([%%#]?)([^}]*)}", i)
+    if name and op ~= "" then
+      if pat:sub(1, 1) == op then op, pat = op .. op, pat:sub(2) end
+      if not pat:find("[%$`{}%[%]()\\'\"]") then return name, i + 3 + #name + #op + #pat, op, pat end
+    end
   end
   -- The $( at i as a piece of the word; past its ), nil when it won't do.
   local function sub(i, quoted)
@@ -747,9 +756,9 @@ local function shell_words(cmd)
           add(cmd:sub(i + 1, i + 1), true)
           i = i + 2
         elseif d == "$" then
-          local name, j = ref(i)
+          local name, j, op, pat = ref(i)
           if name then
-            word[#word + 1] = { var = name, quoted = true }
+            word[#word + 1] = { var = name, op = op, pat = pat, quoted = true }
             i = j
           elseif cmd:sub(i + 1, i + 1) == "(" then
             i = sub(i, true)
@@ -774,10 +783,10 @@ local function shell_words(cmd)
       i = sub(i, false)
       if not i then return nil end
     elseif c == "$" then
-      local name, j = ref(i)
+      local name, j, op, pat = ref(i)
       if not name then return nil end
       word = word or {}
-      word[#word + 1] = { var = name, quoted = false }
+      word[#word + 1] = { var = name, op = op, pat = pat, quoted = false }
       i = j
     elseif c == "|" or c == ";" or c == "\n" then
       end_stmt()
@@ -837,15 +846,41 @@ local REFS = {}
 -- stands for it. Not $- (letters, a flag's) or $! $@ $* $0-$9.
 local SPECIAL = { ["?"] = "0", ["#"] = "0", ["$"] = "0" }
 
--- A $(...) piece's value, or a variable's.
+-- `v` with the shortest (# %) or longest (## %%) prefix (#) or suffix (%)
+-- matching glob `pat` (shell_words': * ? and plain characters) taken off.
+local function glob_trim(v, op, pat)
+  local re = "^" .. pat:gsub("[%^%$%(%)%%%.%[%]%+%-]", "%%%0"):gsub("%*", ".*"):gsub("%?", ".") .. "$"
+  -- Cut after k characters, the first k that matches: going up finds #'s
+  -- shortest prefix and %%'s longest suffix, going down ## and %.
+  local n, suffix = #v, op:sub(1, 1) == "%"
+  local first, last, step = n, 0, -1
+  if op == "#" or op == "%%" then first, last, step = 0, n, 1 end
+  for k = first, last, step do
+    if suffix then
+      if v:sub(k + 1):match(re) then return v:sub(1, k) end
+    elseif v:sub(1, k):match(re) then
+      return v:sub(k + 1)
+    end
+  end
+  return v
+end
+
+-- A $(...) piece's value, or a variable's (trimmed by its ${NAME%pat}).
+-- A trim of what read reads, or of a $(...)'s, is UNKNOWN: a ref name
+-- trimmed could start with -.
 local function value_of(p, vars)
   if p.sub then return p.refs and REFS or UNKNOWN end
+  if p.op then
+    local v = vars[p.var]
+    if v == UNKNOWN or v == REFS then return UNKNOWN end
+    return v and glob_trim(v, p.op, p.pat)
+  end
   return p.text or SPECIAL[p.var] or vars[p.var]
 end
 
 -- What word `w` becomes with `vars` filled in: unquoted, a value splits
 -- on spaces (so B='--output x' can't hide a flag), quoted it doesn't.
--- nil when a name isn't set by the command itself. Second, which of the
+-- nil when a name isn't set by the command itself (trimmed or not). Second, which of the
 -- words an UNKNOWN value is in: "free" when it starts the word, isn't
 -- quoted or follows a - (it could be any word, or several, or finish a
 -- flag), else "inside". REFS is "inside" when it's the whole word, else
@@ -1062,7 +1097,8 @@ end
 -- while read loops and $(...) too - is one of the commands above without a flag
 -- that writes (sed and awk with a program that only prints, gh api with
 -- a GraphQL query and no mutation), once the
--- variables the command sets itself (B=x; ... $B),
+-- variables the command sets itself (B=x; ... $B, or ${B%/*} and the
+-- other trims of a plain pattern),
 -- $? $# $$ (numbers) and its loop variables are filled in (what read reads could be
 -- anything: look_only_part, as is what a $(...) of them prints, but a
 -- lone git rev-parse's); and nothing in it redirects - but a while
