@@ -247,6 +247,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       ... on PullRequestCommit { commit { oid committedDate } }
       ... on HeadRefForcePushedEvent { createdAt afterCommit { oid } } } }
     latestReviews(first: 50) { nodes { submittedAt author { login } commit { oid } } }
+    reviews(last: 100) { nodes { state submittedAt author { login } commit { oid } } }
   } }
 }
 """
@@ -367,6 +368,29 @@ def ado_threads(pr):
     return out
 
 
+def _my_last_review_sha(pr, viewer_login):
+    """The commit my latest submitted review was made on. latestReviews
+    alone isn't enough: it leaves out a PR author's own reviews, and has
+    been seen empty with a COMMENTED review in reviews (HollowThorn/Wtile#9,
+    #99) - so my own nodes in reviews count too, the newest winning, and
+    latestReviews on a tie. A PENDING review is an unsubmitted draft."""
+    if not viewer_login:
+        return None
+    best = None
+    for key in ("latestReviews", "reviews"):
+        for r in ((pr.get(key) or {}).get("nodes") or []):
+            r = r or {}
+            if (r.get("author") or {}).get("login") != viewer_login or r.get("state") == "PENDING":
+                continue
+            oid = (r.get("commit") or {}).get("oid")
+            if not oid:
+                continue
+            at = r.get("submittedAt") or ""
+            if best is None or at > best[0]:
+                best = (at, oid)
+    return best and best[1]
+
+
 def ado_iterations(pr, viewer_login=None):
     """The PR's pushes as ADO iterations ({id, createdDate,
     sourceRefCommit.commitId}), oldest first, plus myLastReviewSha: the
@@ -386,10 +410,7 @@ def ado_iterations(pr, viewer_login=None):
             continue
         seen.add(oid)
         value.append({"id": len(value) + 1, "createdDate": date, "sourceRefCommit": {"commitId": oid}})
-    mine = None
-    for r in ((pr.get("latestReviews") or {}).get("nodes") or []):
-        if viewer_login and ((r or {}).get("author") or {}).get("login") == viewer_login:
-            mine = ((r or {}).get("commit") or {}).get("oid")
+    mine = _my_last_review_sha(pr, viewer_login)
     out = {"count": len(value), "value": value}
     if mine:
         out["myLastReviewSha"] = mine

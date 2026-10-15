@@ -180,6 +180,41 @@ class IterationTests(unittest.TestCase):
         self.assertEqual(out["count"], 3)
         self.assertEqual(out["myLastReviewSha"], "b")
 
+    # myLastReviewSha (#99): latestReviews can leave a COMMENTED review out
+    # (HollowThorn/Wtile#9), so the viewer's own nodes in reviews count too.
+    def my_sha(self, latest=(), reviews=()):
+        def nodes(rs):
+            return {"nodes": [{"state": s, "submittedAt": at, "author": {"login": who}, "commit": {"oid": oid}}
+                              for who, s, oid, at in rs]}
+        return gh.ado_iterations({"latestReviews": nodes(latest), "reviews": nodes(reviews)}, "me").get(
+            "myLastReviewSha")
+
+    def test_comment_only_review_missing_from_latest_reviews(self):
+        self.assertEqual(self.my_sha(reviews=[("bob", "CHANGES_REQUESTED", "a", "2026-01-01T00:00:00Z"),
+                                              ("me", "COMMENTED", "b", "2026-01-02T00:00:00Z")]), "b")
+
+    def test_approved_review(self):
+        mine = [("me", "APPROVED", "b", "2026-01-02T00:00:00Z")]
+        self.assertEqual(self.my_sha(latest=mine, reviews=mine), "b")
+
+    def test_no_review_of_mine(self):
+        self.assertIsNone(self.my_sha())
+        bob = [("bob", "COMMENTED", "a", "2026-01-01T00:00:00Z")]
+        self.assertIsNone(self.my_sha(latest=bob, reviews=bob))
+
+    def test_pending_review_is_ignored(self):
+        self.assertEqual(self.my_sha(reviews=[("me", "COMMENTED", "a", "2026-01-01T00:00:00Z"),
+                                              ("me", "PENDING", "c", None)]), "a")
+        self.assertIsNone(self.my_sha(reviews=[("me", "PENDING", "c", None)]))
+
+    def test_newest_review_wins(self):
+        self.assertEqual(self.my_sha(latest=[("me", "APPROVED", "a", "2026-01-01T00:00:00Z")],
+                                     reviews=[("me", "APPROVED", "a", "2026-01-01T00:00:00Z"),
+                                              ("me", "COMMENTED", "b", "2026-01-02T00:00:00Z")]), "b")
+        # On a tie latestReviews' answer stands.
+        self.assertEqual(self.my_sha(latest=[("me", "COMMENTED", "a", "2026-01-01T00:00:00Z")],
+                                     reviews=[("me", "COMMENTED", "b", "2026-01-01T00:00:00Z")]), "a")
+
 
 class ListTests(unittest.TestCase):
     def run_list(self, requested_nodes=(), reviewed_nodes=(), created_nodes=(), threads=None, acct=None):
@@ -782,6 +817,20 @@ class ActionTests(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(a.threads(), 0)
         self.assertEqual(json.loads(out.getvalue())["value"][0]["id"], 0)
+
+    def test_iterations_take_my_comment_only_review(self):
+        client = FakeClient({"timelineItems": {"viewer": {"login": "me"}, "repository": {"pullRequest": {
+            "timelineItems": {"nodes": [{"__typename": "PullRequestCommit",
+                                         "commit": {"oid": "a", "committedDate": iso()}}]},
+            "latestReviews": {"nodes": []},
+            "reviews": {"nodes": [{"state": "COMMENTED", "submittedAt": iso(), "author": {"login": "me"},
+                                   "commit": {"oid": "a"}}]}}}}})
+        a = gh.Actions(account(), {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"}, client)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(a.iterations(), 0)
+        self.assertEqual(json.loads(out.getvalue())["myLastReviewSha"], "a")
+        self.assertIn("reviews(last: 100)", client.queries[0][0])
 
 
 class IssueLinkTests(unittest.TestCase):
