@@ -238,6 +238,7 @@ paste the output here after changing a default.
 | `search` | `g/` |
 | `since` | `gi` |
 | `status` | `s` |
+| `toggle_fold` | `za` / `<Space>` |
 | `toggle_viewed` | `m` |
 | `unlink_workitem` | `gL` |
 | `view_comments` | `K` |

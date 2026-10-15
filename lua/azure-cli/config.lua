@@ -55,6 +55,8 @@ local DEFAULT_KEYS = {
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
     plan_agents = "gP", chat_input = "i", chat_selection = "<CR>",
+    -- The "· N unchanged lines ·" fold under the cursor; zR / zM do them all.
+    toggle_fold = { "za", "<Space>" },
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
     goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out

@@ -1,7 +1,7 @@
 -- lua/azure-cli/review/pane.lua: what the diff pane needs computed per
--- buffer line from Neovim's option callbacks - the 'statuscolumn' (old and
--- new line numbers, where plain 'number' used to show buffer lines that
--- matched neither) and the 'foldexpr'/'foldtext' that collapse long runs
+-- buffer line from Neovim's option callbacks - the 'statuscolumn' (the
+-- file's own line numbers, where plain 'number' used to show buffer lines
+-- that matched neither) and the 'foldexpr'/'foldtext' that collapse long runs
 -- of unchanged context to "· N unchanged lines ·" while keeping every
 -- change, and every commented line, in view.
 --
@@ -17,7 +17,8 @@ local M = {}
 -- How many unchanged lines to keep visible on each side of a change.
 M.CONTEXT = 3
 
-local by_buf = {}  -- bufnr -> { map, keep, levels, old_w, new_w }
+local by_buf = {}  -- bufnr -> { map, keep, levels, w }
+local on_refresh = {}  -- bufnr -> fn(win, buf), run after M.refresh re-folds
 
 -- Fold level per buffer line: 0 for a change, anything within CONTEXT of
 -- one, a line in `keep` (a commented line) or CONTEXT around it; 1 for
@@ -60,33 +61,32 @@ local function digits(n)
   return #tostring(math.max(1, n or 1))
 end
 
--- The gutter text for line `lnum` of a registered entry: old number,
--- space, new number, each right-aligned in its column; an added line has
--- no old number and a deleted line no new one.
+-- The gutter text for line `lnum` of a registered entry: one number,
+-- right-aligned - the new file's for a context or added line, the old
+-- file's for a removed one (M.statuscolumn dims that). Display only:
+-- comments anchor through the map's side/lineno, never through this.
 function M.gutter_text(entry, lnum)
   local m = entry.map[lnum]
-  local ow, nw = entry.old_w, entry.new_w
   if not m or not m.lineno then
-    return string.rep(" ", ow + 1 + nw + 1)
+    return string.rep(" ", entry.w + 1)
   end
-  local old, new = "", ""
-  if m.kind == "del" then
-    old = tostring(m.lineno)
-  elseif m.kind == "add" then
-    new = tostring(m.lineno)
-  else
-    new = tostring(m.lineno)
-    old = m.old and tostring(m.old) or ""
-  end
-  return string.format("%" .. ow .. "s %" .. nw .. "s ", old, new)
+  return string.format("%" .. entry.w .. "s ", tostring(m.lineno))
+end
+
+-- The highlight group for line `lnum`'s number: a removed line's old
+-- number is dimmed.
+function M.gutter_group(entry, lnum)
+  local m = entry.map[lnum]
+  return (m and m.kind == "del") and "AzureCliGutterOld" or "LineNr"
 end
 
 -- Registers `map` (cache.lua's parse_diff map, plus `old` filled in for
 -- context lines below) for `buf`.
 function M.register(buf, map)
   -- parse_diff records one lineno per line (the new side for a context
-  -- line); the gutter wants both sides, and old = new - (adds so far -
-  -- dels so far) recovers the old number exactly, across hunk boundaries.
+  -- line); old = new - (adds so far - dels so far) recovers a context
+  -- line's old number exactly, across hunk boundaries. The gutter's one
+  -- column is as wide as the larger side needs.
   local maxo, maxn = 1, 1
   local adds, dels = 0, 0
   for _, m in ipairs(map) do
@@ -105,8 +105,7 @@ function M.register(buf, map)
   local entry = by_buf[buf] or {}
   entry.map = map
   entry.keep = entry.keep or {}
-  entry.old_w = digits(maxo)
-  entry.new_w = digits(maxn)
+  entry.w = digits(math.max(maxo, maxn))
   entry.levels = M.compute_levels(map, entry.keep)
   by_buf[buf] = entry
   return entry
@@ -127,6 +126,13 @@ end
 
 function M.forget(buf)
   by_buf[buf] = nil
+  on_refresh[buf] = nil
+end
+
+-- `fn(win, buf)` runs after every M.refresh of `buf` - review/folds.lua
+-- reopens the folds you had open, since the refresh's zX folds them all.
+function M.on_refresh(buf, fn)
+  on_refresh[buf] = fn
 end
 
 -- Option callbacks (evaluated with the window's buffer current). ---------
@@ -136,9 +142,9 @@ function M.statuscolumn()
   local lnum = vim.v.lnum
   if not entry then return "%s%l " end
   if vim.v.virtnum and vim.v.virtnum ~= 0 then
-    return "%s" .. string.rep(" ", entry.old_w + 1 + entry.new_w + 1)
+    return "%s" .. string.rep(" ", entry.w + 1)
   end
-  return "%s%#LineNr#" .. M.gutter_text(entry, lnum) .. "%*"
+  return "%s%#" .. M.gutter_group(entry, lnum) .. "#" .. M.gutter_text(entry, lnum) .. "%*"
 end
 
 function M.foldexpr(lnum)
@@ -156,6 +162,7 @@ end
 -- switch into a diff buffer - window options reset per new buffer).
 function M.apply(win)
   local UI = require("azure-cli.ui")
+  pcall(vim.api.nvim_set_hl, 0, "AzureCliGutterOld", { link = "Comment", default = true })
   local ok = pcall(UI.wo, win, "statuscolumn", "%!v:lua.require'azure-cli.review.pane'.statuscolumn()")
   UI.wo(win, "number", not ok)  -- Neovim < 0.9: fall back to plain numbers
   UI.wo(win, "signcolumn", "yes:1")
@@ -169,11 +176,14 @@ function M.apply(win)
 end
 
 -- Re-evaluates the folds in `win` when it shows `buf` (after the map or
--- keep set changed).
+-- keep set changed, or the buffer came back into the window), then runs
+-- the buffer's M.on_refresh hook. zX, not zx: zx also opens the fold the
+-- cursor is in (zv), which would then be remembered as one you opened.
 function M.refresh(win, buf)
   if not (win and vim.api.nvim_win_is_valid(win)) then return end
   if vim.api.nvim_win_get_buf(win) ~= buf then return end
-  pcall(vim.api.nvim_win_call, win, function() vim.cmd("silent! normal! zx") end)
+  pcall(vim.api.nvim_win_call, win, function() vim.cmd("silent! normal! zX") end)
+  if on_refresh[buf] and by_buf[buf] then pcall(on_refresh[buf], win, buf) end
 end
 
 return M

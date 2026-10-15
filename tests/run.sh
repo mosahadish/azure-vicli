@@ -18,7 +18,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The thirty-three Lua unit tests below it in this directory, against a
+#   4. The thirty-five Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed provider --threads.
 #   5. `python3 -m unittest` over tests/test_*.py - unit tests for
 #      azure-cli.py (the YAML-subset config parser, PR classification,
@@ -278,6 +278,8 @@ HOSTS_LUA="$TMP/lua/lua/azure-cli/hosts.lua"
 SHELL_LUA="$TMP/lua/lua/azure-cli/shell.lua"
 PANE_LUA="$TMP/lua/lua/azure-cli/review/pane.lua"
 VIEWED_LUA="$TMP/lua/lua/azure-cli/review/viewed.lua"
+FOLDS_LUA="$TMP/lua/lua/azure-cli/review/folds.lua"
+BOM_LUA="$TMP/lua/lua/azure-cli/review/bom.lua"
 FILELIST_LUA="$TMP/lua/lua/azure-cli/review/filelist.lua"
 MIGRATE_LUA="$TMP/lua/lua/azure-cli/migrate.lua"
 STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
@@ -351,6 +353,8 @@ run_lua_test test-linked-prs.lua "$REPO_ROOT" "$LINKED_PRS_LUA"
 run_lua_test test-pr-workitems.lua "$REPO_ROOT" "$PR_WORKITEMS_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
+run_lua_test test-review-folds.lua "$REPO_ROOT" "$FOLDS_LUA" "$PANE_LUA" "$VIEWED_LUA"
+run_lua_test test-review-bom.lua "$REPO_ROOT" "$BOM_LUA" "$CACHE_LUA" "$PANE_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
 
 # A test started straight from a polluted environment - XDG dirs at a
@@ -788,6 +792,7 @@ $out"
   smoke_check "smoke: demo.sh --headless renders the fake dashboard, numbers its rows, <Space> folds a section" DEMO
   smoke_check "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" NAV
   smoke_check "smoke: gu lists my comments and gA filters them there like everywhere else" FOLLOWUP
+  smoke_check "smoke: an unfolded diff fold stays open across files, a reopen and a restart; a push drops it; zR/zM and toggle_fold" FOLDS
   smoke_check "smoke: a PR row shows its linked work item, PR #101 opens in the reviewer, and gW opens the item from the dashboard and the reviewer" PRWI REVIEW-WI
   smoke_check "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" LINK
   smoke_check "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues" ISSUES

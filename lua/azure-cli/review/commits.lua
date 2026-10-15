@@ -260,7 +260,7 @@ local function build_commit_diff(ctx, sha, path, cb)
       on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
       on_exit = function(_, _code)
         vim.schedule(function()
-          local lines, map = ctx.parse_diff(out)
+          local lines, map = require("azure-cli.review.bom").normalize(ctx.parse_diff(out))
           diff_content_cache[key] = { lines = lines, map = map }
           cb(lines, map)
         end)

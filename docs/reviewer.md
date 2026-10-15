@@ -112,11 +112,16 @@ for a retry if the call fails; a delete removes the comment at once and
 restores it (and its thread, if it was the thread's only comment) on
 failure.
 
-The diff pane's gutter shows the old and new line numbers side by side (an
-added line has no old number, a deleted line no new one). Runs of unchanged
-context beyond three lines of any change - or of any commented line - are
-folded to `· N unchanged lines ·`; `zR` unfolds them all and `zM` folds them
-again, and `]c` never lands inside one. Syntax highlighting follows
+The diff pane's gutter shows one line number: the new file's for a context
+or added line, and the old file's, dimmed, for a removed one. Runs of
+unchanged context beyond three lines of any change - or of any commented
+line - are folded to `· N unchanged lines ·`; `za` / `<Space>`
+(`toggle_fold`) opens or closes the one under the cursor, `zR` unfolds them
+all and `zM` folds them again, and `]c` never lands inside one. The folds
+you open are remembered per PR and file - when you come back to the file,
+reopen the PR or restart Neovim - until a push changes that file's diff.
+A UTF-8 byte-order mark at the start of a file isn't shown, and adding or
+removing one doesn't count as a change. Syntax highlighting follows
 Neovim's own filetype detection, so a `Dockerfile` or a `.csproj` is
 coloured too.
 

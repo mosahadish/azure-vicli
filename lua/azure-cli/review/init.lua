@@ -1043,7 +1043,9 @@ EXT.opened_with_content = next(content_cache) ~= nil or CACHE.files(cache_key) ~
 -- of reading content_cache again from the completion callback.
 local diff_content_cbs = {}  -- "path\tvariant" -> pending callbacks while a fetch is in flight
 local function ensure_diff_content(path, cb)
-  local cached = content_cache[path]
+  -- A leading BOM never reaches the buffer, the map or the comments
+  -- (review/bom.lua); a prefetched entry is fixed in place, once.
+  local cached = content_cache[path] and require("azure-cli.review.bom").fix(content_cache, path)
   if cached then
     cb(cached.lines, cached.map)
     return
@@ -1065,6 +1067,7 @@ local function ensure_diff_content(path, cb)
   table.insert(diff_content_cbs[dkey], cb)
   if #diff_content_cbs[dkey] > 1 then return end  -- already in flight
   build_diff_async(path, want_ws, function(lines, map)
+    lines, map = require("azure-cli.review.bom").normalize(lines, map)
     bucket[path] = { lines = lines, map = map }
     local cbs = diff_content_cbs[dkey] or {}
     diff_content_cbs[dkey] = nil
@@ -2238,6 +2241,7 @@ HELP.diff_help = {
   { "find_references", "references to the identifier under the cursor (peek)" },
   { "open_file", "this file at the PR's revision, on the same line" },
   { "back", "back to the file list" },
+  { "toggle_fold", "fold / unfold the unchanged lines here (remembered, like zR / zM)" },
   "Comment",
   { "comment", "comment on the current line (or on a visual selection)" },
   { "comment_file", "comment on the whole file" },
@@ -2282,6 +2286,8 @@ local function setup_diff_keymaps(buf)
   KEYS.bind(buf, "diff", "reply", reply_here, { desc = "reply to the thread on the current line" })
   KEYS.bind(buf, "diff", "expand_thread", function() EXT.toggle_inline() end,
     { desc = "expand/collapse the thread on this line under it" })
+  KEYS.bind(buf, "diff", "toggle_fold", function() require("azure-cli.review.folds").toggle(buf) end,
+    { desc = "fold / unfold the unchanged lines here" })
   KEYS.bind(buf, "diff", "toggle_viewed", function() EXT.toggle_viewed(paths_by_buf[buf]) end,
     { desc = "toggle this file's viewed mark" })
   KEYS.bind(buf, "diff", "next_unviewed", function() EXT.jump_unviewed(1) end, { desc = "next file not yet viewed" })
@@ -2375,11 +2381,15 @@ local function open_file(path, focus)
     vim.bo[buf].buftype = "nofile"
     vim.bo[buf].filetype = ft_for_path(path) or "text"
     paths_by_buf[buf] = path
+    -- Remembered folds (review/folds.lua), per PR, file and diff variant -
+    -- gw and since-mode fold differently from the plain diff.
+    require("azure-cli.review.folds").attach(buf, { key = KEY, path = path,
+      variant = (ignore_ws and "w" or "") .. (EXT.since and ("s:" .. tostring(EXT.since.variant or "")) or "") })
     setup_diff_keymaps(buf)
     entry = { buf = buf, map = {}, loaded = false }
     diff_cache[path] = entry
 
-    local cached = content_cache[path]
+    local cached = content_cache[path] and require("azure-cli.review.bom").fix(content_cache, path)
     if cached then
       entry.loaded = true
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, cached.lines)
@@ -2417,6 +2427,8 @@ local function open_file(path, focus)
     -- review/pane.lua.
     UI.plain_window(diff_win, {})
     require("azure-cli.review.pane").apply(diff_win)
+    -- Fold afresh and reopen the folds you had open here (review/folds.lua).
+    require("azure-cli.review.pane").refresh(diff_win, entry.buf)
     set_diff_winbar(path)
     if mark_current_file then mark_current_file(path) end
     if focus then
@@ -2573,7 +2585,7 @@ EXT.refresh_file_list = function()
   local FILELIST = require("azure-cli.review.filelist")
   local stats, threads_info = {}, {}
   for _, f in ipairs(files) do
-    local entry = content_cache[f]
+    local entry = content_cache[f] and require("azure-cli.review.bom").fix(content_cache, f)
     if entry and entry.map then stats[f] = FILELIST.diff_stats(entry.map) end
     local closed, total = file_thread_count(f)
     threads_info[f] = { closed = closed, total = total, new = file_has_new(f),

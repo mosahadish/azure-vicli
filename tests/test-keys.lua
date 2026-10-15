@@ -291,7 +291,13 @@ end
 -- buffers next to those surfaces' own keys, so none of those may have a
 -- key that starts one of them (a bare ] or [) - bound with nowait, it
 -- would fire before the r.
-check("tabs: ]r / [r", keys.resolve("tabs", "next") == "]r" and keys.resolve("tabs", "prev") == "[r")
+-- 14. The diff pane's toggle_fold is the work items board's pair (#131).
+do
+  local spec = keys.resolve("diff", "toggle_fold")
+  check("diff.toggle_fold is za / <Space>", type(spec) == "table" and spec[1] == "za" and spec[2] == "<Space>" and #spec == 2)
+end
+
+check("tabs: ]r / [r",keys.resolve("tabs", "next") == "]r" and keys.resolve("tabs", "prev") == "[r")
 local tab_keys = {}
 do
   local pick = keys.resolve("tabs", "pick")

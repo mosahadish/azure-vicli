@@ -596,6 +596,155 @@ if not ok then return fail("gA again didn't bring my thread back\n" .. tostring(
 smoke_ok("FOLLOWUP")
 end)
 
+-- Remembered folds (#131) and toggle_fold. PR #101 appends a section to
+-- README.md, so its first four unchanged lines fold away. <Space> opens
+-- that fold; it stays open when you go to another file and back, when the
+-- PR is closed and reopened, and after a "restart" (review/viewed.lua
+-- loaded afresh from its file). A push that changed README.md (its stored
+-- stamp no longer matching) folds it again and drops the record, another
+-- file's record staying; zR / zM are remembered the same way.
+section("FOLDS", function()
+local VIEWED_MOD = "azure-cli.review.viewed"
+local FOLDS_KEY = "\tfolds"
+local store = require(VIEWED_MOD).load()
+store[FOLDS_KEY] = nil
+ensure_review()
+
+local dwin
+-- Opens `name` from the file list the way <CR> does and waits for its diff.
+local function open_named(name)
+  local row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(files, 0, -1, false)) do
+    if l:find(name, 1, true) then row = i break end
+  end
+  if not row then return fail("no " .. name .. " row in the file list", files) end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  feed("<CR>")
+  ok = vim.wait(15000, function()
+    local w = vim.api.nvim_get_current_win()
+    local b = vim.api.nvim_win_get_buf(w)
+    return b ~= files and (require("azure-cli.review.pane").entry(b) or {}).map ~= nil
+      and vim.wo[w].winbar:find(name, 1, true) ~= nil
+  end, 100)
+  if not ok then return fail(name .. "'s diff never showed") end
+  dwin = vim.api.nvim_get_current_win()
+end
+-- README.md's first fold, in the diff window now.
+local function first_run()
+  local b = vim.api.nvim_win_get_buf(dwin)
+  local e = require("azure-cli.review.pane").entry(b)
+  return require("azure-cli.review.folds").runs(e.levels, e.map)[1]
+end
+local function is_open(r)
+  return vim.api.nvim_win_call(dwin, function() return vim.fn.foldclosed(r.first) == -1 end)
+end
+local function readme_record()
+  for k, v in pairs(require(VIEWED_MOD).load()[FOLDS_KEY] or {}) do
+    if k:find("\tREADME.md\t", 1, true) then return v, k end
+  end
+end
+local function away_and_back()
+  open_named("auth.py")
+  open_named("README.md")
+end
+
+open_named("README.md")
+local r = first_run()
+if not r then return fail("README.md's diff has no fold", vim.api.nvim_win_get_buf(dwin)) end
+if is_open(r) then return fail("README.md's unchanged lines aren't folded at first") end
+vim.api.nvim_win_set_cursor(dwin, { r.first, 0 })
+feed("<Space>")
+if not is_open(r) then return fail("<Space> (toggle_fold) didn't open the fold") end
+if not readme_record() then return fail("opening the fold wasn't remembered") end
+-- On a changed line toggle_fold does nothing - and raises nothing.
+local b = vim.api.nvim_win_get_buf(dwin)
+local changed
+for i, m in ipairs(require("azure-cli.review.pane").entry(b).map) do
+  if m.kind == "add" then changed = i break end
+end
+vim.api.nvim_win_set_cursor(dwin, { changed, 0 })
+local okk, err = pcall(feed, "za")
+if not okk then return fail("za on a changed line raised: " .. tostring(err)) end
+if not is_open(r) then return fail("za on a changed line closed the fold") end
+
+away_and_back()
+if not is_open(r) then return fail("the fold didn't stay open after going to another file and back") end
+
+-- Closing the PR (q in its file list) and opening it again.
+local function reopen_pr()
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  feed("q")
+  ok = vim.wait(5000, function() return find_buf("azurecli-files") == nil end, 20)
+  if not ok then return fail("q didn't close the reviewer") end
+  files = nil
+  ensure_review()
+  open_named("README.md")
+end
+reopen_pr()
+r = first_run()
+if not is_open(r) then return fail("the fold didn't stay open when the PR was reopened") end
+
+-- A restart: the module, and so its store, loaded again from disk.
+package.loaded[VIEWED_MOD] = nil
+reopen_pr()
+r = first_run()
+if not is_open(r) then return fail("the fold didn't stay open after reloading the store from disk") end
+
+-- za closes it again, and that's remembered too (nothing open: no record).
+vim.api.nvim_win_set_cursor(dwin, { r.first, 0 })
+feed("za")
+if is_open(r) then return fail("za (toggle_fold) didn't close the fold") end
+if readme_record() then return fail("closing the fold left a record behind") end
+
+-- zR opens every fold and is remembered; zM folds them and is too.
+feed("zR")
+away_and_back()
+r = first_run()
+if not is_open(r) then return fail("zR wasn't remembered") end
+feed("zM")
+away_and_back()
+r = first_run()
+if is_open(r) then return fail("zM wasn't remembered") end
+
+-- A push that changed README.md: its diff (and so its stamp) differs, so
+-- its folds go; another file's record stays. Aged while README.md is out
+-- of the window: leaving it records what it shows.
+feed("zR")
+open_named("auth.py")
+local rec, k = readme_record()
+if not rec then return fail("zR left no record to age") end
+rec.stamp = "before-the-push"
+local other = k:gsub("\tREADME%.md\t", "\tsrc/app.py\t")
+require(VIEWED_MOD).load()[FOLDS_KEY][other] = { stamp = "x", open = { { 1, 3 } } }
+open_named("README.md")
+r = first_run()
+if is_open(r) then return fail("a changed file kept its folds") end
+if readme_record() then return fail("a changed file's fold record wasn't dropped") end
+if not require(VIEWED_MOD).load()[FOLDS_KEY][other] then return fail("an unchanged file's record went too") end
+require(VIEWED_MOD).load()[FOLDS_KEY] = nil
+
+-- ? lists toggle_fold, and so does the g. palette.
+vim.api.nvim_set_current_win(dwin)
+feed("?")
+local help = float_text() or ""
+for _, w in ipairs(vim.api.nvim_list_wins()) do
+  if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+end
+if not help:find("fold / unfold the unchanged lines here", 1, true) then return fail("? doesn't list toggle_fold\n" .. help) end
+vim.api.nvim_set_current_win(dwin)
+local PROMPT = require("azure-cli.prompt")
+local real, items = PROMPT.select, nil
+PROMPT.select = function(o) items = o.items end
+pcall(require("azure-cli.keys").palette, vim.api.nvim_win_get_buf(dwin))
+PROMPT.select = real
+local listed = false
+for _, a in ipairs(items or {}) do if a.action == "toggle_fold" then listed = true end end
+if not listed then return fail("the g. palette doesn't list toggle_fold") end
+
+smoke_ok("FOLDS")
+end)
+
 -- Wide enough for the work-items box (~104 cells) plus the number gutter,
 -- so the fit check below is about the gutter, not the headless 80 columns.
 vim.o.columns = 140
