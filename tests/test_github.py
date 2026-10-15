@@ -274,7 +274,7 @@ class ListTests(unittest.TestCase):
         self.assertEqual((r["source"], r["target"]), ("feature-5", "main"))
         self.assertEqual((r["myId"], r["myName"]), ("me", "Me Myself"))
         self.assertEqual(r["buildStatus"], "succeeded")
-        self.assertEqual(r["buildUrl"], "https://github.com/o/r/pull/5/checks")
+        self.assertEqual(r["buildUrl"], "https://github.com/o/r/pull/5/checks?buildId=5")
         # The Conversation tab isn't a thread anyone resolves: counted for
         # unread comments, not as an active thread.
         self.assertEqual((r["activeThreads"], r["totalThreads"]), (1, 1))
@@ -963,6 +963,261 @@ class ReviewerDescriptionTests(unittest.TestCase):
     def test_both_are_github_actions(self):
         self.assertIn("--add-reviewer", ac._GITHUB_ACTIONS)
         self.assertIn("--set-description", ac._GITHUB_ACTIONS)
+
+
+class CiClient(RestClient):
+    """RestClient plus job logs (`logs`: job id -> text, or an HTTP status
+    to fail with) and REST failures (`errors`: (method, prefix) -> status)."""
+
+    def __init__(self, answers=None, logs=None, errors=None):
+        RestClient.__init__(self, answers)
+        answer = self.fetch
+        self.texts = []
+
+        def fetch(method, url, token, data=None):
+            path = url[len("https://api.github.com"):]
+            for (m, prefix), status in (errors or {}).items():
+                if m == method and path.startswith(prefix):
+                    self.calls.append((method, path, data))
+                    raise gh.GitHubHttpError(status, url, '{"message": "Must have admin rights to Repository."}')
+            return answer(method, url, token, data)
+
+        def fetch_text(url, token):
+            path = url[len("https://api.github.com"):]
+            self.texts.append(path)
+            job = path.split("/actions/jobs/")[1].split("/")[0]
+            log = (logs or {}).get(job, "")
+            if isinstance(log, int):
+                raise gh.GitHubHttpError(log, url, '{"message": "Gone"}')
+            return log
+        self.fetch, self.fetch_text = fetch, fetch_text
+
+
+def ci_run(rid, workflow=1, event="pull_request", conclusion="failure", status="completed", name="CI"):
+    return {"id": rid, "workflow_id": workflow, "event": event, "status": status, "conclusion": conclusion,
+            "name": name}
+
+
+def ci_job(jid, conclusion="failure", name="build-and-test", steps=None):
+    return {"id": jid, "name": name, "conclusion": conclusion, "steps": steps if steps is not None else [
+        {"number": 1, "name": "Set up job", "conclusion": "success"},
+        {"number": 5, "name": "Run tests", "conclusion": conclusion},
+        {"number": 9, "name": "Post Run actions/setup-python@v5", "conclusion": "skipped"}]}
+
+
+def ci_note(level, message, title="", path="tests/test_x.py", line=12, raw=""):
+    return {"annotation_level": level, "message": message, "title": title, "path": path, "start_line": line,
+            "raw_details": raw}
+
+
+# What GitHub sent for a real job (actions/jobs/<id>/logs, after its
+# redirect): a BOM, a timestamp on every line, colours, ##[group]Run per step
+# (the command, not the step's name), the ##[error] and the post-job cleanup.
+JOB_LOG = "﻿" + "\n".join("2026-10-14T06:20:{0:02d}.0244511Z {1}".format(i, l) for i, l in enumerate([
+    "Current runner version: '2.337.0'",
+    "##[group]Runner Image Provisioner",
+    "Hosted Compute Agent",
+    "##[endgroup]",
+    "##[group]Run actions/checkout@v4",
+    "Syncing repository",
+    "##[endgroup]",
+    "##[group]Run bash tests/run.sh",
+    "\x1b[36;1mbash tests/run.sh\x1b[0m",
+    "##[endgroup]",
+    "PASS  smoke: one",
+    "\x1b[31mFAIL\x1b[0m  smoke: two",
+    "passed: 1  failed: 1",
+    "##[error]Process completed with exit code 1.",
+    "Post job cleanup.",
+    "[command]/usr/bin/git version",
+    "Cleaning up orphan processes",
+]))
+
+
+class CiTests(unittest.TestCase):
+    """#111: --requeue, --build-log and --test-results on a GitHub PR, from
+    its head's GitHub Actions runs, in Azure's shapes."""
+
+    RUNS = "/repos/o/r/actions/runs?head_sha=HEADSHA"
+
+    def runs(self, *runs):
+        return {("GET", self.RUNS): {"total_count": len(runs), "workflow_runs": list(runs)}}
+
+    def test_requeue_reruns_the_failed_jobs_of_the_heads_failed_runs(self):
+        answers = dict(HEAD)
+        answers.update(self.runs(
+            ci_run(11, workflow=1, event="pull_request"),
+            ci_run(12, workflow=1, event="push"),
+            ci_run(13, workflow=2, conclusion="success"),
+            # Workflow 3 failed, then passed when run again: nothing to re-run.
+            ci_run(14, workflow=3), ci_run(15, workflow=3, conclusion="success"),
+            ci_run(16, workflow=4, conclusion="cancelled"),
+            ci_run(17, workflow=5, conclusion="timed_out"),
+            ci_run(18, workflow=6, status="in_progress", conclusion=None)))
+        c = CiClient(answers)
+        self.assertEqual(quiet(actions(c).requeue),
+                         (0, "Re-queued the failed jobs of 3 workflow run(s) for PR 5."))
+        self.assertEqual([w[1] for w in c.writes()], ["/repos/o/r/actions/runs/11/rerun-failed-jobs",
+                                                     "/repos/o/r/actions/runs/12/rerun-failed-jobs",
+                                                     "/repos/o/r/actions/runs/17/rerun-failed-jobs"])
+
+    def test_requeue_with_no_failed_run_reruns_nothing(self):
+        answers = dict(HEAD)
+        answers.update(self.runs(ci_run(13, conclusion="success"), ci_run(16, workflow=2, conclusion="cancelled")))
+        c = CiClient(answers)
+        self.assertEqual(quiet(actions(c).requeue), (0, "No failed workflow run to re-queue for PR 5."))
+        self.assertEqual(c.writes(), [])
+
+    def test_requeue_refused_is_one_line(self):
+        answers = dict(HEAD)
+        answers.update(self.runs(ci_run(11)))
+        c = CiClient(answers, errors={("POST", "/repos/o/r/actions/runs/11/rerun-failed-jobs"): 403})
+        with mock.patch.object(gh.Actions, "ensure_client", lambda self: setattr(self, "client", c) or True):
+            code, out, err = loud(ac._github_pr_action, "--requeue", [], account(),
+                                  {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"})
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "GitHub requeue failed: HTTP 403: Must have admin rights to Repository.")
+
+    def failed_build(self, logs=None, notes=None):
+        answers = dict(HEAD)
+        answers.update(self.runs(ci_run(11)))
+        answers[("GET", "/repos/o/r/actions/runs/11/jobs")] = {"jobs": [
+            ci_job(21), ci_job(22, conclusion="success", name="lint")]}
+        answers[("GET", "/repos/o/r/check-runs/21/annotations")] = notes if notes is not None else [
+            ci_note("warning", "Node.js 20 is deprecated."),
+            ci_note("failure", "expected 'x', got '--name'", title="test_name_flag", raw="tb line 1\ntb line 2"),
+            ci_note("failure", "Process completed with exit code 1.", path=".github", line=2526),
+            ci_note("notice", "ubuntu-latest will migrate")]
+        return CiClient(answers, logs=logs if logs is not None else {"21": JOB_LOG})
+
+    def test_build_log_is_trimmed_to_the_failing_step(self):
+        c = self.failed_build()
+        code, out = quiet(actions(c).build_log, "5")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"build": 5, "failed": [
+            {"name": "CI / build-and-test", "type": "Job",
+             "issues": ["expected 'x', got '--name'", "Process completed with exit code 1."]},
+            {"name": "build-and-test / Run tests", "type": "Task", "issues": [], "log": "\n".join([
+                "##[group]Run bash tests/run.sh", "bash tests/run.sh", "##[endgroup]", "PASS  smoke: one",
+                "FAIL  smoke: two", "passed: 1  failed: 1", "##[error]Process completed with exit code 1."])}]})
+        self.assertEqual(c.texts, ["/repos/o/r/actions/jobs/21/logs"])
+
+    def test_trim_log_keeps_the_tail_and_falls_back_without_an_error(self):
+        self.assertEqual(gh.trim_log("a\nb\nc\nd", tail=2), "c\nd")
+        self.assertEqual(gh.trim_log("##[group]Run x\n1\n2\n##[error]e1\n##[error]e2\nafter", tail=3),
+                         "2\n##[error]e1\n##[error]e2")
+        self.assertEqual(gh.trim_log("no group\n##[error]boom"), "no group\n##[error]boom")
+
+    def test_build_log_says_when_a_log_is_gone(self):
+        failed = json.loads(quiet(actions(self.failed_build(logs={"21": 410})).build_log, "5")[1])["failed"]
+        self.assertEqual(failed[1]["log"], "(could not read the log: HTTP 410)")
+
+    def test_build_log_with_no_failed_run(self):
+        answers = dict(HEAD)
+        answers.update(self.runs(ci_run(13, conclusion="success")))
+        self.assertEqual(json.loads(quiet(actions(CiClient(answers)).build_log, "5")[1]), {"build": 5, "failed": []})
+
+    def test_failure_annotations_are_the_test_results(self):
+        code, out = quiet(actions(self.failed_build()).test_results, "5")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"build": 5,
+            "runs": [{"id": 21, "name": "build-and-test", "total": 1, "failed": 1}],
+            "failed": [{"test": "test_name_flag", "run": "build-and-test", "error": "expected 'x', got '--name'",
+                        "stack": "tb line 1\ntb line 2"}]})
+
+    def test_only_the_runners_exit_code_is_no_test_result(self):
+        c = self.failed_build(notes=[ci_note("failure", "Process completed with exit code 1."),
+                                     ci_note("warning", "Node.js 20 is deprecated.")])
+        self.assertEqual(json.loads(quiet(actions(c).test_results, "5")[1]), {"build": 5, "runs": [], "failed": []})
+
+    def test_an_untitled_annotation_is_named_by_its_place(self):
+        c = self.failed_build(notes=[ci_note("failure", "boom", path="src/a.py", line=3)])
+        self.assertEqual(json.loads(quiet(actions(c).test_results, "5")[1])["failed"][0]["test"], "src/a.py:3")
+
+    def test_api_errors_are_one_line(self):
+        c = CiClient(dict(HEAD), errors={("GET", "/repos/o/r/actions/runs"): 500})
+        for flag in ("--build-log", "--test-results"):
+            with mock.patch.object(gh.Actions, "ensure_client", lambda self: setattr(self, "client", c) or True):
+                code, out, err = loud(ac._github_pr_action, flag, ["5"], account(),
+                                      {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"})
+            self.assertEqual((code, out), (1, ""))
+            self.assertEqual(err, "GitHub {0} failed: HTTP 500: Must have admin rights to Repository."
+                             .format(flag.lstrip("-")))
+
+    def test_a_build_id_must_be_a_number(self):
+        for fn in (actions(CiClient()).build_log, actions(CiClient()).test_results):
+            self.assertEqual(loud(fn, "x"), (1, "", "Invalid build id."))
+
+    def test_all_three_are_github_actions(self):
+        for flag in ("--requeue", "--build-log", "--test-results"):
+            self.assertIn(flag, ac._GITHUB_ACTIONS)
+
+    def test_http_text_keeps_the_token_off_the_redirect_and_keeps_the_tail(self):
+        seen = {}
+
+        class Resp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(req, timeout=None):
+            seen["req"] = req
+            return Resp(b"x" * 10 + b"tail")
+        with mock.patch.object(gh.urllib.request, "urlopen", urlopen):
+            self.assertEqual(gh.http_text("https://api.github.com/repos/o/r/actions/jobs/1/logs", "tok", keep=6),
+                             "x" * 2 + "tail")
+        req = seen["req"]
+        # Unredirected: sent to api.github.com, not on to the signed blob URL.
+        self.assertEqual(req.unredirected_hdrs.get("Authorization"), "Bearer tok")
+        self.assertNotIn("Authorization", req.headers)
+
+
+class RequeueRoutingTests(unittest.TestCase):
+    """#111: --requeue goes by the PR's env. A GitHub PR's re-runs its own
+    checks and never reaches Azure's requeue, which looks the number up in
+    every Azure organization."""
+
+    CFG = {"accounts": [{"project_name": "P", "org_url": "https://dev.azure.com/x", "pat": "t"},
+                        {"host": "github", "owner": "o"}]}
+    GH_ENV = {"AZVICLI_ORG": "https://api.github.com", "AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r",
+              "AZVICLI_PR": "7"}
+
+    def run_requeue(self, env, pr_id=7):
+        cfg = ac.Config.from_dict(self.CFG)
+        gh_calls = []
+
+        def no_azure(*a, **kw):
+            raise AssertionError("Azure's requeue was reached")
+        with mock.patch.object(ac, "AzureDevOpsPullRequestSource", side_effect=no_azure) as azure, \
+                mock.patch.object(ac, "_github_pr_action",
+                                  lambda flag, rest, account, e: gh_calls.append((flag, rest, account.owner)) or 0):
+            try:
+                result = loud(ac.cmd_requeue, cfg, pr_id, env)
+            except AssertionError:
+                result = None
+        return result, gh_calls, azure.called
+
+    def test_a_github_prs_env_requeues_on_github_only(self):
+        result, gh_calls, azure = self.run_requeue(dict(self.GH_ENV))
+        self.assertEqual(result[0], 0)
+        self.assertEqual(gh_calls, [("--requeue", [], "o")])
+        self.assertFalse(azure)
+
+    def test_a_github_env_for_another_pr_requeues_nothing(self):
+        result, gh_calls, azure = self.run_requeue(dict(self.GH_ENV, AZVICLI_PR="8"))
+        self.assertEqual(result, (1, "", "--requeue 7 doesn't match AZVICLI_PR 8; nothing re-queued."))
+        self.assertEqual(gh_calls, [])
+        self.assertFalse(azure)
+
+    def test_an_azure_env_or_none_is_azures(self):
+        for env in ({"AZVICLI_ORG": "https://dev.azure.com/x", "AZVICLI_PROJECT": "P", "AZVICLI_PR": "7"}, {}):
+            _, gh_calls, azure = self.run_requeue(env)
+            self.assertEqual(gh_calls, [])
+            self.assertTrue(azure)
 
 
 class IssueLinkTests(unittest.TestCase):

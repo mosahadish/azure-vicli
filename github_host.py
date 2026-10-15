@@ -139,6 +139,47 @@ def http(method, url, token, data=None):
     return json.loads(raw.decode("utf-8"))
 
 
+TEXT_KEEP = 4 * 1024 * 1024
+
+
+def http_text(url, token, keep=TEXT_KEEP):
+    """A GET whose answer is text (a job's log), its last `keep` bytes.
+    GitHub answers a log with a 302 to a signed blob URL: the token goes as
+    an unredirected header, so urllib's redirect doesn't carry it there. Read
+    to the end, so a pooled connection goes back clean."""
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    req.add_header("User-Agent", "azure-vicli")
+    if token:
+        req.add_unredirected_header("Authorization", "Bearer " + token)
+    perf = core is not None and core._perf_current() is not None
+    t0 = time.monotonic() if perf else 0.0
+    size = 0
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            tail = b""
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                tail = (tail + chunk)[-keep:]
+            status = getattr(resp, "status", None) or 200
+    except urllib.error.HTTPError as e:
+        err_body = e.read()
+        if perf:
+            core.perf_record("GET", url, e.code, len(err_body or b""), t0, conn=core._last_conn())
+        raise GitHubHttpError(e.code, url, err_body.decode("utf-8", "replace"))
+    except (urllib.error.URLError, ValueError):
+        if perf:
+            core.perf_record("GET", url, 0, 0, t0, conn=core._last_conn())
+        raise
+    if perf:
+        core.perf_record("GET", url, status, size, t0, conn=core._last_conn())
+    return tail.decode("utf-8", "replace")
+
+
 _gh_tokens = {}
 _gh_lock = threading.Lock()
 
@@ -171,10 +212,11 @@ class Client:
     """One account's connection. `fetch(method, url, token, data)` is
     swappable for tests, like PrActions.fetch."""
 
-    def __init__(self, api_url, token, fetch=None):
+    def __init__(self, api_url, token, fetch=None, fetch_text=None):
         self.api_url = api_base(api_url)
         self.token = token
         self.fetch = fetch or http
+        self.fetch_text = fetch_text or http_text
 
     def graphql(self, query, variables=None):
         out = self.fetch("POST", graphql_url(self.api_url), self.token, {"query": query, "variables": variables or {}})
@@ -185,6 +227,9 @@ class Client:
 
     def rest(self, method, path, data=None):
         return self.fetch(method, self.api_url + path, self.token, data)
+
+    def text(self, path):
+        return self.fetch_text(self.api_url + path, self.token)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +553,10 @@ def build_record(client, node, account, state, viewer, threads):
     rollup = ((((node.get("commits") or {}).get("nodes") or [{}])[0] or {}).get("commit") or {}).get(
         "statusCheckRollup") or {}
     missing = [r["displayName"] for r in ado["reviewers"] if not r["vote"]]
-    build = (BUILD.get(rollup.get("state"), "none"), None, (node.get("url") or "") + "/checks", [], missing)
+    # buildId= is what the chat's build tools (chat/tools_pr.lua) look for;
+    # GitHub ignores it, and --build-log goes by AZVICLI_PR anyway.
+    build = (BUILD.get(rollup.get("state"), "none"), None,
+             "{0}/checks?buildId={1}".format(node.get("url") or "", node.get("number")), [], missing)
     acct = _Acct(client.api_url, owner, getattr(account, "clones_dir", None), None)
     rec = core.to_record(ado, acct, state, counts, build, login, me)
     rec["othersComments"], rec["othersCommentsInMyThreads"] = others
@@ -1396,3 +1444,126 @@ class Actions(object):
         print("Auto-merge enabled for PR #{0} ({1}); the branch is deleted on merge only by the repository's own "
               "setting, which is {2}.".format(self.pr, method, "on" if repo.get("deleteBranchOnMerge") else "off"))
         return 0
+
+    # -- CI: the head's GitHub Actions runs (#111) -----------------------
+    #
+    # In Azure's shapes (azure-cli.py's requeue_build_validation, build_log
+    # and test_results), so the dashboard's gr and the chat's build tools
+    # read them unchanged. A job id is its check run's id too.
+
+    def _failed_runs(self):
+        """The head commit's failed workflow runs: the newest run per
+        (workflow, event) - a push and a pull_request run of one workflow
+        are two checks - when that one failed or timed out. Cancelled runs
+        don't count: they were superseded, or stopped on purpose."""
+        sha = self._head()
+        if not sha:
+            return []
+        listed = self.client.rest("GET", self._repo("/actions/runs?head_sha={0}&per_page=100".format(sha))) or {}
+        newest = {}
+        for run in listed.get("workflow_runs") or []:
+            key = (run.get("workflow_id"), run.get("event"))
+            if key not in newest or (run.get("id") or 0) > (newest[key].get("id") or 0):
+                newest[key] = run
+        return sorted((r for r in newest.values()
+                       if r.get("status") == "completed" and r.get("conclusion") in RUN_FAILED),
+                      key=lambda r: r.get("id") or 0)
+
+    def _failed_jobs(self, run):
+        jobs = self.client.rest("GET", self._repo("/actions/runs/{0}/jobs?filter=latest&per_page=100".format(
+            run.get("id")))) or {}
+        return [j for j in jobs.get("jobs") or [] if j.get("conclusion") in RUN_FAILED]
+
+    def _annotations(self, job):
+        return [a for a in (self.client.rest("GET", self._repo("/check-runs/{0}/annotations?per_page=50".format(
+            job.get("id")))) or []) if isinstance(a, dict) and a.get("annotation_level") == "failure"]
+
+    def requeue(self):
+        """--requeue: re-runs the failed jobs of the head's failed workflow
+        runs, answering like requeue_build_validation."""
+        runs = self._failed_runs()
+        if not runs:
+            print("No failed workflow run to re-queue for PR {0}.".format(self.pr))
+            return 0
+        for run in runs:
+            self.client.rest("POST", self._repo("/actions/runs/{0}/rerun-failed-jobs".format(run.get("id"))))
+        print("Re-queued the failed jobs of {0} workflow run(s) for PR {1}.".format(len(runs), self.pr))
+        return 0
+
+    def build_log(self, build_id, tail=120, max_logs=6):
+        """--build-log <id>: each failed job (Job: its failure annotations)
+        and its failed step (Task: the job's log trimmed to that step), in
+        azure-cli.py's build_log shape. The id only has to be a number: the
+        build is this PR's head."""
+        import sys
+        if not _uint(build_id):
+            print("Invalid build id.", file=sys.stderr)
+            return 1
+        failed, logs = [], 0
+        for run in self._failed_runs():
+            for job in self._failed_jobs(run):
+                failed.append({"name": "{0} / {1}".format(run.get("name") or "", job.get("name") or ""),
+                               "type": "Job", "issues": [a.get("message") or "" for a in self._annotations(job)]})
+                step = next((s for s in job.get("steps") or [] if s.get("conclusion") in RUN_FAILED), None)
+                if step is None or logs >= max_logs:
+                    continue
+                entry = {"name": "{0} / {1}".format(job.get("name") or "", step.get("name") or ""),
+                         "type": "Task", "issues": []}
+                try:
+                    entry["log"] = trim_log(self.client.text(self._repo("/actions/jobs/{0}/logs".format(
+                        job.get("id")))), tail)
+                except GitHubHttpError as e:
+                    entry["log"] = "(could not read the log: HTTP {0})".format(e.status)
+                logs += 1
+                failed.append(entry)
+        print(json.dumps({"build": int(build_id), "failed": failed}, ensure_ascii=False))
+        return 0
+
+    def test_results(self, build_id, limit=30):
+        """--test-results <id>: the failed jobs' failure annotations as
+        failed tests, in azure-cli.py's test_results shape. GitHub has no
+        test counts, so a run's total is its failures; the runner's own
+        "Process completed with exit code N." isn't a test."""
+        import sys
+        if not _uint(build_id):
+            print("Invalid build id.", file=sys.stderr)
+            return 1
+        runs, failed = [], []
+        for run in self._failed_runs():
+            for job in self._failed_jobs(run):
+                tests = [a for a in self._annotations(job) if not RUNNER_EXIT.match(a.get("message") or "")]
+                if not tests:
+                    continue
+                runs.append({"id": job.get("id"), "name": job.get("name"), "total": len(tests),
+                             "failed": len(tests)})
+                for a in tests:
+                    if len(failed) >= limit:
+                        break
+                    test = a.get("title") or "{0}:{1}".format(a.get("path") or "", a.get("start_line") or "")
+                    failed.append({"test": test, "run": job.get("name"), "error": (a.get("message") or "")[:2000],
+                                   "stack": "\n".join((a.get("raw_details") or "").splitlines()[:30])})
+        print(json.dumps({"build": int(build_id), "runs": runs, "failed": failed}, ensure_ascii=False))
+        return 0
+
+
+RUN_FAILED = ("failure", "timed_out")
+RUNNER_EXIT = re.compile(r"^Process completed with exit code \d+\.?$")
+_LOG_STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def trim_log(text, tail=120):
+    """A job's log cut to its failing step: from the last "##[group]Run"
+    (a step's start - the command, not the step's name) before the first
+    "##[error]", through the "##[error]" lines after it, its last `tail`
+    lines; with no error, the log's last `tail` lines. Without the BOM,
+    timestamps and terminal colours."""
+    lines = [_ANSI.sub("", _LOG_STAMP.sub("", line)) for line in (text or "").lstrip("\ufeff").splitlines()]
+    err = next((i for i, line in enumerate(lines) if line.startswith("##[error]")), None)
+    if err is None:
+        return "\n".join(lines[-tail:])
+    start = next((i for i in range(err, -1, -1) if lines[i].startswith("##[group]Run ")), 0)
+    end = err
+    while end + 1 < len(lines) and lines[end + 1].startswith("##[error]"):
+        end += 1
+    return "\n".join(lines[start:end + 1][-tail:])

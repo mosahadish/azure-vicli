@@ -1877,6 +1877,9 @@ local function requeue_now(pr)
   local requeue_args = CONFIG.provider_argv()
   vim.list_extend(requeue_args, { "--requeue", tostring(pr.id) })
   RPC.run(requeue_args, {
+    -- The row's host and account: a GitHub row re-runs its own checks and
+    -- never reaches Azure's requeue, which goes by the number alone (#111).
+    env = pr_env(pr),
     detach = true,  -- finish the ADO write even if the user quits before it returns
     stdout_buffered = true,
     stderr_buffered = true,

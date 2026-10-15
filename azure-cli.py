@@ -4920,8 +4920,8 @@ def cmd_prefetch(env=None):
 # ---------------------------------------------------------------------------
 
 
-# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md phase 4: CI
-# comes later), with how each maps onto github_host.Actions.
+# The PR actions a GitHub PR answers, with how each maps onto
+# github_host.Actions.
 _GITHUB_ACTIONS = {
     "--threads": lambda a, arg: a.threads(),
     "--iterations": lambda a, arg: a.iterations(),
@@ -4945,6 +4945,11 @@ _GITHUB_ACTIONS = {
     # #110: through GraphQL (requestReviews, updatePullRequest).
     "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
     "--set-description": lambda a, arg: a.set_description(arg(0)),
+    # #111: CI, through the head's GitHub Actions runs. --requeue comes from
+    # cmd_requeue, not PR_ACTION_FLAGS.
+    "--requeue": lambda a, arg: a.requeue(),
+    "--build-log": lambda a, arg: a.build_log(arg(0)),
+    "--test-results": lambda a, arg: a.test_results(arg(0)),
 }
 
 
@@ -5015,6 +5020,20 @@ def cmd_list(config, env=None):
 
 
 def cmd_requeue(config, pull_request_id, env=None):
+    """--requeue <id>. A PR's env naming a GitHub account (the dashboard's
+    gr and the chat's requeue_build send the row's) re-runs that PR's failed
+    jobs and never falls back to Azure, whose requeue looks the number up in
+    every organization - an Azure PR with the same number would be
+    re-queued. Without one (an Azure row, or by hand) it's Azure's."""
+    env = os.environ if env is None else env
+    gh_account = config.github_account_for(env.get("AZVICLI_ORG"), env.get("AZVICLI_PROJECT")) \
+        if env.get("AZVICLI_ORG") else None
+    if gh_account is not None:
+        if (env.get("AZVICLI_PR") or "") != str(pull_request_id):
+            print("--requeue {0} doesn't match AZVICLI_PR {1}; nothing re-queued.".format(
+                pull_request_id, env.get("AZVICLI_PR") or "(unset)"), file=sys.stderr)
+            return 1
+        return _github_pr_action("--requeue", [], gh_account, env)
     try:
         source = AzureDevOpsPullRequestSource(config)
         print(source.requeue_build_validation(pull_request_id))

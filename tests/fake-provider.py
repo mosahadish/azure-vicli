@@ -62,7 +62,8 @@ GH_OWNER = "demo-gh"
 # The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
-              "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description")
+              "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description",
+              "--requeue", "--build-log", "--test-results")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -614,7 +615,8 @@ def cmd_setup(root, fresh=False):
         }
         if pr.get("host"):
             rec["host"] = pr["host"]
-            rec["buildUrl"] = "https://github.com/{0}/{1}/pull/{2}/checks".format(GH_OWNER, pr["repo"], pr["id"])
+            rec["buildUrl"] = "https://github.com/{0}/{1}/pull/{2}/checks?buildId={2}".format(
+                GH_OWNER, pr["repo"], pr["id"])
             rec["merge"] = pr["merge"]
         state["prs"].append(rec)
         threads = [make_thread(state, pr, t) for t in pr["threads"]]
@@ -1228,8 +1230,24 @@ class Fake:
         return 0
 
     def cmd_requeue(self, rest):
+        """Like azure-cli.py's cmd_requeue (#111): a GitHub PR's env re-runs
+        that PR's failed checks; otherwise Azure's, by number among the
+        Azure PRs only - a GitHub PR is never re-queued that way."""
         pid = rest[0] if rest else ""
-        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid), None)
+        if self.is_github():
+            if (self.env.get("AZVICLI_PR") or "") != pid:
+                print("--requeue {0} doesn't match AZVICLI_PR {1}; nothing re-queued.".format(
+                    pid, self.env.get("AZVICLI_PR") or "(unset)"), file=sys.stderr)
+                return 1
+            pr = self.pr()
+            if pr is None or pr["buildStatus"] != "failed":
+                print("No failed workflow run to re-queue for PR {0}.".format(pid))
+                return 0
+            pr["buildStatus"] = "running"
+            self.ws.save(self.state)
+            print("Re-queued the failed jobs of 1 workflow run(s) for PR {0}.".format(pid))
+            return 0
+        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid and not p.get("host")), None)
         if pr is None:
             print("PR {0} was not found in any configured account.".format(pid))
             return 1

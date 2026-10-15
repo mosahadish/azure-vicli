@@ -3791,6 +3791,97 @@ section("INNERTABS-FIT", function()
   smoke_ok("INNERTABS-FIT")
 end)
 
+-- #111: gr on a GitHub row re-runs that PR's failed checks: its --requeue
+-- carries the row's GitHub account, owner and repo, so it never reaches
+-- Azure's requeue (which goes by the number alone). doohickeys#7's build
+-- failed, gizmos#7's passed; neither, nor any Azure PR, is re-queued in
+-- the other's place. Then the agent's requeue_build does the same.
+section("GH_REQUEUE", function()
+  local STATE = require("azure-cli.state")
+  local UI = require("azure-cli.ui")
+  ensure_dashboard()
+  feed("r")
+  local function rec(repo)
+    for _, p in ipairs((STATE.PR_LIST_CACHE or {}).prs or {}) do
+      if p.host == "github" and p.repo == repo and tostring(p.id) == "7" then return p end
+    end
+  end
+  ok = vim.wait(15000, function() return rec("gizmos") ~= nil and rec("doohickeys") ~= nil end, 100)
+  if not ok then return fail("the dashboard never listed the two GitHub PR #7s", dash) end
+  local function requeues()
+    local out = {}
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find('["--requeue", "7"]', 1, true) then out[#out + 1] = l end
+    end
+    return out
+  end
+  local function idle()
+    local st = STATE.rpc
+    return not st or next(st.pending or {}) == nil
+  end
+  local before = #requeues()
+  vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+  -- doohickeys#7 is signed off (I approved it), a section that starts collapsed.
+  local hrow, hl = header_row(dash, "\u{2500}\u{2500} Signed off")
+  if hrow and hl:find("(collapsed)", 1, true) then
+    vim.api.nvim_win_set_cursor(0, { hrow, 0 })
+    feed("<Space>")
+  end
+  local row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("Doohickey: stop the wobble", 1, true) then row = i end
+  end
+  if not row then return fail("doohickeys#7 has no row on the dashboard", dash) end
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  local confirm, asked = UI.confirm, nil
+  UI.confirm = function(o, cb) asked = o cb(true) end
+  feed("gr")
+  UI.confirm = confirm
+  if not asked then return fail("gr on a GitHub row didn't ask first") end
+  ok = vim.wait(10000, function() return #requeues() > before and idle() end, 100)
+  if not ok then return fail("gr on doohickeys#7 never sent --requeue") end
+  local sent = requeues()[before + 1]
+  for _, want in ipairs({ "AZVICLI_ORG=https://api.github.com", "AZVICLI_PROJECT=demo-gh", "AZVICLI_REPO=doohickeys ",
+      "AZVICLI_PR=7" }) do
+    if not sent:find(want, 1, true) then return fail("gr's --requeue doesn't carry " .. want .. ": " .. sent) end
+  end
+  local state = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, p in ipairs(state.prs) do
+    -- The two #7s only: the Issues smoke's create_pull_request added gizmos#8.
+    local gh7 = p.host == "github" and tostring(p.id) == "7"
+    local was = (gh7 and p.repo == "doohickeys") and "running" or (gh7 and p.repo == "gizmos") and "succeeded" or nil
+    if was and p.buildStatus ~= was then
+      return fail("after gr on doohickeys#7, " .. p.repo .. "#7's build is " .. tostring(p.buildStatus))
+    end
+    if not p.host and p.buildStatus == "running" and tostring(p.id) == "7" then
+      return fail("gr on a GitHub row re-queued Azure PR #7")
+    end
+  end
+
+  -- The agent's requeue_build on gizmos#7 (repo given: two #7s): its own
+  -- env, and the provider's own answer - nothing failed there to re-run.
+  local said
+  local env = { main_win = function() end, log = function() end, confirm = function(_, cb) cb(true) end }
+  before = #requeues()
+  require("azure-cli.chat.tools").call("requeue_build", { pr_id = 7, repo = "demo-gh/gizmos" }, env,
+    function(t, e) said = { t, e } end)
+  ok = vim.wait(10000, function() return said ~= nil and idle() end, 100)
+  if not ok then return fail("the agent's requeue_build never answered") end
+  sent = requeues()[before + 1] or ""
+  if not (sent:find("AZVICLI_ORG=https://api.github.com", 1, true) and sent:find("AZVICLI_REPO=gizmos ", 1, true)) then
+    return fail("requeue_build on gizmos#7 didn't send gizmos' GitHub env: " .. sent)
+  end
+  if not (said[1] and tostring(said[1]):find("No failed workflow run to re-queue for PR 7.", 1, true)) then
+    return fail("requeue_build didn't pass on the provider's answer: " .. vim.inspect(said))
+  end
+  for _, l in ipairs(requeues()) do
+    if not l:find("AZVICLI_ORG=https://api.github.com", 1, true) then
+      return fail("a GitHub #7 sent Azure's --requeue: " .. l)
+    end
+  end
+  smoke_ok("GH_REQUEUE")
+end)
+
 -- A GitHub account (github_host.py): the fake lists PR #7 from two
 -- repositories. Each opens in its own reviewer, with its own threads -
 -- per-PR state is keyed owner~repo~number, not by the number.

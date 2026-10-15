@@ -793,6 +793,7 @@ $out"
   smoke_check "smoke: two work items in W and two issues in I open as inner tabs: the strip, ]r/[r/g1..g3, no twin, q goes back, <CR> retitles, the chat sees each, gW's q returns to the review" INNERTABS-WI
   smoke_check "smoke: two plans open as inner tabs of Agents: the strip, ]r/[r/g1..g3, <CR> again keeps the older revision and the Changes file, a new revision reloads, q goes back, dd closes the open tab" INNERTABS-PLAN
   smoke_check "smoke: with 1, 3 and 4 plans open at 80 and 120 columns, the plan's status shows in full and the current plan stays identifiable" INNERTABS-FIT
+  smoke_check "smoke: gr and the agent's requeue_build on a GitHub #7 re-run that PR's checks with its own env, never Azure's --requeue" GH_REQUEUE
   smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
   # Every check above got its own result only if the script ran to its end:
   # a crash, a hang (demo.sh's timeout) or a Lua error outside a check

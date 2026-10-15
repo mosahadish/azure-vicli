@@ -255,15 +255,25 @@ return function(T)
     },
     {
       name = "requeue_build",
-      description = "Queues the pull request's build validation again (e.g. after a flaky failure).",
-      schema = { type = "object", properties = { pr_id = { type = "integer" } }, required = { "pr_id" } },
+      description = "Queues the pull request's build validation again (e.g. after a flaky failure); on GitHub, "
+        .. "re-runs the failed jobs of its head's failed workflow runs.",
+      schema = { type = "object", properties = { pr_id = { type = "integer" }, repo = { type = "string",
+        description = "GitHub only: the PR's repository (owner/repo), when two PRs share pr_id" } },
+        required = { "pr_id" } },
       risk = "write",
-      run = function(args, _, done)
-        local pr = T.need_pr(args, done)
-        if not pr then return end
+      run = function(args, env, done)
+        -- The agent's own PR first, so one GitHub #7 never means another (#109).
+        local target = require("azure-cli.chat.plan").pr_target_for(args.pr_id, env, args.repo) or {}
+        local pr = T.pr_record(target.pr_key or args.pr_id, not target.pr_key and args.repo or nil)
+        if not pr then
+          return done(nil, "PR !" .. tostring(args.pr_id) .. (args.repo and (" in " .. args.repo) or "")
+            .. " isn't loaded - call get_pull_request for it first.")
+        end
+        -- The PR's env routes it: a GitHub PR's never reaches Azure's requeue (#111).
         T.provider({ "--requeue", tostring(pr.id) }, T.pr_env(pr), function(ok, out, err)
           if not ok then return done(nil, err ~= "" and err or out) end
-          done("Re-queued the build of PR !" .. pr.id .. ".")
+          out = vim.trim(out or "")
+          done(out ~= "" and out or ("Re-queued the build of PR !" .. pr.id .. "."))
         end)
       end,
     },
