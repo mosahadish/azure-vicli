@@ -11,6 +11,7 @@ import io
 import json
 import os
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -831,6 +832,137 @@ class ActionTests(unittest.TestCase):
             self.assertEqual(a.iterations(), 0)
         self.assertEqual(json.loads(out.getvalue())["myLastReviewSha"], "a")
         self.assertIn("reviews(last: 100)", client.queries[0][0])
+
+
+def failing(client, word, message):
+    """`client` answering the query containing `word` with a GraphQL error."""
+    inner = client.fetch
+
+    def fetch(method, url, token, data=None):
+        if word in data["query"]:
+            client.queries.append((data["query"], data.get("variables")))
+            return {"errors": [{"message": message}]}
+        return inner(method, url, token, data)
+    client.fetch = fetch
+    return client
+
+
+def lookup(people, author="alice"):
+    return {"repository": {"pullRequest": {"id": "PR_5", "author": {"login": author}},
+                           "assignableUsers": {"nodes": people}}}
+
+
+BOB = {"id": "U_bob", "login": "bob", "name": "Bob Brown"}
+BOBBY = {"id": "U_bobby", "login": "bobby", "name": "Bobby Tables"}
+
+
+class ReviewerDescriptionTests(unittest.TestCase):
+    """--add-reviewer and --set-description on GitHub (#110)."""
+
+    def mutations(self, client, name):
+        return [v for q, v in client.queries if name in q]
+
+    def test_set_description_updates_the_body(self):
+        c = FakeClient({"PrNodeId": {"repository": {"pullRequest": {"id": "PR_5"}}},
+                        "UpdatePrBody": {"updatePullRequest": {"pullRequest": {"id": "PR_5"}}}})
+        self.assertEqual(loud(actions(c).set_description, "New\ntext"), (0, "Description updated.", ""))
+        self.assertEqual(self.mutations(c, "updatePullRequest"), [{"id": "PR_5", "body": "New\ntext"}])
+
+    def test_set_description_failure_is_one_line(self):
+        c = failing(FakeClient({"PrNodeId": {"repository": {"pullRequest": {"id": "PR_5"}}}}),
+                    "UpdatePrBody", "Resource not accessible by integration")
+        with mock.patch.object(gh.Actions, "ensure_client", lambda self: setattr(self, "client", c) or True):
+            code, out, err = loud(ac._github_pr_action, "--set-description", ["x"], account(),
+                                  {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"})
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "GitHub set-description failed: GitHub GraphQL: Resource not accessible by integration")
+
+    def test_add_reviewer_by_exact_login(self):
+        c = FakeClient({"ReviewerLookup": lookup([BOBBY, BOB]),
+                        "RequestReviews": {"requestReviews": {"pullRequest": {"id": "PR_5"}}}})
+        code, out, err = loud(actions(c).add_reviewer, "bob", "false")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"added": "Bob Brown (bob)", "id": "U_bob"})
+        sent = self.mutations(c, "requestReviews")
+        self.assertEqual(sent, [{"id": "PR_5", "users": ["U_bob"]}])
+        self.assertIn("union: true", [q for q, _ in c.queries if "requestReviews" in q][0])
+        self.assertFalse(self.mutations(c, "UserByLogin"))
+
+    def test_at_login_and_required_note(self):
+        c = FakeClient({"ReviewerLookup": lookup([BOB]),
+                        "RequestReviews": {"requestReviews": {"pullRequest": {"id": "PR_5"}}}})
+        code, out, _ = loud(actions(c).add_reviewer, "@bob", "true")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["note"], gh.NO_REQUIRED_REVIEWERS)
+        self.assertEqual(self.mutations(c, "ReviewerLookup")[0]["q"], "bob")
+
+    def test_a_team(self):
+        c = FakeClient({"ReviewerLookup": lookup([]),
+                        "TeamBySlug": {"organization": {"team": {"id": "T_1", "name": "Core", "slug": "core"}}},
+                        "RequestReviews": {"requestReviews": {"pullRequest": {"id": "PR_5"}}}})
+        code, out, _ = loud(actions(c).add_reviewer, "@acme/core")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"added": "acme/core", "id": "T_1"})
+        self.assertEqual(self.mutations(c, "TeamBySlug"), [{"org": "acme", "slug": "core"}])
+        self.assertEqual(self.mutations(c, "requestReviews"), [{"id": "PR_5", "teams": ["T_1"]}])
+
+    def test_an_unknown_team(self):
+        c = FakeClient({"ReviewerLookup": lookup([]), "TeamBySlug": {"organization": {"team": None}}})
+        code, _, err = loud(actions(c).add_reviewer, "acme/nope")
+        self.assertEqual(code, 1)
+        self.assertIn("No GitHub team acme/nope", err)
+        self.assertFalse(self.mutations(c, "requestReviews"))
+
+    def test_a_login_outside_the_repository_people(self):
+        c = FakeClient({"ReviewerLookup": lookup([]),
+                        "UserByLogin": {"user": {"id": "U_eve", "login": "eve", "name": None}},
+                        "RequestReviews": {"requestReviews": {"pullRequest": {"id": "PR_5"}}}})
+        code, out, _ = loud(actions(c).add_reviewer, "eve")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"added": "eve", "id": "U_eve"})
+
+    def test_one_partial_match_by_name(self):
+        c = failing(FakeClient({"ReviewerLookup": lookup([BOBBY]),
+                                "RequestReviews": {"requestReviews": {"pullRequest": {"id": "PR_5"}}}}),
+                    "UserByLogin", "Could not resolve to a User with the login of 'tables'.")
+        code, out, _ = loud(actions(c).add_reviewer, "tables")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["added"], "Bobby Tables (bobby)")
+
+    def test_ambiguous_lists_the_people(self):
+        c = failing(FakeClient({"ReviewerLookup": lookup([BOB, BOBBY])}), "UserByLogin", "Could not resolve")
+        code, _, err = loud(actions(c).add_reviewer, "Bo")
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "2 people match 'Bo': Bob Brown (bob), Bobby Tables (bobby)")
+        self.assertFalse(self.mutations(c, "requestReviews"))
+
+    def test_no_match(self):
+        c = failing(FakeClient({"ReviewerLookup": lookup([])}), "UserByLogin", "Could not resolve")
+        code, _, err = loud(actions(c).add_reviewer, "zed")
+        self.assertEqual((code, err), (1, "No GitHub user or team matches 'zed'."))
+
+    def test_the_author_is_refused_before_asking_github(self):
+        c = FakeClient({"ReviewerLookup": lookup([BOB], author="Bob")})
+        code, _, err = loud(actions(c).add_reviewer, "bob")
+        self.assertEqual((code, err), (1, "GitHub doesn't let the author review their own pull request."))
+        self.assertFalse(self.mutations(c, "requestReviews"))
+
+    def test_no_one_named(self):
+        self.assertEqual(loud(actions(FakeClient({})).add_reviewer, "  ")[0], 1)
+
+    def test_add_reviewer_failure_is_one_line(self):
+        c = failing(FakeClient({"ReviewerLookup": lookup([BOB])}), "RequestReviews",
+                    "bob does not have permission to review this pull request")
+        with mock.patch.object(gh.Actions, "ensure_client", lambda self: setattr(self, "client", c) or True):
+            code, _, err = loud(ac._github_pr_action, "--add-reviewer", ["bob", "false"], account(),
+                                {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"})
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "GitHub add-reviewer failed: GitHub GraphQL: "
+                              "bob does not have permission to review this pull request")
+
+    def test_both_are_github_actions(self):
+        self.assertIn("--add-reviewer", ac._GITHUB_ACTIONS)
+        self.assertIn("--set-description", ac._GITHUB_ACTIONS)
 
 
 class IssueLinkTests(unittest.TestCase):

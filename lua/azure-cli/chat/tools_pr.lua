@@ -15,6 +15,20 @@ return function(T)
     return tostring(pr.buildUrl or ""):match("[?&]buildId=(%d+)")
   end
 
+  -- A tool's `unsupported`: why PR `args.pr_id`'s host can't `what` (its
+  -- HOSTS.caps lacks `cap`), else nil - a PR not loaded is need_pr's to say.
+  local HOST_NAMES = { azure = "Azure DevOps", github = "GitHub" }
+  local function needs(cap, what)
+    return function(args)
+      local pr = T.pr_record(args.pr_id)
+      if not pr then return nil end
+      local HOSTS = require("azure-cli.hosts")
+      if HOSTS.caps(pr)[cap] then return nil end
+      local host = HOSTS.host(pr)
+      return HOSTS.ref(pr) .. " is on " .. (HOST_NAMES[host] or host) .. ", which can't " .. what .. " from azure-vicli."
+    end
+  end
+
   -- Shows a reviewer tab for PR `id` (opening the reviewer when it isn't
   -- open yet) and, once it's there, calls review/chat.lua's opener with
   -- `path`/`side`/`line`. cb(ok, message).
@@ -114,10 +128,13 @@ return function(T)
     },
     {
       name = "add_reviewer",
-      description = "Adds a reviewer to a pull request by name or email (optionally as required). Asks first.",
+      description = "Adds a reviewer to a pull request - Azure DevOps: by name or email, optionally as required; "
+        .. "GitHub: a login, @login, a name, or org/team (GitHub has no required reviewers). Says so when the PR's "
+        .. "host can't. Asks first.",
       schema = { type = "object", properties = { pr_id = { type = "integer" }, who = { type = "string" },
         required = { type = "boolean" } }, required = { "pr_id", "who" } },
       risk = "ask",
+      unsupported = needs("add_reviewer", "add reviewers"),
       confirm = function(a) return "add " .. tostring(a.who) .. " as a" .. (a.required and " required" or "") .. " reviewer on PR !" .. tostring(a.pr_id) end,
       run = function(args, _, done)
         local pr = T.need_pr(args, done)
@@ -125,16 +142,20 @@ return function(T)
         T.provider({ "--add-reviewer", args.who, args.required and "true" or "false" }, T.pr_env(pr), function(ok, out, err)
           if not ok then return done(nil, err) end
           local okd, d = pcall(vim.json.decode, out)
-          done("Added " .. ((okd and d.added) or args.who) .. " as a reviewer on PR !" .. pr.id .. ".")
+          d = okd and type(d) == "table" and d or {}
+          done("Added " .. (d.added or args.who) .. " as a reviewer on PR !" .. pr.id .. "."
+            .. (d.note and (" Note: " .. d.note .. ".") or ""))
         end)
       end,
     },
     {
       name = "update_pr_description",
-      description = "Replaces a pull request's description (markdown). Asks first.",
+      description = "Replaces a pull request's description (markdown; on GitHub, its body). Says so when the PR's "
+        .. "host can't. Asks first.",
       schema = { type = "object", properties = { pr_id = { type = "integer" }, description = { type = "string" } },
         required = { "pr_id", "description" } },
       risk = "ask",
+      unsupported = needs("set_description", "change the description"),
       confirm = function(a) return "replace the description of PR !" .. tostring(a.pr_id) end,
       details = function(a, cb) cb(vim.split(a.description or "", "\n", { plain = true })) end,
       run = function(args, _, done)

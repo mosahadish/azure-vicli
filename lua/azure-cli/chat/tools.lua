@@ -758,6 +758,12 @@ function M.call(name, args, env, cb)
   args = type(args) == "table" and args or {}
   local perm = M.permission(tool, perms())
   if perm == "deny" then return cb("The user doesn't allow " .. name .. ".", true) end
+  -- What the PR's host can't do ends here, before anyone is asked.
+  local nope = tool.unsupported and tool.unsupported(args)
+  if nope then
+    env.log("\u{2717} " .. name .. ": " .. nope)
+    return cb(nope, true)
+  end
   local function finish(result, err, undo)
     if err then
       env.log("\u{2717} " .. name .. ": " .. tostring(err))

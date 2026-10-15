@@ -44,6 +44,9 @@ local AZURE = {
   },
   complete_work_items = true,
   auto_complete = true,
+  -- The agent's add_reviewer / update_pr_description (chat/tools_pr.lua).
+  add_reviewer = true,
+  set_description = true,
   -- "@<guid>": Azure DevOps only notifies for a mention by GUID.
   mention = function(id) return "@<" .. id .. ">" end,
   sigil = "!",
@@ -76,6 +79,10 @@ local GITHUB = {
   },
   complete_work_items = false,
   auto_complete = true,
+  -- Through GraphQL (requestReviews, updatePullRequest); a record's caps
+  -- can turn either off.
+  add_reviewer = true,
+  set_description = true,
   -- gS sends the queue as one review (--submit-review), not comment by
   -- comment: one notification, and nothing lands half-sent.
   native_review = true,

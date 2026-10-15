@@ -4920,9 +4920,8 @@ def cmd_prefetch(env=None):
 # ---------------------------------------------------------------------------
 
 
-# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md phase 4: CI, the
-# reviewer and the description come later), with how each maps onto
-# github_host.Actions.
+# The PR actions a GitHub PR answers so far (GITHUB_PLAN.md phase 4: CI
+# comes later), with how each maps onto github_host.Actions.
 _GITHUB_ACTIONS = {
     "--threads": lambda a, arg: a.threads(),
     "--iterations": lambda a, arg: a.iterations(),
@@ -4943,6 +4942,9 @@ _GITHUB_ACTIONS = {
     # third argument is ignored.
     "--complete": lambda a, arg: a.complete(arg(0), arg(1, "true")),
     "--auto-complete": lambda a, arg: a.auto_merge(arg(0), arg(1)),
+    # #110: through GraphQL (requestReviews, updatePullRequest).
+    "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
+    "--set-description": lambda a, arg: a.set_description(arg(0)),
 }
 
 

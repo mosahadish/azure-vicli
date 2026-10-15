@@ -62,7 +62,7 @@ GH_OWNER = "demo-gh"
 # The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
-              "--create-pr", "--complete", "--auto-complete")
+              "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description")
 TEAM = "Demo Team"
 
 PEOPLE = {

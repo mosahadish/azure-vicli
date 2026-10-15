@@ -644,6 +644,30 @@ SUBMIT_REVIEW = """mutation($id: ID!, $event: PullRequestReviewEvent!, $body: St
 DELETE_REVIEW = """mutation($id: ID!) {
   deletePullRequestReview(input: {pullRequestReviewId: $id}) { pullRequestReview { id } } }"""
 
+# --add-reviewer: the PR's node id and author with the repository's people
+# matching `who` (login or name - the only GraphQL search by display name),
+# else a login outside them (read access is enough to review), or a team.
+REVIEWER_QUERY = """query ReviewerLookup($owner: String!, $name: String!, $number: Int!, $q: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { id author { login } }
+    assignableUsers(query: $q, first: 10) { nodes { id login name } } }
+}"""
+USER_QUERY = "query UserByLogin($login: String!) { user(login: $login) { id login name } }"
+TEAM_QUERY = """query TeamBySlug($org: String!, $slug: String!) {
+  organization(login: $org) { team(slug: $slug) { id name slug } } }"""
+# union: add to the requested reviewers instead of replacing them.
+REQUEST_REVIEWS = """mutation RequestReviews($id: ID!, $users: [ID!], $teams: [ID!]) {
+  requestReviews(input: {pullRequestId: $id, userIds: $users, teamIds: $teams, union: true}) {
+    pullRequest { id } } }"""
+
+PR_NODE_QUERY = """query PrNodeId($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) { id } } }"""
+UPDATE_BODY = """mutation UpdatePrBody($id: ID!, $body: String!) {
+  updatePullRequest(input: {pullRequestId: $id, body: $body}) { pullRequest { id } } }"""
+
+NO_REQUIRED_REVIEWERS = ("GitHub has no required reviewers (CODEOWNERS and branch rules decide that) - "
+                         "requested a review")
+
 # Statuses that leave a conversation open; anything else resolves it.
 OPEN_STATUSES = ("active", "pending")
 
@@ -1023,6 +1047,83 @@ class Actions(object):
         self.client.rest("PUT", self._repo("/pulls/{0}/reviews/{1}/dismissals".format(self.pr, mine[-1]["id"])),
                          {"message": "Dismissed by its author.", "event": "DISMISS"})
         print("Vote set to 0.")
+        return 0
+
+    def add_reviewer(self, who, required="false"):
+        """--add-reviewer: requests a review from `who` - a login, @login,
+        or org/team (@org/team) - adding to the reviewers already asked.
+        A name finds the repository's people by login or name: an exact
+        login wins, else the one partial match; several are an error
+        listing them, like Azure's. GitHub has no required reviewers, so
+        `required` only adds a note. Prints {"added", "id"[, "note"]}."""
+        import sys
+        who = (who or "").strip()
+        if not who:
+            print("Who should review?", file=sys.stderr)
+            return 1
+        data = self.client.graphql(REVIEWER_QUERY, dict(self._vars(), q=who.lstrip("@")))
+        repo = data.get("repository") or {}
+        pr = repo.get("pullRequest") or {}
+        team = re.match(r"^@?([^/\s]+)/([^/\s]+)$", who)
+        if team:
+            t = ((self.client.graphql(TEAM_QUERY, {"org": team.group(1), "slug": team.group(2)})
+                  .get("organization") or {}).get("team")) or {}
+            if not t.get("id"):
+                print("No GitHub team {0}/{1} (or it isn't visible to you).".format(team.group(1), team.group(2)),
+                      file=sys.stderr)
+                return 1
+            found, ids = t, {"teams": [t["id"]]}
+            added = "{0}/{1}".format(team.group(1), t.get("slug") or team.group(2))
+        else:
+            found = self._find_user(who.lstrip("@"), (repo.get("assignableUsers") or {}).get("nodes") or [])
+            if isinstance(found, str):
+                print(found, file=sys.stderr)
+                return 1
+            if (found.get("login") or "").lower() == (((pr.get("author") or {}).get("login")) or "").lower():
+                print("GitHub doesn't let the author review their own pull request.", file=sys.stderr)
+                return 1
+            ids = {"users": [found["id"]]}
+            added = "{0} ({1})".format(found["name"], found["login"]) if found.get("name") else found.get("login")
+        self.client.graphql(REQUEST_REVIEWS, dict({"id": pr.get("id")}, **ids))
+        out = {"added": added, "id": found.get("id")}
+        if str(required).lower() == "true":
+            out["note"] = NO_REQUIRED_REVIEWERS
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+
+    def _find_user(self, who, people):
+        """The one user `who` names among `people` (the repository's), else
+        by login anywhere; an error string when none or several match."""
+        low = who.lower()
+        people = [p for p in people if p and p.get("id")]
+        exact = [p for p in people if (p.get("login") or "").lower() == low]
+        if exact:
+            return exact[0]
+        if not re.search(r"\s", who):
+            try:
+                u = self.client.graphql(USER_QUERY, {"login": who}).get("user") or {}
+            except RuntimeError:  # NOT_FOUND comes as a GraphQL error
+                u = {}
+            if u.get("id"):
+                return u
+        partial = [p for p in people if low in (p.get("login") or "").lower() or low in (p.get("name") or "").lower()]
+        if len(partial) == 1:
+            return partial[0]
+        if not partial:
+            return "No GitHub user or team matches '{0}'.".format(who)
+        names = ", ".join("{0} ({1})".format(p.get("name") or p.get("login"), p.get("login")) for p in partial[:8])
+        return "{0} people match '{1}': {2}".format(len(partial), who, names)
+
+    def set_description(self, text):
+        """--set-description: replaces the PR's body."""
+        data = self.client.graphql(PR_NODE_QUERY, self._vars())
+        node = ((data.get("repository") or {}).get("pullRequest") or {}).get("id")
+        if not node:
+            import sys
+            print("Pull request {0} isn't in {1}/{2}.".format(self.pr, self.owner, self.repo), file=sys.stderr)
+            return 1
+        self.client.graphql(UPDATE_BODY, {"id": node, "body": text or ""})
+        print("Description updated.")
         return 0
 
     def submit_review(self, payload_json):

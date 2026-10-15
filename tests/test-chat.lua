@@ -634,6 +634,49 @@ do
     S.PR_LIST_CACHE = saved
   end
   do
+    -- add_reviewer / update_pr_description follow the PR's host (#110):
+    -- GitHub's go to the provider; a host whose caps say no is refused
+    -- before anyone is asked.
+    local S = require("azure-cli.state")
+    local saved, real_provider = S.PR_LIST_CACHE, TOOLS.provider
+    S.PR_LIST_CACHE = { prs = {
+      { id = 7, key = "o~web~7", host = "github", repo = "web", project = "o", org = "https://api.github.com" },
+      { id = 8, key = "o~web~8", host = "github", repo = "web", project = "o", org = "https://api.github.com",
+        caps = { add_reviewer = false, set_description = false } },
+      { id = 101, repo = "w", project = "p", org = "https://dev.azure.com/x" } } }
+    local calls = {}
+    TOOLS.provider = function(argv, _, cb)
+      calls[#calls + 1] = argv
+      if argv[1] == "--add-reviewer" then
+        return cb(true, '{"added": "Bob Brown (bob)", "id": "U_bob", "note": "GitHub has no required reviewers"}', "")
+      end
+      cb(true, "Description updated.", "")
+    end
+    local asked = 0
+    local env = { log = function() end, confirm = function(_, cb) asked = asked + 1; cb(true) end }
+    local got
+    TOOLS.call("add_reviewer", { pr_id = 7, who = "bob", required = true }, env, function(t, e) got = { t, e } end)
+    check("add_reviewer: a GitHub PR asks, then goes to the provider", asked == 1 and calls[1]
+      and calls[1][1] == "--add-reviewer" and calls[1][2] == "bob" and calls[1][3] == "true", vim.inspect(calls))
+    check("add_reviewer: says who, with GitHub's note", got[2] == false
+      and got[1]:find("Added Bob Brown (bob)", 1, true) and got[1]:find("Note: GitHub has no required", 1, true),
+      vim.inspect(got))
+    TOOLS.call("update_pr_description", { pr_id = 7, description = "New" }, env, function(t, e) got = { t, e } end)
+    check("update_pr_description: a GitHub PR goes to the provider", asked == 2 and calls[2][1] == "--set-description"
+      and calls[2][2] == "New" and got[2] == false, vim.inspect(got))
+    TOOLS.call("add_reviewer", { pr_id = 8, who = "bob" }, env, function(t, e) got = { t, e } end)
+    check("add_reviewer: a host that can't is refused without asking", asked == 2 and #calls == 2 and got[2] == true
+      and got[1] == "web#8 is on GitHub, which can't add reviewers from azure-vicli.", vim.inspect(got))
+    TOOLS.call("update_pr_description", { pr_id = 8, description = "x" }, env, function(t, e) got = { t, e } end)
+    check("update_pr_description: likewise", asked == 2 and #calls == 2 and got[2] == true
+      and got[1] == "web#8 is on GitHub, which can't change the description from azure-vicli.", vim.inspect(got))
+    check("unsupported: Azure can, an unknown PR is need_pr's to say",
+      TOOLS.by_name.add_reviewer.unsupported({ pr_id = 101 }) == nil
+        and TOOLS.by_name.update_pr_description.unsupported({ pr_id = 101 }) == nil
+        and TOOLS.by_name.add_reviewer.unsupported({ pr_id = 999 }) == nil)
+    TOOLS.provider, S.PR_LIST_CACHE = real_provider, saved
+  end
+  do
     -- find_implementations / find_definition's patterns against real git grep.
     local C = require("azure-cli.chat.tools_code")
     local dir = vim.fn.tempname()
