@@ -223,6 +223,9 @@ do
   local AGS = require("azure-cli.chat.agents")
   local real_start, got = AGS.start_for_items, nil
   AGS.start_for_items = function(items) got = items return "ok", {} end
+  -- An unlisted GitHub issue's key is read first (#127): not found here.
+  local real_provider = TOOLS.provider
+  TOOLS.provider = function(_, _, cb) cb(false, "", "not found") end
   ST.BOARDS = { workItems = true, issues = {} }
   run_tool("start_agents", { work_item_ids = { 48 }, board = "github" })
   check("start_agents: board = github reaches the agent", got and got[1].id == 48 and got[1].board == "github",
@@ -237,7 +240,7 @@ do
   run_tool("start_agents", { work_item_ids = { 5, 12 }, board = "github" })
   check("start_agents: board = github doesn't take the Azure item with that id", got and got[1].title == nil
     and got[1].board == "github" and got[2].title == "Gh" and got[2].repo == "gizmos", vim.inspect(got))
-  AGS.start_for_items, ST.BOARDS = real_start, saved_boards
+  AGS.start_for_items, ST.BOARDS, TOOLS.provider = real_start, saved_boards, real_provider
   AZ.state.WI_LIST_CACHE, GH.state.WI_LIST_CACHE = saved_caches.az, saved_caches.gh
 
   -- set_work_item_parent: --wi-edit set-parent on the board's ref, what it

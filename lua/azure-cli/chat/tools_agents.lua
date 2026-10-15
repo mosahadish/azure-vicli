@@ -49,6 +49,24 @@ return function(T)
     return item
   end
 
+  -- Gives GitHub issue `item` its key when no list had it (#127: created in
+  -- the session, the board not refreshed since), read as get_work_item
+  -- does, and notes it so its number finds it (plan.note_issue). Then
+  -- `cb(keyed)`: false when it has no key and couldn't be read.
+  local function with_key(item, args, env, cb)
+    if item.board ~= "github" or (item.key and item.key ~= "") then return cb(true) end
+    local B = T.board_for({ board = "github" }, env)
+    T.provider({ "--wi-detail", T.wi_ref(B, item.id, args.repo) }, B.env, function(ok, out)
+      local okd, d = pcall(vim.json.decode, ok and out or "")
+      local it = okd and type(d) == "table" and type(d.item) == "table" and d.item or nil
+      if not (it and type(it.key) == "string" and it.key ~= "") then return cb(false) end
+      item.key, item.repo = it.key, item.repo or it.key:match("^[^~]*~(.-)~%d+$")
+      item.title, item.type, item.state = item.title or it.title, item.type or it.type, item.state or it.state
+      PLAN().note_issue(item)
+      cb(true)
+    end)
+  end
+
   local target_props = {
     work_item_id = { type = "integer", description = "the agent's work item" },
     pr_id = { type = "integer", description = "the agent's pull request" },
@@ -77,20 +95,37 @@ return function(T)
       run = function(args, env, done)
         local why = main_only(env)
         if why then return done(nil, why) end
-        local said = {}
-        local items = {}
+        local items, unkeyed = {}, {}
         for _, id in ipairs(type(args.work_item_ids) == "table" and args.work_item_ids or {}) do
           items[#items + 1] = item_on_board(id, args, env)
         end
-        if #items > 0 then said[#said + 1] = (AGENTS().start_for_items(items, args.instructions)) end
-        if args.pr_id then
-          local pr = T.pr_record(args.pr_id, args.repo)
-          if not pr then return done(nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request first") end
-          local threads = type(args.thread_ids) == "table" and #args.thread_ids > 0 and args.thread_ids or nil
-          said[#said + 1] = (AGENTS().start_for_prs({ pr }, { [pr.id] = threads }, args.instructions))
+        local function start()
+          local said = {}
+          if #items > 0 then said[#said + 1] = (AGENTS().start_for_items(items, args.instructions)) end
+          if #unkeyed > 0 then
+            said[#said + 1] = "Couldn't read issue " .. table.concat(unkeyed, ", ") .. " on GitHub, so its plan is "
+              .. "keyed by number only."
+          end
+          if args.pr_id then
+            local pr = T.pr_record(args.pr_id, args.repo)
+            if not pr then return done(nil, "PR !" .. tostring(args.pr_id) .. " isn't loaded - call get_pull_request first") end
+            local threads = type(args.thread_ids) == "table" and #args.thread_ids > 0 and args.thread_ids or nil
+            said[#said + 1] = (AGENTS().start_for_prs({ pr }, { [pr.id] = threads }, args.instructions))
+          end
+          if #said == 0 then return done(nil, "give work_item_ids or pr_id") end
+          done(table.concat(said, " "))
         end
-        if #said == 0 then return done(nil, "give work_item_ids or pr_id") end
-        done(table.concat(said, " "))
+        -- One at a time, then start them all.
+        local i = 0
+        local function next_item()
+          i = i + 1
+          if i > #items then return start() end
+          with_key(items[i], args, env, function(keyed)
+            if not keyed then unkeyed[#unkeyed + 1] = "#" .. tostring(items[i].id) end
+            next_item()
+          end)
+        end
+        next_item()
       end,
     },
     {

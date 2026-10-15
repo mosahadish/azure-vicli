@@ -123,11 +123,24 @@ local function key_in_repo(key, repo)
   return owner ~= nil and (tostring(repo) == name or tostring(repo) == owner .. "/" .. name)
 end
 
+-- GitHub issues looked up this session that no list showed yet (#127: one
+-- created in the session, before the board is refreshed), by key.
+local noted = {}
+
+-- Remembers issue `item` (with its key) as listed, so its number finds it.
+function M.note_issue(item)
+  if type(item) == "table" and item.id and item.key and item.key ~= "" then noted[tostring(item.key)] = item end
+end
+
+-- For tests: forget the noted issues.
+function M.reset_noted() noted = {} end
+
 -- The GitHub issues numbered `id` listed this session (the Issues board's
--- list and its sprint tabs), in `repo` when given, once each.
+-- list and its sprint tabs, and M.note_issue's), in `repo` when given,
+-- once each.
 local function listed_issues(id, repo)
   local S = require("azure-cli.workitems.board").get("github").state
-  local lists = { (S.WI_LIST_CACHE or {}).items or {} }
+  local lists = { (S.WI_LIST_CACHE or {}).items or {}, vim.tbl_values(noted) }
   for _, c in pairs(S.WI_SPRINT_ITEMS or {}) do lists[#lists + 1] = c.items or {} end
   local out, seen = {}, {}
   for _, items in ipairs(lists) do

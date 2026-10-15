@@ -104,8 +104,9 @@ end
 
 -- Keyed by the issue's key, not its number (#114): two GitHub #7s in
 -- different repos are two agents, and an Azure #7 a third. An issue whose
--- plan began before that keeps its wi-<n> one (plan.resolve_item). Nil
--- for an Azure item whose wi-<n> is such an old issue plan.
+-- plan began before that keeps its wi-<n> one (plan.resolve_item). An
+-- issue no list had yet comes with its key looked up (start_agents, #127).
+-- Nil for an Azure item whose wi-<n> is such an old issue plan.
 local function job_for_item(it, extra)
   local PLAN = require("azure-cli.chat.plan")
   local target = it.board == "github" and PLAN.resolve_item(PLAN.item_target(it)) or { work_item_id = it.id }

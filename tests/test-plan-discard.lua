@@ -455,6 +455,60 @@ do
     vim.inspect({ said, discarded("wi-88") }))
 end
 
+-- #127: an issue created in the session, not on any list yet: start_agents
+-- reads its key (--wi-detail, stubbed) and keys its agent by it; an old
+-- wi-<n> plan of such an issue, whose conversation recorded only "github",
+-- still loads under wi-<n> and stays its issue's.
+do
+  local TOOLS = require("azure-cli.chat.tools")
+  local real_provider = TOOLS.provider
+  local read = {}
+  TOOLS.provider = function(argv, _, cb)
+    if argv[1] ~= "--wi-detail" then return cb(false, "", "unexpected") end
+    read[#read + 1] = argv[2]
+    local n = tonumber(argv[2])
+    cb(true, vim.json.encode({ item = { id = n, key = "o~repo~" .. n, title = "New " .. n, repo = "repo" } }), "")
+  end
+  local main_env = CHAT._.tool_env({ tools = {} }, nil)
+  local busy = CHAT.conversation("wi-9891", { target = { work_item_id = 9891 }, label = "#9891" })
+  busy.running = true  -- the one slot is taken: they queue
+  local function start(id)
+    local res, err, finished
+    TOOLS.by_name["start_agents"].run({ work_item_ids = { id }, board = "github" }, main_env,
+      function(r, e) res, err, finished = r, e, true end)
+    vim.wait(5000, function() return finished end, 10)
+    return res, err
+  end
+
+  local res, err = start(12701)
+  local q = AG.queued()[1]
+  check("#127 new issue: its agent is keyed by the issue's key", q and q.key == "wi-github-o~repo~12701"
+    and q.label == "repo#12701" and q.target.item_key == "o~repo~12701" and read[1] == "12701",
+    vim.inspect({ res, err, q and q.key, read }))
+  check("#127 new issue: the main chat's tools find it by number",
+    PLAN.key(PLAN.item_target_for(12701, main_env)) == "wi-github-o~repo~12701")
+  AG.reset()
+
+  local key = make_plan(12702)
+  STORE.save({ id = "20261015-000000-2702", created = os.time(), plan = key, entries = {
+    { role = "you", text = "/plan GitHub issue #12702", view = { work_item = { id = 12702, board = "github" } } },
+    { role = "agent", text = "planned" } } })
+  PLAN.reset_recorded()
+  res, err = start(12702)
+  q = AG.queued()[1]
+  check("#127 old wi-<n> plan: its issue's agent still uses it", q and q.key == "wi-12702"
+    and PLAN.load(q.key).title == "Plan 12702", vim.inspect({ res, err, q and q.key }))
+  check("#127 old wi-<n> plan: the main chat's tools find it",
+    PLAN.key(PLAN.item_target_for(12702, main_env)) == "wi-12702" and not exists("wi-github-o~repo~12702"))
+
+  AG.reset()
+  busy.running = false
+  CHAT.drop_conversation("wi-9891")
+  TOOLS.provider = real_provider
+  PLAN.reset_noted()
+  PLAN.reset_recorded()
+end
+
 -- #119: the question comes at once, with no git; Cancel runs none; after
 -- Discard the plan is gone before any git job answers; all worktrees are
 -- checked in parallel, a clean one removed, a changed one and one git
