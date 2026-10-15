@@ -151,7 +151,7 @@ vim.list_extend(steps, {
   function()
     rows_buf = screen()
     vim.api.nvim_buf_set_lines(rows_buf, 0, -1, false, { "header", "", "a", "b", "", "c", "d", "", "g? keys" })
-    KH.rows(rows_buf, function() return ROWS end)
+    KH.rows(rows_buf, function() return ROWS end, "agents")
     vim.cmd("normal! 4G")
     vim.api.nvim_input("G")
     return 300, on(7, "G")
@@ -190,6 +190,43 @@ vim.list_extend(steps, {
       if #ran ~= before + 1 or ran[#ran] ~= "vote" then return "gv on a rows screen didn't vote" end
       if not g_mapped(rows_buf) then return "g wasn't mapped again on the rows screen" end
     end
+  end,
+  -- #128: first_row / last_row are in the palette (g.) like the other keys.
+  function()
+    local PROMPT = require("azure-cli.prompt")
+    local real, seen = PROMPT.select, {}
+    PROMPT.select = function(o) for _, a in ipairs(o.items) do seen[a.surface .. "." .. a.action] = true end end
+    KEYS.palette(rows_buf)
+    PROMPT.select = real
+    return 0, function()
+      if not (seen["agents.first_row"] and seen["agents.last_row"]) then
+        return "the palette doesn't list first_row / last_row: " .. vim.inspect(vim.tbl_keys(seen))
+      end
+    end
+  end,
+  -- Rebound in setup(): the new keys go to the first / last row, gg is Vim's own again.
+  function()
+    require("azure-cli").setup({ keys = { agents = { first_row = "[[", last_row = "]]" } } })
+    rows_buf = screen()
+    vim.api.nvim_buf_set_lines(rows_buf, 0, -1, false, { "header", "", "a", "b", "", "c", "d", "", "g? keys" })
+    KH.rows(rows_buf, function() return ROWS end, "agents")
+    vim.cmd("normal! 4G")
+    vim.api.nvim_input("]]")
+    return 300, on(7, "a rebound last_row")
+  end,
+  typed("[[", 3),
+  typed("2]]", 4),
+  typed("gg", 1),
+  -- Unbound (false): no mapping at all, G is Vim's own.
+  function()
+    require("azure-cli").setup({ keys = { agents = { first_row = false, last_row = false } } })
+    rows_buf = screen()
+    vim.api.nvim_buf_set_lines(rows_buf, 0, -1, false, { "header", "", "a", "b", "", "c", "d", "", "g? keys" })
+    KH.rows(rows_buf, function() return ROWS end, "agents")
+    require("azure-cli").setup({})
+    vim.cmd("normal! 4G")
+    vim.api.nvim_input("G")
+    return 300, on(9, "an unbound last_row's G")
   end,
 })
 

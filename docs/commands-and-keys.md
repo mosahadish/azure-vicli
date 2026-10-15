@@ -313,9 +313,11 @@ paste the output here after changing a default.
 | `edit_title` | `ge` |
 | `expand_all` | `zR` |
 | `filter` | `/` |
+| `first_row` | `gg` |
 | `goto_sprint_n` | `gt` |
 | `help` | `?` |
 | `issues` | `I` |
+| `last_row` | `G` |
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
 | `new` | `n` |
@@ -435,8 +437,10 @@ paste the output here after changing a default.
 | `changes` | `gd` |
 | `chat_input` | `i` |
 | `discard` | `dd` |
+| `first_row` | `gg` |
 | `help` | `?` |
 | `issues` | `I` |
+| `last_row` | `G` |
 | `open` | `<CR>` |
 | `palette` | `g.` |
 | `pr_list` | `P` |

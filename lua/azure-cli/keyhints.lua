@@ -11,7 +11,7 @@
 -- of the way, after the count and register: Vim's own g commands, your g
 -- mappings (gcc, grn, ...) and the screen's (gP, gA, ...) all do what
 -- they did. A screen with lines that aren't rows gives M.rows its rows,
--- so gg / G land on one.
+-- so gg / G (its first_row / last_row keys) land on one.
 --
 -- ui.key_hints: "auto" (the default) - on unless which-key or mini.clue is
 -- there, which show pending keys themselves (from the same descriptions
@@ -181,10 +181,11 @@ end
 -- gg / G on a screen whose lines aren't all rows (group headers, a tab
 -- bar, the padding round a centred box): the first / last row, and with a
 -- count the count-th row, instead of a line the cursor can't use there.
--- `fn()` gives the screen's rows by line ({ [line] = row }). Mapped whether
--- or not the hints are on; g and a pause replays gg into this one too,
--- count and all.
-function M.rows(buf, fn)
+-- `fn()` gives the screen's rows by line ({ [line] = row }). Bound as
+-- `surface`'s first_row / last_row (config.lua: gg / G, rebindable),
+-- whether or not the hints are on; g and a pause replays gg into this one
+-- too, count and all.
+function M.rows(buf, fn, surface)
   local function go(last)
     local list = {}
     for l in pairs(fn() or {}) do list[#list + 1] = l end
@@ -195,8 +196,9 @@ function M.rows(buf, fn)
     vim.cmd("normal! m'")
     pcall(vim.api.nvim_win_set_cursor, 0, { list[i], vim.api.nvim_win_get_cursor(0)[2] })
   end
-  vim.keymap.set("n", "gg", function() go(false) end, { buffer = buf, silent = true, desc = "first row (a count: that row)" })
-  vim.keymap.set("n", "G", function() go(true) end, { buffer = buf, silent = true, desc = "last row (a count: that row)" })
+  local KEYS = require("azure-cli.keys")
+  KEYS.bind(buf, surface, "first_row", function() go(false) end, { desc = "first row (a count: that row)" })
+  KEYS.bind(buf, surface, "last_row", function() go(true) end, { desc = "last row (a count: that row)" })
 end
 
 -- Gives `buf` (one of ours - keys.lua calls this on its first key) the g

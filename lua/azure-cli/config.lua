@@ -93,6 +93,7 @@ local DEFAULT_KEYS = {
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     plan_agents = "gP", agents = "A", chat_input = "i", chat_selection = "<CR>",
+    first_row = "gg", last_row = "G",
   },
   -- Work-item detail view.
   workitem_view = {
@@ -117,7 +118,7 @@ local DEFAULT_KEYS = {
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
-    show_finished = "gF", chat_input = "i", discard = "dd",
+    show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {

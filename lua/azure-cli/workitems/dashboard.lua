@@ -1682,6 +1682,8 @@ local SPRINT, QUARTER = WORDS.sprint, WORDS.quarter
 local WORKITEMS_HELP = {
   "Navigate",
   { "open", "open the " .. WORDS.item .. ": parent, children, description" },
+  { "first_row", "the first " .. WORDS.item .. " (a count: that row)" },
+  { "last_row", "the last " .. WORDS.item .. " (a count: that row)" },
   { "filter", "filter by id, title, state or assignee (Esc clears)" },
   { "tree", "tree view: everything under each " .. WORDS.item .. ", indented (remembered)" },
   { "toggle_fold", "tree: fold/unfold the " .. WORDS.item .. "'s children (on a child: fold its parent)" },
@@ -1859,7 +1861,7 @@ KEYS.bind(buf, "workitems", "quit", function()
 end, { desc = "quit" })
 
 -- gg / G: the first / last item row, not the tab bar or the box's padding.
-require("azure-cli.keyhints").rows(buf, function() return row_item end)
+require("azure-cli.keyhints").rows(buf, function() return row_item end, "workitems")
 
 -- Prefetch the item under the cursor once movement settles (debounced), so the
 -- detail tab opens from cache instantly.
