@@ -562,6 +562,8 @@ setmetatable(M, { __call = function(_, T)
           pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
             "Waiting for your review on the Agents screen") end)
           pcall(function() require("azure-cli.chat.plan_changes").poke() end)
+          -- Its change viewer, when it's open, redrawn where it is (#126).
+          pcall(require("azure-cli.chat.changes").refresh, t.dir, { quiet = true })
           -- Against the plan: what it changed that the plan doesn't list,
           -- and what the plan lists that it didn't change.
           local PLAN = require("azure-cli.chat.plan")
@@ -756,7 +758,7 @@ setmetatable(M, { __call = function(_, T)
           env.log("$ " .. cmd)
           TR.run(t.dir, cmd, TR.fingerprint(diff or ""), function(r, err)
             if not r then return done(nil, err) end
-            pcall(require("azure-cli.chat.changes").refresh, t.dir)
+            pcall(require("azure-cli.chat.changes").refresh, t.dir, { quiet = true })
             done({ exit_code = r.code, passed = r.code == 0, timed_out = r.timed_out, seconds = r.seconds,
               output = table.concat(TR.tail(r.output, 80), "\n") })
           end, { by = "agent" })

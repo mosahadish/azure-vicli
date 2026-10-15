@@ -1649,6 +1649,48 @@ do
       and FIX.last and FIX.last.dir == wt, vim.inspect({ res, FIX.last }))
   check("#120 show_fix: the plan view's Changes section is poked", poked >= 1, poked)
 
+  -- #126: its change viewer already open, the user in another tab: show_fix
+  -- redraws it in place - no tab, window or mode change.
+  local CHANGES = require("azure-cli.chat.changes")
+  CHANGES.open("Proposed change - #9120", wt, vim.split(sh({ "diff" }), "\n", { plain = true }))
+  vim.wait(200, function() return false end, 20)  -- open's own scheduled focus
+  local function viewer()
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.bo[vim.api.nvim_win_get_buf(w)].filetype == "azurecli-changes" then return w end
+    end
+  end
+  local lw = viewer()
+  local ctab = lw and vim.api.nvim_win_get_tabpage(lw)
+  local dw
+  for _, w in ipairs(ctab and vim.api.nvim_tabpage_list_wins(ctab) or {}) do if w ~= lw then dw = w end end
+  local function diff_text()
+    return dw and vim.api.nvim_win_is_valid(dw)
+      and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(dw), 0, -1, false), "\n") or ""
+  end
+  check("#126 the viewer is open on the change", diff_text():find("return 2", 1, true) ~= nil, diff_text())
+  vim.cmd("tabnew")
+  local mine = vim.api.nvim_get_current_tabpage()
+  vim.fn.writefile({ "return 3" }, wt .. "/a.lua")
+  vim.fn.writefile({ "new" }, wt .. "/b.lua")
+  before = screen()
+  res, err = call("show_fix", { work_item_id = 9120 }, env)
+  vim.wait(3000, function() return diff_text():find("return 3", 1, true) ~= nil end, 10)
+  ok, detail = same(before)
+  check("#126 show_fix with its viewer open: the user's tab, window and mode stay", res and ok, detail .. tostring(err))
+  local listed = lw and vim.api.nvim_win_is_valid(lw)
+    and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(lw), 0, -1, false), "\n") or ""
+  check("#126 ... and the viewer shows the new change: its diff and file list",
+    diff_text():find("return 3", 1, true) ~= nil and listed:find("b.lua", 1, true) ~= nil, diff_text() .. " / " .. listed)
+
+  -- The viewer closed: show_fix opens nothing.
+  pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(ctab))
+  vim.api.nvim_set_current_tabpage(mine)
+  before = screen()
+  res, err = call("show_fix", { work_item_id = 9120 }, env)
+  ok, detail = same(before)
+  check("#126 show_fix with no viewer open: nothing opens", res and ok and viewer() == nil, detail .. tostring(err))
+  pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(mine))
+
   FIX.last = last
   SHELL.notify, CHAT.alert, PC.poke = real.notify, real.alert, real.poke
   vim.fn.delete(wt, "rf")

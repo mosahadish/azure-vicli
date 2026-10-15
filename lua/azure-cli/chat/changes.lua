@@ -10,10 +10,13 @@
 --
 --   M.open(title, dir, raw, keep)  shows `raw` (`git diff` output of
 --                             worktree `dir`), reusing the tab when it's
---                             still open; `keep` = { path, line, list } puts
---                             the cursor back where it was
---   M.refresh()               the same worktree again (r), staying on the
---                             file and line
+--                             still open; `keep` = { path, line, list, quiet }
+--                             puts the cursor back where it was
+--   M.refresh(dir, opts)      the same worktree again (r), staying on the
+--                             file and line; opts.quiet (show_fix, run_tests:
+--                             #126) redraws it where it is - no tab, window,
+--                             focus or mode change, and nothing opens when
+--                             it isn't open
 --   M.jump_to(path, line)        file `path` at line `line` of its new version
 --                             (the plan's gd)
 --
@@ -865,7 +868,7 @@ function M.open(title, dir, raw, keep)
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
     by_buf[view.list_buf] = view
-    vim.api.nvim_set_current_tabpage(view.tab)
+    if not (keep and keep.quiet) then vim.api.nvim_set_current_tabpage(view.tab) end
   else
     vim.cmd("tabnew")
     view.tab = vim.api.nvim_get_current_tabpage()
@@ -906,11 +909,10 @@ function M.open(title, dir, raw, keep)
     vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zv") end)
   elseif #view.files > 0 then
     show(1, false)
-    vim.api.nvim_set_current_win(view.diff_win)
     local first = DIFFBUF.edge_change(view.maps[vim.api.nvim_win_get_buf(view.diff_win)].map, 1)
     if first then
       vim.api.nvim_win_set_cursor(view.diff_win, { first, 0 })
-      vim.cmd("normal! zz")
+      vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zz") end)
     end
   end
   -- The diff pane gets the focus - again after the chat panel has followed
@@ -928,8 +930,11 @@ function M.open(title, dir, raw, keep)
     local w = (#view.files > 0 and not (keep and keep.list)) and view.diff_win or view.list_win
     if valid_win(w) then vim.api.nvim_set_current_win(w) end
   end
-  focus()
-  vim.schedule(function() vim.schedule(focus) end)
+  -- Quiet (#126): the user stays where they are.
+  if not (keep and keep.quiet) then
+    focus()
+    vim.schedule(function() vim.schedule(focus) end)
+  end
   return view.tab
 end
 
@@ -960,8 +965,10 @@ function M.jump_to(path, line)
 end
 
 -- `dir`: the worktree whose change to refresh (default: the one being
--- worked on - the key's own).
-function M.refresh(dir)
+-- worked on - the key's own). opts.quiet: redrawn in place, the focus
+-- staying where it is (#126).
+function M.refresh(dir, opts)
+  local quiet = opts and opts.quiet
   if dir and not use_dir(dir) then return end
   if not (view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab)) then return end
   local cur = view.files[view.current or 0]
@@ -969,12 +976,14 @@ function M.refresh(dir)
     path = cur and cur.path,
     line = valid_win(view.diff_win) and vim.api.nvim_win_get_cursor(view.diff_win)[1] or 1,
     list = vim.api.nvim_get_current_win() == view.list_win,
+    quiet = quiet,
   }
   local title = view.title:gsub(" %(last commit%)$", "")
   dir = view.dir
   require("azure-cli.chat.tools_fix").load(dir, require("azure-cli.chat.tools").git, function(ok, diff, last)
     if not ok then return notify("Refreshing failed: " .. tostring(diff)) end
     M.open(title .. (last and " (last commit)" or ""), dir, vim.split(diff, "\n", { plain = true }), keep)
+    if quiet then return end
     notify("Refreshed: " .. #view.files .. " file" .. (#view.files == 1 and "" or "s") .. " changed.")
   end)
 end
