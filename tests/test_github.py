@@ -873,6 +873,26 @@ class ReviewerDescriptionTests(unittest.TestCase):
                         "UpdatePrBody": {"updatePullRequest": {"pullRequest": {"id": "PR_5"}}}})
         self.assertEqual(loud(actions(c).set_description, "New\ntext"), (0, "Description updated.", ""))
         self.assertEqual(self.mutations(c, "updatePullRequest"), [{"id": "PR_5", "body": "New\ntext"}])
+        self.assertEqual(self.mutations(c, "UpdatePrBodyTitle"), [])
+
+    def test_set_description_with_a_title_retitles(self):
+        """#137: a title goes in the same updatePullRequest, a blank one is no title."""
+        c = FakeClient({"PrNodeId": {"repository": {"pullRequest": {"id": "PR_5"}}},
+                        "UpdatePrBody": {"updatePullRequest": {"pullRequest": {"id": "PR_5"}}}})
+        self.assertEqual(loud(actions(c).set_description, "Body", " New title "), (0, "Description updated.", ""))
+        self.assertEqual(self.mutations(c, "UpdatePrBodyTitle"), [{"id": "PR_5", "body": "Body", "title": "New title"}])
+        c.queries = []
+        loud(actions(c).set_description, "Body", "   ")
+        self.assertEqual(self.mutations(c, "updatePullRequest"), [{"id": "PR_5", "body": "Body"}])
+
+    def test_set_description_passes_the_title_through(self):
+        c = FakeClient({"PrNodeId": {"repository": {"pullRequest": {"id": "PR_5"}}},
+                        "UpdatePrBody": {"updatePullRequest": {"pullRequest": {"id": "PR_5"}}}})
+        with mock.patch.object(gh.Actions, "ensure_client", lambda self: setattr(self, "client", c) or True):
+            code, _, _ = loud(ac._github_pr_action, "--set-description", ["x", "T"], account(),
+                              {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"})
+        self.assertEqual(code, 0)
+        self.assertEqual(self.mutations(c, "UpdatePrBodyTitle"), [{"id": "PR_5", "body": "x", "title": "T"}])
 
     def test_set_description_failure_is_one_line(self):
         c = failing(FakeClient({"PrNodeId": {"repository": {"pullRequest": {"id": "PR_5"}}}}),

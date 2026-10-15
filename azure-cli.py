@@ -2985,10 +2985,14 @@ class PrActions:
         print(json.dumps({"added": person.get("providerDisplayName"), "id": person.get("id")}, ensure_ascii=False))
         return 0
 
-    def set_description(self, text):
-        """Replaces the PR's description (PATCH .../pullRequests/{id})."""
+    def set_description(self, text, title=""):
+        """Replaces the PR's description (PATCH .../pullRequests/{id}), and
+        its title when `title` isn't blank."""
+        data = {"description": text or ""}
+        if not _is_blank(title or ""):
+            data["title"] = title.strip()
         try:
-            self.fetch(self._pr_url(), method="PATCH", data={"description": text or ""}, pat=self.pat, api_version="6.0")
+            self.fetch(self._pr_url(), method="PATCH", data=data, pat=self.pat, api_version="6.0")
         except AdoHttpError as e:
             print("REST description update failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
@@ -3201,7 +3205,7 @@ def cmd_pr_action(flag, rest, env=None):
     if flag == "--add-reviewer":
         return actions.add_reviewer(arg(0), arg(1, "false"))
     if flag == "--set-description":
-        return actions.set_description(arg(0))
+        return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":
         return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
     if flag == "--get-pr":
@@ -5118,7 +5122,7 @@ _GITHUB_ACTIONS = {
     "--auto-complete": lambda a, arg: a.auto_merge(arg(0), arg(1)),
     # #110: through GraphQL (requestReviews, updatePullRequest).
     "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
-    "--set-description": lambda a, arg: a.set_description(arg(0)),
+    "--set-description": lambda a, arg: a.set_description(arg(0), arg(1)),
     # #111: CI, through the head's GitHub Actions runs. --requeue comes from
     # cmd_requeue, not PR_ACTION_FLAGS.
     "--requeue": lambda a, arg: a.requeue(),

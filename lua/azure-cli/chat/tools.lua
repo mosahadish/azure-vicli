@@ -909,8 +909,11 @@ M.undoers = {
   description = function(u, cb)
     local pr = M.pr_record(u.pr_id)
     if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
-    provider({ "--set-description", u.text or "" }, pr_env(pr), function(ok, _, err)
-      cb(ok, ok and "Description put back." or err)
+    -- A retitle's record carries the old title too (update_pr_description).
+    local argv = { "--set-description", u.text or "" }
+    if u.title and u.title ~= "" then argv[3] = u.title end
+    provider(argv, pr_env(pr), function(ok, _, err)
+      cb(ok, ok and (argv[3] and "Title and description put back." or "Description put back.") or err)
     end)
   end,
 }

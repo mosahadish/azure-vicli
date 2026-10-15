@@ -643,7 +643,8 @@ do
     local S = require("azure-cli.state")
     local saved, real_provider = S.PR_LIST_CACHE, TOOLS.provider
     S.PR_LIST_CACHE = { prs = {
-      { id = 7, key = "o~web~7", host = "github", repo = "web", project = "o", org = "https://api.github.com" },
+      { id = 7, key = "o~web~7", host = "github", repo = "web", project = "o", org = "https://api.github.com",
+        title = "Old title" },
       { id = 8, key = "o~web~8", host = "github", repo = "web", project = "o", org = "https://api.github.com",
         caps = { add_reviewer = false, set_description = false } },
       { id = 101, repo = "w", project = "p", org = "https://dev.azure.com/x" } } }
@@ -667,6 +668,27 @@ do
     TOOLS.call("update_pr_description", { pr_id = 7, description = "New" }, env, function(t, e) got = { t, e } end)
     check("update_pr_description: a GitHub PR goes to the provider", asked == 2 and calls[2][1] == "--set-description"
       and calls[2][2] == "New" and got[2] == false, vim.inspect(got))
+    -- #137: an optional title. Left out (or blank), nothing changes.
+    local UPD = TOOLS.by_name.update_pr_description
+    local shown
+    UPD.details({ pr_id = 7, description = "A\nB" }, function(l) shown = l end)
+    check("update_pr_description: no title, the argv, confirm and details are as before",
+      #calls[2] == 2 and got[1] == "Updated the description of PR !7." and TOOLS.last_undo.title == nil
+        and UPD.confirm({ pr_id = 7, description = "x" }) == "replace the description of PR !7"
+        and UPD.confirm({ pr_id = 7, description = "x", title = "  " }) == "replace the description of PR !7"
+        and vim.deep_equal(shown, { "A", "B" }), vim.inspect({ calls[2], got, shown }))
+    UPD.details({ pr_id = 7, description = "A\nB", title = "New title" }, function(l) shown = l end)
+    check("update_pr_description: a title shows in the confirm and details",
+      UPD.confirm({ pr_id = 7, description = "x", title = "New title" }) == "replace the title and description of PR !7"
+        and vim.deep_equal(shown, { "Title: New title", "", "A", "B" }), vim.inspect(shown))
+    TOOLS.call("update_pr_description", { pr_id = 7, description = "New", title = " New title " }, env,
+      function(t, e) got = { t, e } end)
+    check("update_pr_description: the title goes to the provider, the undo keeps the old one",
+      asked == 3 and vim.deep_equal(calls[3], { "--set-description", "New", "New title" }) and got[2] == false
+        and got[1] == "Updated the title and description of PR !7."
+        and TOOLS.last_undo.title == "Old title" and S.PR_LIST_CACHE.prs[1].title == "New title",
+      vim.inspect({ calls[3], got, TOOLS.last_undo }))
+    calls, asked = { calls[1], calls[2] }, 2
     TOOLS.call("add_reviewer", { pr_id = 8, who = "bob" }, env, function(t, e) got = { t, e } end)
     check("add_reviewer: a host that can't is refused without asking", asked == 2 and #calls == 2 and got[2] == true
       and got[1] == "web#8 is on GitHub, which can't add reviewers from azure-vicli.", vim.inspect(got))

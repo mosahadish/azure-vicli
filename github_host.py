@@ -726,6 +726,9 @@ PR_NODE_QUERY = """query PrNodeId($owner: String!, $name: String!, $number: Int!
   repository(owner: $owner, name: $name) { pullRequest(number: $number) { id } } }"""
 UPDATE_BODY = """mutation UpdatePrBody($id: ID!, $body: String!) {
   updatePullRequest(input: {pullRequestId: $id, body: $body}) { pullRequest { id } } }"""
+# #137: the same, retitling it too (only when a title is given).
+UPDATE_BODY_TITLE = """mutation UpdatePrBodyTitle($id: ID!, $body: String!, $title: String!) {
+  updatePullRequest(input: {pullRequestId: $id, body: $body, title: $title}) { pullRequest { id } } }"""
 
 NO_REQUIRED_REVIEWERS = ("GitHub has no required reviewers (CODEOWNERS and branch rules decide that) - "
                          "requested a review")
@@ -1183,15 +1186,20 @@ class Actions(object):
         names = ", ".join("{0} ({1})".format(p.get("name") or p.get("login"), p.get("login")) for p in partial[:8])
         return "{0} people match '{1}': {2}".format(len(partial), who, names)
 
-    def set_description(self, text):
-        """--set-description: replaces the PR's body."""
+    def set_description(self, text, title=""):
+        """--set-description: replaces the PR's body, and its title when
+        `title` isn't blank."""
         data = self.client.graphql(PR_NODE_QUERY, self._vars())
         node = ((data.get("repository") or {}).get("pullRequest") or {}).get("id")
         if not node:
             import sys
             print("Pull request {0} isn't in {1}/{2}.".format(self.pr, self.owner, self.repo), file=sys.stderr)
             return 1
-        self.client.graphql(UPDATE_BODY, {"id": node, "body": text or ""})
+        title = (title or "").strip()
+        if title:
+            self.client.graphql(UPDATE_BODY_TITLE, {"id": node, "body": text or "", "title": title})
+        else:
+            self.client.graphql(UPDATE_BODY, {"id": node, "body": text or ""})
         print("Description updated.")
         return 0
 

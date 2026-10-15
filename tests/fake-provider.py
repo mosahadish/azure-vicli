@@ -1122,6 +1122,8 @@ class Fake:
         if not self.need_pr():
             return 1
         self.pr()["description"] = rest[0] if rest else ""
+        if len(rest) > 1 and rest[1].strip():
+            self.pr()["title"] = rest[1].strip()
         self.ws.save(self.state)
         print("Description updated.")
         return 0

@@ -29,6 +29,13 @@ return function(T)
     end
   end
 
+  -- update_pr_description's title, nil when left out or blank (a blank one
+  -- would empty the PR's title).
+  local function new_title(args)
+    local t = type(args.title) == "string" and vim.trim(args.title) or ""
+    return t ~= "" and t or nil
+  end
+
   -- Shows a reviewer tab for PR `id` (opening the reviewer when it isn't
   -- open yet) and, once it's there, calls review/chat.lua's opener with
   -- `path`/`side`/`line`. cb(ok, message).
@@ -150,22 +157,34 @@ return function(T)
     },
     {
       name = "update_pr_description",
-      description = "Replaces a pull request's description (markdown; on GitHub, its body). Says so when the PR's "
-        .. "host can't. Asks first.",
-      schema = { type = "object", properties = { pr_id = { type = "integer" }, description = { type = "string" } },
+      description = "Replaces a pull request's description (markdown; on GitHub, its body), and its title when "
+        .. "title is given. Says so when the PR's host can't. Asks first.",
+      schema = { type = "object", properties = { pr_id = { type = "integer" }, description = { type = "string" },
+        title = { type = "string", description = "new title; leave out to keep it" } },
         required = { "pr_id", "description" } },
       risk = "ask",
       unsupported = needs("set_description", "change the description"),
-      confirm = function(a) return "replace the description of PR !" .. tostring(a.pr_id) end,
-      details = function(a, cb) cb(vim.split(a.description or "", "\n", { plain = true })) end,
+      confirm = function(a)
+        return "replace the " .. (new_title(a) and "title and " or "") .. "description of PR !" .. tostring(a.pr_id)
+      end,
+      details = function(a, cb)
+        local lines = vim.split(a.description or "", "\n", { plain = true })
+        if new_title(a) then lines = vim.list_extend({ "Title: " .. new_title(a), "" }, lines) end
+        cb(lines)
+      end,
       run = function(args, _, done)
         local pr = T.need_pr(args, done)
         if not pr then return end
-        local before = pr.description
-        T.provider({ "--set-description", args.description }, T.pr_env(pr), function(ok, _, err)
+        local before, title, before_title = pr.description, new_title(args), pr.title
+        -- No title keeps the argv (and so the request) as it always was.
+        local argv = { "--set-description", args.description }
+        if title then argv[3] = title end
+        T.provider(argv, T.pr_env(pr), function(ok, _, err)
           if not ok then return done(nil, err) end
           pr.description = args.description
-          done("Updated the description of PR !" .. pr.id .. ".", nil, { op = "description", pr_id = pr.id, text = before or "" })
+          if title then pr.title = title end
+          done("Updated the " .. (title and "title and " or "") .. "description of PR !" .. pr.id .. ".", nil,
+            { op = "description", pr_id = pr.id, text = before or "", title = title and (before_title or "") or nil })
         end)
       end,
     },
