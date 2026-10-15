@@ -5,8 +5,12 @@
 -- lua/azure-cli/state.lua, so they survive each surface's re-open().
 --
 -- Everything the reviewer needs to open a PR is cached here, keyed by the PR
--- id plus its last-activity timestamp (a new push therefore invalidates the
--- lot, and old PRs are evicted once more than MAX_PRS are held):
+-- id plus its last-activity timestamp (old PRs are evicted once more than
+-- MAX_PRS are held). That timestamp alone doesn't follow a push: on Azure
+-- DevOps/TFS a PR's updatedIso is its creation date (azure-cli.py's
+-- latest_commit_date), so each key also remembers the source and target
+-- commits its buckets were built from (M.refs), and M.prefetch empties them
+-- when the refs have moved since (#121):
 --   files    the changed paths           (git diff --name-only)
 --   commits  the Overview's commit list  (git log)
 --   diffs    every file's parsed diff    (ONE git diff over the whole range,
@@ -40,6 +44,9 @@ local PR_THREADS_CACHE = STATE.PR_THREADS_CACHE  -- id -> { json, ts, totalThrea
 -- always-present plain/":iws" pair - so touch()'s eviction below can drop
 -- them alongside everything else once that PR version ages out.
 local PR_DIFF_CACHE_EXTRA = STATE.PR_DIFF_CACHE_EXTRA
+-- key -> "<source sha> <target sha>": the commits that key's files/diffs/
+-- commits were built from (see M.refs / M.prefetch below).
+local PR_CACHE_REFS = STATE.PR_CACHE_REFS
 
 M.MAX_PRS = 24        -- PRs whose files/commits/diffs are held at once
 M.THREADS_TTL = 120   -- seconds before a cached thread list is refetched on hover
@@ -70,6 +77,7 @@ local function touch(key)
       PR_FILES_CACHE[evict .. suffix] = nil
     end
     PR_DIFF_CACHE_EXTRA[evict] = nil
+    PR_CACHE_REFS[evict] = nil
   end
 end
 
@@ -132,6 +140,39 @@ end
 function M.set_commits(key, list) touch(key); PR_COMMITS_CACHE[key] = list end
 function M.set_threads(id, json, total)
   PR_THREADS_CACHE[tostring(id)] = { json = json, ts = os.time(), totalThreads = total }
+end
+
+-- The "<source sha> <target sha>" a key's buckets were built from, or nil
+-- when nobody recorded it (e.g. only the reviewer's own per-file builds
+-- filled it).
+function M.refs(key) return PR_CACHE_REFS[key] end
+function M.set_refs(key, refs) touch(key); PR_CACHE_REFS[key] = refs end
+
+-- Empties a key's files, diffs (plain, ignore-whitespace and every named
+-- variant) and commits, and forgets its refs; threads are per PR, not per
+-- commit, and stay. The diff buckets are emptied in place rather than
+-- replaced, so a reviewer holding one (its content_cache) sees them go.
+function M.drop(key)
+  local function clear(t) if t then for k in pairs(t) do t[k] = nil end end end
+  clear(PR_DIFF_CACHE[key])
+  clear(PR_DIFF_CACHE[key .. ":iws"])
+  PR_FILES_CACHE[key] = nil
+  PR_COMMITS_CACHE[key] = nil
+  for _, suffix in ipairs(PR_DIFF_CACHE_EXTRA[key] or {}) do
+    clear(PR_DIFF_CACHE[key .. suffix])
+    PR_FILES_CACHE[key .. suffix] = nil
+  end
+  PR_CACHE_REFS[key] = nil
+end
+
+-- True when anything commit-dependent is cached under key.
+local function holds_content(key)
+  if PR_FILES_CACHE[key] or PR_COMMITS_CACHE[key] then return true end
+  if next(PR_DIFF_CACHE[key] or {}) or next(PR_DIFF_CACHE[key .. ":iws"] or {}) then return true end
+  for _, suffix in ipairs(PR_DIFF_CACHE_EXTRA[key] or {}) do
+    if PR_FILES_CACHE[key .. suffix] or next(PR_DIFF_CACHE[key .. suffix] or {}) then return true end
+  end
+  return false
 end
 
 -- Parses raw `git diff` output for ONE file into display lines plus a
@@ -376,10 +417,35 @@ end
 --         required whenever `range` is given, since a plain-keyed bucket
 --         must always hold the PR's real (three-dot) range. A variant'd
 --         prefetch only fills files + diffs; commits/threads are PR-wide,
---         not range-scoped, and are left to the plain prefetch.
+--         not range-scoped, and are left to the plain prefetch. key
+--         (optional) names the bucket outright instead of id + updatedIso -
+--         the reviewer passes the one it reads, which after a push is
+--         keyed on the new commits (review/init.lua's reload_after_push).
+--
+-- Before anything else it resolves origin/<source> and origin/<target>
+-- (one local `git rev-parse`): when they differ from what the key's buckets
+-- were built from (M.refs), or nobody recorded that and something is cached
+-- anyway, it empties them first (M.drop) and records the new pair - so a
+-- push never leaves the previous iteration's diffs and +/- counts behind
+-- under an updatedIso that didn't change (#121). When the refs can't be
+-- resolved it goes on as before, and the git steps below fail the same way.
 local inflight = {}  -- key (variant-suffixed, see below) -> { callbacks }
+
+-- The `git rev-parse` argv M.refs_from parses: the source ref, then the
+-- target's.
+function M.refs_args(repo, source, target)
+  return M.git(repo, { "rev-parse", "origin/" .. source, "origin/" .. target })
+end
+-- "<source sha> <target sha>" from that command's output, or nil.
+function M.refs_from(code, out)
+  if code ~= 0 then return nil end
+  local shas = vim.tbl_filter(function(l) return l ~= "" end, out or {})
+  if #shas ~= 2 then return nil end
+  return shas[1] .. " " .. shas[2]
+end
+
 function M.prefetch(spec, cb)
-  local key = M.key(spec.id, spec.updatedIso)
+  local key = spec.key or M.key(spec.id, spec.updatedIso)
   local variant_key = key .. (spec.variant and (":" .. spec.variant) or "") .. (spec.ignore_ws and ":iws" or "")
   if inflight[variant_key] then
     if cb then table.insert(inflight[variant_key], cb) end
@@ -401,75 +467,86 @@ function M.prefetch(spec, cb)
     for _, f in ipairs(cbs) do if f then f() end end
   end
 
-  -- Files, then every missing file's diff from a single git run.
-  start()
-  local function after_files(files)
-    local bucket = M.diffs(key, diff_variant)
-    local missing = false
-    for _, f in ipairs(files) do
-      if not bucket[f] then missing = true break end
-    end
-    if not missing then done_one() return end
-    run(M.git(spec.repo, diff_args), nil, function(code, out)
-      if code == 0 then
-        local per = M.split_diff(out)
-        for _, f in ipairs(files) do
-          if not bucket[f] then
-            -- A file --name-only lists can still be absent from the combined
-            -- diff's sections when ignore_ws is on and its only changes were
-            -- whitespace: git omits such a file entirely rather than
-            -- emitting an empty hunk for it. parse_diff({}) is exactly what
-            -- a single-file build of that file would produce anyway (the
-            -- "no textual diff" placeholder), so caching that here keeps it
-            -- from being re-fetched on every open instead of ever settling.
-            local lines, map = M.parse_diff(per[f] or {})
-            bucket[f] = { lines = lines, map = map }
+  local function fill()
+    -- Files, then every missing file's diff from a single git run.
+    start()
+    local function after_files(files)
+      local bucket = M.diffs(key, diff_variant)
+      local missing = false
+      for _, f in ipairs(files) do
+        if not bucket[f] then missing = true break end
+      end
+      if not missing then done_one() return end
+      run(M.git(spec.repo, diff_args), nil, function(code, out)
+        if code == 0 then
+          local per = M.split_diff(out)
+          for _, f in ipairs(files) do
+            if not bucket[f] then
+              -- A file --name-only lists can still be absent from the combined
+              -- diff's sections when ignore_ws is on and its only changes were
+              -- whitespace: git omits such a file entirely rather than
+              -- emitting an empty hunk for it. parse_diff({}) is exactly what
+              -- a single-file build of that file would produce anyway (the
+              -- "no textual diff" placeholder), so caching that here keeps it
+              -- from being re-fetched on every open instead of ever settling.
+              local lines, map = M.parse_diff(per[f] or {})
+              bucket[f] = { lines = lines, map = map }
+            end
           end
         end
+        done_one()
+      end)
+    end
+    local files = M.files(key, spec.variant)
+    if files then
+      after_files(files)
+    else
+      run(M.git(spec.repo, { "diff", "--name-only", range }), nil, function(code, out)
+        if code ~= 0 then done_one() return end
+        local list = vim.tbl_filter(function(f) return f ~= "" end, out)
+        M.set_files(key, list, spec.variant)
+        after_files(list)
+      end)
+    end
+
+    if not spec.variant then
+      if not M.commits(key) then
+        start()
+        run(M.git(spec.repo, { "log", "--format=%h  %ad  %an: %s", "--date=short",
+            "origin/" .. spec.target .. "..origin/" .. spec.source }), nil, function(code, out)
+          if code == 0 then
+            M.set_commits(key, vim.tbl_filter(function(l) return l ~= "" end, out))
+          end
+          done_one()
+        end)
       end
-      done_one()
-    end)
-  end
-  local files = M.files(key, spec.variant)
-  if files then
-    after_files(files)
-  else
-    run(M.git(spec.repo, { "diff", "--name-only", range }), nil, function(code, out)
-      if code ~= 0 then done_one() return end
-      local list = vim.tbl_filter(function(f) return f ~= "" end, out)
-      M.set_files(key, list, spec.variant)
-      after_files(list)
-    end)
-  end
 
-  if not spec.variant then
-    if not M.commits(key) then
-      start()
-      run(M.git(spec.repo, { "log", "--format=%h  %ad  %an: %s", "--date=short",
-          "origin/" .. spec.target .. "..origin/" .. spec.source }), nil, function(code, out)
-        if code == 0 then
-          M.set_commits(key, vim.tbl_filter(function(l) return l ~= "" end, out))
-        end
-        done_one()
-      end)
-    end
-
-    local th = M.threads(spec.id)
-    local stale = th == nil
-      or (spec.totalThreads ~= nil and th.totalThreads ~= spec.totalThreads)
-      or (os.time() - th.ts) > M.THREADS_TTL
-    if stale and spec.cmd then
-      start()
-      local threads_args = vim.list_extend({}, spec.cmd)
-      threads_args[#threads_args + 1] = "--threads"
-      run(threads_args, spec.env, function(code, out)
-        if code == 0 then
-          M.set_threads(spec.id, table.concat(out, "\n"), spec.totalThreads)
-        end
-        done_one()
-      end)
+      local th = M.threads(spec.id)
+      local stale = th == nil
+        or (spec.totalThreads ~= nil and th.totalThreads ~= spec.totalThreads)
+        or (os.time() - th.ts) > M.THREADS_TTL
+      if stale and spec.cmd then
+        start()
+        local threads_args = vim.list_extend({}, spec.cmd)
+        threads_args[#threads_args + 1] = "--threads"
+        run(threads_args, spec.env, function(code, out)
+          if code == 0 then
+            M.set_threads(spec.id, table.concat(out, "\n"), spec.totalThreads)
+          end
+          done_one()
+        end)
+      end
     end
   end
+
+  run(M.refs_args(spec.repo, spec.source, spec.target), nil, function(code, out)
+    local refs = M.refs_from(code, out)
+    if refs and PR_CACHE_REFS[key] ~= refs then
+      if PR_CACHE_REFS[key] ~= nil or holds_content(key) then M.drop(key) end
+      M.set_refs(key, refs)
+    end
+    fill()
+  end)
 end
 
 -- True while a prefetch for this PR version is in flight.

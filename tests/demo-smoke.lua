@@ -4236,5 +4236,158 @@ section("GITHUB", function()
   end
   smoke_ok("GITHUB")
 end)
+
+-- #121: a push that deletes a file the first iteration modified. On Azure
+-- DevOps/TFS a PR's updatedIso is its creation date, so a push doesn't
+-- change the cache key - the fake's state.json is left alone here to match.
+-- The push goes through a worktree of the reviewer's own clone (what the
+-- chat agent's commit_and_push_fix does), so origin/<source> has moved
+-- locally before the reviewer looks and nothing needs fetching. Then a
+-- second push lands while the reviewer is open. Each time, every row's
+-- status, +/- counts and diff must come from the new commits: README.md is
+-- D with only deletions, its diff the whole old file removed, auth.py shows
+-- the new line, and each row's counts are what its diff holds. Last, so
+-- the pushes can't disturb the checks above that read PR #101's files.
+section("PUSHDIFF", function()
+  reset()
+  ensure_dashboard()
+  local STATE = require("azure-cli.state")
+  local FILELIST = require("azure-cli.review.filelist")
+  local PANE = require("azure-cli.review.pane")
+  local ws = vim.env.AZVICLI_FAKE_WS
+  local clone = ws .. "/clones/widgets"
+  local branch = "feature/login-throttle"
+  local function git(...)
+    local out = vim.fn.system(vim.list_extend({ "git", "-C" }, { ... }))
+    if vim.v.shell_error ~= 0 then return fail("git " .. table.concat({ ... }, " ") .. " failed: " .. out) end
+    return vim.trim(out)
+  end
+  -- One push of `edit(dir)`'s changes to the PR's branch, from a worktree
+  -- of the clone (removed again afterwards).
+  local function push(msg, edit)
+    local wt = vim.fn.tempname()
+    git(clone, "worktree", "add", "-q", "--detach", wt, "origin/" .. branch)
+    edit(wt)
+    git(wt, "-c", "user.email=agent@example.com", "-c", "user.name=agent", "commit", "-q", "-a", "-m", msg)
+    git(wt, "push", "-q", "origin", "HEAD:refs/heads/" .. branch)
+    git(clone, "worktree", "remove", "--force", wt)
+  end
+  local function append(path, line)
+    local l = vim.fn.readfile(path)
+    l[#l + 1] = line
+    vim.fn.writefile(l, path)
+  end
+
+  -- The list row for `name`: its status letter and counts, nil while "(?)".
+  local list
+  local function row(name)
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(list, 0, -1, false)) do
+      local st, a, d = l:match("(%u)  .-" .. vim.pesc(name) .. " %(%+(%d+) \u{2212}(%d+)%)")
+      if st then return { status = st, adds = tonumber(a), dels = tonumber(d), text = l } end
+    end
+  end
+  local function open_pr()
+    require("azure-cli").open_review(101)
+    ok = vim.wait(20000, function()
+      list = shown_buf("azurecli-files")
+      return list ~= nil and row("auth.py") ~= nil
+    end, 100)
+    if not ok then return fail("the reviewer never listed PR #101's files with their counts", list) end
+  end
+  -- Opens `name`'s diff from the list the way <CR> does; its lines and map
+  -- once the diff window shows it (built from `want`, when given).
+  local function diff_of(name, path, want)
+    local r
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(list, 0, -1, false)) do
+      if l:find(name, 1, true) then r = i break end
+    end
+    if not r then return fail("no " .. name .. " row in the file list", list) end
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(list))
+    vim.api.nvim_win_set_cursor(0, { r, 0 })
+    feed("<CR>")
+    local b, lines, map
+    ok = vim.wait(15000, function()
+      local w = vim.api.nvim_get_current_win()
+      b = vim.api.nvim_win_get_buf(w)
+      map = (PANE.entry(b) or {}).map
+      lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      return b ~= list and map ~= nil and #map > 0 and vim.wo[w].winbar:find(path, 1, true) ~= nil
+        and (want == nil or table.concat(lines, "\n"):find(want, 1, true) ~= nil)
+    end, 100)
+    if not ok then
+      return fail(name .. "'s diff never showed" .. (want and (" " .. want) or "") .. "; winbar "
+        .. vim.wo[vim.api.nvim_get_current_win()].winbar, b)
+    end
+    return lines, map
+  end
+  -- The row's counts are what its diff holds (the row is redrawn once the
+  -- warmed diffs land, so give it that long).
+  local function counts_match(name, path, want)
+    local _, map = diff_of(name, path, want)
+    local s, r = FILELIST.diff_stats(map), nil
+    vim.wait(10000, function()
+      r = row(name)
+      return r ~= nil and r.adds == s.adds and r.dels == s.dels
+    end, 100)
+    if not r or r.adds ~= s.adds or r.dels ~= s.dels then
+      return fail(name .. "'s row says " .. vim.inspect(r) .. " but its diff holds +" .. s.adds .. " -" .. s.dels, list)
+    end
+    return map
+  end
+  -- README.md, deleted: D, nothing added, its whole old content removed.
+  local function readme_deleted(old_n)
+    ok = vim.wait(15000, function()
+      local r = row("README.md")
+      return r ~= nil and r.status == "D" and r.adds == 0 and r.dels == old_n
+    end, 100)
+    if not ok then
+      return fail("README.md's row should say D (+0 \u{2212}" .. old_n .. ") after the push: "
+        .. vim.inspect(row("README.md")), list)
+    end
+    local lines, map = diff_of("README.md", "README.md")
+    for i, m in ipairs(map) do
+      if m.kind ~= "del" then return fail("deleted README.md's diff line " .. i .. " isn't a deletion: " .. tostring(lines[i])) end
+    end
+    if #map ~= old_n then return fail("deleted README.md's diff has " .. #map .. " lines, the old file " .. old_n) end
+  end
+
+  -- Iteration 1, warm in the cache: README.md modified.
+  open_pr()
+  local before
+  vim.wait(10000, function()
+    before = row("README.md")
+    return before ~= nil and before.status == "M"
+  end, 100)
+  if not (before and before.status == "M" and before.adds > 0) then
+    return fail("README.md should start out modified: " .. vim.inspect(before), list)
+  end
+  counts_match("README.md", "README.md")
+  -- What a deletion removes in the PR's (three-dot) diff: the file as it
+  -- is at the merge-base.
+  local base = git(clone, "merge-base", "origin/main", "origin/" .. branch)
+  local old_n = #vim.split(git(clone, "show", base .. ":README.md"), "\n")
+  reset()
+
+  -- Iteration 2, pushed from the clone while the reviewer is closed.
+  push("Drop the README, note the throttle", function(wt)
+    git(wt, "rm", "-q", "README.md")
+    append(wt .. "/src/auth.py", "# throttled since iteration 2")
+  end)
+  open_pr()
+  readme_deleted(old_n)
+  counts_match("auth.py", "src/auth.py", "# throttled since iteration 2")
+
+  -- Iteration 3, pushed while the reviewer is open; the poll's refs check
+  -- (run now rather than in poll_seconds) reloads it.
+  push("Another note", function(wt)
+    append(wt .. "/src/auth.py", "# and again in iteration 3")
+  end)
+  STATE.review_check_refs()
+  counts_match("auth.py", "src/auth.py", "# and again in iteration 3")
+  readme_deleted(old_n)
+  print("== reviewer file list after the pushes (PR #101) ==")
+  print(text(list))
+  smoke_ok("PUSHDIFF")
+end)
 print("SMOKE-DONE")
 vim.cmd("qa!")

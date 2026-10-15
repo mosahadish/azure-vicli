@@ -1011,6 +1011,14 @@ local cache_key = diff_cache_key()
 -- toggle_ignore_ws (below), which updates every closure that captured this
 -- local the same way apply_threads_json swaps in a fresh threads_by_key.
 local content_cache = CACHE.diffs(cache_key, ignore_ws)
+-- What that bucket was at open: the commits it was built from (if anyone
+-- recorded them) and whether it held anything. EXT.check_source_sha's first
+-- run compares them with the live refs - on Azure DevOps/TFS the key above
+-- doesn't change on a push (updatedIso is the creation date), so a bucket
+-- filled before one would otherwise be shown as current (#121). Taken now,
+-- not then: a prefetch started meanwhile may re-record the bucket.
+EXT.opened_refs = CACHE.refs(cache_key)
+EXT.opened_with_content = next(content_cache) ~= nil or CACHE.files(cache_key) ~= nil
 
 -- Fetches (or joins an in-flight fetch of) a file's diff content, calling
 -- cb(lines, map) once available. Serves from content_cache instantly when
@@ -2442,6 +2450,11 @@ local files_loaded = false
 local function prefetch_all_diffs()
   local pr = current_pr_record()
   CACHE.prefetch({
+    -- The bucket this reviewer reads (cache_key), not one rebuilt from ID +
+    -- updatedIso: after a push it's keyed on the new commits, and on GitHub
+    -- KEY isn't ID - either way the warmed diffs and +/- counts landed
+    -- where nothing looked.
+    key = cache_key,
     id = ID, updatedIso = pr and pr.updatedIso or "",
     source = SOURCE, target = TARGET, repo = REPO_PATH, ignore_ws = ignore_ws,
     range = EXT.since and EXT.since.range or nil,
@@ -3603,7 +3616,15 @@ EXT.reload_after_push = function()
   -- against the new origin/<source> rather than serving the old lines.
   -- Reassigning this local updates every closure that captured it, the same
   -- way rebuild_view swaps content_cache.
-  if EXT.source_sha then cache_key = CACHE.key(KEY, EXT.source_sha) end
+  --
+  -- The target's commit is part of the key too: the diff is three-dot, so
+  -- a moved target can change its merge-base. The pair is recorded on the
+  -- new key, so CACHE.prefetch (prefetch_all_diffs) fills it rather than
+  -- emptying it again.
+  if EXT.source_sha then
+    cache_key = CACHE.key(KEY, EXT.source_sha .. ":" .. (EXT.target_sha or ""))
+    CACHE.set_refs(cache_key, EXT.source_sha .. " " .. (EXT.target_sha or ""))
+  end
 
   local path = current_file_path
   local anchor, want_path = nil, nil
@@ -3640,34 +3661,45 @@ end
 
 -- The reload half of the poll: cheap local `git rev-parse` (no network -
 -- see EXT.check_new_push's comment for why the fetch isn't ours to run),
--- rebuilding only once the ref the diffs are built from has actually
--- moved.
+-- rebuilding only once a ref the diffs are built from - the source, or the
+-- target the three-dot diff takes its merge-base from - has actually moved.
+EXT.target_sha = nil       -- origin/<target> the shown diffs were built against
 EXT.check_source_sha = function()
-  if SOURCE == "" or EXT.sha_inflight then return end
+  if SOURCE == "" or TARGET == "" or EXT.sha_inflight then return end
   EXT.sha_inflight = true
   local out = {}
   -- jobstart answers <= 0 when the spawn itself failed, and then never
   -- calls on_exit - without clearing the flag here the guard above would
   -- latch and this check would be dead for the rest of the session.
-  local job = vim.fn.jobstart(git_args("rev-parse", "origin/" .. SOURCE), {
+  local job = vim.fn.jobstart(CACHE.refs_args(REPO_PATH, SOURCE, TARGET), {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
       EXT.sha_inflight = false
-      if code ~= 0 then return end
-      local sha = vim.trim(table.concat(out, ""))
-      if sha == "" then return end
+      local refs = CACHE.refs_from(code, out)
+      if not refs then return end
+      local sha, target_sha = refs:match("^(%S+) (%S+)$")
       -- Decide and act in one scheduled context: EXT.source_sha must only
       -- move when the rebuild actually happens, or a push deferred for
       -- being mid-edit would be marked as shown and never reloaded.
       vim.schedule(function()
         if EXT.source_sha == nil then
-          EXT.source_sha = sha  -- baseline: what the view already shows
+          -- Baseline: what the view already shows - unless the bucket it
+          -- opened with was built from other commits, or holds content
+          -- nobody recorded the commits of (#121). Then it's reloaded
+          -- just like a push seen while open.
+          local stale = (EXT.opened_refs ~= nil and EXT.opened_refs ~= refs)
+            or (EXT.opened_refs == nil and EXT.opened_with_content)
+          if not stale then
+            EXT.source_sha, EXT.target_sha = sha, target_sha
+            if CACHE.refs(cache_key) == nil then CACHE.set_refs(cache_key, refs) end
+            return
+          end
+        elseif sha == EXT.source_sha and target_sha == EXT.target_sha then
           return
         end
-        if sha == EXT.source_sha then return end
         if EXT.reload_would_interrupt() then return end  -- try again next poll
-        EXT.source_sha = sha
+        EXT.source_sha, EXT.target_sha = sha, target_sha
         notify("New commits pulled in \u{2014} reloading the diff\u{2026}")
         EXT.reload_after_push()
       end)
@@ -3738,6 +3770,9 @@ EXT.preview_hook = function()
   return preview_timer ~= nil and #vim.fn.timer_info(preview_timer) > 0
 end
 STATE.review_preview_pending = EXT.preview_hook
+-- The poll's "have the refs moved?" check, run now, for tests/demo-smoke.lua
+-- (its PUSHDIFF step, #121) rather than waiting out poll_seconds.
+STATE.review_check_refs = function() EXT.check_source_sha() end
 
 -- The file list keeps its absolute width across a terminal resize
 -- otherwise, with the diff pane absorbing all of the change.

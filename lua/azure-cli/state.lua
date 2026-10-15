@@ -46,6 +46,7 @@ M.PR_COMMITS_CACHE = {}
 M.PR_CACHE_ORDER = {}
 M.PR_THREADS_CACHE = {}
 M.PR_DIFF_CACHE_EXTRA = {}
+M.PR_CACHE_REFS = {}                 -- key -> "<source sha> <target sha>" its buckets were built from
 
 -- Provider daemon client (lua/azure-cli/rpc.lua)
 M.rpc = nil

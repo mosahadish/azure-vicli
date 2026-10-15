@@ -812,6 +812,7 @@ $out"
   smoke_check "smoke: with 1, 3 and 4 plans open at 80 and 120 columns, the plan's status shows in full and the current plan stays identifiable" INNERTABS-FIT
   smoke_check "smoke: gr and the agent's requeue_build on a GitHub #7 re-run that PR's checks with its own env, never Azure's --requeue" GH_REQUEUE
   smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
+  smoke_check "smoke: after a push (updatedIso unchanged), a deleted file is D with only deletions, and every row's counts match its diff" PUSHDIFF
   # Every check above got its own result only if the script ran to its end:
   # a crash, a hang (demo.sh's timeout) or a Lua error outside a check
   # stops it short, and shows here with the end of the output.
