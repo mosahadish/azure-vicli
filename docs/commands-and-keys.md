@@ -14,12 +14,12 @@ Installed as a plugin, everything goes through one user command:
 | `:AzureCli issues` | Open the [issues dashboard](work-items.md#issues-github), in a new tab: a GitHub account's `issues:` project. With no such account it says so instead. |
 | `:AzureCli chat` | Show or hide the [chat panel](chat.md) - `i` on any azure-vicli screen goes to its input box. |
 | `:AzureCli agents` | Every plan's agent - what each is doing ([Chat](chat.md#several-agents-at-once)) |
-| `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
+| `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization and GitHub account, the work-items block and a GitHub account's `issues:` project - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
 | `:AzureCli toasts` | Toggle [desktop notifications](dashboard.md#desktop-notifications) for the rest of this session - the same switch the dashboard's own `gN` key flips. |
 | `:AzureCli status` | Show the [provider daemon's](development.md#architecture) status, plus the resolved python interpreter, config file path and where the options come from (`azure-cli.lua`, or your `setup()`; see [setup() options](configuration.md#setup-options)). |
 | `:AzureCli log` | Open this session's error log (`lua/azure-cli/log.lua`) in a scratch split - every provider failure's full text, oldest first; `q` closes it. See [Troubleshooting](troubleshooting.md#troubleshooting). |
 | `:AzureCli perf` | Summarise the perf log `AZVICLI_DEBUG=1` writes (`lua/azure-cli/perf.lua`): requests and wall ms per poll tick for the PR dashboard, a PR review and the work-items / issues board, the slowest requests, and requests per endpoint. `r` reads the log again, `q` closes it. See [Troubleshooting](troubleshooting.md#troubleshooting). |
-| `:AzureCli web start` / `stop` / `status` / `rotate` | The [phone dashboard](chat.md#phone-dashboard): a read-only web page of the Agents screen, served from this machine. Off until `dashboard_web.enabled` is set; `start` (and `status`) show its URL, token included, in a float. The token is kept across restarts; `rotate` makes a new one (the old link gets 401 at once) and shows the new URL. `web` alone is `status`. |
+| `:AzureCli web start` / `stop` / `status` / `rotate` | The [phone dashboard](chat.md#phone-dashboard): a read-only web page of the Agents screen, served from this machine. Off until `dashboard_web.enabled` is set; `start` shows its URL, token included, in a float, and so does `status` while it runs (stopped, `status` says whether a token is stored). The token is kept across restarts (`dashboard_web.persist_token`). While it runs, `rotate` makes a new one (the old link gets 401 at once) and shows the new URL; while it's stopped, `rotate` deletes the stored token, so the next `start` makes a new URL. `web` alone is `status`. |
 | `:AzureCli options` | Every `setup()` option at its default, generated from the code so it can't drift. In the standalone launcher: creates `azure-cli.lua` next to `azure-cli.yml` with them (the file it loads), or opens it if it already exists. In your own Neovim, where that file isn't read: shows the same list in a scratch buffer to copy into your `setup()` call, writing nothing. `gO`'s "Options" does the same. |
 | `:AzureCli help` | List these. |
 
@@ -41,12 +41,12 @@ in for it, you can type "approve" or "unlink" instead of remembering the key.
 The action you pick runs where you were, cursor and all. Actions that only
 work on a visual selection aren't listed.
 
-**The three home screens** - Pull requests, Work items and Agents - each
-have a tab of their own: `P` goes to the pull requests, `W` to the work
-items, `A` to the Agents screen, from any of them (or click the tab). The
-standalone launcher opens all three at startup and keeps them the first
-three tabs, in that order; what you open from them stays inside them, as
-inner tabs (below).
+**The home screens** - Pull requests, Work items, Agents, and Issues
+when a GitHub account has `issues:` - each have a tab of their own: `P`
+goes to the pull requests, `W` to the work items, `A` to the Agents
+screen, `I` to the issues, from any of them (or click the tab). The
+standalone launcher opens them all at startup and keeps them the first
+tabs; what you open from them stays inside them, as inner tabs (below).
 
 **Inner tabs.** A pull request you open stays inside the Pull requests tab,
 as an inner tab: the tab line keeps one entry for Pull requests, and the
@@ -62,9 +62,18 @@ Neovim, a `'tabline'` of your own lists them - azure-vicli's
 The same goes for work items (inside Work items), issues (inside Issues)
 and plans (inside Agents): `<CR>` on an Agents row whose plan is already
 open goes back to it as you left it - the older revision you were reading,
-the Changes file you were on - and `dd` on that row closes its tab. One
-opened from elsewhere (`gW` in a review, a plan the chat's agent wrote)
-goes back there when you close it.
+the Changes file you were on - and `dd` on that row closes its tab. Plans
+and changes only open when you open them: an agent finishing one never
+opens it for you. One opened from elsewhere (`gW` in a review, a plan
+opened from its change viewer) goes back there when you close it.
+
+The strip shares the winbar with what the window shows there itself (a
+file's name and counts, `?: help`): it gets what that leaves, at most 60%
+of the window, and gives way step by step - shorter titles, then only the
+ids, then a `+N` count, then only the current entry, then nothing. It shows
+in one window per tab, the widest one that isn't the chat panel. `g.`'s
+"Inner tabs" lists them in a picker, and `]r` / `[r` with only one open
+say so.
 
 Press `g` and pause, and a small float in the bottom-right corner lists the
 screen's `g` keys and what each does (with the `↑` marks); the next key
@@ -459,4 +468,5 @@ paste the output here after changing a default.
 | `next` | `]r` |
 | `pick` | `g1` / `g2` / `g3` / `g4` / `g5` / `g6` / `g7` / `g8` / `g9` |
 | `prev` | `[r` |
+
 <!-- END GENERATED KEYS TABLE -->

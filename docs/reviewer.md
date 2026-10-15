@@ -8,6 +8,15 @@ Opening a PR adds an inner tab to Pull requests with the file list on the
 left and the selected content on the right. The first row is always the
 Overview: title, description, commits, and PR-level comments.
 
+The Overview's filetype is `azurecli-overview`, not `markdown`: only the
+description and the comment bodies are highlighted as Markdown (with Vim's
+own markdown syntax, minus its `markdownError`), so an `_` in a branch name
+or a commit subject isn't flagged as an error. The commit list and a
+commit's file list are `azurecli-commits`. A `FileType markdown` autocmd or
+a Markdown renderer (render-markdown.nvim, markview.nvim) no longer
+attaches to these buffers; hook `FileType azurecli-overview` instead if you
+want one there.
+
 Several reviews stay open side by side inside the Pull requests tab: the
 winbar's strip (`Pull requests │ !101 Fix auth │ [!102 Cache]`) lists them,
 `]r` / `[r` and `g1`..`g9` switch, and each keeps its file list, diff and
@@ -17,7 +26,7 @@ you're in and goes to the one before it, the list when it was the first
 
 ![The reviewer just opened: file list on the left, the Overview on the right](images/reviewer-files.png)
 
-![A file's diff: old/new line numbers in the gutter, a thread marker on the commented line](images/reviewer-diff.png)
+![A file's diff: one line-number column in the gutter, a thread marker on the commented line](images/reviewer-diff.png)
 
 ![The same thread expanded inline with Tab](images/reviewer-thread.png)
 
@@ -85,6 +94,10 @@ Diff pane:
 | `s` | Set the thread's status (on GitHub: resolve or unresolve) |
 | `]C` / `[C` | Next / previous thread |
 | `gd` / `gr` / `gf` | Code navigation, see below |
+| `za` / `<Space>` | Open or close the `· N unchanged lines ·` fold under the cursor (remembered, see below) |
+| `zR` / `zM` | Unfold / fold them all |
+| `<Tab>` | Expand the thread on the current line inline, or collapse it |
+| `m` / `]m` / `[m` | Toggle the file's viewed mark / next / previous file not yet viewed |
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
 | `gc` | Open the PR's commit list |
@@ -120,6 +133,12 @@ line - are folded to `· N unchanged lines ·`; `za` / `<Space>`
 all and `zM` folds them again, and `]c` never lands inside one. The folds
 you open are remembered per PR and file - when you come back to the file,
 reopen the PR or restart Neovim - until a push changes that file's diff.
+Vim's own `zo` / `zc` / `zA` and friends are remembered the same way. The
+plain diff, the whitespace-ignoring one (`gw`) and the since-your-last-review
+one (`gi`) each keep their own folds; they're stored next to the viewed
+marks, in `azure-cli-viewed.json` under Neovim's data directory. (The
+chat's change viewer shares the `diff` keys but doesn't fold-toggle or
+remember folds - `toggle_fold` is the reviewer's.)
 A UTF-8 byte-order mark at the start of a file isn't shown, and adding or
 removing one doesn't count as a change. Syntax highlighting follows
 Neovim's own filetype detection, so a `Dockerfile` or a `.csproj` is
@@ -225,8 +244,18 @@ before (a commit line's `<CR>` still opens that commit).
 With [snacks.nvim](https://github.com/folke/snacks.nvim)'s image module or
 [image.nvim](https://github.com/3rd/image.nvim) installed, in a terminal that
 can draw images (kitty, WezTerm, Ghostty; sixel terminals through image.nvim),
-the Overview also shows the images under their lines - neither plugin is
-required. `images = { inline = false }` in `setup()` turns that off.
+the Overview also shows the images under their lines (the first 10, up to
+15 rows each) - neither plugin is required. `images = { inline = false }`
+in `setup()` turns that off. If the plugin errors, inline images stay off
+for the rest of the session and the error goes to `:AzureCli log`;
+`<CR>` / `gx` still open them.
+
+Nothing is drawn inline in the standalone launcher: it starts Neovim with
+its own `init.lua` (`nvim -u standalone/init.lua`) in place of yours, which
+adds only azure-vicli to the runtime path, so the image plugins your config
+sets up through a plugin manager (lazy.nvim, packer, ...) aren't loaded
+there. `<CR>` / `gx` still open images in the system viewer; for inline
+images, use azure-vicli as a plugin in your own Neovim.
 
 ### Range comments
 
@@ -425,9 +454,11 @@ reviewer, with the same keys. What differs:
     allows auto-merge, and then the repository's own setting decides
     whether the branch is deleted;
   - a branch in a fork is never deleted.
-- **Checks, not builds.** The build state is the head commit's checks. The
-  build log, test results and re-queue aren't available for a GitHub PR
-  yet; asking for one says so.
+- **Checks, not builds.** The build state is the head commit's checks.
+  Re-queuing re-runs the failed jobs of its failed GitHub Actions runs;
+  the agent's build log is those jobs' failure annotations and the failed
+  step's log, and its test results are their annotations (GitHub has no
+  test counts, so a run's total is its failures).
 - **Issues, not work items.** `gW` lists the issues the PR will close
   (including ones linked on github.com); `gl` / `gL` add or remove a
   `Closes #n` line in the PR's description, which GitHub honours only for a

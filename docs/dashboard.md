@@ -60,7 +60,7 @@ solves the widths; see its own header comment for the exact rules).
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
-| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't). Azure DevOps only for now |
+| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't). On a GitHub PR: re-runs the failed jobs of its failed GitHub Actions runs |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
 | `zM` | Collapse every section |
@@ -148,7 +148,9 @@ ones - every account is fetched at once, and one that fails is named in a
   (see [Reviewer: On GitHub](reviewer.md#on-github)).
 - **Checks are the build.** The build column is the latest commit's checks:
   `✓` passed, `✗` failed, `●` pending - never `↻` or a queue position.
-  `gb` opens the PR's Checks page; `gr` doesn't apply yet.
+  `gb` opens the PR's Checks page; `gr` re-runs the failed jobs of the
+  head commit's failed GitHub Actions runs (other checks can't be
+  re-queued from here).
 - **`gd`** has no Policies section (GitHub's branch protection shows in
   `gm` instead).
 - **`gm`** opens GitHub's merge dialog: the repository's own merge types,

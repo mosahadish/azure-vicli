@@ -17,7 +17,7 @@ and can work on several work items at once.
 
 <table>
 <tr>
-<td width="50%"><a href="docs/reviewer.md"><img src="docs/images/reviewer-thread.png" alt="The reviewer: file list on the left, a diff with an old/new gutter on the right, and a comment thread expanded inline"></a><br><sub><b>Reviewer</b> - file list, old/new gutter, folded context, a thread expanded inline with <code>Tab</code>.</sub></td>
+<td width="50%"><a href="docs/reviewer.md"><img src="docs/images/reviewer-thread.png" alt="The reviewer: file list on the left, a diff with one line-number column on the right, and a comment thread expanded inline"></a><br><sub><b>Reviewer</b> - file list, one line-number column, folded context, a thread expanded inline with <code>Tab</code>.</sub></td>
 <td width="50%"><a href="docs/reviewer.md"><img src="docs/images/reviewer-files.png" alt="The reviewer's Overview: title, branches, author, votes, description, commits and PR-level comments"></a><br><sub><b>Overview</b> - description, commits and PR-level comments, first row of every review.</sub></td>
 </tr>
 <tr>
@@ -69,6 +69,11 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - Optional, for the [chat](docs/chat.md): an agent CLI - Claude Code or the
   GitHub Copilot CLI (or any command that reads a prompt and prints an
   answer).
+- Optional, for [images drawn inline](docs/reviewer.md#images) in a PR's
+  Overview: [snacks.nvim](https://github.com/folke/snacks.nvim)'s image
+  module or [image.nvim](https://github.com/3rd/image.nvim), in a terminal
+  that draws images, with azure-vicli as a plugin (not in the standalone
+  launcher). Without them, `<CR>` / `gx` open an image in the system viewer.
 
 ## Install
 
@@ -158,8 +163,8 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
    account with `host: github` instead or as well
    ([GitHub accounts](docs/configuration.md#github-accounts)).
 2. `./azure-cli --doctor` (or `:AzureCli doctor`) whenever something looks
-   off: it confirms the file parses and signs in to every organization in
-   it.
+   off: it confirms the file parses and signs in to every organization and
+   GitHub account in it.
 3. Press `?` on any screen for its keys.
 
 Or let an agent do it: open GitHub Copilot (or another agent that reads
@@ -191,10 +196,13 @@ your dotfiles repo instead:
   you, grouped by what they need, with build state, votes, unread activity
   and mentions; vote, complete and re-queue builds from the list. GitHub
   PRs sit in the same list ([what differs](docs/dashboard.md#github-pull-requests)).
-- **[Reviewer](docs/reviewer.md)** - a two-pane review with an old/new
-  gutter, folded context, inline threads, viewed-file tracking, comments
-  and replies that appear instantly, batch review, "since my last review"
-  and follow-up views, per-commit diffs and no-LSP code navigation. On
+- **[Reviewer](docs/reviewer.md)** - a two-pane review with one
+  line-number column, folded context (`za` / `<Space>`, remembered),
+  inline threads, viewed-file tracking, comments and replies that appear
+  instantly, batch review, "since my last review" and follow-up views,
+  per-commit diffs, no-LSP code navigation, and
+  [images](docs/reviewer.md#images) in the description and comments
+  (`<CR>` / `gx`, inline with snacks.nvim or image.nvim). On
   GitHub, review verdicts and the repository's merge types
   ([what differs](docs/reviewer.md#on-github)).
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
@@ -217,8 +225,9 @@ your dotfiles repo instead:
   autopilot where nothing asks). `/skills` opens a popup of the agent's skills to allow them or start a message with one.
 - **[Phone dashboard](docs/chat.md#phone-dashboard)** - `:AzureCli web start`
   serves a read-only page of the Agents screen, to watch your agents from a
-  phone. It's off until you turn it on, and its token link survives
-  restarts.
+  phone. It's off until you turn it on (`dashboard_web`), its `?token=`
+  link survives restarts (`persist_token`), and `:AzureCli web rotate`
+  replaces it.
 - **[Commands and keys](docs/commands-and-keys.md)** - every `:AzureCli`
   subcommand and every default key, all rebindable.
 - **[Configuration](docs/configuration.md)** - the config file, `setup()`
@@ -250,7 +259,7 @@ directly):
 |---|---|
 | `--list` | Every relevant PR as newline-delimited JSON. |
 | `--init-config` | Write the config file template (with `TODO`s) if there isn't one, and print its path. |
-| `--requeue <id>` | Re-queue expired or failed build validation for an Azure DevOps PR. |
+| `--requeue <id>` | Re-queue expired or failed build validation for an Azure DevOps PR (on a GitHub PR, from the dashboard's `gr`: re-run its failed GitHub Actions jobs). |
 | `--print-pat --org <url> [--project <name>]` | The configured PAT for that Azure DevOps account. |
 | `--whoami --org <url> [--project <name>]` | The authenticated identity as JSON. |
 | `--doctor [--json]` | Check the setup (config file, its fields, sign-in per organization and GitHub account, work items, a GitHub project); exit 1 if anything fails. `--json` prints one object per check. |

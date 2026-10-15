@@ -74,7 +74,7 @@ accounts:
 | `host` | `github` (an account without it is Azure DevOps). |
 | `owner` | Optional. Limit the account to one user's or organization's repositories; without it, every PR you're asked to review, have reviewed or opened, anywhere. |
 | `api_url` | Optional. The REST root of a GitHub Enterprise Server (`https://<host>/api/v3`); default `https://api.github.com`. |
-| `pat` / `pat_file` | Optional. A token with the `repo` scope (and `project` for `issues:`). Without one, the provider asks the GitHub CLI (`gh auth token`, for the account's host) - so after `gh auth login` nothing else is needed. It asks once per session: after a new `gh auth login`, restart Neovim. |
+| `pat` / `pat_file` | Optional. A token with the `repo` scope (and `project` for `issues:`); in `setup()` only `pat_file` is accepted, as for an Azure account. Without one, the provider asks the GitHub CLI (`gh auth token`, for the account's host) - so after `gh auth login` nothing else is needed. It asks once per session: after a new `gh auth login`, restart Neovim. |
 | `clones_dir`, `hide_ancient` | As for an Azure account. |
 | `issues` | Optional. Turns on the [Issues tab](work-items.md#issues-github) (`I`) for a GitHub Projects v2 project; see below. |
 
@@ -113,9 +113,9 @@ reviews, comments on and merges it as it does an Azure DevOps one; the
 agent's tools work on it too. What differs - verdicts instead of votes,
 resolving instead of thread statuses, the repository's merge types and
 checks - is in [Pull request dashboard](dashboard.md#github-pull-requests)
-and [Reviewer](reviewer.md#on-github). A build's log, its test results and
-re-queuing a build are Azure DevOps only for now; trying one on a GitHub PR
-says so.
+and [Reviewer](reviewer.md#on-github). Re-queuing (`gr`) re-runs the failed
+jobs of the head commit's failed GitHub Actions runs, and the agent's build
+log and test results read those jobs' logs and failure annotations.
 
 ### Accounts in setup() instead of a file (plugin)
 
@@ -136,12 +136,19 @@ require("azure-cli").setup({
       -- hide_ancient = true,
       -- work_items = { team = "My Team", types = { "User Story", "Bug" } },
     },
+    {
+      host = "github",
+      owner = "my-org",                         -- optional
+      clones_dir = "~/src",
+      -- pat_file = "~/.config/azure-cli/gh-token",   -- optional: without one, `gh auth token` is used
+      -- issues = { project = 3 },                    -- optional: the Issues tab (I)
+    },
   },
 })
 ```
 
-`setup()` validates the table up front (a missing field or `pat_file`, an
-unknown key) and hands it to the provider, which
+`setup()` validates the table up front (a missing field, a missing
+`pat_file` on an Azure account, a `pat` anywhere, an unknown key) and hands it to the provider, which
 prefers it over `azure-cli.yml` outright. `gO` then says so instead of
 opening the file, and `:AzureCli status`/`:AzureCli doctor` report
 "setup({accounts=...})" as the source. The standalone launcher has no
@@ -188,7 +195,7 @@ return {
 | `hide_ancient_days` | `30` | `setup({hide_ancient_days=...})` is exported to the provider as `AZVICLI_HIDE_ANCIENT_DAYS` (an ambient value already in the environment is left alone, same as `AZVICLI_PREFETCH_DIR`'s default below), read by an account's `hide_ancient: true` (see [Configuration](#configuration)) in place of a hard-coded 30. |
 | `row_numbers` | `"relative"` | Row numbers inside the PR and work-items dashboards' boxes, just inside the left border. `"relative"` numbers each row by its distance from the cursor, so `5j` / `5k` jumps straight to it (the cursor row shows its own line number); `"absolute"` shows plain line numbers (`:12` jumps there); `false` hides them. |
 | `notifications` | `"float"` | `setup({notifications="notify"})` turns transient status messages (`lua/azure-cli/notify.lua`'s `M.flash` - "Opening PR…", "Comment posted.", "Refresh already in progress…", ...) into plain `vim.notify` calls instead of a floating window stack, for a setup where `vim.notify` is already handled by another plugin (e.g. nvim-notify) that should see these too. An error still also goes through `vim.notify` at `ERROR` level either way, so `:messages` never loses one. |
-| `chat` | `{ position = "right", size = 0.35, input_height = 3 }`, no agent | The chat panel (`i`): where it sits and the agent it talks to - see [Chat](chat.md#setting-it-up). Validated at `setup()` time. |
+| `chat` | `{ position = "right", size = 0.35, input_height = 3 }`, no agent | The chat panel (`i`): where it sits and the agent it talks to - see [Chat](chat.md#setting-it-up). Validated at `setup()` time. Among its options: an agent's `idle_timeout_seconds` (600), `max_turn_seconds` (7200) and `interrupt_grace_seconds` (5) ([Fields](chat.md#fields)), `plan_revisions` (3, [Plans](chat.md#plans-and-asking-why)) and `max_agents` (3, [Several agents](chat.md#several-agents-at-once)). |
 | `ui` | `{ border = "rounded", palette = "colorscheme", key_hints = "auto", confirm = "popup" }` | The shared look: `confirm` is how azure-vicli asks: `"popup"` puts yes/no questions (an agent's tool call, approving a plan, deleting a comment, re-queuing a build, ...) and short menus (a vote, a thread's status, a priority - up to 7 entries, numbered) in a popup in the middle of the screen, with any details above it. A yes/no question is answered Yes or Cancel, Yes focused; only the agent's own questions differ (Allow / Deny, Deny focused). Longer lists (assignees, earlier conversations, the `g.` palette) stay `vim.ui.select`. `"select"` sends everything through `vim.ui.select`, so Telescope, fzf-lua or dressing.nvim draw it all. `key_hints` is the float `g` and a pause put up, listing the screen's `g` keys ([Keys](commands-and-keys.md#keys)) - `"auto"` shows it unless which-key or mini.clue is installed (they list the same keys themselves), `true` always, `false` never. `palette = "azure-vicli"` uses the standalone launcher's own dark colours (`lua/azure-cli/palette.lua`) instead of your colorscheme's, set again after every `:colorscheme` (your tab line and status lines stay yours). `border` is every popup's border (`"rounded"`, `"single"`, `"double"`, `"bold"`, `"solid"`, `"shadow"`, `"none"`, or a list of border characters). The colours of the winbars, popups, the plan window and the questions under a line are highlight groups linked to your colorscheme's (`AzureCliWinbar*`, `AzureCliFloat*`, `AzureCliSection`, `AzureCliStatus*`, `AzureCliThread*` - `:hi` restyles them). The standalone launcher also names its tabs and status lines after the screens; in your own Neovim that's `vim.o.tabline = "%!v:lua.require'azure-cli.ui'.tabline()"` (and `.statusline()`). |
 | `dashboard_web` | `{ enabled = false, bind = "127.0.0.1", port = 8797, persist_token = true }` | The [phone dashboard](chat.md#phone-dashboard) (`:AzureCli web start`). `enabled` lets it start (it never starts by itself); `bind` is the one address it listens on - set it to this machine's LAN or VPN (e.g. Tailscale) address to reach it from a phone; `0.0.0.0` / `::` (every interface) are refused. `port` `0` takes any free port. `persist_token` keeps the token in `stdpath("state")/azure-cli/web-token` (mode `0600`) so the URL survives restarts until `:AzureCli web rotate`; `false` makes a new one every start. Validated at `setup()` time. |
 | `images` | `{ inline = true }` | [Images](reviewer.md#images) in a PR's description and comments. `<CR>`/`gx` always opens one; `inline` also draws them under their line in the Overview (the first 10, up to 15 rows each) when snacks.nvim's image module or image.nvim is installed and the terminal can draw images. `false` keeps just `<CR>`/`gx`. Validated at `setup()` time. |
