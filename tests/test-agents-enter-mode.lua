@@ -41,10 +41,31 @@ local function to_row(label)
   end
 end
 
+-- The first / last line of the screen that's an agent's row.
+local function edge_row(last)
+  local at
+  for l in pairs(av.rows) do
+    if not at or (last and l > at) or (not last and l < at) then at = l end
+  end
+  return at
+end
+local function cursor_on(want, what)
+  local l = vim.api.nvim_win_get_cursor(av.win)[1]
+  if l ~= want then return what .. " went to line " .. l .. ", not the row on " .. tostring(want) end
+end
+
 -- Each step runs `before`, then - once what that scheduled has run (the
 -- panel following into a tab moves the focus) - `at` (the row to type
 -- on), types `keys`, and `check()` a moment later returns an error or nil.
 local steps = {
+  -- gg / G: the first / last agent, past the group headers (#123).
+  { at = "#9001", keys = "G", check = function() return cursor_on(edge_row(true), "G") end },
+  { keys = "gg", check = function()
+    if edge_row(false) == 1 then return "line 1 is a row: no header to test gg past" end
+    return cursor_on(edge_row(false), "gg")
+  end },
+  { keys = "2G", check = function() return cursor_on(edge_row(true), "2G") end },
+  { keys = "1G", check = function() return cursor_on(edge_row(false), "1G") end },
   { at = "#9001", keys = "<CR>",
     check = function()
       local v = PLAN.current()

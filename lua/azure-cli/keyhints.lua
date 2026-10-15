@@ -10,7 +10,8 @@
 -- you then type, or the one already waiting, is replayed with this g out
 -- of the way, after the count and register: Vim's own g commands, your g
 -- mappings (gcc, grn, ...) and the screen's (gP, gA, ...) all do what
--- they did.
+-- they did. A screen with lines that aren't rows gives M.rows its rows,
+-- so gg / G land on one.
 --
 -- ui.key_hints: "auto" (the default) - on unless which-key or mini.clue is
 -- there, which show pending keys themselves (from the same descriptions
@@ -175,6 +176,27 @@ press = function(buf)
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(buf) then map_g(buf) end
   end)
+end
+
+-- gg / G on a screen whose lines aren't all rows (group headers, a tab
+-- bar, the padding round a centred box): the first / last row, and with a
+-- count the count-th row, instead of a line the cursor can't use there.
+-- `fn()` gives the screen's rows by line ({ [line] = row }). Mapped whether
+-- or not the hints are on; g and a pause replays gg into this one too,
+-- count and all.
+function M.rows(buf, fn)
+  local function go(last)
+    local list = {}
+    for l in pairs(fn() or {}) do list[#list + 1] = l end
+    if #list == 0 then return end
+    table.sort(list)
+    local n = vim.v.count
+    local i = n > 0 and math.min(n, #list) or (last and #list or 1)
+    vim.cmd("normal! m'")
+    pcall(vim.api.nvim_win_set_cursor, 0, { list[i], vim.api.nvim_win_get_cursor(0)[2] })
+  end
+  vim.keymap.set("n", "gg", function() go(false) end, { buffer = buf, silent = true, desc = "first row (a count: that row)" })
+  vim.keymap.set("n", "G", function() go(true) end, { buffer = buf, silent = true, desc = "last row (a count: that row)" })
 end
 
 -- Gives `buf` (one of ours - keys.lua calls this on its first key) the g

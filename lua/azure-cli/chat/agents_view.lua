@@ -471,6 +471,8 @@ function M.open()
     view.line = go
     if go ~= to then pcall(vim.api.nvim_win_set_cursor, 0, { go, 0 }) end
   end })
+  -- gg / G: the first / last agent, not a header the step above turns back from.
+  require("azure-cli.keyhints").rows(view.buf, function() return view and view.rows end)
   local timer = (vim.uv or vim.loop).new_timer()
   view.timer = timer
   timer:start(1000, 1000, vim.schedule_wrap(function()

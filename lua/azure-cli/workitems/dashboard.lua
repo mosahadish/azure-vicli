@@ -1858,6 +1858,9 @@ KEYS.bind(buf, "workitems", "quit", function()
   end
 end, { desc = "quit" })
 
+-- gg / G: the first / last item row, not the tab bar or the box's padding.
+require("azure-cli.keyhints").rows(buf, function() return row_item end)
+
 -- Prefetch the item under the cursor once movement settles (debounced), so the
 -- detail tab opens from cache instantly.
 local prefetch_timer

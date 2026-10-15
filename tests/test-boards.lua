@@ -116,6 +116,30 @@ for _, ft in ipairs({ "azurecli-dashboard", "azurecli-workitems", "azurecli-agen
   end
 end
 
+-- gg / G / 3G on the boards land on item rows (#123), not the tab bar or
+-- the box's padding: an item row is the one with a #id and a [state].
+local function edges(ft)
+  vim.cmd("tab sbuffer " .. buf_of(ft))
+  local rows = {}
+  vim.wait(5000, function()
+    rows = {}
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+      if l:find("#%d+.*%[.-%]") then rows[#rows + 1] = i end
+    end
+    return #rows >= 3
+  end, 50)
+  if #rows < 3 then return fail(ft .. ": fewer than 3 item rows to test gg / G on") end
+  for _, t in ipairs({ { "G", rows[#rows] }, { "gg", rows[1] }, { "3G", rows[3] }, { "2gg", rows[2] },
+      { "99G", rows[#rows] } }) do
+    vim.wait(100, function() return false end, 20)  -- g is the hints' again
+    feed(t[1])
+    local at = vim.api.nvim_win_get_cursor(0)[1]
+    if at ~= t[2] then return fail(ft .. ": " .. t[1] .. " went to line " .. at .. ", not the row on " .. t[2]) end
+  end
+  return true
+end
+if not edges("azurecli-workitems") then return end
+
 -- I goes to the Issues tab (and W back from it).
 if issues then
   vim.cmd("tab sbuffer " .. buf_of("azurecli-workitems"))
@@ -123,6 +147,7 @@ if issues then
   if not vim.wait(5000, function() return vim.bo.filetype == "azurecli-issues" end, 50) then
     return fail("I didn't go to the Issues tab (ft " .. vim.bo.filetype .. ")")
   end
+  if not edges("azurecli-issues") then return end
   feed("W")
   if not vim.wait(5000, function() return vim.bo.filetype == "azurecli-workitems" end, 50) then
     return fail("W from the Issues tab didn't go back (ft " .. vim.bo.filetype .. ")")
