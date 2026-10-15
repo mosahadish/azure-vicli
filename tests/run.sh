@@ -281,6 +281,7 @@ VIEWED_LUA="$TMP/lua/lua/azure-cli/review/viewed.lua"
 FOLDS_LUA="$TMP/lua/lua/azure-cli/review/folds.lua"
 BOM_LUA="$TMP/lua/lua/azure-cli/review/bom.lua"
 FILELIST_LUA="$TMP/lua/lua/azure-cli/review/filelist.lua"
+IMAGES_LUA="$TMP/lua/lua/azure-cli/review/images.lua"
 MIGRATE_LUA="$TMP/lua/lua/azure-cli/migrate.lua"
 STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
 STATE_DIALOG_LUA="$TMP/lua/lua/azure-cli/workitems/state_dialog.lua"
@@ -356,6 +357,7 @@ run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
 run_lua_test test-review-folds.lua "$REPO_ROOT" "$FOLDS_LUA" "$PANE_LUA" "$VIEWED_LUA"
 run_lua_test test-review-bom.lua "$REPO_ROOT" "$BOM_LUA" "$CACHE_LUA" "$PANE_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
+run_lua_test test-review-images.lua "$REPO_ROOT" "$IMAGES_LUA" "$REPO_ROOT/tests/fake-provider.py"
 
 # A test started straight from a polluted environment - XDG dirs at a
 # sentinel "real" directory, the parent nvim's runtime vars, the chat's

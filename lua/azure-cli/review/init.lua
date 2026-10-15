@@ -392,6 +392,9 @@ local mark_current_file  -- highlights the file-list row for the shown diff; ass
 local EXT = { keys = { list = {}, diff = {}, overview = {}, nav = {} },
               help = { list = {}, diff = {}, overview = {}, nav = {} } }
 EXT.on_comment_popup = {}
+-- EXT.on_overview_render: callbacks render_overview runs with (buf, lines)
+-- after each render - review/images.lua's inline images (#134).
+EXT.on_overview_render = {}
 -- The record the dashboard handed over for THIS PR (STATE.PR_CURRENT is
 -- rewritten for every PR opened after it, and several reviews can be open
 -- at once - inner tabs, lua/azure-cli/innertabs.lua).
@@ -2068,6 +2071,9 @@ local function render_overview()
   vim.api.nvim_buf_set_lines(overview_buf, 0, -1, false, lines)
   vim.bo[overview_buf].modifiable = false
   mark_threads_read(filtered(general_threads))
+  for _, f in ipairs(EXT.on_overview_render) do
+    pcall(f, overview_buf, lines)
+  end
 end
 
 -- Fetch the PR's commit list for the Overview page in the background and
@@ -4088,12 +4094,29 @@ EXT.status_options = status_options
   -- not a duplicate). Call while a module loads (below) - before the
   -- re-apply pass a few lines down, and before any buffer of that kind
   -- created afterwards (which reads EXT.keys.<kind> itself when it's set up).
-  ctx.add_key = function(kind, action, fn, desc, mode)
+  -- opts.chain: fn is called as fn(prev, key) - prev the handler an
+  -- earlier module registered for the same key and mode on this surface
+  -- (nil if none), which this registration replaces - so two features can
+  -- share one key, the later one handing over to the earlier where it has
+  -- nothing to do (review/images.lua's <CR> on a non-image line goes on to
+  -- review/commits.lua's open_commit).
+  ctx.add_key = function(kind, action, fn, desc, mode, opts)
     local keyspec = KEYS.resolve(kind, action)
     if not keyspec then return end
     local keylist = type(keyspec) == "table" and keyspec or { keyspec }
+    local function same(a, b)
+      return vim.api.nvim_replace_termcodes(a, true, true, true) == vim.api.nvim_replace_termcodes(b, true, true, true)
+    end
     for _, k in ipairs(keylist) do
-      table.insert(EXT.keys[kind], { key = k, fn = fn, desc = desc, mode = mode or "n" })
+      local handler = fn
+      if opts and opts.chain then
+        local prev
+        for _, e in ipairs(EXT.keys[kind]) do
+          if (e.mode or "n") == (mode or "n") and same(e.key, k) then prev = e.fn end
+        end
+        handler = function() fn(prev, k) end
+      end
+      table.insert(EXT.keys[kind], { key = k, fn = handler, desc = desc, mode = mode or "n" })
     end
     table.insert(EXT.help[kind], { key = table.concat(keylist, " / "), desc = desc })
   end
@@ -4103,6 +4126,11 @@ EXT.status_options = status_options
   -- comment for why that surface can't be reached through EXT.keys.*.
   ctx.on_comment_popup = function(fn)
     table.insert(EXT.on_comment_popup, fn)
+  end
+  -- Registers a callback render_overview runs with (buf, lines) after
+  -- every Overview render.
+  ctx.on_overview_render = function(fn)
+    table.insert(EXT.on_overview_render, fn)
   end
 
   EXT.notify = require("azure-cli.notify")
@@ -4135,6 +4163,10 @@ EXT.status_options = status_options
   EXT.workitems = require("azure-cli.review.workitems")(ctx)
   -- i: the chat panel, and what it's told this reviewer shows.
   EXT.chat = require("azure-cli.review.chat")(ctx)
+  -- Images in the description and comments (#134): Enter/gx opens one,
+  -- and the Overview shows them inline when an image plugin can. Loaded
+  -- after review/commits.lua: its <CR> chains onto open_commit.
+  EXT.images = require("azure-cli.review.images")(ctx)
 
   -- File-list access for code defined before `files`/`open_file` exist
   -- (jump_change's cross-file stepping - ]c/]C crossing from the last/first

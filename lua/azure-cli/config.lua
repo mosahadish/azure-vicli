@@ -71,7 +71,7 @@ local DEFAULT_KEYS = {
     active_filter = "gA", filters = "gF", ignore_ws = "gw", config = "gO",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",
     quit = "q", edit_comment = "e", delete_comment = "dd",
-    open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
+    open_commit = "<CR>", open_image = { "<CR>", "gx" }, batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP",
     chat_input = "i", chat_selection = "<CR>",
@@ -251,12 +251,29 @@ local DEFAULTS_DASHBOARD_WEB = { enabled = false, bind = "127.0.0.1", port = 879
 local ALL_INTERFACES = { [""] = true, ["*"] = true, ["0.0.0.0"] = true, ["::"] = true, ["[::]"] = true,
   ["0:0:0:0:0:0:0:0"] = true }
 
+-- setup({images=...}): images in a PR's description and comments
+-- (review/images.lua, #134). Enter/gx always opens one; `inline` also shows
+-- them under their line in the Overview when snacks.nvim or image.nvim is
+-- installed and the terminal can draw images.
+local DEFAULTS_IMAGES = { inline = true }
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
   row_numbers = DEFAULT_ROW_NUMBERS, chat = DEFAULTS_CHAT, ui = DEFAULTS_UI,
-  dashboard_web = DEFAULTS_DASHBOARD_WEB,
+  dashboard_web = DEFAULTS_DASHBOARD_WEB, images = DEFAULTS_IMAGES,
 }
+
+local function validate_images(t)
+  if type(t) ~= "table" then error("azure-cli.setup: `images` must be a table") end
+  local out = vim.deepcopy(DEFAULTS_IMAGES)
+  for k, v in pairs(t) do
+    if k ~= "inline" then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in images") end
+    if type(v) ~= "boolean" then error("azure-cli.setup: images.inline must be true or false") end
+    out[k] = v
+  end
+  return out
+end
 
 local function validate_dashboard_web(w)
   if type(w) ~= "table" then error("azure-cli.setup: `dashboard_web` must be a table") end
@@ -746,6 +763,8 @@ function M.setup(opts)
   if opts.ui ~= nil then ui = validate_ui(opts.ui) end
   local dashboard_web = DEFAULTS.dashboard_web
   if opts.dashboard_web ~= nil then dashboard_web = validate_dashboard_web(opts.dashboard_web) end
+  local images = DEFAULTS.images
+  if opts.images ~= nil then images = validate_images(opts.images) end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
@@ -759,6 +778,7 @@ function M.setup(opts)
     chat = chat,
     ui = ui,
     dashboard_web = dashboard_web,
+    images = images,
   }
   if ui.palette == "azure-vicli" then
     pcall(function() require("azure-cli.palette").apply({ follow = true }) end)
@@ -876,6 +896,13 @@ function M.render_options()
   w("  dashboard_web = {")
   for _, k in ipairs(sorted_keys(DEFAULTS.dashboard_web)) do
     w("    " .. k .. " = " .. lua_literal(DEFAULTS.dashboard_web[k]) .. ",")
+  end
+  w("  },")
+  w("  -- Images in PR descriptions and comments: Enter/gx opens one; inline also shows")
+  w("  -- them in the Overview when snacks.nvim or image.nvim can draw in this terminal.")
+  w("  images = {")
+  for _, k in ipairs(sorted_keys(DEFAULTS.images)) do
+    w("    " .. k .. " = " .. lua_literal(DEFAULTS.images[k]) .. ",")
   end
   w("  },")
   w("")

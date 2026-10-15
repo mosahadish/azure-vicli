@@ -63,7 +63,7 @@ GH_OWNER = "demo-gh"
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
               "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description",
-              "--requeue", "--build-log", "--test-results")
+              "--requeue", "--build-log", "--test-results", "--fetch-image")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -1039,6 +1039,38 @@ class Fake:
             if pid.isdigit() and int(pid) in w.get("prs", []):
                 print(json.dumps({k: w[k] for k in ("id", "type", "state", "title", "assignedTo")},
                                  ensure_ascii=False))
+        return 0
+
+    # -- images (#134) ------------------------------------------------------
+
+    def cmd_fetch_image(self, rest):
+        """As azure-cli.py's --fetch-image: a URL on the PR's own server
+        (ORG's or github.com's origin) gets a fixture PNG at <stem>.png, made
+        0600 and O_EXCL, and an "auth: yes" line in calls.log; any other host
+        exits 3 with no file, logged "auth: no". No network either way."""
+        if not self.need_pr():
+            return 1
+        url, stem = (rest + ["", ""])[:2]
+        own = ("https://github.com/", "https://raw.githubusercontent.com/") if self.is_github() else (ORG + "/",)
+        allowed = url.startswith(own) and "/../" not in url
+        self.ws.log(["--fetch-image auth: " + ("yes" if allowed else "no"), url], {})
+        if not allowed:
+            m = re.match(r"^[a-zA-Z]+://([^/?#]+)", url)
+            print("not this PR's host: {0}".format(m.group(1) if m else "?"), file=sys.stderr)
+            return 3
+        if not os.path.isabs(stem) or not os.path.isdir(os.path.dirname(stem)):
+            print("Image download failed: the destination must be an absolute file path", file=sys.stderr)
+            return 1
+        path = stem + ".png"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except OSError as ex:
+            print("Image download failed: could not create the file: {0}".format(ex.strerror), file=sys.stderr)
+            return 1
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(png)
+        print(json.dumps({"path": path, "contentType": "image/png", "bytes": len(png)}))
         return 0
 
     # -- the chat panel's PR tools -----------------------------------------
@@ -2018,7 +2050,7 @@ class Fake:
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
                    "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
                    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
-                   "--get-pr", "--submit-review")
+                   "--get-pr", "--submit-review", "--fetch-image")
 
 
 def dispatch(ws, argv, env):
@@ -2070,6 +2102,7 @@ def dispatch(ws, argv, env):
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
         "--submit-review": lambda: f.cmd_submit_review(rest),
+        "--fetch-image": lambda: f.cmd_fetch_image(rest),
     }
     handler = table.get(flag)
     if handler is not None and f.is_github() and flag.startswith("--") and flag not in GH_ACTIONS \

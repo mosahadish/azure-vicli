@@ -267,6 +267,7 @@ paste the output here after changing a default.
 | `link_workitem` | `gl` |
 | `next_comment` | `]C` |
 | `open_commit` | `<CR>` |
+| `open_image` | `<CR>` / `gx` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |

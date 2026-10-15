@@ -1542,6 +1542,165 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
 
 
 # ---------------------------------------------------------------------------
+# Images in PR descriptions and comments (#134)
+# ---------------------------------------------------------------------------
+#
+# --fetch-image <url> <stem> downloads one image with the account's PAT or
+# token, for review/images.lua to open or show inline. Only Lua's URL and a
+# file stem are on argv; the credential is resolved here, as for every other
+# PR action. The rules:
+#   - the URL must be on the PR's own server (image_url_on: scheme, host and
+#     port compared exactly; on dev.azure.com the org's path too). Anything
+#     else exits FETCH_IMAGE_FOREIGN without a request, and Lua opens it in
+#     the browser without credentials instead;
+#   - Authorization is an unredirected header, so urllib never copies it
+#     onto a redirect - GitHub's 302 to a signed private-user-images URL,
+#     ADO's to blob storage, or anywhere else;
+#   - only raster image types are kept (no SVG: it can carry script once a
+#     browser opens it from disk; no ADO 203 sign-in page), up to
+#     IMAGE_MAX_BYTES;
+#   - the file is <stem>.<ext>, the extension from the Content-Type and
+#     nothing from the URL, created O_EXCL|O_NOFOLLOW with mode 0600. The
+#     stem is Lua's vim.fn.tempname(), in Neovim's own 0700 temp directory;
+#   - the perf log gets perf_record's host/path/parameter names, and error
+#     messages the host and the status, never the request.
+
+IMAGE_MAX_BYTES = 25 * 1024 * 1024
+IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp",
+               "image/bmp": "bmp"}
+FETCH_IMAGE_FOREIGN = 3
+
+
+class ImageFetchError(Exception):
+    pass
+
+
+def url_origin(url):
+    """(scheme, host, port) of an http(s) URL, lowercased and with the
+    default port filled in; None for anything else, or a URL with
+    user:password@ in it."""
+    try:
+        parts = urllib.parse.urlsplit(url or "")
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
+        return None
+    return (scheme, parts.hostname.lower(), port or (443 if scheme == "https" else 80))
+
+
+def url_host(url):
+    """The host to name in a message: never the path or query (a signed
+    URL's query is a credential of its own)."""
+    origin = url_origin(url)
+    return origin[1] if origin else "?"
+
+
+def image_url_on(url, own_urls):
+    """True when url is on one of own_urls' origins. An own URL on
+    dev.azure.com also needs url's path to start with its org
+    (dev.azure.com/<org>/), so the PAT never reaches another org there. A
+    path with "." or ".." segments is refused: the server would resolve it
+    somewhere this check never saw."""
+    origin = url_origin(url)
+    if origin is None:
+        return False
+    path = urllib.parse.urlsplit(url).path
+    segs = [urllib.parse.unquote(s) for s in path.split("/")]
+    if any(s in (".", "..") for s in segs):
+        return False
+    for own in own_urls:
+        if url_origin(own) != origin:
+            continue
+        if origin[1] == "dev.azure.com":
+            org = urllib.parse.urlsplit(own).path.strip("/").split("/")[0].lower()
+            if not org or len(segs) < 3 or segs[1].lower() != org:
+                continue
+        return True
+    return False
+
+
+def fetch_image_to(url, stem, auth=None, max_bytes=IMAGE_MAX_BYTES):
+    """Downloads url to <stem>.<ext> and returns (path, content_type, bytes).
+    auth is the Authorization header's value, sent unredirected. Raises
+    ImageFetchError, with no file left behind."""
+    if not stem or not os.path.isabs(stem) or os.path.basename(stem) in ("", ".", ".."):
+        raise ImageFetchError("the destination must be an absolute file path")
+    parent = os.path.dirname(stem)
+    if not os.path.isdir(parent) or os.path.islink(parent):
+        raise ImageFetchError("the destination's directory doesn't exist")
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", "image/png, image/jpeg, image/gif, image/webp, image/bmp, */*;q=0.1")
+    req.add_header("User-Agent", "azure-vicli")
+    if auth:
+        req.add_unredirected_header("Authorization", auth)
+    host = url_host(url)
+    perf = _perf_current() is not None
+    t0 = time.monotonic() if perf else 0.0
+    status, size = 0, 0
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            ext = IMAGE_TYPES.get(ctype)
+            if status == 203 or ext is None:
+                raise ImageFetchError("{0} answered {1}, not an image{2}".format(
+                    host, ctype or "no content type",
+                    " (SVG isn't opened)" if ctype == "image/svg+xml" else ""))
+            path = stem + "." + ext
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            try:
+                fd = os.open(path, flags, 0o600)
+            except OSError as e:
+                raise ImageFetchError("could not create the file: {0}".format(e.strerror or e))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise ImageFetchError("the image is larger than {0} MB".format(max_bytes // (1024 * 1024)))
+                        f.write(chunk)
+            except BaseException:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                raise
+    except urllib.error.HTTPError as e:
+        status = e.code
+        e.close()
+        raise ImageFetchError("{0} answered HTTP {1}".format(host, e.code))
+    except urllib.error.URLError as e:
+        raise ImageFetchError("could not reach {0}: {1}".format(host, getattr(e, "reason", e)))
+    except ValueError as e:
+        raise ImageFetchError("not a URL that can be fetched: {0}".format(e))
+    finally:
+        if perf:
+            perf_record("GET", url, status, size, t0, conn=_last_conn())
+    return path, ctype, size
+
+
+def fetch_image_action(url, stem, allowed, auth):
+    """--fetch-image's body for both hosts: FETCH_IMAGE_FOREIGN with no
+    request when the URL isn't on the PR's own server, 1 when the download
+    failed, else 0 and {"path", "contentType", "bytes"} on stdout."""
+    if not allowed:
+        print("not this PR's host: {0}".format(url_host(url)), file=sys.stderr)
+        return FETCH_IMAGE_FOREIGN
+    try:
+        path, ctype, size = fetch_image_to(url, stem, auth)
+    except ImageFetchError as e:
+        print("Image download failed: {0}".format(e), file=sys.stderr)
+        return 1
+    print(json.dumps({"path": path, "contentType": ctype, "bytes": size}))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # ConnectionData - the one identity lookup, shared by all three callers
 # ---------------------------------------------------------------------------
 #
@@ -2226,7 +2385,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
-    "--submit-review",
+    "--submit-review", "--fetch-image",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2858,6 +3017,15 @@ class PrActions:
                          ensure_ascii=False))
         return 0
 
+    def fetch_image(self, url, stem):
+        """--fetch-image (#134): an image in the PR's description or a
+        comment, with the PAT - only from the org's own server."""
+        allowed = image_url_on(url, [self.org])
+        auth = None
+        if allowed:
+            auth = "Basic " + base64.b64encode(":{0}".format(self.pat).encode("utf-8")).decode("ascii")
+        return fetch_image_action(url, stem, allowed, auth)
+
     def get_pr(self):
         """Any PR in the project by id (GET {org}/{project}/_apis/git/
         pullrequests/{id} - no repository needed), printed as the same record
@@ -3038,6 +3206,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
     if flag == "--get-pr":
         return actions.get_pr()
+    if flag == "--fetch-image":
+        return actions.fetch_image(arg(0), arg(1))
     if flag == "--submit-review":
         # GitHub's (github_host.py): an Azure batch goes out comment by
         # comment from review/batch.lua itself.
@@ -4954,6 +5124,8 @@ _GITHUB_ACTIONS = {
     "--requeue": lambda a, arg: a.requeue(),
     "--build-log": lambda a, arg: a.build_log(arg(0)),
     "--test-results": lambda a, arg: a.test_results(arg(0)),
+    # #134: an image in the description or a comment, with the token.
+    "--fetch-image": lambda a, arg: a.fetch_image(arg(0), arg(1)),
 }
 
 

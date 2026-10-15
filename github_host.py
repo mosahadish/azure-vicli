@@ -93,6 +93,19 @@ def web_host(api_url):
     return "github.com" if netloc in ("api.github.com", "") else netloc
 
 
+def image_origins(api_url):
+    """The URLs whose origin an image may be fetched from with the token
+    (#134): github.com's own hosts, or the Enterprise Server's. A
+    user-attachments URL there redirects to a signed
+    private-user-images.githubusercontent.com one, which needs no token and
+    gets none (azure-cli.py's fetch_image_to)."""
+    host = web_host(api_url)
+    if host == "github.com":
+        return ["https://github.com", "https://api.github.com", "https://raw.githubusercontent.com"]
+    scheme = urllib.parse.urlparse(api_base(api_url)).scheme or "https"
+    return ["{0}://{1}".format(scheme, host)]
+
+
 def _graphql_read(url, data):
     """A GraphQL POST that only reads - no mutation or subscription anywhere
     in it - which azure-cli.py's connection pool may retry once on a stale
@@ -929,6 +942,13 @@ class Actions(object):
 
     def _vars(self):
         return {"owner": self.owner, "name": self.repo, "number": int(self.pr)}
+
+    def fetch_image(self, url, stem):
+        """--fetch-image (#134): an image in the PR's body or a comment, with
+        the token - only from GitHub's own hosts (image_origins)."""
+        allowed = core.image_url_on(url, image_origins(self.account.api_url))
+        auth = "Bearer " + self.client.token if allowed and self.client.token else None
+        return core.fetch_image_action(url, stem, allowed, auth)
 
     def threads(self):
         print(json.dumps({"count": 0, "value": fetch_threads(self.client, self.owner, self.repo, self.pr)},

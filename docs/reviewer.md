@@ -209,6 +209,25 @@ the way back to whatever diff or Overview you started from. Comments never
 show in a commit diff - they're anchored to the PR's final diff, not any one
 commit along the way - and the winbar there says so.
 
+### Images
+
+An image in the description or a comment (`![alt](url)`, `<img src=...>`, or
+a link to one) opens with `<CR>` or `gx` on its line, in the Overview and the
+K popup: azure-vicli downloads it with your PAT or token into Neovim's own
+temp directory (a `0600` file, deleted when Neovim exits) and opens it in the
+system viewer. The credential only goes to the PR's own server - the org's
+host (on `dev.azure.com`, the org's own path), or GitHub's - never along a
+redirect, and never on a command line or into the perf log. An image on any
+other host opens in the browser as it is, without your credentials. SVG
+isn't downloaded. On a line with no image, `<CR>` and `gx` do what they did
+before (a commit line's `<CR>` still opens that commit).
+
+With [snacks.nvim](https://github.com/folke/snacks.nvim)'s image module or
+[image.nvim](https://github.com/3rd/image.nvim) installed, in a terminal that
+can draw images (kitty, WezTerm, Ghostty; sixel terminals through image.nvim),
+the Overview also shows the images under their lines - neither plugin is
+required. `images = { inline = false }` in `setup()` turns that off.
+
 ### Range comments
 
 Select a run of lines in visual mode and press `c` to comment on the whole
