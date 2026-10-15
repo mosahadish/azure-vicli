@@ -647,6 +647,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-plan-discard.lua (headless nvim)" "$out"
   fi
 
+  # The tab line's "N plans wait for you" (#117): redrawn once whenever the
+  # plans index changes - discard, approve, a new plan - with no chat render.
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-plan-tabline.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all plan-tabline tests passed"* ]]; then
+    pass "test-plan-tabline.lua (headless nvim)"
+  else
+    fail "test-plan-tabline.lua (headless nvim)" "$out"
+  fi
+
   # chat/init.lua's `send`: one agent process for the whole conversation
   # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
   # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.

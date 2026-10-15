@@ -297,6 +297,20 @@ end
 -- once, kept up to date by M.save.
 local index = nil
 
+-- The index changed: the tab line's "N plans wait for you" (and a
+-- statusline's strip()) drawn again (#117) - once, after the burst of
+-- saves that changed it, out of the caller's way.
+local redraw_pending = false
+local function redraw_soon()
+  if redraw_pending then return end
+  redraw_pending = true
+  vim.schedule(function()
+    redraw_pending = false
+    pcall(vim.cmd, "redrawstatus!")
+    pcall(vim.cmd, "redrawtabline")
+  end)
+end
+
 -- Saving keeps at most chat.plan_revisions (3) revisions - never the
 -- newest or the one last approved dropped (#90). A plan from before that
 -- with more is pruned the same way the next time it's saved.
@@ -308,11 +322,13 @@ function M.save(rec)
   if index then index[rec.key] = { status = rec.status, label = M.target_label(rec.target) } end
   vim.fn.mkdir(M.root(), "p")
   vim.fn.writefile({ vim.json.encode(rec) }, M.root() .. "/" .. rec.key .. ".json")
+  redraw_soon()
 end
 
 -- Plan `key`'s files are gone (chat/plan_discard.lua): out of the index.
 function M.forget(key)
   if index then index[key] = nil end
+  redraw_soon()
 end
 
 local function last_rev(rec) return rec.revisions[#rec.revisions] end
