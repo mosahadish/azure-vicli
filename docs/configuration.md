@@ -78,6 +78,26 @@ accounts:
 | `clones_dir`, `hide_ancient` | As for an Azure account. |
 | `issues` | Optional. Turns on the [Issues tab](work-items.md#issues-github) (`I`) for a GitHub Projects v2 project; see below. |
 
+**Without GraphQL.** azure-vicli talks to GitHub through its GraphQL API.
+Where that's refused - a proxy that lets only REST through (a Claude Code
+cloud session's does), or an Enterprise Server with GraphQL turned off - the
+first refusal switches that account to the REST API for the rest of the
+session, by itself (`AZVICLI_GITHUB_REST=1` starts there). The PR list, the
+reviewer, comments, reviews (`gS`), votes, reviewers, the description and
+merging all work; what's different:
+
+- If GitHub's search is refused too, the list is the open PRs of the
+  repositories cloned in `clones_dir` (under `owner:` when it's set), or of
+  the ones `AZVICLI_GITHUB_REPOS` names (`owner/name`, comma-separated).
+- Whether a conversation is resolved, resolving one, and auto-merge exist
+  only in GraphQL. A proxy that offers them (Claude Code's does) is used;
+  without one every conversation shows as active, and resolving or
+  auto-merge says it needs GraphQL.
+- The merge dialog can't tell which checks are required, and a PR's issues
+  (`gW`) are only its body's `Closes #n` lines.
+- The Issues tab (`issues:`) still needs GraphQL.
+- More requests: each PR is a few REST calls, kept until the PR changes.
+
 `project_name`, `org_url` and `work_items` don't apply (`work_items:` on a
 GitHub account is an error). `:AzureCli doctor` checks the sign-in, and
 with `issues:` that the project can be read.

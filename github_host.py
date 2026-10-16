@@ -19,6 +19,10 @@ name and AZVICLI_PR the PR number. Votes keep Azure's numbers as the
 currency between the two sides: an approval is 10, changes requested -5
 (GitHub's "wait for author"), anything else 0.
 
+Reads and writes go through GitHub's GraphQL API. Where that's refused,
+Client.graphql answers each query from REST instead (github_rest.py), in
+the same shape, so nothing past it knows the difference.
+
 azure-cli.py hands its own module in as `core` (bind()), for the helpers it
 reuses; nothing here imports it.
 """
@@ -221,6 +225,78 @@ def account_token(account):
     return account.token() or gh_token(account.api_url)
 
 
+# ---------------------------------------------------------------------------
+# GraphQL refused: REST instead (github_rest.py)
+# ---------------------------------------------------------------------------
+#
+# A proxy that lets only REST through (a Claude Code cloud session's answers
+# every GraphQL POST with a 403 saying so), or an Enterprise Server with
+# GraphQL off (404): the first refusal switches that API root to REST for
+# the process's life. AZVICLI_GITHUB_REST=1 starts every root there.
+
+class GraphQLUnavailable(RuntimeError):
+    pass
+
+
+_rest_hosts = set()
+_rest_lock = threading.Lock()
+
+
+def graphql_refused(err):
+    """Whether an HTTP error from the GraphQL endpoint is GraphQL being
+    turned away, rather than a bad token or a rate limit REST would hit
+    too."""
+    body = (err.body or "").lower()
+    if err.status in (404, 410):
+        return True
+    return err.status == 403 and "graphql" in body and "rate limit" not in body
+
+
+def rest_only(api_url):
+    if os.environ.get("AZVICLI_GITHUB_REST") == "1":
+        return True
+    with _rest_lock:
+        return api_url in _rest_hosts
+
+
+_rest_mod = []
+
+
+def rest():
+    """github_rest.py, loaded from beside this file on first use."""
+    with _rest_lock:
+        if not _rest_mod:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "azvicli_github_rest", os.path.join(os.path.dirname(os.path.abspath(__file__)), "github_rest.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.bind(_Self())
+            _rest_mod.append(mod)
+        return _rest_mod[0]
+
+
+class _Self(object):
+    """This module's globals as attributes, for github_rest.py: azure-cli.py
+    loads this file by path, so it isn't in sys.modules to hand over."""
+
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name)
+
+
+def rest_builder(query):
+    """github_rest.py's builder for one of this module's queries, or None."""
+    name = REST_BUILDERS.get(query)
+    if name is None:
+        return None
+    r = rest()
+    fn = getattr(r, name[0])
+    return (lambda client, variables: fn(client, variables, *name[1:])) if len(name) > 1 else fn
+
+
 class Client:
     """One account's connection. `fetch(method, url, token, data)` is
     swappable for tests, like PrActions.fetch."""
@@ -232,7 +308,26 @@ class Client:
         self.fetch_text = fetch_text or http_text
 
     def graphql(self, query, variables=None):
-        out = self.fetch("POST", graphql_url(self.api_url), self.token, {"query": query, "variables": variables or {}})
+        """A GraphQL query's `data` - or, where GraphQL is refused, the same
+        `data` built from REST calls (github_rest.py), when the query has a
+        builder there; GraphQLUnavailable when it hasn't."""
+        if not rest_only(self.api_url):
+            try:
+                out = self.fetch("POST", graphql_url(self.api_url), self.token,
+                                 {"query": query, "variables": variables or {}})
+            except GitHubHttpError as e:
+                if not graphql_refused(e):
+                    raise
+                with _rest_lock:
+                    _rest_hosts.add(self.api_url)
+            else:
+                return self._data(out)
+        builder = rest_builder(query)
+        if builder is None:
+            raise GraphQLUnavailable("GitHub's GraphQL API isn't reachable from here, and this needs it")
+        return builder(self, variables or {})
+
+    def _data(self, out):
         errors = (out or {}).get("errors")
         if errors:
             raise RuntimeError("GitHub GraphQL: " + "; ".join(str((e or {}).get("message") or e) for e in errors))
@@ -613,6 +708,7 @@ def list_records(account, env=None, client=None):
             raise RuntimeError("GitHub account {0} has no token: set pat_file, or sign in with `gh auth login`"
                                .format(account.label()))
         client = Client(account.api_url, token)
+    client.account = account  # github_rest.py lists its clones_dir's repositories when search is refused
     data = client.graphql(LIST_QUERY, search_queries(owner_filter(client, account.owner)))
     viewer = data.get("viewer") or {}
     login = viewer.get("login") or ""
@@ -918,6 +1014,39 @@ query($owner: String!, $name: String!, $number: Int!) {
         ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } } }
 }
 """
+
+
+# Each query's REST builder in github_rest.py (its name, then any extra
+# arguments): what Client.graphql answers with where GraphQL is refused.
+REST_BUILDERS = {
+    "query { viewer { login name } }": ("viewer",),
+    OWNER_QUERY: ("repository_owner",),
+    LIST_QUERY: ("list_prs",),
+    PR_QUERY: ("get_pr",),
+    PR_NODE_QUERY: ("pr_id",),
+    THREADS_QUERY: ("threads",),
+    THREAD_NODES_QUERY: ("threads",),
+    RESOLVE: ("set_resolved", True),
+    UNRESOLVE: ("set_resolved", False),
+    ITERATIONS_QUERY: ("iterations",),
+    REVIEW_QUERY: ("review_state",),
+    ADD_REVIEW: ("add_review",),
+    ADD_THREAD: ("add_thread",),
+    ADD_REPLY: ("add_reply",),
+    SUBMIT_REVIEW: ("submit_review",),
+    DELETE_REVIEW: ("delete_review",),
+    REVIEWER_QUERY: ("reviewer_lookup",),
+    USER_QUERY: ("user",),
+    TEAM_QUERY: ("team",),
+    REQUEST_REVIEWS: ("request_reviews",),
+    UPDATE_BODY: ("update_pr",),
+    UPDATE_BODY_TITLE: ("update_pr",),
+    MERGE_STATE_QUERY % {"req": _REQUIRED}: ("merge_state",),
+    MERGE_STATE_QUERY % {"req": ""}: ("merge_state",),
+    ENABLE_AUTO_MERGE: ("enable_auto_merge",),
+    DISABLE_AUTO_MERGE: ("disable_auto_merge",),
+    CLOSING_ISSUES_QUERY: ("closing_issues",),
+}
 
 
 class Actions(object):
@@ -1244,7 +1373,12 @@ class Actions(object):
                 fields["pullRequestReviewId"] = review
                 self.client.graphql(mutation, {"input": fields})
             self.client.graphql(SUBMIT_REVIEW, {"id": review, "event": event, "body": body or None})
-        except Exception:
+        except Exception as e:
+            if getattr(e, "posted", False):
+                # REST (github_rest.py): the review is in, some of the rest
+                # isn't - failing would have the queue sent again, twice.
+                print("Review submitted, but {0}.".format(e))
+                return 0
             if not mine:
                 try:
                     self.client.graphql(DELETE_REVIEW, {"id": review})

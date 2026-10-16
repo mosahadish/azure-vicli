@@ -41,6 +41,13 @@ _Part of the [azure-vicli](../README.md) docs._
 - **"No PAT available" / "no configured PAT"**: add `pat:` (or `pat_file:`) to the matching
   account. The org URL is compared case-insensitively with the trailing
   slash ignored. Every account needs one - there is no Azure AD sign-in.
+- **"GitHub GraphQL is not available" / a GitHub account lists nothing**:
+  the GraphQL API is refused where you are (a REST-only proxy, say).
+  azure-vicli switches that account to REST by itself; if the list is still
+  empty, GitHub's search is refused too, and only the repositories cloned in
+  the account's `clones_dir` are listed - clone the one you want there, or
+  name it in `AZVICLI_GITHUB_REPOS=owner/name`. See [GitHub
+  accounts](configuration.md#github-accounts) for what REST can't do.
 - **A PR won't open, "branch not found"**: the source branch was deleted, or
   `clones_dir` points at a different repository. Check the clone path in the
   error.
