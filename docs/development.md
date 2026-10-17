@@ -22,7 +22,18 @@ _Part of the [azure-vicli](../README.md) docs._
   time, in the order Actionable, created by me, Drafts, Signed off, Waiting,
   with one repository-wide fetch per clone only when something changed.
 - **Polling that stays out of the way.** One list poll and one thread poll
-  per minute, never overlapping themselves, and a half-second hover debounce.
+  every `timing.poll_seconds` (30 s), slower while Neovim is idle or
+  unfocused, never overlapping themselves, and a half-second hover debounce.
+- **Kept-alive connections.** Idle connections to the same host are reused
+  from a pool (up to 8 per host, dropped after 60 s idle), and a read that
+  fails on a pooled one is retried once on a fresh connection.
+  `AZVICLI_NO_POOL=1` turns the pool off.
+- **`connectionData` once per organization.** Under `--serve` the daemon
+  keeps each organization's `connectionData` for 10 minutes, keyed by
+  organization and PAT, and drops it when a request there answers 401, 403
+  or 203.
+- **Every account at once.** `--list` fetches all accounts together on one
+  pool of 8 and prints them in config order.
 
 The cache is keyed by PR id and its last-activity timestamp, so a push
 invalidates it automatically. It holds 24 PRs by default. Every number in
@@ -212,6 +223,12 @@ syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
 Neovim's/the platform's cache directory (see `AZVICLI_PREFETCH_DIR` in [Environment variables](configuration.md#environment-variables)),
 not inside the repo.
 
+Every `tests/*.lua` test (the `gen-keys-table.lua` generator aside) loads
+`tests/sandbox.lua` first, and `run.sh` checks it does. `run.sh` itself
+clears every `AZVICLI_*` variable plus `VIM`, `VIMRUNTIME`, `NVIM`,
+`MYVIMRC` and `NVIM_LOG_FILE`, and sets its own `XDG_DATA_HOME`,
+`XDG_CACHE_HOME`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` under a temp dir.
+
 `tests/run.sh` is the whole test suite (bash, git, luajit and python3; a
 real `nvim` on PATH enables the stricter Neovim load check and the headless
 smokes - see below): a `luajit -bl` syntax check and a global-name scan
@@ -362,7 +379,8 @@ harmless on another, unless the acting one asks first: it lists those in
 DevOps goes in `WRITES`, so `?` marks it and the check covers it.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `bash tests/run.sh` on
-every push and pull request.
+every push and pull request, on ubuntu-latest with the distro's Neovim
+installed by apt (0.9.x, the minimum the plugin supports).
 
 ### Trying it without Azure DevOps
 

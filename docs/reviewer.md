@@ -113,7 +113,8 @@ of the whole line reading as uniformly changed.
 Comments, replies and status changes appear the instant you submit them,
 tagged "(sending…)" until the server confirms. If the call fails the entry is
 removed and the prompt reopens with your text, so nothing is lost. Threads
-refresh in the background every minute, and new comments on your PR or on
+refresh in the background every `timing.poll_seconds` (30 s), slower while
+Neovim is idle or unfocused, and new comments on your PR or on
 threads you took part in raise a notification (both `vim.notify` and, unless
 disabled, a desktop toast).
 
@@ -447,13 +448,20 @@ reviewer, with the same keys. What differs:
   - it lists the checks, `(required)` where GitHub says so;
   - anything that stops the merge - a conflict, a draft, the base moved on,
     a failing or pending required check, a review still needed, changes
-    requested - is shown as `⛔ Can't merge: …`, and `<CR>` refuses;
+    requested - is shown as `⛔ Can't merge: …`, and `<CR>` refuses; when
+    GitHub blocks it for none of those, the reason is "blocked by <base>'s
+    branch protection (e.g. unresolved conversations, signed commits)";
+  - a check that failed but isn't required is a warning, not a blocker:
+    "check `x` failed (not required)", or "some checks failed (not
+    required)" when GitHub doesn't say which;
   - there's no work-items row (an issue closes through its `Closes #n`
     line instead);
   - "Auto-merge when requirements pass" is there only when the repository
     allows auto-merge, and then the repository's own setting decides
     whether the branch is deleted;
-  - a branch in a fork is never deleted.
+  - a direct merge (not auto-merge) has the "Delete source branch"
+    checkbox, on by default;
+  - a branch in a fork is never deleted, even with that box checked.
 - **Checks, not builds.** The build state is the head commit's checks.
   Re-queuing re-runs the failed jobs of its failed GitHub Actions runs;
   the agent's build log is those jobs' failure annotations and the failed

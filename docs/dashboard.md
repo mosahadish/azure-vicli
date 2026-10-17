@@ -6,7 +6,8 @@ _Part of the [azure-vicli](../README.md) docs._
 
 PRs are grouped into sections: Actionable, Waiting for author, Signed off,
 Drafts, and Created by me. Within a section the most recently updated PR is
-first. The list refreshes every minute.
+first. The list refreshes every `timing.poll_seconds` (30 s), slower while
+Neovim is idle or unfocused.
 
 ![The pull request dashboard](images/dashboard.png)
 
@@ -52,6 +53,7 @@ solves the widths; see its own header comment for the exact rules).
 | Key | Action |
 |---|---|
 | `j` / `k` | Move |
+| `gg` / `G` | First / last PR |
 | `<CR>` | Open the PR in the reviewer, cloning its repo first if needed |
 | `gd` | Show the description, build status and branch policies |
 | `gy` | Copy the PR link |
@@ -71,8 +73,11 @@ solves the widths; see its own header comment for the exact rules).
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
 | `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which PR is under the cursor. `<CR>` on a visual selection sends it along |
 | `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
+| `gP` | Start an agent that plans the fix of the PR's open comments (on selected rows: one per PR) - see [Several agents at once](chat.md#several-agents-at-once) |
+| `[r` / `]r`, `g1`-`g9` | Previous / next inner tab, or the n-th (`g1` is this list) - see above |
 | `W` | Switch to the work-items dashboard |
 | `I` | Switch to the [Issues tab](work-items.md#issues-github) - only when a GitHub account has `issues:` |
+| `A` | Switch to the [Agents screen](chat.md#several-agents-at-once) |
 | `q` | Quit |
 
 Press `?` for a popup with these keys plus the badge legend below.
@@ -139,7 +144,9 @@ ones - every account is fetched at once, and one that fails is named in a
 
 - **Which PRs.** The open PRs you're asked to review, have reviewed or
   opened (in unarchived repositories), only under the account's `owner:`
-  when it has one. A PR whose branch is gone is skipped.
+  when it has one. A PR you're asked to review or have reviewed is skipped
+  when its branch is gone (a fork's branch aside); the PRs you opened stay
+  listed.
 - **Names.** A PR is `repo#12` rather than `!101`.
 - **Votes are reviews.** An approving review counts as an approval and
   "changes requested" as Azure's wait-for-author (`✗` in the reviewer

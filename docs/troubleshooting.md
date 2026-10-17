@@ -40,7 +40,17 @@ _Part of the [azure-vicli](../README.md) docs._
   very least add it to that repository's `.gitignore`.
 - **"No PAT available" / "no configured PAT"**: add `pat:` (or `pat_file:`) to the matching
   account. The org URL is compared case-insensitively with the trailing
-  slash ignored. Every account needs one - there is no Azure AD sign-in.
+  slash ignored. Every Azure DevOps account needs one - there is no Azure AD
+  sign-in. A GitHub account without one falls back to `gh auth token`.
+- **"No GitHub token" / "no GitHub token for …"**: set `pat_file` on the
+  account, or sign in with `gh auth login`.
+- **"… the token needs the project scope"** (the Issues tab): run
+  `gh auth refresh -s project`.
+- **"Auto-merge isn't allowed on owner/repo (its settings)."**: turn on
+  auto-merge in the repository's settings, or merge it instead.
+- **"Auto-merge needs <branch> to require checks or reviews (branch
+  protection); merge it instead."**: GitHub only auto-merges into a
+  protected branch with required checks or reviews; merge it now instead.
 - **"GitHub GraphQL is not available" / a GitHub account lists nothing**:
   the GraphQL API is refused where you are (a REST-only proxy, say).
   azure-vicli switches that account to REST by itself; if the list is still
@@ -52,7 +62,8 @@ _Part of the [azure-vicli](../README.md) docs._
   `clones_dir` points at a different repository. Check the clone path in the
   error.
 - **Comments show but the badge or counts look stale**: the thread poll runs
-  once a minute; press `r` in the dashboard to refresh now.
+  every `timing.poll_seconds` (30 s), slower while Neovim is idle or
+  unfocused; press `r` in the dashboard to refresh now.
 - **Peek panes have no titles**: Neovim is older than 0.9. Everything else works.
 - **Slow first open on a big repo**: the warm-all pass may still be running.
   The `⇣` badge shows which PRs are in progress; `◆` means ready.
