@@ -28,6 +28,10 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gi` | Move the item to another sprint of the quarter |
 | `gU` | Move the item under another parent, or off its own (see below) |
 | `gl` | Link a pull request to the item under the cursor |
+| `gL` | Unlink a pull request from the item under the cursor (a popup of its linked PRs) |
+| `gy` | Copy the item's link |
+| `o` | Open the item in the browser |
+| `/` | Filter by id, title, state or assignee |
 | `T` | Tree view: everything under each item indented beneath it (remembered) |
 | `za` or `<Space>` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
 | `gR` | Open a pull request linked to the item (a picker when there are several) |
@@ -37,7 +41,10 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gg` / `G` | First / last row (with a count, that row) |
 | `r` | Refresh |
 | `P` | Back to the PR dashboard |
+| `I` | The [Issues tab](#issues-github) - only when a GitHub account has `issues:` |
+| `A` | The [Agents screen](chat.md#several-agents-at-once) |
 | `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which work item is under the cursor ("create a branch from develop for this work item") |
+| `gP` | Start an agent that plans the item under the cursor (in visual mode: one per selected row) - see [Several agents at once](chat.md#several-agents-at-once) |
 | `q` | Quit |
 
 Press `?` for a popup with these keys. `ga`, `gp`, `ge` and `gi` apply to the
@@ -253,6 +260,9 @@ from the Issues tab goes back to the work items.
 
 What's different on GitHub:
 
+- **Ids.** An issue's id is its number, or `owner/repo#n` (or `owner~repo~n`).
+  A bare number that two of the project's issues share is refused, and
+  you're asked for `owner/repo#n` instead.
 - **Tabs** are the project's iterations (its Iteration field): the current
   one, the ones after it, and the last 3 finished ones, then a last
   **No iteration** tab with the open issues that have none. A project with

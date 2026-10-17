@@ -44,7 +44,9 @@ while leaving it open. Once shown, the panel appears in every azure-vicli
 tab you visit (dashboard, reviewer, work items) until you hide it. The
 conversation is the same in every tab. (`gq` did this before; it's gone -
 a `gq` left in your `setup()` is skipped, with a warning when you had
-changed it.)
+changed it.) `chat.allowed_skills` is gone too: `setup()` stops with an
+error until you remove it, and you allow a skill from `/skills` instead
+(see [What the agent can do](#what-the-agent-can-do)).
 
 | Key (in the panel) | Action |
 |---|---|
@@ -257,17 +259,27 @@ picks goes through `session/set_config_option`.
   (`↳ $ git status  (allowed: only looks)`, `(you denied it)`), and so in
   the run log (`gH`). Reading and searching files never ask -
   they're always allowed, and so is searching or listing through the
-  shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `printf` (not
-  `-v`), `file`, `diff`, `cmp`, `comm`, `git log` / `diff` / `show` /
-  `status` / `blame` / `grep`, `git worktree list` (`--porcelain`, `-v`,
+  shell: `grep`, `egrep`, `fgrep`, `findstr`, `rg`, `find`, `fd` (not
+  `-x` / `-X`), `ls`, `dir`, `tree`, `cat`, `head`, `tail`, `wc`, `sort`
+  (not `-o`), `uniq`, `cut`, `echo`, `printf` (not `-v`), `pwd`, `cd`,
+  `stat`, `which` / `where`, `basename` / `dirname` / `realpath`, `file`,
+  `diff`, `cmp`, `comm`, `nvim --version`, a `sed` or `awk` that only
+  prints (no `-i` or `-f`, no `w` / `e` commands, no `system` or pipes),
+  `git log` / `diff` / `show` / `status` / `blame` / `grep` / `ls-files` /
+  `ls-tree` / `rev-parse` / `describe` / `shortlog` / `cat-file` /
+  `merge-base` / `show-ref`, `git remote [-v]` / `show` / `get-url`,
+  `git worktree list` (`--porcelain`, `-v`,
   `-z`), plain `git fetch [-q] [--prune] [remote [branch…]]` (no
   `--upload-pack` or other options, no `x:y` refspecs), `gh run list` /
   `view` / `watch`, `gh pr view` / `checks` / `diff` / `list` /
   `status`, `gh issue view` / `list` / `status` (not with `--web`),
   `gh api graphql` queries (no mutation, `@file`, `--input` or other
   method),
-  PowerShell's `Get-ChildItem`,
-  `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
+  PowerShell's `Get-ChildItem`, `Get-Item`,
+  `Get-Content`, `Select-String`, `Where-Object`, `Test-Path`,
+  `Resolve-Path`, `Get-Location`, `Select-Object`, `Sort-Object`,
+  `Measure-Object`, `Format-Table` / `Format-List`, `Out-String` and
+  `Out-Null`, and pipes
   of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
   `2>&1`), and `for` / `while read` loops of them (`while read l; do
   grep -n "$l" src; done < file`). **Skills you allow** don't ask
@@ -292,7 +304,8 @@ picks goes through `session/set_config_option`.
   altogether, see `chat.permissions`' groups ([below](#what-the-agent-can-do)).
   azure-vicli's own questions - posting, voting, pushing - still ask. A
   command that could
-  write or run something else - a redirect, `$(...)`, a script block,
+  write or run something else - a redirect, a `$(...)` that writes or runs
+  something (one whose commands only look is allowed), a script block,
   `find -exec`, `rg --pre`, any other program - still asks. While a
   `/plan` message runs, editing, deleting or moving a file is refused
   without asking (a plan changes no code). Once you've approved the plan, changing a file it lists under
@@ -790,10 +803,12 @@ question waits for you · ● 2 plans wait for you`.
 first - Needs you, Working, In progress, Finished - with the most recent
 first in each group (finished ones over 7 days old are hidden until `gF`).
 For each it shows what it's doing (working, with its latest step; waiting
-for an agent; its plan waiting for you; approved; revising; pushed;
-`PR !123 open` once it opened one; finished - `merged` or `PR abandoned` -
-once that PR is closed, which it learns from the
-[watched PRs](#conversations-agents-and-models) check), how long since it
+for an agent; its plan waiting for you; changes asked, not revised yet;
+approved; pushed; `PR !123 open` once it opened one; finished - `merged`
+or `PR abandoned` - once that PR is closed, which it learns from the
+[watched PRs](#conversations-agents-and-models) check; failed or timed
+out; idle). A timed-out agent is always under Needs you; a failed one is
+there only when its plan isn't already approved or pushed. It also shows how long since it
 last did something, and what it has used so far, centred in its window, and the winbar adds it up: its cost when the
 agent reports one (Claude Code does, and an ACP agent can, through ACP's
 `usage_update`), else its premium requests (`agent.premium_requests`:
@@ -938,11 +953,14 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 
 When a tool asks, a popup comes up in the middle of the screen ("The agent
 wants to vote "Approve" on PR #101."), with the diff or text it would send
-in a window above it (`<C-d>` / `<C-u>` scroll it), and two buttons:
-**Allow** and **Deny**. It can come up while you're typing something else,
-so Deny is the one focused, and for the first moment keys don't count -
-the buttons light up once they do; then `y` / `n`, or `<Tab>` and `<CR>`.
-`<Esc>`, `q` or leaving it is Deny. A deny is reported back to the agent,
+in a window above it (`<C-d>` / `<C-u>` and `<C-e>` / `<C-y>` scroll it),
+and two buttons: **Allow** and **Deny**. It can come up while you're typing
+something else, so Deny is the one focused, and for the first moment keys
+don't count - the buttons light up once they do; then `y` / `n`, or
+`<Tab>` (or `h` / `j` / `k` / `l`, or the arrows) and `<CR>`. `o` opens the
+whole request in a window of its own, where `q` comes back and the popup
+keeps asking. `<Esc>` or leaving it is Deny; `q` does nothing here, since
+it may be a stray key. A deny is reported back to the agent,
 which carries on without it. Approving a plan (`gA`) asks the same way:
 Approve, Approve and let it push, or Cancel. `ui.confirm = "select"`
 ([Configuration](configuration.md)) asks through `vim.ui.select` instead,
@@ -1014,7 +1032,9 @@ tasks and pushes can't be undone from here; the list says so.
    the base branch (e.g. `feature/3001-login-throttle` from `develop`),
    linked to the work item like `create_branch`, and a worktree of it under
    `{fix_root}`. An existing branch of that name is used as it is, and
-   asking again for the same work item picks up where it left off. While
+   asking again for the same work item picks up where it left off. When the
+   branch already exists on origin (e.g. `from` = `name`), no branch is
+   made: the change is pushed straight to it, and no PR is offered. While
    planning (before you approve), `start_story` only makes a read-only
    worktree of that branch, detached, with nothing created on the server:
    the agent reads the code it plans for there, and the same directory

@@ -38,7 +38,7 @@ accounts:
 | `repo_path` | top level | Optional. A single clone to use when an account has no `clones_dir`. Prefer `clones_dir`. |
 | `project_name` | account | The Azure DevOps project. |
 | `org_url` | account | Organization or collection URL. Several accounts may share one. |
-| `pat` | account | Personal access token. Required (or `pat_file`) - there is no Azure AD sign-in. |
+| `pat` | account | Personal access token. Required for an Azure DevOps account (or `pat_file`) - there is no Azure AD sign-in. A GitHub account without one uses `gh auth token`. |
 | `pat_file` | account | Instead of `pat`: the path of a file holding nothing but the token (`~` expands). Keeps the secret out of a config you might commit; `chmod 600` it and keep it outside any git checkout - `:AzureCli doctor` flags a file other users can read, and one inside the plugin folder or any git working tree (a dotfiles repo, say). |
 | `hide_ancient` | account | Drop PRs whose latest commit is older than `hide_ancient_days` (default 30 - see [setup() options](#setup-options) below, `setup({hide_ancient_days=...})`). Off when absent. |
 | `clones_dir` | account | Directory holding one clone per repository, named after the repo. Repos are cloned here on demand when you open a PR. |

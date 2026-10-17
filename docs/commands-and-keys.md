@@ -33,8 +33,8 @@ directly, in the current window, the same way it always has (see
 
 Two keys work on every screen: `?` lists that screen's keys, grouped by what
 they're for, with `↑` before the ones that change something on Azure DevOps
-(a vote, a comment, a link, a work item's state - a comment in batch mode
-only once `gS` sends it); and `g.` (the
+(GitHub on the Issues tab): a vote, a comment, a link, a work item's state -
+a comment in batch mode only once `gS` sends it; and `g.` (the
 `palette` action) lists every action bound there by what it does, through
 `vim.ui.select` - so with Telescope's, fzf-lua's or another picker standing
 in for it, you can type "approve" or "unlink" instead of remembering the key.
@@ -62,7 +62,8 @@ Neovim, a `'tabline'` of your own lists them - azure-vicli's
 The same goes for work items (inside Work items), issues (inside Issues)
 and plans (inside Agents): `<CR>` on an Agents row whose plan is already
 open goes back to it as you left it - the older revision you were reading,
-the Changes file you were on - and `dd` on that row closes its tab. Plans
+the Changes file you were on - and `dd` on that row discards its plan,
+after asking (see [Several agents at once](chat.md#several-agents-at-once)). Plans
 and changes only open when you open them: an agent finishing one never
 opens it for you. One opened from elsewhere (`gW` in a review, a plan
 opened from its change viewer) goes back there when you close it.
