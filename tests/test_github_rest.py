@@ -266,6 +266,15 @@ class ThreadTests(Base):
         self.assertEqual(file_["threadContext"], {"filePath": "/c.py"})
         self.assertTrue(conv["conversation"])
 
+    def test_the_proxy_routes_real_shape_marks_resolved_threads(self):
+        # As Claude Code's proxy answers it (seen live on #138).
+        c = RestClient(self.routes([{"resolved": True, "outdated": False, "path": "a.py", "line": 5,
+                                     "comment_ids": [1, 2]},
+                                    {"resolved": False, "outdated": True, "path": "b.py", "line": 9,
+                                     "comment_ids": [3]}]))
+        self.assertEqual([t["status"] for t in gh.fetch_threads(c, "o", "r", 7)],
+                         ["fixed", "active", "active", "active"])
+
     def test_without_the_proxy_route_every_thread_reads_unresolved(self):
         c = RestClient(self.routes(http_error(404)))
         self.assertEqual({t["status"] for t in gh.fetch_threads(c, "o", "r", 7)}, {"active"})

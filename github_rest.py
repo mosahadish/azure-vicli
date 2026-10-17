@@ -412,7 +412,7 @@ def _ccr_threads(client, owner, name, number):
         resolved = next((t[k] for k in ("isResolved", "is_resolved", "resolved") if k in t), None)
         if resolved is None and isinstance(t.get("state"), str):
             resolved = t["state"].lower() == "resolved"
-        comments = t.get("comments")
+        comments = t.get("comments") or t.get("comment_ids")  # Claude Code's: {resolved, comment_ids, ...}
         if isinstance(comments, dict):
             comments = comments.get("nodes")
         ids = []
