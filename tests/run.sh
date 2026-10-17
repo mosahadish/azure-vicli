@@ -6,8 +6,8 @@
 # a build step first.
 #
 # What it checks, in order:
-#   0. Every tests/*.lua loads tests/sandbox.lua first (its own XDG dirs
-#      and a clean environment however it's started); step 4 and the
+#   0. Every tests/*.lua loads tests/sandbox.lua first (its own XDG dirs,
+#      an empty HOME and a clean environment however it's started); step 4 and the
 #      smokes also start some straight from a polluted environment and
 #      check nothing reached the sentinel "real" dirs.
 #   1. luajit -bl syntax check on every Lua UI file, plus (when nvim is on
@@ -367,14 +367,14 @@ run_lua_test test-review-images.lua "$REPO_ROOT" "$IMAGES_LUA" "$REPO_ROOT/tests
 # would; test-sandbox.lua checks that file doesn't reach the sandbox.
 REAL="$TMP/real"
 OUTER_LOG="$TMP/outer-nvim.log"
-mkdir -p "$REAL/data" "$REAL/state" "$REAL/cache" "$REAL/config" "$TMP/bogus-runtime"
+mkdir -p "$REAL/data" "$REAL/state" "$REAL/cache" "$REAL/config" "$REAL/home" "$TMP/bogus-runtime"
 sentinel() {
   local name="$1"
   shift
   local out rc left
   out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX \
     XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" \
-    VIM="$TMP/bogus-runtime" VIMRUNTIME="$TMP/bogus-runtime" NVIM="$TMP/bogus-nvim.sock" MYVIMRC="$REAL/config/nvim/init.lua" \
+    HOME="$REAL/home" VIM="$TMP/bogus-runtime" VIMRUNTIME="$TMP/bogus-runtime" NVIM="$TMP/bogus-nvim.sock" MYVIMRC="$REAL/config/nvim/init.lua" \
     NVIM_LOG_FILE="$OUTER_LOG" \
     AZVICLI_CHAT_AGENT=leak AZVICLI_CHAT_BRIDGE=leak AZVICLI_CHAT_TOKEN=leak \
     timeout 120 "$@" 2>&1)"
@@ -707,7 +707,7 @@ if command -v nvim >/dev/null 2>&1; then
   # A script loaded into an already-running nvim can't start again in a
   # sandbox of its own, so outside one it refuses (and touches nothing).
   out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" \
-    XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" NVIM_LOG_FILE="$OUTER_LOG" \
+    XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" HOME="$REAL/home" NVIM_LOG_FILE="$OUTER_LOG" \
     timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-boards.lua" -c 'qa!' 2>&1)"
   rc=$?
   left="$(find "$REAL" -mindepth 2 2>/dev/null)"
@@ -726,8 +726,9 @@ $out"
     ws="$TMP/boards-$expect"
     python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
     printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
+    mkdir -p "$ws/home"
     out="$(BOARDS_EXPECT=$expect AZVICLI_FAKE_WS="$ws" AZVICLI_TEST_SANDBOX="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
-      AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" \
+      AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" HOME="$ws/home" \
       XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
       AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \
       timeout 120 nvim --headless -u "$ws/init.lua" \
@@ -744,8 +745,9 @@ $out"
   ws="$TMP/poll-surfaces"
   python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
   printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
+  mkdir -p "$ws/home"
   out="$(POLL_SURFACES=1 AZVICLI_FAKE_WS="$ws" AZVICLI_TEST_SANDBOX="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
-    AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" \
+    AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" HOME="$ws/home" \
     XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
     AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \
     timeout 120 nvim --headless -u "$ws/init.lua" \

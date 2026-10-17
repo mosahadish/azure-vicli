@@ -22,6 +22,8 @@ for _, v in ipairs({ "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_C
   check(v .. " is in the sandbox", under(os.getenv(v), root), os.getenv(v))
   if real then check(v .. " is not the real one", not under(os.getenv(v) .. "/", real), os.getenv(v)) end
 end
+check("HOME is in the sandbox", under(os.getenv("HOME"), root), os.getenv("HOME"))
+if real then check("HOME is not the real one", not under(os.getenv("HOME") .. "/", real), os.getenv("HOME")) end
 
 local env = {}
 local p = io.popen("env")

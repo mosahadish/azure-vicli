@@ -222,7 +222,11 @@ Neovim's/the platform's cache directory (see `AZVICLI_PREFETCH_DIR` in [Environm
 not inside the repo.
 
 Every `tests/*.lua` test (the `gen-keys-table.lua` generator aside) loads
-`tests/sandbox.lua` first, and `run.sh` checks it does. `run.sh` itself
+`tests/sandbox.lua` first, and `run.sh` checks it does. The sandbox runs
+each test with its own XDG directories and an empty `HOME` in a temp dir,
+so a test never reads your `~/.claude/skills`, `~/.gitconfig` or the like
+(the scripts loaded into a harness's nvim get theirs from `run.sh` and
+`demo.sh --headless`). `run.sh` itself
 clears every `AZVICLI_*` variable plus `VIM`, `VIMRUNTIME`, `NVIM`,
 `MYVIMRC` and `NVIM_LOG_FILE`, and sets its own `XDG_DATA_HOME`,
 `XDG_CACHE_HOME`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` under a temp dir.
@@ -271,7 +275,7 @@ Neovim itself (marked "Runs in headless nvim" below) and eight smokes:
 | `test-perf.lua` | `perf.lua`'s pure helpers behind `:AzureCli perf`: which screen a request belongs to, folding ids out of a path, and the summary and its lines |
 | `test-web.lua` | `web.lua`'s pure helpers: the phone dashboard's page JSON built from the Agents screen's rows (keeping only what the page may show) and its URL |
 | `test-shell.lua` | `shell.lua`'s `open_url` without `vim.ui.open` (Neovim 0.9): it starts `xdg-open` / `open` itself, detached |
-| `test-sandbox.lua` | `tests/sandbox.lua`'s own probe, started straight from a polluted environment (XDG dirs at a sentinel directory, a bogus `VIMRUNTIME`, `AZVICLI_CHAT_*` set) under both `luajit` and headless nvim: it ends up in a fresh sandbox, and `run.sh` checks the sentinel directory stayed empty |
+| `test-sandbox.lua` | `tests/sandbox.lua`'s own probe, started straight from a polluted environment (XDG dirs and `HOME` at a sentinel directory, a bogus `VIMRUNTIME`, `AZVICLI_CHAT_*` set) under both `luajit` and headless nvim: it ends up in a fresh sandbox with its own `HOME`, and `run.sh` checks the sentinel directory stayed empty |
 | `test-merge.lua` | `merge.lua`'s pure helpers: `build_label` for every build state (queued included), `warnings` (a green build/no conflict/zero threads is clean, an unknown thread count is not a warning, singular/plural threads), and `lines` for a full spec and a bare one (toggle states, merge-type cycling, the `?` placeholders, the warning line only when there is one) |
 | `test-hosts.lua` | `hosts.lua`: the host falls back to Azure, record overrides layer without touching the host's table, the key and ref, vote lookup and glyphs, which statuses are open, and mention tokens |
 | `test-prs.lua` | `prs.lua`'s pure PR-record helpers: `surname` parsing, applying/undoing my vote (key, ratio, summary, adding me when absent), `iso_epoch` of the provider's UTC stamps (a summer and a winter stamp pinned so the local-offset correction is checked, unparseable/`nil` as 0, ordering), and `drop_completed`/`mark_completed` (a PR completed this session hidden while ADO still lists it, forgotten once gone, back after the grace period, undo unmarking) |
@@ -415,7 +419,9 @@ subcommand (`--list`, `--threads`, `--post`, `--vote`, `--wi-list`, ...,
 - **Isolated.** `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` point
   into the workspace, so your real `azure-cli.yml`, viewed marks and
   prefetch cache are never read or written; `AZVICLI_TOASTS=0` keeps
-  desktop notifications quiet.
+  desktop notifications quiet. `--headless` also gets an empty `HOME` in
+  the workspace; the interactive modes keep yours, so a real agent opened
+  from the demo's chat keeps its login.
 
 Fixtures: repo `widgets` with PRs #101 (Actionable, an inline thread
 that @-mentions you, a resolved one and a general one), #102 (yours),

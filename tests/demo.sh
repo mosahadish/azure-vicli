@@ -106,7 +106,11 @@ case "$MODE" in
     run="$run; if not ok then print('DEMO-SMOKE-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')"
     limit=()
     if command -v timeout >/dev/null 2>&1; then limit=(timeout 300); fi
-    out="$("${limit[@]}" nvim --headless -u "$WS/init.lua" -c "$run" 2>&1)"
+    # An empty HOME too, so the smoke never sees your ~/.claude/skills or
+    # ~/.gitconfig. Only here: the interactive modes keep the real one, so
+    # a real agent opened from the demo's chat keeps its login.
+    mkdir -p "$WS/home"
+    out="$(HOME="$WS/home" "${limit[@]}" nvim --headless -u "$WS/init.lua" -c "$run" 2>&1)"
     rc=$?
     if [ "$rc" -eq 124 ]; then out="$out"$'\n'"DEMO-SMOKE-FAIL: timed out after 300s"; fi
     printf '%s\n' "$out"
