@@ -37,7 +37,7 @@ local function reviewer_pr(win)
 end
 
 -- The snapshot for `win` (default: the current window). `sel` ({ buf,
--- from, to, text }, from gq in visual mode) is handed to the describer,
+-- from, to, text }, from <CR> in visual mode) is handed to the describer,
 -- which can say where it is (the reviewer maps it to file lines); the text
 -- is added when the describer didn't.
 function M.snapshot(win, sel)

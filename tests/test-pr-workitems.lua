@@ -1,6 +1,7 @@
 -- test-pr-workitems.lua: lua/azure-cli/pr_workitems.lua's pure helpers
 -- (a PR row's linked-work-item badge and gW's picker lines).
 -- Usage: luajit test-pr-workitems.lua <pr_workitems.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-pr-workitems.lua <pr_workitems.lua path>")
 local PW = dofile(path)

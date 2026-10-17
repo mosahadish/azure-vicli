@@ -6,7 +6,8 @@ _Part of the [azure-vicli](../README.md) docs._
 
 PRs are grouped into sections: Actionable, Waiting for author, Signed off,
 Drafts, and Created by me. Within a section the most recently updated PR is
-first. The list refreshes every minute.
+first. The list refreshes every `timing.poll_seconds` (30 s), slower while
+Neovim is idle or unfocused.
 
 ![The pull request dashboard](images/dashboard.png)
 
@@ -33,6 +34,12 @@ lists every key: `Pull requests · N actionable · M mentions   [filter: x]
 they're non-zero/active (a filtered, non-syncing dashboard with nothing in
 Actionable just shows `Pull requests   ?: help`).
 
+`<CR>` on a PR opens it as an inner tab of this one, not a tab of its own:
+with reviews open, the winbar starts with a strip of them -
+`Pull requests │ !101 Fix auth │ [!102 Cache] ┃` - and `]r` / `[r` or
+`g2`..`g9` go to one (`g1` is back here). `<CR>` on a PR that's already
+open goes to its inner tab. See [Inner tabs](commands-and-keys.md#keys).
+
 The table's columns scale with the window instead of the fixed widths an
 older version hard-coded: title and reviewer summary grow to fill a wide
 terminal, id/badges/vote/thread-count stay fixed, and on a narrow one the
@@ -46,6 +53,7 @@ solves the widths; see its own header comment for the exact rules).
 | Key | Action |
 |---|---|
 | `j` / `k` | Move |
+| `gg` / `G` | First / last PR |
 | `<CR>` | Open the PR in the reviewer, cloning its repo first if needed |
 | `gd` | Show the description, build status and branch policies |
 | `gy` | Copy the PR link |
@@ -54,7 +62,7 @@ solves the widths; see its own header comment for the exact rules).
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
-| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't) |
+| `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't). On a GitHub PR: re-runs the failed jobs of its failed GitHub Actions runs |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |
 | `zR` | Expand every section |
 | `zM` | Collapse every section |
@@ -63,9 +71,13 @@ solves the widths; see its own header comment for the exact rules).
 | `r` | Refresh |
 | `gW` | Pop up the work items linked to the PR - state, type, title and assignee - where `<CR>` opens one in the work-item detail view, `gs` changes its state, `gl` links another and `gL` unlinks the one under the cursor. A row shows its first linked item next to the title, e.g. `#3001` or `#3001 +1`, once they've been read in the background |
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
-| `gq` | Show/hide the [chat panel](chat.md); the agent knows which PR is under the cursor |
+| `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which PR is under the cursor. `<CR>` on a visual selection sends it along |
 | `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
+| `gP` | Start an agent that plans the fix of the PR's open comments (on selected rows: one per PR) - see [Several agents at once](chat.md#several-agents-at-once) |
+| `[r` / `]r`, `g1`-`g9` | Previous / next inner tab, or the n-th (`g1` is this list) - see above |
 | `W` | Switch to the work-items dashboard |
+| `I` | Switch to the [Issues tab](work-items.md#issues-github) - only when a GitHub account has `issues:` |
+| `A` | Switch to the [Agents screen](chat.md#several-agents-at-once) |
 | `q` | Quit |
 
 Press `?` for a popup with these keys plus the badge legend below.
@@ -122,6 +134,41 @@ work items are completed and the source branch deleted (both on by
 default), whether to set auto-complete instead of completing now, and the
 build state, unresolved thread count and votes, with a warning when any of
 them argue against merging.
+
+### GitHub pull requests
+
+With a GitHub account (see [GitHub accounts](configuration.md#github-accounts))
+its PRs join the same list, in the same sections, beside the Azure DevOps
+ones - every account is fetched at once, and one that fails is named in a
+"Some accounts failed" warning while the rest still show. What differs:
+
+- **Which PRs.** The open PRs you're asked to review, have reviewed or
+  opened (in unarchived repositories), only under the account's `owner:`
+  when it has one. A PR you're asked to review or have reviewed is skipped
+  when its branch is gone (a fork's branch aside); the PRs you opened stay
+  listed.
+- **Names.** A PR is `repo#12` rather than `!101`.
+- **Votes are reviews.** An approving review counts as an approval and
+  "changes requested" as Azure's wait-for-author (`✗` in the reviewer
+  column), so they sort into the same sections. Asking someone to
+  review again clears their old verdict. `gv` offers GitHub's verdicts
+  (see [Reviewer: On GitHub](reviewer.md#on-github)).
+- **Checks are the build.** The build column is the latest commit's checks:
+  `✓` passed, `✗` failed, `●` pending - never `↻` or a queue position.
+  `gb` opens the PR's Checks page; `gr` re-runs the failed jobs of the
+  head commit's failed GitHub Actions runs (other checks can't be
+  re-queued from here).
+- **`gd`** has no Policies section (GitHub's branch protection shows in
+  `gm` instead).
+- **`gm`** opens GitHub's merge dialog: the repository's own merge types,
+  the checks, and what blocks the merge - see
+  [Reviewer: On GitHub](reviewer.md#on-github).
+- **Mentions** are `@login`; one in the PR's Conversation tab doesn't put
+  it under Mentions.
+- **Issues, not work items.** `gW`, `gl` and `gL` work on the issues the PR
+  closes, through `Closes #n` lines in its description (see
+  [Linking](work-items.md#issues-github)). The issues live on the Issues
+  tab (`I`), which appears only when a GitHub account has `issues:`.
 
 ### Desktop notifications
 

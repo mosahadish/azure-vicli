@@ -2,6 +2,7 @@
 -- helpers (gs's popup: how a child's state is mapped, the rendered lines,
 -- and the "also set children" toggles).
 -- Usage: luajit test-state-dialog.lua <state_dialog.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-state-dialog.lua <state_dialog.lua path>")
 local SD = dofile(path)
@@ -60,7 +61,7 @@ local function kids()
 end
 local st = { states = { { label = "Closed" }, { label = "Resolved" } }, si = 1, ropts = nil, ri = 1, all = false }
 local lines, rows = SD.lines(spec, st)
-check("lines: header", lines[1] == "Set #3001  User Story \u{00B7} Active", lines[1])
+check("lines: header names the state it has now", lines[1] == "#3001  User Story \u{00B7} now Active", lines[1])
 check("lines: title", lines[2] == "  Throttle repeated login failures", lines[2])
 check("lines: state row", lines[4] == "State:   \u{2039} Closed \u{203A}   (1/2)" and rows[4].kind == "state", lines[4])
 check("lines: reason loading", lines[5] == "Reason:  loading\u{2026}" and rows[5].kind == "reason", lines[5])
@@ -101,6 +102,17 @@ lines = SD.lines(spec, st)
 check("lines: pending child", lines[10] == "    [ ] #3013 Task  Done \u{2026}  Design", lines[10])
 
 check("toggle_all: no children", SD.toggle_all({ kids = {} }) == false)
+
+-- start_index: the State: line opens on the current state when it's listed.
+local gh = { { label = "Todo" }, { label = "In Progress" }, { label = "Done" }, { label = "Closed" } }
+check("start_index: on the current state", SD.start_index(gh, "In Progress") == 2)
+check("start_index: No Status opens on the first", SD.start_index(gh, "No Status") == 1)
+check("start_index: Azure's transitions leave the current state out",
+  SD.start_index({ { label = "Closed" }, { label = "Resolved" } }, "Active") == 1)
+check("start_index: nothing listed yet", SD.start_index({}, "Todo") == 1)
+lines = SD.lines({ id = "67", type = "Issue", state = "No Status" }, { states = gh, si = SD.start_index(gh, "No Status"), ri = 1 })
+check("lines: No Status header with Todo to set", lines[1] == "#67  Issue \u{00B7} now No Status"
+  and lines[3] == "State:   \u{2039} Todo \u{203A}   (1/4)", lines[1] .. " | " .. lines[3])
 
 -- tree_order: parents before their children, depth set, strays dropped.
 local ordered = SD.tree_order("1", {

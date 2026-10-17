@@ -9,14 +9,17 @@ Installed as a plugin, everything goes through one user command:
 | Command | Effect |
 |---|---|
 | `:AzureCli` / `:AzureCli dashboard` | Open the [pull request dashboard](dashboard.md#pull-request-dashboard), in a new tab. |
-| `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, in a new tab - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
+| `:AzureCli review <id>` | Open the [reviewer](reviewer.md#reviewer) for pull request `<id>` directly, as an inner tab of Pull requests (see Inner tabs below) - looked up in the dashboard's own cached list, so open the dashboard at least once first this session. |
 | `:AzureCli workitems` | Open the [work-items dashboard](work-items.md#work-items), in a new tab. |
-| `:AzureCli chat` | Show or hide the [chat panel](chat.md) - the same as `gq` on any azure-vicli screen. |
+| `:AzureCli issues` | Open the [issues dashboard](work-items.md#issues-github), in a new tab: a GitHub account's `issues:` project. With no such account it says so instead. |
+| `:AzureCli chat` | Show or hide the [chat panel](chat.md) - `i` on any azure-vicli screen goes to its input box. |
 | `:AzureCli agents` | Every plan's agent - what each is doing ([Chat](chat.md#several-agents-at-once)) |
-| `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization, and the work-items block - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
+| `:AzureCli doctor` | Check the setup and show the result in a float: Neovim version, python, git, the config file, its fields, a sign-in to every configured organization and GitHub account, the work-items block and a GitHub account's `issues:` project - each line says what to fix. `:checkhealth azure-cli` runs the same checks through Neovim's health UI, and `./azure-cli --doctor` from a terminal. |
 | `:AzureCli toasts` | Toggle [desktop notifications](dashboard.md#desktop-notifications) for the rest of this session - the same switch the dashboard's own `gN` key flips. |
 | `:AzureCli status` | Show the [provider daemon's](development.md#architecture) status, plus the resolved python interpreter, config file path and where the options come from (`azure-cli.lua`, or your `setup()`; see [setup() options](configuration.md#setup-options)). |
 | `:AzureCli log` | Open this session's error log (`lua/azure-cli/log.lua`) in a scratch split - every provider failure's full text, oldest first; `q` closes it. See [Troubleshooting](troubleshooting.md#troubleshooting). |
+| `:AzureCli perf` | Summarise the perf log `AZVICLI_DEBUG=1` writes (`lua/azure-cli/perf.lua`): requests and wall ms per poll tick for the PR dashboard, a PR review and the work-items / issues board, the slowest requests, and requests per endpoint. `r` reads the log again, `q` closes it. See [Troubleshooting](troubleshooting.md#troubleshooting). |
+| `:AzureCli web start` / `stop` / `status` / `rotate` | The [phone dashboard](chat.md#phone-dashboard): a read-only web page of the Agents screen, served from this machine. Off until `dashboard_web.enabled` is set; `start` shows its URL, token included, in a float, and so does `status` while it runs (stopped, `status` says whether a token is stored). The token is kept across restarts (`dashboard_web.persist_token`). While it runs, `rotate` makes a new one (the old link gets 401 at once) and shows the new URL; while it's stopped, `rotate` deletes the stored token, so the next `start` makes a new URL. `web` alone is `status`. |
 | `:AzureCli options` | Every `setup()` option at its default, generated from the code so it can't drift. In the standalone launcher: creates `azure-cli.lua` next to `azure-cli.yml` with them (the file it loads), or opens it if it already exists. In your own Neovim, where that file isn't read: shows the same list in a scratch buffer to copy into your `setup()` call, writing nothing. `gO`'s "Options" does the same. |
 | `:AzureCli help` | List these. |
 
@@ -30,20 +33,48 @@ directly, in the current window, the same way it always has (see
 
 Two keys work on every screen: `?` lists that screen's keys, grouped by what
 they're for, with `↑` before the ones that change something on Azure DevOps
-(a vote, a comment, a link, a work item's state - a comment in batch mode
-only once `gS` sends it); and `g.` (the
+(GitHub on the Issues tab): a vote, a comment, a link, a work item's state -
+a comment in batch mode only once `gS` sends it; and `g.` (the
 `palette` action) lists every action bound there by what it does, through
 `vim.ui.select` - so with Telescope's, fzf-lua's or another picker standing
 in for it, you can type "approve" or "unlink" instead of remembering the key.
 The action you pick runs where you were, cursor and all. Actions that only
 work on a visual selection aren't listed.
 
-**The three home screens** - Pull requests, Work items and Agents - each
-have a tab of their own: `P` goes to the pull requests, `W` to the work
-items, `A` to the Agents screen, from any of them (or click the tab). The
-standalone launcher opens all three at startup and keeps them the first
-three tabs, in that order; a PR or a plan you open goes after them, and
-closing it takes you back to the tab you opened it from.
+**The home screens** - Pull requests, Work items, Agents, and Issues
+when a GitHub account has `issues:` - each have a tab of their own: `P`
+goes to the pull requests, `W` to the work items, `A` to the Agents
+screen, `I` to the issues, from any of them (or click the tab). The
+standalone launcher opens them all at startup and keeps them the first
+tabs; what you open from them stays inside them, as inner tabs (below).
+
+**Inner tabs.** A pull request you open stays inside the Pull requests tab,
+as an inner tab: the tab line keeps one entry for Pull requests, and the
+winbar shows a strip - `Pull requests │ !101 Fix auth │ [!102 Cache]` - the
+list first, then each open review, the one you're on in brackets. `]r` /
+`[r` go to the next / previous one, `g1`..`g9` to the n-th (`g1` the list),
+and `q` in a review closes it and goes to the one before it (the list when
+there's none). Opening a PR that's already open goes to its inner tab. Each
+keeps its own cursor, file list and diff while you're in another. (Each is
+still a Neovim tab underneath, so `gt` / `gT` visit them too; in your own
+Neovim, a `'tabline'` of your own lists them - azure-vicli's
+`ui.tabline()`, see [Configuration](configuration.md), doesn't.)
+The same goes for work items (inside Work items), issues (inside Issues)
+and plans (inside Agents): `<CR>` on an Agents row whose plan is already
+open goes back to it as you left it - the older revision you were reading,
+the Changes file you were on - and `dd` on that row discards its plan,
+after asking (see [Several agents at once](chat.md#several-agents-at-once)). Plans
+and changes only open when you open them: an agent finishing one never
+opens it for you. One opened from elsewhere (`gW` in a review, a plan
+opened from its change viewer) goes back there when you close it.
+
+The strip shares the winbar with what the window shows there itself (a
+file's name and counts, `?: help`): it gets what that leaves, at most 60%
+of the window, and gives way step by step - shorter titles, then only the
+ids, then a `+N` count, then only the current entry, then nothing. It shows
+in one window per tab, the widest one that isn't the chat panel. `g.`'s
+"Inner tabs" lists them in a picker, and `]r` / `[r` with only one open
+say so.
 
 Press `g` and pause, and a small float in the bottom-right corner lists the
 screen's `g` keys and what each does (with the `↑` marks); the next key
@@ -57,7 +88,7 @@ turns it on or off regardless.
 
 Every key in every table in these docs is a *default* - `setup()`'s `keys`
 option remaps or unbinds any of them, per **surface** (`dashboard`, `list`,
-`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat`, `plan`, `agents` - roughly, one per
+`diff`, `overview`, `nav`, `workitems`, `workitem_view`, `chat`, `plan`, `agents`, `tabs` - roughly, one per
 screen this tool shows) and **action** (a stable name for what the key
 does, independent of which key it's bound to):
 
@@ -98,7 +129,8 @@ paste the output here after changing a default.
 | `agent_chat` | `ga` |
 | `agents` | `A` |
 | `browser` | `o` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `collapse_all` | `zM` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -108,6 +140,7 @@ paste the output here after changing a default.
 | `filter` | `/` |
 | `first_pr` | `gg` |
 | `help` | `?` |
+| `issues` | `I` |
 | `last_pr` | `G` |
 | `link_workitem` | `gl` |
 | `open` | `<CR>` |
@@ -133,7 +166,8 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment_file` | `C` |
 | `commits` | `gc` |
 | `complete` | `gm` |
@@ -174,7 +208,8 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment` | `c` |
 | `comment_file` | `C` |
 | `comment_range` | `c` |
@@ -213,6 +248,7 @@ paste the output here after changing a default.
 | `search` | `g/` |
 | `since` | `gi` |
 | `status` | `s` |
+| `toggle_fold` | `za` / `<Space>` |
 | `toggle_viewed` | `m` |
 | `unlink_workitem` | `gL` |
 | `view_comments` | `K` |
@@ -227,7 +263,8 @@ paste the output here after changing a default.
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
 | `batch_toggle` | `gB` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment` | `c` |
 | `complete` | `gm` |
 | `config` | `gO` |
@@ -240,6 +277,7 @@ paste the output here after changing a default.
 | `link_workitem` | `gl` |
 | `next_comment` | `]C` |
 | `open_commit` | `<CR>` |
+| `open_image` | `<CR>` / `gx` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
@@ -260,7 +298,8 @@ paste the output here after changing a default.
 |---|---|
 | `back` | `<BS>` |
 | `back_to_diff` | `q` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `config` | `gO` |
 | `find_references` | `gr` |
 | `goto_definition` | `gd` |
@@ -277,7 +316,8 @@ paste the output here after changing a default.
 | `agents` | `A` |
 | `assign` | `ga` |
 | `browser` | `o` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `click` | `<LeftMouse>` |
 | `collapse_all` | `zM` |
 | `config` | `gO` |
@@ -285,25 +325,30 @@ paste the output here after changing a default.
 | `edit_title` | `ge` |
 | `expand_all` | `zR` |
 | `filter` | `/` |
+| `first_row` | `gg` |
 | `goto_sprint_n` | `gt` |
 | `help` | `?` |
+| `issues` | `I` |
+| `last_row` | `G` |
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
 | `new` | `n` |
-| `next_sprint` | `]` / `<Tab>` |
+| `next_sprint` | `<Tab>` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `pr_list` | `P` |
-| `prev_sprint` | `[` / `<S-Tab>` |
+| `prev_sprint` | `<S-Tab>` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `set_parent` | `gU` |
 | `state` | `gs` |
 | `toggle_fold` | `za` / `<Space>` |
 | `tree` | `T` |
 | `unlink_pr` | `gL` |
+| `workitems` | `W` |
 
 #### workitem_view
 
@@ -312,9 +357,11 @@ paste the output here after changing a default.
 | `assign` | `ga` |
 | `back` | `<BS>` |
 | `browser` | `o` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `comment` | `gc` |
 | `copy_link` | `gy` |
+| `description` | `gE` |
 | `edit_title` | `ge` |
 | `help` | `?` |
 | `link_pr` | `gl` |
@@ -325,6 +372,7 @@ paste the output here after changing a default.
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `set_parent` | `gU` |
 | `state` | `gs` |
 | `unlink_pr` | `gL` |
 
@@ -345,16 +393,18 @@ paste the output here after changing a default.
 | `history` | `gh` |
 | `model` | `gm` |
 | `new_chat` | `gn` |
+| `newline` | `<S-CR>` / `<C-j>` |
 | `next_message` | `<Down>` |
 | `open_ref` | `<CR>` |
 | `palette` | `g.` |
 | `prev_message` | `<Up>` |
 | `prompts` | `gp` |
+| `queue_drop` | `dd` |
+| `queue_edit` | `cc` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `send` | `<CR>` |
-| `send_insert` | `<C-s>` |
-| `toggle` | `gq` |
+| `send_insert` | `<CR>` / `<C-s>` |
 | `use_as_reply` | `gr` |
 | `why` | `ga` |
 
@@ -366,8 +416,11 @@ paste the output here after changing a default.
 | `approve` | `gA` |
 | `ask` | `ga` |
 | `back` | `<BS>` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `chat_selection` | `<CR>` |
 | `delete_thread` | `dd` |
+| `discard` | `gD` |
+| `edit_request` | `cc` |
 | `expand_thread` | `<Tab>` |
 | `goto_code` | `gd` |
 | `help` | `?` |
@@ -382,6 +435,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `revise` | `gR` |
+| `revisions` | `gh` |
 | `run_log` | `gH` |
 | `since` | `gi` |
 | `view_thread` | `K` |
@@ -393,8 +447,12 @@ paste the output here after changing a default.
 | `approve` | `gA` |
 | `cancel` | `<C-c>` |
 | `changes` | `gd` |
-| `chat` | `gq` |
+| `chat_input` | `i` |
+| `discard` | `dd` |
+| `first_row` | `gg` |
 | `help` | `?` |
+| `issues` | `I` |
+| `last_row` | `G` |
 | `open` | `<CR>` |
 | `palette` | `g.` |
 | `pr_list` | `P` |
@@ -403,4 +461,13 @@ paste the output here after changing a default.
 | `run_log` | `gH` |
 | `show_finished` | `gF` |
 | `workitems` | `W` |
+
+#### tabs
+
+| Action | Default key(s) |
+|---|---|
+| `next` | `]r` |
+| `pick` | `g1` / `g2` / `g3` / `g4` / `g5` / `g6` / `g7` / `g8` / `g9` |
+| `prev` | `[r` |
+
 <!-- END GENERATED KEYS TABLE -->

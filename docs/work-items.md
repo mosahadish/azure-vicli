@@ -7,7 +7,10 @@ _Part of the [azure-vicli](../README.md) docs._
 Press `W` in the PR dashboard. The work-items dashboard shows the user stories
 and bugs assigned to you in the current sprint, with tabs for the other
 sprints of the quarter (or, with `work_items.sprint_scope: all`, every sprint
-the team has - see below). Its winbar is `Work items · Sprint 42 (Sep 1–14) ·
+the team has - see below). The last tab, **No sprint**, lists your open
+items whose iteration is the team's backlog iteration (from the team's
+settings) or the project root, which no sprint's tab shows; `gi` to it, or
+`n` on it, files an item there. Its winbar is `Work items · Sprint 42 (Sep 1–14) ·
 N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 
 ![The work-items dashboard: sprint tabs, items grouped by type](images/workitems.png)
@@ -23,15 +26,25 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gp` | Set the item's priority (1-4) |
 | `ge` | Edit the item's title |
 | `gi` | Move the item to another sprint of the quarter |
+| `gU` | Move the item under another parent, or off its own (see below) |
 | `gl` | Link a pull request to the item under the cursor |
+| `gL` | Unlink a pull request from the item under the cursor (a popup of its linked PRs) |
+| `gy` | Copy the item's link |
+| `o` | Open the item in the browser |
+| `/` | Filter by id, title, state or assignee |
 | `T` | Tree view: everything under each item indented beneath it (remembered) |
 | `za` or `<Space>` / `zR` / `zM` | Tree: fold/unfold an item's children / unfold all / fold all |
 | `gR` | Open a pull request linked to the item (a picker when there are several) |
-| `[` / `]` | Previous / next sprint (also `<S-Tab>` / `<Tab>`) |
+| `<S-Tab>` / `<Tab>` | Previous / next sprint |
+| `[r` / `]r`, `g1`-`g9` | Previous / next inner tab, or the n-th (`g1` is this list) - see below |
 | `{n}gt` | Jump to sprint n |
+| `gg` / `G` | First / last row (with a count, that row) |
 | `r` | Refresh |
 | `P` | Back to the PR dashboard |
-| `gq` | Show/hide the [chat panel](chat.md); the agent knows which work item is under the cursor ("create a branch from develop for this work item") |
+| `I` | The [Issues tab](#issues-github) - only when a GitHub account has `issues:` |
+| `A` | The [Agents screen](chat.md#several-agents-at-once) |
+| `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which work item is under the cursor ("create a branch from develop for this work item") |
+| `gP` | Start an agent that plans the item under the cursor (in visual mode: one per selected row) - see [Several agents at once](chat.md#several-agents-at-once) |
 | `q` | Quit |
 
 Press `?` for a popup with these keys. `ga`, `gp`, `ge` and `gi` apply to the
@@ -39,6 +52,38 @@ row immediately and are reverted with an error if the call fails, the same
 optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
 sprint's list instead.
+
+Work items you open stay inside the Work items tab (GitHub issues inside
+Issues) as inner tabs: the tab line shows the one tab, and its winbar a
+strip like `Work items │ #3001 Throttle … │ [#3002 …]`. `]r` / `[r` and
+`g1`-`g9` move between them, each keeping its cursor; opening an item
+that's already open goes to it. `q` / `<BS>` in an item goes to the one
+before it, or the list - or back to where you opened it from, when that
+was outside its tab (`gW` in a review, the chat).
+
+### Changing the parent (`gU`)
+
+`gU` on a row, or in the item view, opens a picker of who could be the
+item's parent: the project's open items on a higher backlog level than its
+type (a Task gets the stories, bugs, features and epics; a Feature the
+epics), read from the team's process configuration - the 200 changed last.
+A server that won't say what its levels are (an old TFS) gets the open items
+of any other type, and the picker's title says so. Then "(type an id…)" for
+an item that isn't listed, and "(no parent)" to take it off its parent. The
+current parent is marked "(current)".
+
+The move is one update on Azure DevOps: the old parent link is removed and
+the new one added together, so the item is never under two parents, or left
+with none by accident. If someone changed the item in between, nothing is
+changed and you're asked to try again. Afterwards the tree regroups, and the
+item view and both parents' views refresh. When it fails, the message says
+the parent wasn't changed and what it still is.
+
+On GitHub the issue becomes a sub-issue of the one you pick (GitHub moves it
+off its old parent in the same call); "(no parent)" removes it from its
+parent. Issue types have no levels, so every open issue in the project is
+offered but the issue itself and what's under it. A GitHub Enterprise Server
+without sub-issues says so instead.
 
 ### Tree view (`T`)
 
@@ -145,6 +190,7 @@ is still listed, by its id alone.
 Linking works from either side, each through a popup picker (`<CR>` picks, `q` closes): `gl`/`gL` here link and unlink a PR on the item, and `gl`/`gL` on the PR dashboard or in the reviewer link and unlink a work item on the PR. Either way both dashboards, and an open detail view, show the change straight away.
 
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
+`gU` changes the parent (see above),
 `ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
 detail on success), `o` opens the browser, `<BS>` returns to the list, and
 `?` shows its keys. It also shows the item's discussion and linked pull
@@ -200,3 +246,72 @@ still focused. The tab bar shows a window of tabs around the active one
 (with `‹`/`›` markers) whenever there are more than fit the window width, so
 `all` scope's usually-longer list is handled the same way a wide `parent`
 group already was.
+
+## Issues (GitHub)
+
+Press `I` (or run `:AzureCli issues`) for the issues dashboard: the same
+screens as the work-items dashboard, showing the GitHub Projects v2 project
+in a GitHub account's `issues:` block (see
+[GitHub accounts](configuration.md#github-accounts)). `I` and the Issues tab
+exist only when an account has that block. On an Azure-only setup there's no
+`I` key, no tab and no help line. `W` and `I` are separate tabs that share
+nothing, so `#7` on one never refreshes or replaces `#7` on the other. `W`
+from the Issues tab goes back to the work items.
+
+What's different on GitHub:
+
+- **Ids.** An issue's id is its number, or `owner/repo#n` (or `owner~repo~n`).
+  A bare number that two of the project's issues share is refused, and
+  you're asked for `owner/repo#n` instead.
+- **Tabs** are the project's iterations (its Iteration field): the current
+  one, the ones after it, and the last 3 finished ones, then a last
+  **No iteration** tab with the open issues that have none. A project with
+  no Iteration field uses the repository's open milestones, with a last
+  **No milestone** tab, and one with neither gets a single tab for the
+  whole project. `gi` to the No iteration (or No milestone) tab clears the
+  issue's iteration (or milestone).
+- **The list** shows the issues assigned to you in that iteration, or
+  everyone's with `issues: { scope: all }`. Issues are grouped by their
+  issue type, or under Issues when the repository has no types.
+- **State** is the project's Status field, plus Closed. In the `gs` popup,
+  Closed has the reasons completed and not planned. Setting a Status such as
+  Done doesn't close the issue; the project's own workflow does that if it's
+  set up to. Setting a Status on a closed issue reopens it. An open issue
+  with no Status shows as "No Status".
+- **`n`** creates an issue in the open iteration, assigned to you and added
+  to the project. On the No iteration tab and the whole-project tab no
+  iteration is set. With the
+  cursor on an issue, it offers to make the new one a sub-issue of it. The
+  type prompt is skipped when the repository has no issue types. If GitHub
+  makes the issue but a later step fails (adding it to the project, its
+  iteration or its parent), it says which, and the issue stays created.
+  After the title (and parent) it opens the comment editor for the issue's
+  description: `<C-s>` saves it, and an empty one or `q` creates the issue
+  without one.
+- **`T`** shows sub-issues under their parent.
+- **The detail view** shows the body as written, in Markdown, under
+  "Description"; the repository as "Repository"; and comments under
+  "Comments". `gc` adds a comment. `gE` writes or edits the description in
+  the same editor, prefilled with the current one: `<C-s>` saves it and
+  the view refreshes, an emptied editor clears it, and `q` (or saving it
+  unchanged) writes nothing. Work items on `W` don't have `gE` yet: Azure
+  DevOps descriptions are HTML, and the detail view shows them flattened
+  to text, so writing that back would lose their formatting.
+- **`ga`, `gp`, `ge`, `gi`** set the assignees (GitHub logins), the
+  project's Priority field (when it has one), the title and the iteration.
+- **Linked pull requests** are the ones GitHub lists as closing the issue,
+  shown as `repo#7`. `gR` opens one.
+- **`gl`/`gL`** link and unlink a GitHub pull request. GitHub has no other
+  way to link an existing PR to an issue, so `gl` adds a `Closes #12` line
+  to the PR's description (`owner/repo#12` across repositories) and `gL`
+  removes it. GitHub honours it only on a PR into the repository's default
+  branch, and closes the issue when that PR merges; for a PR into another
+  branch you're told the line won't link it. On the PR dashboard and in the
+  reviewer, `gW` on a GitHub PR lists the issues it closes and opens them
+  here.
+- **`i` and `gP`** work as on `W`: the chat's board tools then work on the
+  issue (see [the chat](chat.md#issues-on-github)), and each `gP` agent plans
+  its issue.
+
+Your key overrides for the `workitems` and `workitem_view` surfaces apply
+to both tabs.

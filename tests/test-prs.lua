@@ -1,5 +1,6 @@
 -- test-prs.lua: lua/azure-cli/prs.lua's pure PR-record helpers.
 -- Usage: luajit test-prs.lua <prs.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-prs.lua <prs.lua path>")
 local P = dofile(path)
@@ -63,6 +64,34 @@ check("drop_completed: back after grace", ids(P.drop_completed(done, { { id = 7 
 local unmark = P.mark_completed(done, 9, 1000)
 unmark()
 check("mark_completed: undo unmarks", done["9"] == nil)
+
+-- failed_accounts: the accounts a partly failed --list names on stderr (#95).
+local names = P.failed_accounts({
+  "azure-cli --list failed for proj-b: HTTP 500 GET https://dev.azure.com/o/proj-b/_apis/git/pullrequests",
+  "some other diagnostic",
+  "azure-cli --list failed for GitHub (acme): timed out",
+  "azure-cli --list failed for proj-b: again",
+  "",
+})
+check("failed_accounts: names in order, once each", table.concat(names, "|") == "proj-b|GitHub (acme)",
+  table.concat(names, "|"))
+check("failed_accounts: none on a clean run", #P.failed_accounts({ "" }) == 0)
+check("failed_accounts: nil", #P.failed_accounts(nil) == 0)
+check("failed_accounts: a total failure's line isn't partial",
+  #P.failed_accounts({ "azure-cli --list failed: HTTP 401" }) == 0)
+
+-- failed_accounts_changed: the dashboard polls every 30 s, so the same
+-- failing accounts warn once, not every tick; a recovery re-arms it.
+local key, warn = ""
+local polls = { { "b" }, { "b" }, { "b", "a" }, { "a", "b" }, {}, {}, { "a", "b" }, { "a" } }
+local warned = {}
+for i, names in ipairs(polls) do
+  warn, key = P.failed_accounts_changed(key, names)
+  warned[i] = warn and "W" or "-"
+end
+check("failed_accounts_changed: warns on a change, a recovery re-arms it", table.concat(warned) == "W-W---WW",
+  table.concat(warned))
+check("failed_accounts_changed: nil prev and names", P.failed_accounts_changed(nil, nil) == false)
 
 print(fails == 0 and "test-prs: all cases pass" or ("test-prs: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

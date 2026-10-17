@@ -9,6 +9,7 @@
 --
 -- Usage: luajit test-config.lua <config.lua path> [cache.lua path]
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 vim = {
   deepcopy = function(t)
     if type(t) ~= "table" then return t end
@@ -223,6 +224,8 @@ do
   check("timing: default cached_prs", t.cached_prs == 24, t.cached_prs)
   check("timing: default threads_ttl_seconds", t.threads_ttl_seconds == 120, t.threads_ttl_seconds)
   check("timing: default aged_days", t.aged_days == 14, t.aged_days)
+  check("timing: default idle_after", t.idle_after == 300, t.idle_after)
+  check("timing: default max_poll_seconds", t.max_poll_seconds == 300, t.max_poll_seconds)
   check("hide_ancient_days: default", config.get().hide_ancient_days == 30, config.get().hide_ancient_days)
 end
 
@@ -245,6 +248,19 @@ do
   local ok, err = pcall(config.setup, { timing = { poll_seconds = -5 } })
   check("timing: non-positive number errors clearly",
     not ok and tostring(err):find("poll_seconds", 1, true) ~= nil, err)
+  config.setup({})
+end
+
+do
+  local ok, err = pcall(config.setup, { timing = { idle_after = 0 } })
+  check("timing: non-positive idle_after errors clearly",
+    not ok and tostring(err):find("idle_after", 1, true) ~= nil, err)
+  ok, err = pcall(config.setup, { timing = { max_poll_seconds = "slow" } })
+  check("timing: non-number max_poll_seconds errors clearly",
+    not ok and tostring(err):find("max_poll_seconds", 1, true) ~= nil, err)
+  config.setup({ timing = { idle_after = 60, max_poll_seconds = 600 } })
+  local t = config.get().timing
+  check("timing: idle_after/max_poll_seconds override", t.idle_after == 60 and t.max_poll_seconds == 600)
   config.setup({})
 end
 
@@ -383,6 +399,9 @@ do
   for k, v in pairs(defaults.ui) do
     assert(opts.ui and opts.ui[k] == v, "ui." .. k .. " preserved")
   end
+  for k, v in pairs(defaults.dashboard_web) do
+    assert(opts.dashboard_web and opts.dashboard_web[k] == v, "dashboard_web." .. k .. " preserved")
+  end
   for field in pairs(config._CHAT_FIELDS) do
     assert(text:find("%f[%w_]" .. field .. " =") or text:find("%f[%w_]" .. field .. ","), "the options file mentions chat." .. field)
   end
@@ -435,6 +454,18 @@ do
   rejects("work_items without team", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = {} } }, "`team`")
   rejects("a bad sprint_scope", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", sprint_scope = "some" } } }, "sprint_scope")
   rejects("a non-string in types", { { project_name = "p", org_url = "https://x", pat_file = "f", work_items = { team = "T", types = { 1 } } } }, "list of strings")
+
+  -- issues: on a GitHub account (github_issues.py)
+  config.setup({ accounts = { { host = "github", owner = "o", issues = { project = 3, scope = "all" } } } })
+  check("issues: a project number is exported as one",
+    (vim.env.AZVICLI_ACCOUNTS_JSON or ""):find('"project":3', 1, true) ~= nil, vim.env.AZVICLI_ACCOUNTS_JSON)
+  local ok_title = pcall(config.setup, { accounts = { { host = "github", issues = { project = "Roadmap", repo = "r" } } } })
+  check("issues: a project title is accepted", ok_title)
+  config.setup({})
+  rejects("issues without project", { { host = "github", issues = {} } }, "needs a `project`")
+  rejects("a bad issues.scope", { { host = "github", issues = { project = 1, scope = "team" } } }, "issues.scope")
+  rejects("an unknown issues field", { { host = "github", issues = { project = 1, team = "T" } } }, "unknown field `team`")
+  rejects("issues on an Azure account", { { project_name = "p", org_url = "https://x", pat_file = "f", issues = { project = 1 } } }, "is for a GitHub account")
 end
 
 -- --- chat: placement defaults, agents, prompts, permissions -------------------
@@ -491,6 +522,33 @@ do
     local ok, err = pcall(config.setup, { ui = bad })
     check("ui: rejects " .. next(bad), not ok and tostring(err):find("ui", 1, true) ~= nil, err)
   end
+  config.setup({})
+end
+
+-- dashboard_web: the phone dashboard (#97) - off, on loopback, never on every interface.
+do
+  local w = config.get().dashboard_web
+  check("dashboard_web: off by default, loopback, port 8797", w.enabled == false and w.bind == "127.0.0.1"
+    and w.port == 8797)
+  config.setup({ dashboard_web = { enabled = true, bind = "100.64.0.5" } })
+  w = config.get().dashboard_web
+  check("dashboard_web: a VPN address accepted, the port left at its default", w.enabled == true
+    and w.bind == "100.64.0.5" and w.port == 8797)
+  config.setup({ dashboard_web = { port = 0 } })
+  check("dashboard_web: port 0 (any free one) accepted", config.get().dashboard_web.port == 0)
+  check("dashboard_web: persist_token on by default (#105)", config.get().dashboard_web.persist_token == true)
+  config.setup({ dashboard_web = { persist_token = false } })
+  check("dashboard_web: persist_token = false accepted", config.get().dashboard_web.persist_token == false)
+  for _, bad in ipairs({ { bind = "0.0.0.0" }, { bind = "::" }, { bind = " 0.0.0.0 " }, { bind = "" }, { bind = "[::]" },
+    { bind = 1 }, { port = 70000 }, { port = 1.5 }, { port = "80" }, { enabled = "yes" }, { colour = 1 },
+    { persist_token = "no" } }) do
+    local ok, err = pcall(config.setup, { dashboard_web = bad })
+    check("dashboard_web: rejects " .. next(bad) .. " = " .. tostring(bad[next(bad)]),
+      not ok and tostring(err):find("dashboard_web", 1, true) ~= nil, err)
+  end
+  local ok, err = pcall(config.setup, { dashboard_web = { bind = "0.0.0.0" } })
+  check("dashboard_web: says why every interface is refused", not ok and tostring(err):find("every interface", 1, true),
+    err)
   config.setup({})
 end
 

@@ -115,8 +115,17 @@ end
 -- just fails silently and buries the real reason. It detaches, so the
 -- spawned shell isn't tied to this Neovim's lifetime (two of the four old
 -- copies passed detach and two didn't).
+--
+-- vim.ui.open is 0.10+. On 0.9 there is none, so `open` (macOS) or
+-- `xdg-open` (anywhere else) is started directly, detached the same way.
 function M.open_url(url)
   if not url or url == "" then return false, "no URL" end
+  if not vim.ui.open and vim.fn.has("win32") == 0 then
+    local opener = vim.fn.has("mac") == 1 and "open" or "xdg-open"
+    if vim.fn.executable(opener) == 0 then return false, "no " .. opener .. " to open a browser with" end
+    if vim.fn.jobstart({ opener, url }, { detach = true }) <= 0 then return false, "could not start " .. opener end
+    return true
+  end
   local ok, ret, err = pcall(vim.ui.open, url)
   if not ok then err = ret end          -- vim.ui.open itself raised
   if ok and not err then return true end

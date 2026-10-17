@@ -37,7 +37,13 @@
 --
 -- How the base commit is picked: fetch this PR's iterations (--iterations;
 -- each push/force-push is one, with an id, a createdDate and a
--- sourceRefCommit.commitId) and take the latest one created at or before my
+-- sourceRefCommit.commitId). On GitHub the payload also carries
+-- myLastReviewSha, the commit my latest review was made on; when that is
+-- one of the iterations' commits it is the base, exactly - review and push
+-- times can interleave so the timestamp rule below picks the wrong push -
+-- and the iterations after it are new. That also makes a GitHub review
+-- without a comment count. Otherwise (Azure, never reviewed, or the sha
+-- was force-pushed away) take the latest iteration created at or before my
 -- last review point - that iteration's source commit is where I left off.
 -- Iterations created after it are "new" (new_iterations). If every
 -- iteration is at or after my last review point (I've never actually seen
@@ -197,6 +203,31 @@ function M.pick_base(iterations, review_point)
   return best, new_count
 end
 
+-- Picks the base commit sha to diff from, preferring `my_sha` - the commit
+-- my latest review was made on (GitHub's --iterations hands it back as
+-- myLastReviewSha; Azure has no such field) - over M.pick_base's timestamp
+-- rule. When `my_sha` is one of the iterations' source commits, it's the
+-- base and every iteration after it (the list is oldest first) is new. When
+-- it's absent, or not among the iterations (force-pushed away - not a
+-- useful base, and the clone may not have it), this is exactly
+-- M.pick_base(iterations, review_point). Returns the base sha ("" when the
+-- picked iteration carries no commit id) plus the new-iteration count, or
+-- nil plus the total iteration count when there's no earlier point to diff
+-- from.
+function M.choose_base(iterations, review_point, my_sha)
+  iterations = iterations or {}
+  if type(my_sha) == "string" and my_sha ~= "" then
+    for i, it in ipairs(iterations) do
+      if it.sourceRefCommit and it.sourceRefCommit.commitId == my_sha then
+        return my_sha, #iterations - i
+      end
+    end
+  end
+  local base_it, new_count = M.pick_base(iterations, review_point)
+  if not base_it then return nil, new_count end
+  return (base_it.sourceRefCommit and base_it.sourceRefCommit.commitId) or "", new_count
+end
+
 -- The cache.lua files/diffs bucket suffix for a since-range based on
 -- `base_commit`'s short sha - see cache.lua's M.diffs/M.files.
 function M.variant(short_sha)
@@ -265,6 +296,17 @@ local function setup(ctx)
     return list
   end
 
+  -- Decodes the --iterations JSON payload into its iteration list (as
+  -- decode_list) plus the top-level myLastReviewSha, which decode_list's
+  -- unwrapping would throw away - nil on Azure, or when I've never reviewed.
+  local function decode_iterations(json)
+    local list = decode_list(json)
+    local ok, decoded = pcall(vim.json.decode, json or "", { luanil = { object = true, array = true } })
+    local sha = ok and type(decoded) == "table" and decoded.myLastReviewSha or nil
+    if type(sha) ~= "string" or sha == "" then sha = nil end
+    return list, sha
+  end
+
   -- Verifies `sha` is a commit this clone actually has - a force-push that
   -- rewrote history, or a shallow fetch, can leave an old iteration's base
   -- unreachable - calling cb(true) or cb(false).
@@ -282,7 +324,8 @@ local function setup(ctx)
   -- `git cat-file -e` check toggle_since always ran inline: on success calls
   -- `cb(base_sha, new_iterations, review_point)` (review_point is the raw
   -- ISO timestamp M.last_review_point resolved, handed back so a caller like
-  -- followup.lua can show it without re-fetching); on any of the ways this
+  -- followup.lua can show it without re-fetching - nil when the base came
+  -- from myLastReviewSha alone, a review with no comment); on any of the ways this
   -- can come up empty, calls `cb(nil, reason, level)` instead - `reason` a
   -- complete, capitalised, already-punctuated sentence ready to hand
   -- straight to ctx.notify, `level` the vim.log.levels value to notify it at
@@ -300,25 +343,27 @@ local function setup(ctx)
         cb(nil, "Could not load your review history (" .. body .. ").", vim.log.levels.ERROR)
         return
       end
+      -- nil when I have no comments - not the end yet: a GitHub review
+      -- without a comment still leaves a myLastReviewSha in --iterations.
       local review_point = M.last_review_point(decode_list(body), my_id)
-      if not review_point then
-        cb(nil, "You haven't commented on this PR yet, so there's no \"last review\" to compare since.",
-          vim.log.levels.WARN)
-        return
-      end
 
       run_script({ "--iterations" }, function(ok2, body2)
         if not ok2 then
           cb(nil, "Could not load this PR's iterations (" .. body2 .. ").", vim.log.levels.ERROR)
           return
         end
-        local base_it, new_count = M.pick_base(decode_list(body2), review_point)
-        if not base_it then
+        local iterations, my_sha = decode_iterations(body2)
+        if not review_point and not my_sha then
+          cb(nil, "You haven't commented on this PR yet, so there's no \"last review\" to compare since.",
+            vim.log.levels.WARN)
+          return
+        end
+        local sha, new_count = M.choose_base(iterations, review_point, my_sha)
+        if not sha then
           cb(nil, "Everything in this PR is new since your last review.")
           return
         end
-        local sha = base_it.sourceRefCommit and base_it.sourceRefCommit.commitId
-        if not sha or sha == "" then
+        if sha == "" then
           cb(nil, "Couldn't resolve a base commit for your last review.", vim.log.levels.ERROR)
           return
         end

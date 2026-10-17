@@ -6,6 +6,7 @@
 -- moment it's cast rather than on the next poll. No vim calls, so
 -- tests/test-prs.lua runs it under plain luajit.
 local M = {}
+local HOSTS = require("azure-cli.hosts")
 
 -- Short label: surname from "Surname, Given", else the last word.
 function M.surname(name)
@@ -25,22 +26,19 @@ function M.my_reviewer(pr)
   return nil
 end
 
--- My current vote as the VOTE_OPTIONS key string ("10", "5", "-5", "-10"),
--- or nil when I haven't voted / am not a reviewer.
+-- My current vote as its option key (Azure: "10", "5", "-5", "-10"), or
+-- nil when I haven't voted / am not a reviewer.
 function M.my_vote_key(pr)
   local r = M.my_reviewer(pr)
-  local v = r and tonumber(r.vote)
-  if v and v ~= 0 then return tostring(v) end
+  local o = r and r.vote ~= nil and HOSTS.vote(pr, r.vote)
+  if o and not o.reset then return o.key end
   return nil
 end
 
--- Glyph for a vote value, as the dashboard's reviewer summary draws it.
-function M.vote_glyph(v)
-  v = tonumber(v) or 0
-  if v == 10 or v == 5 then return "\u{2713}" end
-  if v == -10 then return "\u{2717}" end
-  if v == -5 then return "~" end
-  return "\u{00B7}"
+-- Glyph for a vote value on `pr`'s host, as the dashboard's reviewer
+-- summary draws it.
+function M.vote_glyph(v, pr)
+  return HOSTS.vote_glyph(pr, v)
 end
 
 -- Seconds to add to an os.time() result to correct for os.time() having
@@ -70,7 +68,7 @@ function M.iso_epoch(iso)
   return guess + utc_offset(guess)
 end
 
--- Records `vote` (a number) as mine on `pr` and recomputes the derived
+-- Records `vote` (an option key) as mine on `pr` and recomputes the derived
 -- voteRatio / reviewerSummary the way azure-cli.py builds them. Returns an
 -- undo function that restores the previous values (for a failed call).
 function M.apply_my_vote(pr, vote)
@@ -87,9 +85,9 @@ function M.apply_my_vote(pr, vote)
   mine.vote = vote
   local signed, parts = 0, {}
   for _, r in ipairs(pr.reviewers) do
-    local v = tonumber(r.vote) or 0
-    if v == 10 or v == 5 then signed = signed + 1 end
-    parts[#parts + 1] = M.vote_glyph(v) .. M.surname(r.name)
+    local o = HOSTS.vote(pr, r.vote)
+    if o and o.signed then signed = signed + 1 end
+    parts[#parts + 1] = M.vote_glyph(r.vote, pr) .. M.surname(r.name)
   end
   pr.voteRatio = signed .. " / " .. #pr.reviewers
   pr.reviewerSummary = table.concat(parts, " ")
@@ -117,7 +115,7 @@ end
 function M.drop_completed(done, list, now)
   local listed, kept = {}, {}
   for _, p in ipairs(list) do
-    local id = tostring(p.id)
+    local id = tostring(HOSTS.key(p))
     local at = done[id]
     if at then listed[id] = true end
     if not (at and now - at < M.COMPLETED_GRACE) then kept[#kept + 1] = p end
@@ -126,6 +124,38 @@ function M.drop_completed(done, list, now)
     if not listed[id] or now - at >= M.COMPLETED_GRACE then done[id] = nil end
   end
   return kept
+end
+
+-- The accounts a --list that still exited 0 couldn't list, in order and
+-- once each: azure-cli.py prints "azure-cli --list failed for <account>:
+-- <message>" on stderr for every one (#95), keeping the others' records.
+M.LIST_PARTIAL_PREFIX = "azure-cli --list failed for "
+
+function M.failed_accounts(lines)
+  local names, seen = {}, {}
+  for _, line in ipairs(lines or {}) do
+    if line:sub(1, #M.LIST_PARTIAL_PREFIX) == M.LIST_PARTIAL_PREFIX then
+      local name = line:sub(#M.LIST_PARTIAL_PREFIX + 1):match("^(.-): ")
+      if name and not seen[name] then
+        seen[name] = true
+        names[#names + 1] = name
+      end
+    end
+  end
+  return names
+end
+
+-- Whether a --list that failed for `names` should warn, given `prev` (the
+-- key it last returned; "" at first): only when the set of failed accounts
+-- changed, so an account that keeps failing doesn't warn on every poll. A
+-- clean list resets the key, so failing again after a recovery warns again.
+-- Returns (warn, key).
+function M.failed_accounts_changed(prev, names)
+  local sorted = {}
+  for i, n in ipairs(names or {}) do sorted[i] = n end
+  table.sort(sorted)
+  local key = table.concat(sorted, "\n")
+  return key ~= "" and key ~= (prev or ""), key
 end
 
 return M

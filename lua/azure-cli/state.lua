@@ -24,6 +24,7 @@ local M = {}
 -- PR dashboard / reviewer
 M.PR_LIST_CACHE = nil               -- { prs, ts }
 M.PR_COMPLETED = {}                 -- PR id -> os.time() completed this session (prs.lua's drop_completed)
+M.PR_LIST_FAILED = ""               -- the failed accounts last warned about (prs.lua's failed_accounts_changed)
 M.PR_WORKITEMS = {}                 -- PR id -> { list, ts }: its linked work items (pr_workitems.lua)
 M.PR_DASHBOARD_RENDER = nil         -- the PR dashboard's change-aware redraw, for other screens' writes
 M.PR_CURRENT = nil                  -- metadata for the PR currently being opened
@@ -31,8 +32,7 @@ M.PR_REFRESH_TIMER = nil                -- dashboard's periodic-refresh timer id
 M.whoami = nil                       -- "org|project" -> { id, displayName }
 M.ignore_ws = nil                    -- reviewer's gw toggle, sticky within a session
 M.last_search = nil                  -- reviewer's g/ last search text
-M.review_badge_timer = nil
-M.review_threads_timer = nil
+M.reviews = nil                      -- PR key -> that open reviewer's cleanup (several can be open)
 M.toasts = nil                       -- desktop-notification session opt-out (gN)
 M.batch = nil                        -- reviewer batch-review queue, per PR id
 M.editor_drafts = nil                -- lua/azure-cli/editor.lua's cancelled-comment drafts, by draft key
@@ -46,6 +46,7 @@ M.PR_COMMITS_CACHE = {}
 M.PR_CACHE_ORDER = {}
 M.PR_THREADS_CACHE = {}
 M.PR_DIFF_CACHE_EXTRA = {}
+M.PR_CACHE_REFS = {}                 -- key -> "<source sha> <target sha>" its buckets were built from
 
 -- Provider daemon client (lua/azure-cli/rpc.lua)
 M.rpc = nil

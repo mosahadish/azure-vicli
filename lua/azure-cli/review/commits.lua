@@ -260,7 +260,7 @@ local function build_commit_diff(ctx, sha, path, cb)
       on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
       on_exit = function(_, _code)
         vim.schedule(function()
-          local lines, map = ctx.parse_diff(out)
+          local lines, map = require("azure-cli.review.bom").normalize(ctx.parse_diff(out))
           diff_content_cache[key] = { lines = lines, map = map }
           cb(lines, map)
         end)
@@ -348,7 +348,8 @@ local function ensure_commit_files_buf(ctx, sha)
   if buf and vim.api.nvim_buf_is_valid(buf) then return buf end
   buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].filetype = "markdown"
+  -- Plain text: paths like tg/remote_HW_stubs aren't Markdown (#135).
+  vim.bo[buf].filetype = "azurecli-commits"
   buf_meta[buf] = { kind = "files", sha = sha }
   commit_files_bufs[sha] = buf
   setup_files_keymaps(ctx, buf)
@@ -431,7 +432,7 @@ local function ensure_commit_list_buf(ctx)
   if commit_list_buf and vim.api.nvim_buf_is_valid(commit_list_buf) then return commit_list_buf end
   commit_list_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[commit_list_buf].buftype = "nofile"
-  vim.bo[commit_list_buf].filetype = "markdown"
+  vim.bo[commit_list_buf].filetype = "azurecli-commits"
   buf_meta[commit_list_buf] = { kind = "list" }
   setup_list_keymaps(ctx, commit_list_buf)
   return commit_list_buf

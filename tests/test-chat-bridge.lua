@@ -4,6 +4,7 @@
 -- for the next one).
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-chat-bridge.lua
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local uv = vim.uv or vim.loop
 local B = require("azure-cli.chat.bridge")
 local fails = 0

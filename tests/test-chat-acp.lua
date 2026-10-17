@@ -9,6 +9,7 @@
 -- counter in every answer; --marker-file records every pid it ever had.
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-chat-acp.lua
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fails = 0
 local function check(name, ok, detail)
   print((ok and "ok  " or "FAIL") .. "  " .. name .. ((not ok and detail) and ("  -- " .. tostring(detail)) or ""))
@@ -113,6 +114,33 @@ check("so the next edit to it doesn't ask", #asked == 0 and e8 ~= nil and e8.tex
 check("and the change check counts it as planned",
   #PLAN.check_change(PLAN.load("wi-3001"), { "src/a.py", "src/b.py" }).unplanned == 0)
 UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
+
+-- A new, approved revision (the next stage): the last one's allowances
+-- don't carry over, and its Files entries count every path they name - a
+-- second one after a comma, a bare file name - and no code word.
+do
+  local r = PLAN.load("wi-3001")
+  PLAN.add_revision(r, "## Goal\nx\n\n## Files\n- `src/a.py`, `src/c.py` - throttle, `M.open(host)`\n"
+    .. "- helper.py: the bare name\n", "agent")
+  r.status, r.approved_rev = "approved", #r.revisions
+  PLAN.save(r)
+  asked = {}
+  local e = send_and_wait("EDITPATH=" .. wt .. "/src/b.py")
+  check("a new revision: the last one's allowance asks again", #asked == 1 and e ~= nil
+    and e.text:find("src/b.py]=no", 1, true) ~= nil, vim.inspect(asked))
+  asked = {}
+  e = send_and_wait("EDITPATH=" .. wt .. "/src/c.py EDITPATH=" .. wt .. "/src/lib/helper.py")
+  check("a second comma path and a bare name are in the plan", #asked == 0 and e ~= nil
+    and e.text:find("src/c.py]=yes", 1, true) ~= nil and e.text:find("helper.py]=yes", 1, true) ~= nil,
+    vim.inspect(asked) .. " " .. tostring(e and e.text))
+  check("and the code word isn't a planned-not-changed file",
+    vim.deep_equal(PLAN.check_change(PLAN.load("wi-3001"), { "src/a.py", "src/c.py", "src/lib/helper.py" }).missing, {}))
+  r = PLAN.load("wi-3001")
+  r.revisions = { r.revisions[1] }
+  r.approved_rev = nil
+  PLAN.save(r)
+  os.remove(PLAN.path("wi-3001"))
+end
 
 -- Building and testing as the approved plan's Test plan says: the agent's
 -- own shell running it (in that plan's conversation) and run_tests
@@ -317,6 +345,192 @@ local started = call("start_agents", { work_item_ids = { 3006 } })
 check("start_agents starts one", started and started:find("Planning #3006", 1, true) ~= nil, started)
 local c6 = CHAT.find_conversation("wi-3006")
 vim.wait(20000, function() return c6 and not c6.running end, 20)
+
+-- Claude Code's --permission-prompt-tool (mcp__azure-vicli__permission):
+-- its requests reach the same rules and popup as an ACP agent's.
+do
+  local RUN = require("azure-cli.chat.run")
+  local t = RUN.claude_tool({ tool_name = "Bash", input = { command = "git log -3", description = "Show commits" } })
+  check("claude_tool: Bash is a command", t.kind == "execute" and t.rawInput.command == "git log -3"
+    and t.title == "Bash: Show commits", vim.inspect(t))
+  t = RUN.claude_tool({ tool_name = "Edit", input = { file_path = "a.lua", old_string = "x = 1", new_string = "x = 2" } })
+  check("claude_tool: an edit, with its diff for the popup", t.kind == "edit"
+    and t.rawInput.diff == "--- a.lua\n+++ a.lua\n-x = 1\n+x = 2", vim.inspect(t))
+  check("claude_tool: reads and searches", RUN.claude_tool({ tool_name = "Grep", input = {} }).kind == "search"
+    and RUN.claude_tool({ tool_name = "mcp__other__x", input = {} }).kind == "other")
+
+  local BRIDGE = require("azure-cli.chat.bridge")
+  local handler = BRIDGE.handler
+  local listed
+  handler({ method = "list" }, function(r) listed = r end)
+  local names = {}
+  for _, x in ipairs(listed and listed.tools or {}) do names[x.name] = true end
+  check("the bridge lists the permission tool", names.permission == true)
+  local function ask(tool_name, input)
+    local ans
+    handler({ method = "call", name = "permission", arguments = { tool_name = tool_name, input = input } },
+      function(r) ans = vim.json.decode(r.text) end)
+    vim.wait(2000, function() return ans ~= nil end, 10)
+    return ans
+  end
+  asked = {}
+  UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
+  local a = ask("Bash", { command = "git log -3" })
+  check("a look-only command is allowed without asking", a and a.behavior == "allow"
+    and a.updatedInput.command == "git log -3" and #asked == 0, vim.inspect({ a, asked }))
+  a = ask("Bash", { command = "rm -rf build" })
+  check("anything else asks, and Deny refuses it", a and a.behavior == "deny" and #asked == 1, vim.inspect({ a, asked }))
+  -- #74: what every agent runs each round, through the popup's path.
+  local quiet, loud = {}, {}
+  for _, c in ipairs({ "gh run view 1 --log-failed", "git fetch -q origin github-host", "printf '%s' a", "file a.lua" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "allow" and #asked == 1) then quiet[#quiet + 1] = c end
+  end
+  check("printf, file, gh run view and plain git fetch don't ask (#74)", #quiet == 0, vim.inspect({ quiet, asked }))
+  for k, c in ipairs({ "git fetch --upload-pack=x origin", "gh run rerun 1", "printf -v x y" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
+  end
+  check("git fetch --upload-pack, gh run rerun and printf -v still ask (#74)", #loud == 0, vim.inspect({ loud, asked }))
+  -- #75: plain diff, gh pr / issue reads and git worktree list, through the popup's path.
+  asked, quiet, loud = { asked[1] }, {}, {}
+  for _, c in ipairs({ "diff -u a b", "sed -n 1,9p x.md | diff - /tmp/k.md", "cmp -s a b", "comm -12 a b",
+    "gh pr view 12 --json state", "gh pr checks 12", "gh pr diff 12 --name-only", "gh pr list -s all", "gh pr status",
+    "gh issue view 75 --comments", "gh issue list -l bug", "gh issue status", "git worktree list --porcelain" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "allow" and #asked == 1) then quiet[#quiet + 1] = c end
+  end
+  check("diff, cmp, comm, gh pr/issue reads and git worktree list don't ask (#75)", #quiet == 0, vim.inspect({ quiet, asked }))
+  for k, c in ipairs({ "diff a b > out", "diff --output=x a b", "gh pr view 12 --web", "gh pr list -w", "gh issue view 75 -wc",
+    "gh pr merge 1", "gh pr checkout 1", "gh issue close 1", "git worktree add ../x", "git worktree remove ../x",
+    "git worktree prune", "git worktree list x" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
+  end
+  check("diff that writes, gh --web, gh pr/issue that acts and git worktree add/remove/prune still ask (#75)", #loud == 0,
+    vim.inspect({ loud, asked }))
+  -- #84: $?, git remote's reads and nvim --version, through the popup's path.
+  asked, quiet, loud = { asked[1] }, {}, {}
+  for _, c in ipairs({ "for id in 1 2; do gh run watch $id; echo \"$id exit=$?\"; done", "git remote -v",
+    "git remote show origin", "git remote get-url origin", "nvim --version", "nvim -v" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "allow" and #asked == 1) then quiet[#quiet + 1] = c end
+  end
+  check("$?, git remote -v/show/get-url and nvim --version don't ask (#84)", #quiet == 0, vim.inspect({ quiet, asked }))
+  for k, c in ipairs({ "git remote add x y", "git remote set-url origin x", "git remote prune origin", "nvim -l x.lua",
+    "nvim --headless -c q", "echo $(nvim -l x)", "echo $-" }) do
+    a = ask("Bash", { command = c })
+    if not (a and a.behavior == "deny" and #asked == 1 + k) then loud[#loud + 1] = c end
+  end
+  check("other git remote, other nvim and $- still ask (#84)", #loud == 0, vim.inspect({ loud, asked }))
+  asked = { asked[1] }
+  UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(1) end
+  a = ask("Write", { file_path = "notes.txt", content = "hi" })
+  check("an edit asks, and Allow allows it with its input", a and a.behavior == "allow"
+    and a.updatedInput.file_path == "notes.txt" and #asked == 2, vim.inspect({ a, asked }))
+
+  -- Issue #31: AskUserQuestion is asked as its questions, and the answer
+  -- goes back as updatedInput.answers, keyed by the question's text.
+  local colour = { question = "Which colour?", header = "Colour", multiSelect = false, options = {
+    { label = "Red", description = "warm" }, { label = "Blue", description = "cool" } } }
+  local extras = { question = "Which extras?", header = "Extras", multiSelect = true, options = {
+    { label = "A", description = "first" }, { label = "B", description = "second" }, { label = "C", description = "third" } } }
+  -- `answers`: per popup, what it answers - cb's (index, ticks).
+  local popups
+  local function answering(answers)
+    popups = {}
+    UI.choose = function(o, cb)
+      popups[#popups + 1] = o
+      local ans = table.remove(answers, 1) or {}
+      cb(ans[1], ans[2])
+    end
+  end
+  answering({ { 2 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: one pick is the answer, under the question's text", a and a.behavior == "allow"
+    and a.updatedInput.answers["Which colour?"] == "Blue" and a.updatedInput.questions[1].question == "Which colour?",
+    vim.inspect(a))
+  local p = popups[1] or {}
+  check("AskUserQuestion: the popup shows the header, the question and the options with their descriptions",
+    #popups == 1 and p.title == "Colour" and p.lines[1] == "Which colour?"
+    and vim.tbl_contains(p.lines, "1. Red - warm") and vim.tbl_contains(p.lines, "2. Blue - cool")
+    and vim.deep_equal(p.buttons, { "Red", "Blue", "Other\u{2026}", "Cancel" }) and p.cancel == 4 and p.keys["2"] == 2
+    and p.checks == nil and p.arm_ms == 400, vim.inspect(p))
+
+  -- multiSelect: tick boxes, then Done (button 5: A B C Other Done Cancel).
+  answering({ { 5, { true, false, true } } })
+  a = ask("AskUserQuestion", { questions = { extras } })
+  p = popups[1] or {}
+  check("AskUserQuestion: multiSelect offers tick boxes and Done", vim.deep_equal(p.checks, { false, false, false })
+    and vim.deep_equal(p.buttons, { "A", "B", "C", "Other\u{2026}", "Done", "Cancel" }), vim.inspect(p))
+  check("AskUserQuestion: multiSelect answers the ticked labels, joined", a and a.behavior == "allow"
+    and a.updatedInput.answers["Which extras?"] == "A, C", vim.inspect(a))
+
+  -- Other: your own words, from the comment editor.
+  local EDITOR = require("azure-cli.editor")
+  local real_open, opened = EDITOR.open, {}
+  EDITOR.open = function(o) opened[#opened + 1] = o; o.on_submit("  my own  ") end
+  answering({ { 3 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: Other sends your own words", a and a.behavior == "allow"
+    and a.updatedInput.answers["Which colour?"] == "my own" and #opened == 1
+    and opened[1].context_lines[1] == "Which colour?", vim.inspect({ a, opened }))
+  -- Backing out of the editor asks the question again.
+  opened = {}
+  EDITOR.open = function(o) opened[#opened + 1] = o; o.on_cancel() end
+  answering({ { 3 }, { 1 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: cancelling Other asks again", a and a.updatedInput.answers["Which colour?"] == "Red"
+    and #popups == 2 and #opened == 1, vim.inspect({ a, #popups }))
+  EDITOR.open = real_open
+
+  -- Esc (cancel): declined, and nothing answered.
+  answering({ { 4 } })
+  a = ask("AskUserQuestion", { questions = { colour } })
+  check("AskUserQuestion: Esc declines to answer", a and a.behavior == "deny" and a.updatedInput == nil
+    and a.message == "The user declined to answer the question(s).", vim.inspect(a))
+
+  -- Two questions: each its own popup, both answers back; cancelling the
+  -- second declines both.
+  answering({ { 1 }, { 5, { false, true, false } } })
+  a = ask("AskUserQuestion", { questions = { colour, extras } })
+  check("AskUserQuestion: two questions, two answers", a and a.behavior == "allow" and #popups == 2
+    and popups[1].title == "Colour (1/2)" and a.updatedInput.answers["Which colour?"] == "Red"
+    and a.updatedInput.answers["Which extras?"] == "B", vim.inspect(a))
+  answering({ { 1 }, { 6 } })
+  a = ask("AskUserQuestion", { questions = { colour, extras } })
+  check("AskUserQuestion: cancelling one of them declines them all", a and a.behavior == "deny", vim.inspect(a))
+
+  -- Every other tool still gets Allow/Deny.
+  asked = {}
+  UI.choose = function(o, cb) asked[#asked + 1] = o; cb(2) end
+  a = ask("Bash", { command = "rm -rf build" })
+  check("and any other tool still asks Allow/Deny", a and a.behavior == "deny" and #asked == 1
+    and vim.deep_equal(asked[1].buttons, { "Allow", "Deny" }), vim.inspect(asked))
+  check("answers_for: declined is a deny", RUN.answers_for({ questions = {} }, nil).behavior == "deny")
+  UI.choose = real_choose
+end
+
+-- Issue #27: the idle timeout stops a quiet turn through session/cancel,
+-- so the session survives it; a popup waiting for you isn't idle.
+do
+  local AG = require("azure-cli.config").get().chat.agent
+  AG.idle_timeout_seconds = 1
+  CHAT.new_chat(true)
+  local q, qerr = send_and_wait("GOQUIET")
+  check("idle timeout: a quiet ACP turn is stopped", q ~= nil and q.status == "timed out (idle 1s)", qerr or (q and q.status))
+  check("idle timeout: it says so, naming the setting", q and table.concat(q.tools, "\n")
+    :find("no output from the agent for 1s (idle_timeout_seconds = 1)", 1, true) ~= nil, q and vim.inspect(q.tools))
+  local n = send_and_wait("after")
+  check("idle timeout: the session survives it (its turn 2)", n and n.status == "done" and n.text:match("^turn 2,") ~= nil,
+    n and n.text)
+  UI.choose = function(_, cb) vim.defer_fn(function() cb(2) end, 2500) end
+  local p, perr = send_and_wait("EXEC=rm_-rf_build")
+  check("idle timeout: 2.5s on a popup isn't idle", p ~= nil and p.status == "done"
+    and p.text:find("exec[rm -rf build]=no", 1, true) ~= nil, perr or (p and (p.status .. " " .. p.text)))
+  UI.choose = real_choose
+  AG.idle_timeout_seconds = nil
+end
 
 CHAT.new_chat(true)
 os.remove(marker)

@@ -184,14 +184,16 @@ end
 -- filetype, else the buffer's own name. nil for a buffer that isn't ours.
 local FT_TITLE = {
   ["azurecli-dashboard"] = "Pull requests", ["azurecli-workitems"] = "Work items",
-  ["azurecli-workitem"] = "Work item", ["azurecli-changes"] = "Change", ["azurecli-plan"] = "Plan",
+  ["azurecli-workitem"] = "Work item", ["azurecli-issues"] = "Issues", ["azurecli-issue"] = "Issue", ["azurecli-changes"] = "Change", ["azurecli-plan"] = "Plan",
   ["azurecli-agents"] = "Agents",
 }
 function M.buf_title(buf)
   local t = vim.b[buf].azure_cli_title
   if t and t ~= "" then return t end
   local ft = vim.bo[buf].filetype
-  if ft == "azurecli-files" and vim.b[buf].azure_cli_pr then return "PR !" .. tostring(vim.b[buf].azure_cli_pr) end
+  if ft == "azurecli-files" and vim.b[buf].azure_cli_pr then
+    return "PR " .. (vim.b[buf].azure_cli_pr_ref or ("!" .. tostring(vim.b[buf].azure_cli_pr)))
+  end
   if vim.b[buf].azure_cli_chat then return "Chat" end
   return FT_TITLE[ft]
 end
@@ -215,13 +217,19 @@ end
 
 -- 'tabline': every tab by its title (the standalone launcher sets it;
 -- plugin users can: vim.o.tabline = "%!v:lua.require'azure-cli.ui'.tabline()").
+-- A home tab's inner tabs (lua/azure-cli/innertabs.lua) aren't listed: the
+-- home is, selected while you're in one of them.
 function M.tabline()
   M.theme()
+  local INNER = require("azure-cli.innertabs")
   local cur = vim.api.nvim_get_current_tabpage()
+  local cur_home = INNER.is_member(cur) and INNER.home_of(cur) or cur
   local out = {}
   for i, tab in ipairs(vim.api.nvim_list_tabpages()) do
-    local hl = tab == cur and "%#TabLineSel#" or "%#TabLine#"
-    out[#out + 1] = hl .. "%" .. i .. "T " .. (M.tab_title(tab):gsub("%%", "%%%%")) .. " "
+    if not INNER.is_member(tab) then
+      local hl = tab == cur_home and "%#TabLineSel#" or "%#TabLine#"
+      out[#out + 1] = hl .. "%" .. i .. "T " .. (M.tab_title(tab):gsub("%%", "%%%%")) .. " "
+    end
   end
   -- The chat's status strip on the right: the agent working, a question
   -- waiting for you, plans waiting for your review.
@@ -465,8 +473,22 @@ end
 -- value every later window inherits - the plugin used to turn line
 -- numbers off for the user's whole session that way. Every window-option
 -- write in this plugin goes through here.
+-- A winbar gets the inner-tab strip in front (lua/azure-cli/innertabs.lua's
+-- M.bar: empty except in the widest window of a home tab with inner tabs,
+-- or of one of those), so no winbar builder has to know about it.
+M.STRIP = "%{%v:lua.require'azure-cli.innertabs'.bar()%}"
 function M.wo(win, name, value)
+  if name == "winbar" and type(value) == "string" and value ~= "" and value:sub(1, #M.STRIP) ~= M.STRIP then
+    value = M.STRIP .. value
+  end
   vim.api.nvim_set_option_value(name, value, { win = win, scope = "local" })
+end
+
+-- `win`'s own winbar: its 'winbar' without the strip M.wo put in front.
+function M.own_winbar(win)
+  local v = vim.api.nvim_get_option_value("winbar", { win = win, scope = "local" })
+  if v:sub(1, #M.STRIP) == M.STRIP then v = v:sub(#M.STRIP + 1) end
+  return v
 end
 
 -- Pads `s` to exactly `n` display cells, or truncates it to n-1 cells plus
@@ -656,18 +678,23 @@ end
 function M.choose_lines(body, labels, focused, width, hint, waiting, stack)
   local lines, hls = {}, {}
   -- `l` as lines of the popup: as it is when it fits (spacing and all),
-  -- else wrapped at word boundaries, one cell of margin on each side.
+  -- else wrapped at word boundaries, one cell of margin on each side. The
+  -- wrapped lines keep its indent - under the text of a "- " item - and a
+  -- word too long for the rest of a line starts the next one, never split.
   local function add(l)
     if l == "" then lines[#lines + 1] = "" return end
     if vim.fn.strdisplaywidth(l) <= width - 2 then lines[#lines + 1] = " " .. l return end
-    local cur = ""
+    local lead = l:match("^%s*")
+    local hang = lead .. (l:sub(#lead + 1):match("^[-*] ") and "  " or "")
+    local cur, empty = lead, true
     for word in l:gmatch("%S+") do
-      if cur ~= "" and vim.fn.strdisplaywidth(cur .. " " .. word) > width - 2 then
+      if not empty and vim.fn.strdisplaywidth(cur .. " " .. word) > width - 2 then
         lines[#lines + 1] = " " .. cur
-        cur = word
+        cur = hang .. word
       else
-        cur = cur == "" and word or (cur .. " " .. word)
+        cur = empty and (cur .. word) or (cur .. " " .. word)
       end
+      empty = false
     end
     lines[#lines + 1] = " " .. cur
   end
@@ -706,39 +733,166 @@ function M.choose_lines(body, labels, focused, width, hint, waiting, stack)
   return lines, hls, rows
 end
 
+-- The question popup's details (M.choose) as rows no wider than `width`, so
+-- the window shows one row per line and scrolling by line skips nothing: a
+-- long line breaks at a space (a word longer than a row, anywhere), its
+-- later rows indented like it - with a diff's +/- in front of them too
+-- (`diff`), so they keep its colour. Pure.
+function M.wrap_details(lines, width, diff)
+  width = math.max(8, width)
+  local out = {}
+  -- The longest head of `s` that fits in `room` cells.
+  local function head(s, room)
+    local lo, hi = 1, vim.fn.strchars(s)
+    while lo < hi do
+      local mid = math.floor((lo + hi + 1) / 2)
+      if vim.fn.strdisplaywidth(vim.fn.strcharpart(s, 0, mid)) <= room then lo = mid else hi = mid - 1 end
+    end
+    return vim.fn.strcharpart(s, 0, lo)
+  end
+  for _, l in ipairs(lines or {}) do
+    if vim.fn.strdisplaywidth(l) <= width then
+      out[#out + 1] = l
+    else
+      local mark = diff and l:match("^[+%-]") or ""
+      local prefix = mark .. l:sub(#mark + 1):match("^%s*")
+      if vim.fn.strdisplaywidth(prefix) > width / 2 then prefix = mark end
+      local rest, first = l, true
+      while rest ~= "" do
+        local room = first and width or (width - vim.fn.strdisplaywidth(prefix))
+        local row = rest
+        if vim.fn.strdisplaywidth(rest) > room then
+          row = head(rest, room)
+          -- Back to the last space, unless the cut already falls on one.
+          if not rest:sub(#row + 1, #row + 1):match("%s") then
+            local at = row:match("^.*()%s")
+            if at and row:sub(1, at - 1):match("%S") then row = row:sub(1, at - 1) end
+          end
+        end
+        rest = rest:sub(#row + 1):gsub("^%s+", "")
+        out[#out + 1] = (first and "" or prefix) .. row:gsub("%s+$", "")
+        first = false
+      end
+    end
+  end
+  return out
+end
+
 -- A question as a popup in the middle of the screen, answered with buttons:
 --   title, lines    what it's about (wrapped)
 --   buttons         their labels; default = the one focused first (1)
 --   keys            shortcuts: { y = 1, n = 2 } presses that button
---   cancel          what q / <Esc> / leaving the popup answers (the last;
+--   cancel          what <Esc> / q / leaving the popup answers (the last;
 --                   false: nothing - cb(nil), for a menu with no Cancel)
 --   stack           one button per line, numbered keys up to the caller
 --                   (prompt.lua's menus)
 --   details         longer text (a diff, the text a tool would send) in a
---                   window above, details_ft its filetype - scrolled from the
---                   popup with <C-d> / <C-u> / <C-e> / <C-y>
+--                   window above, as tall as it needs (M.wrap_details),
+--                   details_ft its filetype - scrolled from the popup with
+--                   <C-d> / <C-u> / <C-e> / <C-y>
+--   full            what o opens, to read or yank: the details as they are,
+--                   unwrapped (default: details) - q there goes back
 --   hint            the keys line under the buttons, when the one made from
 --                   `keys` would be too long (long labels)
 --   arm_ms          keys count only after this long, so typing already
 --                   under way when an agent's question pops up can't answer
---                   it (the buttons light up once they work)
+--                   it (the buttons light up once they work); any key that
+--                   does nothing waits that long again, and q doesn't cancel
+--   checks          booleans for the first #checks buttons, which become
+--                   tick boxes ("[x] "/"[ ] "): <CR>, <Space>, x and their
+--                   keys tick them instead of answering; another button
+--                   answers, and cb gets the ticks as its second argument
 -- <Tab> / <S-Tab> / h / l / j / k / the arrows move between the buttons,
--- <CR> presses the focused one. Opened from insert mode it leaves it, and
--- goes back to it after. cb(index), once. With ui.confirm = "select" it's
--- vim.ui.select (prompt.lua) instead - the details in a float beside it.
+-- <CR> presses the focused one; every other key does nothing. Opened from
+-- insert mode it leaves it, and goes back to it after (give_back: not in
+-- the chat's input box). cb(index), once.
+-- With ui.confirm = "select" it's vim.ui.select (prompt.lua) instead - the
+-- details in a float beside it.
+-- How many of those popups are open, and what waits for them all to close
+-- (M.after_choose): a view that would move the cursor while one asks - the
+-- chat panel following into a tab, a viewer taking the focus - and with it
+-- close the popup, answering its cancel button.
+-- One asked while another is open waits in `queued` (issue #72): opening
+-- on top would take the focus, and that answers the open one's cancel - an
+-- agent's question used to cancel the plan's Approve that way. Each keeps
+-- its own cb, so each answer goes to who asked.
+local choosing, after_choose, queued = 0, {}, {}
+function M.choosing() return choosing > 0 or #queued > 0 end
+function M.after_choose(fn)
+  if not M.choosing() then return fn() end
+  after_choose[#after_choose + 1] = fn
+end
+-- None open any more: the next one waiting, else what waits for them all.
+-- Scheduled, so one opened from the answered one's cb (the next of an
+-- agent's questions, a menu's next step) goes first; the one waiting stays
+-- first in line for when that's answered.
+local function settle()
+  if choosing > 0 then return end
+  if #queued > 0 then
+    vim.schedule(function()
+      if choosing > 0 or #queued == 0 then return end
+      local nxt = table.remove(queued, 1)
+      M.choose(nxt[1], nxt[2])
+    end)
+  elseif #after_choose > 0 then
+    local waiting = after_choose
+    after_choose = {}
+    vim.schedule(function() for _, fn in ipairs(waiting) do pcall(fn) end end)
+  end
+end
+
+-- Where the popup gives the focus back once answered (issue #55): the
+-- window it was opened from (in its tab), in the mode it was in - insert
+-- only there. That window gone (closed while it asked): the screen next to
+-- the chat, in normal mode. The chat's input box gets it back in normal
+-- mode, never insert: the popup left insert mode, so what you type next
+-- looks like commands to you - and <CR> there sends.
+local function give_back(prev_win, was_insert)
+  local back = false
+  if vim.api.nvim_win_is_valid(prev_win) then
+    pcall(vim.api.nvim_set_current_win, prev_win)
+    back = vim.api.nvim_get_current_win() == prev_win
+  end
+  -- (only when the chat is loaded already: a popup doesn't start it)
+  local chat = _G.package.loaded["azure-cli.chat"]
+  if not back and type(chat) == "table" and chat.main_win then
+    local ok, main = pcall(chat.main_win)
+    if ok and main and vim.api.nvim_win_is_valid(main) then pcall(vim.api.nvim_set_current_win, main) end
+  end
+  local in_chat = type(chat) == "table" and chat.is_chat_buf and chat.is_chat_buf(vim.api.nvim_get_current_buf())
+  if back and was_insert and not in_chat then
+    vim.cmd("startinsert")
+  elseif vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then
+    vim.cmd("stopinsert")
+  end
+end
+
 function M.choose(opts, cb)
   opts = opts or {}
   M.theme()
   local labels = opts.buttons or { "Yes", "Cancel" }
   local cancel = opts.cancel
   if cancel == nil then cancel = #labels elseif cancel == false then cancel = nil end
-  local done = false
-  local details_win
+  local done, counted = false, false
+  local details_win, full_win
+  local checks = opts.checks and vim.deepcopy(opts.checks) or nil
+  local function checkable(i) return checks ~= nil and i ~= nil and i <= #checks end
+  -- The buttons as drawn: tick boxes in front of the checkable ones.
+  local function shown()
+    if not checks then return labels end
+    local out = {}
+    for i, l in ipairs(labels) do out[i] = checkable(i) and ((checks[i] and "[x] " or "[ ] ") .. l) or l end
+    return out
+  end
   local function finish(i)
     if done then return end
     done = true
-    if details_win and vim.api.nvim_win_is_valid(details_win) then pcall(vim.api.nvim_win_close, details_win, true) end
-    cb(i)
+    for _, w in ipairs({ details_win, full_win }) do
+      if type(w) == "number" and vim.api.nvim_win_is_valid(w) then pcall(vim.api.nvim_win_close, w, true) end
+    end
+    if counted then choosing = choosing - 1 end
+    settle()
+    cb(i, checks)
   end
   local function details_float(focus_row)
     if not (opts.details and #opts.details > 0) then return end
@@ -756,32 +910,43 @@ function M.choose(opts, cb)
     end)
   end
   if style == "select" then return as_select() end
+  -- Another one open: this one waits for it (no window yet - nil).
+  if choosing > 0 then
+    queued[#queued + 1] = { opts, cb }
+    return nil
+  end
 
   local was_insert = vim.api.nvim_get_mode().mode:sub(1, 1) == "i"
   local prev_win = vim.api.nvim_get_current_win()
   local focused = opts.default or 1
   local uv = vim.uv or vim.loop
-  local armed_at = uv.hrtime() + (opts.arm_ms or 0) * 1e6
+  local arm_ms = opts.arm_ms or 0
+  local armed_at = uv.hrtime() + arm_ms * 1e6
   local function armed() return uv.hrtime() >= armed_at end
+  local full = opts.full or opts.details
+  if not (full and #full > 0) then full = nil end
+  local full_key = full and not (opts.keys or {}).o and "o" or nil
   local hint_parts, shortcuts = {}, {}
   for k, i in pairs(opts.keys or {}) do shortcuts[#shortcuts + 1] = { k = k, i = i } end
   table.sort(shortcuts, function(a, b) return a.i < b.i or (a.i == b.i and a.k < b.k) end)
   for _, s in ipairs(shortcuts) do hint_parts[#hint_parts + 1] = s.k .. " " .. labels[s.i]:lower() end
   hint_parts[#hint_parts + 1] = cancel and ("Esc " .. labels[cancel]:lower()) or "Esc cancels"
   if #labels > 1 then hint_parts[#hint_parts + 1] = "Tab moves" end
-  if opts.details and #opts.details > 0 then hint_parts[#hint_parts + 1] = "C-d / C-u scroll above" end
+  if opts.details and #opts.details > 0 then hint_parts[#hint_parts + 1] = "C-d / C-u scroll" end
+  if full_key then hint_parts[#hint_parts + 1] = full_key .. " shows all" end
   local hint = opts.hint or table.concat(hint_parts, " \u{00B7} ")
 
   local width = math.max(40, math.min(vim.fn.strdisplaywidth(hint) + 2, 80))
-  for _, l in ipairs(labels) do width = math.max(width, vim.fn.strdisplaywidth(l) + 6) end
+  for _, l in ipairs(shown()) do width = math.max(width, vim.fn.strdisplaywidth(l) + 6) end
   width = math.min(width, math.max(30, math.min(80, vim.o.columns - 4)))
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
   local ns = vim.api.nvim_create_namespace("azure_cli_confirm")
-  local rows = {}
+  local rows, spans = {}, {}
   local function draw()
     local lines, hls
-    lines, hls, rows = M.choose_lines(opts.lines, labels, focused, width, hint, not armed(), opts.stack)
+    lines, hls, rows = M.choose_lines(opts.lines, shown(), focused, width, hint, not armed(), opts.stack)
+    for i = 1, #labels do spans[i] = hls[i] end  -- the buttons come first: { row, from, to, group }
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
@@ -793,10 +958,12 @@ function M.choose(opts, cb)
   end
   local height = draw()
 
-  -- The details above the popup, both centred together.
-  local dh = 0
+  -- The details above the popup, both centred together: one row per line,
+  -- as many as they take while there's room.
+  local dh, drows = 0, nil
   if opts.details and #opts.details > 0 then
-    dh = math.max(3, math.min(#opts.details, vim.o.lines - height - 8))
+    drows = M.wrap_details(opts.details, width, opts.details_ft == "diff")
+    dh = math.max(1, math.min(#drows, vim.o.lines - height - 8))
   end
   local total = height + 2 + (dh > 0 and dh + 2 or 0)
   local top = math.max(0, math.floor((vim.o.lines - total) / 2) - 1)
@@ -804,7 +971,7 @@ function M.choose(opts, cb)
   if dh > 0 then
     local dbuf = vim.api.nvim_create_buf(false, true)
     vim.bo[dbuf].bufhidden = "wipe"
-    vim.api.nvim_buf_set_lines(dbuf, 0, -1, false, opts.details)
+    vim.api.nvim_buf_set_lines(dbuf, 0, -1, false, drows)
     vim.bo[dbuf].modifiable = false
     if opts.details_ft then vim.bo[dbuf].filetype = opts.details_ft end
     local dcfg = { relative = "editor", row = top, col = col, width = width, height = dh, style = "minimal",
@@ -816,12 +983,17 @@ function M.choose(opts, cb)
       ok, details_win = pcall(vim.api.nvim_open_win, dbuf, false, dcfg)
       if not ok then details_win = nil end
     end
-    if details_win then M.float_hl(details_win) end
+    if details_win then
+      M.float_hl(details_win)
+      vim.wo[details_win].wrap = false  -- wrapped already: a row is a line
+    end
     top = top + dh + 2
   end
   local wcfg = { relative = "editor", row = top, col = col, width = width, height = height, style = "minimal",
     border = M.border(), zindex = 200 }
   if opts.title then wcfg.title, wcfg.title_pos = " " .. opts.title .. " ", "center" end
+  -- Counted before it opens: opening it fires autocmds already.
+  choosing, counted = choosing + 1, true
   local ok, win = pcall(vim.api.nvim_open_win, buf, true, wcfg)
   if not ok then
     wcfg.title, wcfg.title_pos = nil, nil
@@ -829,51 +1001,160 @@ function M.choose(opts, cb)
   end
   if not ok then
     -- Can't take the focus here (the command line, say): the menu instead.
+    choosing, counted = choosing - 1, false
     if details_win and vim.api.nvim_win_is_valid(details_win) then pcall(vim.api.nvim_win_close, details_win, true) end
     details_win = nil
     return as_select()
   end
   M.float_hl(win)
   if was_insert then vim.cmd("stopinsert") end
-  local function place() pcall(vim.api.nvim_win_set_cursor, win, { rows[focused] or 1, 0 }) end
+  -- The cursor sits on the focused button, and <CR> presses the one under
+  -- the cursor - however it got there (the mouse, <C-w>, a motion).
+  local function place()
+    pcall(vim.api.nvim_win_set_cursor, win, { rows[focused] or 1, spans[focused] and spans[focused][2] or 0 })
+  end
+  local function under_cursor()
+    if not vim.api.nvim_win_is_valid(win) then return nil end
+    local pos = vim.api.nvim_win_get_cursor(win)
+    for i, s in ipairs(spans) do
+      if rows[i] == pos[1] and pos[2] >= s[2] and pos[2] < s[3] then return i end
+    end
+  end
   place()
-  if not armed() then
+  -- Once keys count, the buttons light up.
+  local function light_when_armed()
     vim.defer_fn(function()
-      if not done and vim.api.nvim_buf_is_valid(buf) then draw() place() end
-    end, (opts.arm_ms or 0) + 10)
+      if not done and armed() and vim.api.nvim_buf_is_valid(buf) then draw() place() end
+    end, arm_ms + 10)
+  end
+  if not armed() then light_when_armed() end
+  -- A key that does nothing (typing meant for somewhere else, or an answer
+  -- before keys count) waits arm_ms again: a burst of typing never answers
+  -- this question, nor the one after it.
+  local function rearm()
+    if arm_ms <= 0 or done then return end
+    local was = armed()
+    armed_at = uv.hrtime() + arm_ms * 1e6
+    if was then draw() place() end
+    light_when_armed()
   end
 
   local function answer(i)
     if done then return end
     if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
-    if vim.api.nvim_win_is_valid(prev_win) then pcall(vim.api.nvim_set_current_win, prev_win) end
-    if was_insert then vim.cmd("startinsert") end
+    give_back(prev_win, was_insert)
     finish(i)
   end
-  local function guarded(fn) return function() if armed() then fn() end end end
+  local function guarded(fn) return function() if armed() then fn() else rearm() end end end
   local kopts = { buffer = buf, silent = true, nowait = true }
-  -- Typing that was meant for somewhere else lands here as normal-mode
-  -- keys: the ones that would start editing or a command do nothing.
-  for _, k in ipairs({ "i", "a", "o", "I", "A", "O", "s", "S", "c", "C", "x", "X", "d", "D", "p", "P", "r", "R",
-      "u", "v", "V", ":", "/", "?", "g", "z", "Z", "<Space>", "<BS>" }) do
-    vim.keymap.set("n", k, "<Nop>", kopts)
-  end
+  local on_leave  -- (below)
+  local bound = {}
+  local function bind(k, fn) bound[k] = true vim.keymap.set("n", k, fn, kopts) end
   local function move(d) focused = (focused - 1 + d) % #labels + 1; draw(); place() end
-  for _, k in ipairs({ "<Tab>", "l", "j", "<Right>", "<Down>" }) do vim.keymap.set("n", k, guarded(function() move(1) end), kopts) end
-  for _, k in ipairs({ "<S-Tab>", "h", "k", "<Left>", "<Up>" }) do vim.keymap.set("n", k, guarded(function() move(-1) end), kopts) end
-  vim.keymap.set("n", "<CR>", guarded(function() answer(focused) end), kopts)
-  for k, i in pairs(opts.keys or {}) do vim.keymap.set("n", k, guarded(function() answer(i) end), kopts) end
-  -- Never guarded: backing out is always safe.
-  for _, k in ipairs({ "q", "<Esc>" }) do vim.keymap.set("n", k, function() answer(cancel) end, kopts) end
+  for _, k in ipairs({ "<Tab>", "l", "j", "<Right>", "<Down>" }) do bind(k, guarded(function() move(1) end)) end
+  for _, k in ipairs({ "<S-Tab>", "h", "k", "<Left>", "<Up>" }) do bind(k, guarded(function() move(-1) end)) end
+  -- A tick box's button ticks it (focused on it) and keeps asking.
+  local function press(i)
+    if not checkable(i) then return answer(i) end
+    checks[i] = not checks[i]
+    focused = i
+    draw()
+    place()
+  end
+  bind("<CR>", guarded(function() press(under_cursor() or focused) end))
+  for k, i in pairs(opts.keys or {}) do bind(k, guarded(function() press(i) end)) end
+  if checks then
+    for _, k in ipairs({ "<Space>", "x" }) do
+      if not bound[k] then bind(k, guarded(function() if checkable(focused) then press(focused) end end)) end
+    end
+  end
+  -- Never guarded: backing out is always safe. q too, but not in a question
+  -- that can pop up while you type (arm_ms): there it's a stray key.
+  bind("<Esc>", function() answer(cancel) end)
+  if arm_ms <= 0 then bind("q", function() answer(cancel) end) end
   for key, cmd in pairs({ ["<C-d>"] = "\4", ["<C-u>"] = "\21", ["<C-e>"] = "\5", ["<C-y>"] = "\25" }) do
-    vim.keymap.set("n", key, function()
+    bind(key, function()
       if details_win and vim.api.nvim_win_is_valid(details_win) then
         vim.api.nvim_win_call(details_win, function() vim.cmd("normal! " .. cmd) end)
       end
-    end, kopts)
+    end)
   end
-  vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true,
-    callback = function() vim.schedule(function() answer(cancel) end) end })
+  -- o: all of it, as it is, in a window of its own to read or yank from
+  -- (the popup keeps asking); q / <Esc> there come back.
+  if full_key then
+    bind(full_key, function()
+      if full_win then return end
+      local fbuf = vim.api.nvim_create_buf(false, true)
+      vim.bo[fbuf].bufhidden = "wipe"
+      vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, full)
+      vim.bo[fbuf].modifiable = false
+      if opts.details_ft then vim.bo[fbuf].filetype = opts.details_ft end
+      local fcfg = { relative = "editor", row = 1, col = 2, width = math.max(20, vim.o.columns - 6),
+        height = math.max(3, vim.o.lines - 6), border = M.border(), zindex = 210,
+        title = " All of it \u{00B7} q goes back ", title_pos = "left" }
+      full_win = true  -- leaving the popup for it isn't an answer (on_leave)
+      local fok, fwin = pcall(vim.api.nvim_open_win, fbuf, true, fcfg)
+      if not fok then
+        fcfg.title, fcfg.title_pos = nil, nil
+        fok, fwin = pcall(vim.api.nvim_open_win, fbuf, true, fcfg)
+      end
+      if not fok then full_win = nil return end
+      full_win = fwin
+      M.float_hl(fwin)
+      vim.wo[fwin].wrap = true
+      for _, k in ipairs({ "q", "<Esc>" }) do
+        vim.keymap.set("n", k, function() pcall(vim.api.nvim_win_close, fwin, true) end, { buffer = fbuf, silent = true, nowait = true })
+      end
+      vim.api.nvim_create_autocmd("WinClosed", { pattern = tostring(fwin), once = true, callback = function()
+        full_win = nil
+        vim.schedule(function()
+          if done or not vim.api.nvim_win_is_valid(win) then return end
+          pcall(vim.api.nvim_set_current_win, win)
+          vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true, callback = on_leave })
+        end)
+      end })
+    end)
+  end
+  -- Every other key does nothing: typing meant for somewhere else (a :
+  -- command, <C-w>, q:) can't leave the popup, which would answer it.
+  local function ignore() rearm() end
+  for c = 33, 126 do
+    local k = string.char(c)
+    if not bound[k] then vim.keymap.set("n", k, ignore, kopts) end
+  end
+  for c = string.byte("a"), string.byte("z") do
+    local k = "<C-" .. string.char(c) .. ">"
+    -- (<C-i> is <Tab> and <C-m> is <CR>)
+    if not bound[k] and c ~= string.byte("i") and c ~= string.byte("m") then vim.keymap.set("n", k, ignore, kopts) end
+  end
+  for _, k in ipairs({ "<Space>", "<BS>", "<Del>" }) do
+    if not bound[k] then vim.keymap.set("n", k, ignore, kopts) end
+  end
+  -- The button the cursor lands on lights up (before keys count, arming
+  -- puts the cursor back on the focused one).
+  vim.api.nvim_create_autocmd("CursorMoved", { buffer = buf, callback = function()
+    local i = armed() and under_cursor()
+    if i and i ~= focused then focused = i; draw() end
+  end })
+  -- Leaving it answers its cancel button - unless that happens before its
+  -- keys count: then it wasn't you (a split opening, a view taking the
+  -- cursor), and the popup takes the focus back and keeps asking. Going to
+  -- what o opened isn't leaving either: closing that comes back.
+  on_leave = function()
+    local early, into_full = not armed(), full_win ~= nil
+    vim.schedule(function()
+      if done or into_full then return end
+      if early and vim.api.nvim_win_is_valid(win) then
+        pcall(vim.api.nvim_set_current_win, win)
+        if vim.api.nvim_get_current_win() == win then
+          vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true, callback = on_leave })
+          return
+        end
+      end
+      answer(cancel)
+    end)
+  end
+  vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true, callback = on_leave })
   return win
 end
 

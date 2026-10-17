@@ -2,15 +2,16 @@
 -- pause, and a small float lists the g keys that screen has and what each
 -- does (↑ before the ones that change Azure DevOps), until the next key -
 -- which then does what it always did. On those buffers g is a key of its
--- own. Every screen also has longer g keys (gq, g., ...), so Neovim waits
+-- own. Every screen also has longer g keys (gP, g., ...), so Neovim waits
 -- 'timeoutlen' after a g before it settles on the plain one - that wait is
 -- the pause: when this g runs with no key typed after it, you paused, and
 -- the float goes up. (Nothing can be shown from outside: Neovim runs no
 -- timers or scheduled callbacks while a mapping is still pending.) The key
 -- you then type, or the one already waiting, is replayed with this g out
 -- of the way, after the count and register: Vim's own g commands, your g
--- mappings (gcc, grn, ...) and the screen's (gq, gA, ...) all do what
--- they did.
+-- mappings (gcc, grn, ...) and the screen's (gP, gA, ...) all do what
+-- they did. A screen with lines that aren't rows gives M.rows its rows,
+-- so gg / G (its first_row / last_row keys) land on one.
 --
 -- ui.key_hints: "auto" (the default) - on unless which-key or mini.clue is
 -- there, which show pending keys themselves (from the same descriptions
@@ -47,7 +48,7 @@ end
 -- sorted), at most `max_w` cells wide and `max_h` lines tall: "↑ gA  desc",
 -- keys in a column, a "…" line (and g. to see the rest) when they don't
 -- all fit, the ↑ legend when one is marked. Pure.
-function M.lines(entries, max_w, max_h)
+function M.lines(entries, max_w, max_h, service)
   local kw = 0
   for _, e in ipairs(entries) do kw = math.max(kw, vim.fn.strdisplaywidth(e.key)) end
   local lines, hls, marked = {}, {}, false
@@ -69,7 +70,7 @@ function M.lines(entries, max_w, max_h)
     hls[#hls + 1] = { #lines - 1, #mark + 1, #mark + 1 + #e.key, "AzureCliKeyHint" }
   end
   if marked then
-    lines[#lines + 1] = "\u{2191} changes Azure DevOps"
+    lines[#lines + 1] = "\u{2191} changes " .. (service or "Azure DevOps")
     hls[#hls + 1] = { #lines - 1, 0, -1, "AzureCliMuted" }
   end
   return lines, hls
@@ -79,6 +80,13 @@ end
 function M.entries(buf)
   local writes = require("azure-cli.keys").writes_on(buf)
   local out, seen = {}, {}
+  -- g1..g9 (innertabs.lua's tabs.pick) as one line, not nine.
+  local pick = vim.b[buf].azure_cli_tabs and require("azure-cli.keys").resolve("tabs", "pick")
+  pick = type(pick) == "table" and pick or (pick and { pick }) or {}
+  for _, k in ipairs(pick) do seen[k] = true end
+  if #pick > 1 and pick[1]:sub(1, 1) == "g" then
+    out[#out + 1] = { key = pick[1] .. "-" .. pick[#pick], desc = "go to inner tab n (the first is the list)", write = false }
+  end
   for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
     local lhs = m.lhs or ""
     if lhs:sub(1, 1) == "g" and #lhs > 1 and not seen[lhs] then
@@ -108,7 +116,8 @@ local function show(buf)
   UI.theme()
   local max_w = math.max(20, math.min(70, vim.o.columns - 6))
   local max_h = math.max(3, vim.o.lines - vim.o.cmdheight - 6)
-  local lines, hls = M.lines(entries, max_w, max_h)
+  -- vim.b.azure_cli_service: what a screen's ↑ keys change ("GitHub" on the Issues tab).
+  local lines, hls = M.lines(entries, max_w, max_h, vim.b[buf].azure_cli_service)
   local width = 0
   for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l)) end
   local fbuf = vim.api.nvim_create_buf(false, true)
@@ -167,6 +176,29 @@ press = function(buf)
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(buf) then map_g(buf) end
   end)
+end
+
+-- gg / G on a screen whose lines aren't all rows (group headers, a tab
+-- bar, the padding round a centred box): the first / last row, and with a
+-- count the count-th row, instead of a line the cursor can't use there.
+-- `fn()` gives the screen's rows by line ({ [line] = row }). Bound as
+-- `surface`'s first_row / last_row (config.lua: gg / G, rebindable),
+-- whether or not the hints are on; g and a pause replays gg into this one
+-- too, count and all.
+function M.rows(buf, fn, surface)
+  local function go(last)
+    local list = {}
+    for l in pairs(fn() or {}) do list[#list + 1] = l end
+    if #list == 0 then return end
+    table.sort(list)
+    local n = vim.v.count
+    local i = n > 0 and math.min(n, #list) or (last and #list or 1)
+    vim.cmd("normal! m'")
+    pcall(vim.api.nvim_win_set_cursor, 0, { list[i], vim.api.nvim_win_get_cursor(0)[2] })
+  end
+  local KEYS = require("azure-cli.keys")
+  KEYS.bind(buf, surface, "first_row", function() go(false) end, { desc = "first row (a count: that row)" })
+  KEYS.bind(buf, surface, "last_row", function() go(true) end, { desc = "last row (a count: that row)" })
 end
 
 -- Gives `buf` (one of ours - keys.lua calls this on its first key) the g

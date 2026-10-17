@@ -7,6 +7,7 @@
 --
 -- Usage: luajit test-migrate.lua <migrate.lua path>
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fs = {}  -- path -> array of lines (a "file"); absent key = doesn't exist
 
 vim = {

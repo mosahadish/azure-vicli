@@ -10,7 +10,7 @@ local M = {}
 local function pr_record(ctx)
   local rec = ctx.current_pr_record()
   if rec then return rec end
-  return { id = ctx.ID, org = ctx.ORG, project = ctx.PROJECT, repo = vim.env.AZVICLI_REPO or "" }
+  return { id = ctx.ID, org = ctx.ORG, project = ctx.PROJECT, repo = ctx.REPO or "" }
 end
 
 local function setup(ctx)

@@ -4,10 +4,10 @@
 -- rows) hands each work item to an agent of its own: a conversation of
 -- its own (chat/init.lua's CHAT.conversation, keyed by the item's plan
 -- key) that starts with /plan, so each writes its plan while you carry on.
--- At most chat.max_agents (default 3) work at once; the rest wait here and
--- start as others finish. Once a plan is in, you review it as usual - its
--- tab's chat is that agent's conversation, so approving it there sets that
--- agent going.
+-- At most chat.max_agents (default 3) work at once (the main chat doesn't
+-- count); the rest wait here and start as others finish. Once a plan is
+-- in, you review it as usual - its tab's chat is that agent's
+-- conversation, so approving it there sets that agent going.
 --
 --   M.start_for_items(items, extra)  queues { id, title, type, state } work
 --                             items; `extra` = what the user added, passed on
@@ -22,6 +22,7 @@
 --   M.pump()                  starts queued ones while there's room
 --                             (chat/init.lua calls it after every answer)
 --   M.queued()                the waiting ones, in order
+--   M.unqueue(key)            takes one out (its plan discarded)
 --   M.max()                   chat.max_agents
 --   M.plan_prompt(item)       the first message (pure)
 local M = {}
@@ -42,22 +43,44 @@ function M.queued()
   return out
 end
 
--- How many conversations have a message in flight.
+-- How many plan agents have a message in flight: only conversations with a
+-- plan key take a slot - the main chat's own turn (it's mid-turn whenever
+-- it calls start_agents) never does (#83).
 function M.working()
   local n = 0
-  for _, c in ipairs(CHAT().conversations()) do if c.running then n = n + 1 end end
+  for _, c in ipairs(CHAT().conversations()) do if c.plan_key and c.running then n = n + 1 end end
   return n
 end
 
+-- Where a planner reads the code (#71): the branch the story goes on, not
+-- the clone's default branch.
+M.READ_IN_WORKTREE = "call start_story for its repository and branch first: before approval it gives you a "
+  .. "read-only worktree of that branch to read with Read/Grep"
+
 function M.plan_prompt(item)
+  if item.board == "github" then
+    return "/plan GitHub issue #" .. tostring(item.id) .. (item.repo and (" in " .. item.repo) or "")
+      .. (item.title and (" \"" .. item.title .. "\"") or "")
+      .. ": read it (get_work_item with board = \"github\"), look at the code it touches (" .. M.READ_IN_WORKTREE
+      .. "), then write the plan for it with submit_plan (work_item_id " .. tostring(item.id) .. "). Pass board = \"github\" to every work-item "
+      .. "tool for it. You were started from the Issues board, one agent per issue - this conversation is about "
+      .. "this one only."
+  end
   return "/plan Work item #" .. tostring(item.id) .. (item.title and (" \"" .. item.title .. "\"") or "")
-    .. ": read it, look at the code it touches, then write the plan for it with submit_plan (work_item_id "
+    .. ": read it, look at the code it touches (" .. M.READ_IN_WORKTREE .. "), then write the plan for it with "
+    .. "submit_plan (work_item_id "
     .. tostring(item.id) .. "). You were started from the board, one agent per work item - this conversation is "
     .. "about this one only."
 end
 
--- The view a board-started agent is told about: just its work item.
+-- The view a board-started agent is told about: just its work item (and
+-- on GitHub its board, which the board tools then default to).
 local function snap_for(item)
+  if item.board == "github" then
+    return { screen = "issues dashboard (this agent was started for one issue)", board = "github",
+      work_item = { id = item.id, type = item.type, title = item.title, state = item.state, board = "github",
+        repo = item.repo, key = item.key } }
+  end
   return { screen = "work items dashboard (this agent was started for one work item)",
     work_item = { id = item.id, type = item.type, title = item.title, state = item.state } }
 end
@@ -79,9 +102,22 @@ local function with_extra(prompt, extra)
   return extra ~= "" and (prompt .. "\n\nThe user adds: " .. extra) or prompt
 end
 
+-- Keyed by the issue's key, not its number (#114): two GitHub #7s in
+-- different repos are two agents, and an Azure #7 a third. An issue whose
+-- plan began before that keeps its wi-<n> one (plan.resolve_item). An
+-- issue no list had yet comes with its key looked up (start_agents, #127).
+-- Nil for an Azure item whose wi-<n> is such an old issue plan.
 local function job_for_item(it, extra)
-  return { key = "wi-" .. tostring(it.id), label = "#" .. tostring(it.id), title = it.title,
-    target = { work_item_id = it.id }, prompt = with_extra(M.plan_prompt(it), extra), display = "/plan #" .. tostring(it.id),
+  local PLAN = require("azure-cli.chat.plan")
+  local target = it.board == "github" and PLAN.resolve_item(PLAN.item_target(it)) or { work_item_id = it.id }
+  if not target.item_key and it.board ~= "github" and PLAN.legacy_is_github(it.id) then
+    notify("#" .. tostring(it.id) .. ": plans/wi-" .. tostring(it.id) .. " is a GitHub issue's plan from before "
+      .. "issues had keys of their own - finish or discard it (dd on the Agents screen) first.", vim.log.levels.WARN)
+    return nil
+  end
+  local label = PLAN.target_label(target)
+  return { key = PLAN.key(target), label = label, title = it.title,
+    target = target, prompt = with_extra(M.plan_prompt(it), extra), display = "/plan " .. label,
     snap = snap_for(it) }
 end
 
@@ -92,7 +128,9 @@ function M.pr_prompt(pr, threads)
     and ("the review comment" .. (#threads == 1 and "" or "s") .. " in thread" .. (#threads == 1 and " " or "s ")
       .. table.concat(vim.tbl_map(tostring, threads), ", "))
     or "its open review comments (every active thread)"
-  return "/plan PR !" .. tostring(pr.id) .. (pr.title and (" \"" .. pr.title .. "\"") or "") .. ": plan how to fix "
+  local repo = pr.key and tostring(pr.key):match("^(.-~.-)~%d+$")
+  return "/plan PR !" .. tostring(pr.id) .. (repo and (" in " .. repo:gsub("~", "/")) or "")
+    .. (pr.title and (" \"" .. pr.title .. "\"") or "") .. ": plan how to fix "
     .. which .. ". Read them with get_pr_threads and look at the code they're on, then write one plan for the fix "
     .. "with submit_plan (pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
 end
@@ -116,18 +154,22 @@ end
 local function job_for_pr(pr, threads, extra)
   -- A PR one of the agents opened goes back to that agent, with its plan
   -- and its conversation.
-  local owner = require("azure-cli.chat.plan").owner_of_pr(pr.id, pr.source)
+  local PLAN = require("azure-cli.chat.plan")
+  local owner = PLAN.owner_of_pr(pr, pr.source)
   local wi = owner and owner.target and owner.target.work_item_id
   if wi then
-    return { key = owner.key, label = "#" .. tostring(wi), title = owner.title or pr.title, target = owner.target,
+    return { key = owner.key, label = PLAN.target_label(owner.target), title = owner.title or pr.title, target = owner.target,
       prompt = with_extra(M.pr_followup_prompt(pr, threads, wi), extra),
       display = "/plan PR !" .. tostring(pr.id) .. "'s comments" .. ((threads and #threads > 0) and (" (thread "
         .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
       snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. " got review comments)",
         pr = pr } }
   end
-  return { key = "pr-" .. tostring(pr.id), label = "PR !" .. tostring(pr.id), title = pr.title,
-    target = { pr_id = pr.id }, prompt = with_extra(M.pr_prompt(pr, threads), extra),
+  -- Keyed by the PR's key, not its number (#109): two GitHub #7s in
+  -- different repos are two agents.
+  local target = PLAN.pr_target(pr)
+  return { key = PLAN.key(target), label = PLAN.target_label(target), title = pr.title,
+    target = target, prompt = with_extra(M.pr_prompt(pr, threads), extra),
     display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "
       .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
     snap = { screen = "pull request (this agent was started for one PR's review comments)", pr = pr } }
@@ -181,11 +223,15 @@ local function enqueue(jobs, nothing)
   return msg, added
 end
 
--- Queues `items` (work items from the board; nil entries skipped).
-function M.start_for_items(items, extra)
+-- Queues `items` (work items from the board; nil entries skipped);
+-- `board` "github" when they're the Issues board's.
+function M.start_for_items(items, extra, board)
   local jobs = {}
   for _, it in ipairs(items or {}) do
-    if type(it) == "table" and it.id then jobs[#jobs + 1] = job_for_item(it, extra) end
+    if type(it) == "table" and it.id then
+      if board then it = vim.tbl_extend("force", it, { board = board }) end
+      jobs[#jobs + 1] = job_for_item(it, extra)
+    end
   end
   return enqueue(jobs, "Put the cursor on a work item (or select some rows).")
 end
@@ -213,7 +259,7 @@ function M.start_for(text, snap)
     if r.kind == "pr" then
       prs[#prs + 1] = r.pr or require("azure-cli.chat.tools").pr_record(r.id) or { id = r.id }
     else
-      items[#items + 1] = r.item or { id = r.id }
+      items[#items + 1] = vim.tbl_extend("force", r.item or { id = r.id }, { board = r.board })
     end
   end
   local threads_of = {}
@@ -233,6 +279,18 @@ function M.start_for(text, snap)
   if #items > 0 then said[#said + 1] = (M.start_for_items(items, extra)) end
   if #prs > 0 then said[#said + 1] = (M.start_for_prs(prs, threads_of, extra)) end
   return table.concat(said, " ")
+end
+
+-- Takes `key` out of the queue (its plan discarded, #98): whether it was
+-- there.
+function M.unqueue(key)
+  for i, q in ipairs(queue) do
+    if q.key == key then
+      table.remove(queue, i)
+      return true
+    end
+  end
+  return false
 end
 
 -- For tests: forget the queue.

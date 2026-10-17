@@ -9,8 +9,8 @@
 -- (plus keys.prefix) at every `keys.bind` call site instead of a UI file
 -- ever hard-coding a key string itself; a value of `false` unbinds that
 -- action entirely, a list of strings binds several keys to the same action
--- (e.g. the work-items dashboard's next_sprint responding to both "]" and
--- "<Tab>", exactly as it always has).
+-- (e.g. the work-items dashboard's toggle_fold responding to both "za" and
+-- "<Space>").
 local M = {}
 
 local DEFAULT_KEYS = {
@@ -18,11 +18,11 @@ local DEFAULT_KEYS = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
     filter = "/", vote = "gv", complete = "gm",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
-    workitems = "W", toasts = "gN", help = "?", palette = "g.", quit = "q",
+    workitems = "W", issues = "I", toasts = "gN", help = "?", palette = "g.", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", agents = "A", plan_agents = "gP",
-    agent_chat = "ga",
+    link_workitem = "gl", unlink_workitem = "gL", agents = "A", plan_agents = "gP",
+    agent_chat = "ga", chat_input = "i", chat_selection = "<CR>",
   },
   -- Reviewer file list.
   list = {
@@ -34,7 +34,8 @@ local DEFAULT_KEYS = {
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq", plan_agents = "gP",
+    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP",
+    chat_input = "i", chat_selection = "<CR>",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
@@ -52,8 +53,10 @@ local DEFAULT_KEYS = {
     quit = "q", commits = "gc", batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", chat = "gq",
-    plan_agents = "gP",
+    expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
+    plan_agents = "gP", chat_input = "i", chat_selection = "<CR>",
+    -- The "· N unchanged lines ·" fold under the cursor; zR / zM do them all.
+    toggle_fold = { "za", "<Space>" },
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
     goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
@@ -68,54 +71,72 @@ local DEFAULT_KEYS = {
     active_filter = "gA", filters = "gF", ignore_ws = "gw", config = "gO",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",
     quit = "q", edit_comment = "e", delete_comment = "dd",
-    open_commit = "<CR>", batch_toggle = "gB", batch_queue = "gQ",
+    open_commit = "<CR>", open_image = { "<CR>", "gx" }, batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", chat = "gq", plan_agents = "gP",
+    link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP",
+    chat_input = "i", chat_selection = "<CR>",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
     goto_definition = "gd", find_references = "gr", search = "g/",
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
-    resize_more = ">", help = "?", palette = "g.", chat = "gq",
+    resize_more = ">", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
   },
-  -- Work-items dashboard.
+  -- Work-items dashboard - and the issues dashboard (I), the same screen
+  -- on a GitHub account's project. workitems (W) is bound on the issues
+  -- one, issues (I) on the work-items one.
   workitems = {
     open = "<CR>", state = "gs", new = "n", assign = "ga", priority = "gp",
-    edit_title = "ge", move_sprint = "gi", link_pr = "gl", browser = "o",
-    refresh = "r", next_sprint = { "]", "<Tab>" }, prev_sprint = { "[", "<S-Tab>" },
-    goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P",
+    edit_title = "ge", move_sprint = "gi", set_parent = "gU", link_pr = "gl", browser = "o",
+    -- Not a bare ] / [: they'd make the inner-tab keys ]r / [r wait.
+    refresh = "r", next_sprint = "<Tab>", prev_sprint = "<S-Tab>",
+    goto_sprint_n = "gt", click = "<LeftMouse>", pr_list = "P", workitems = "W", issues = "I",
     copy_link = "gy", config = "gO", help = "?", palette = "g.", quit = "q",
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
-    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM", chat = "gq",
-    plan_agents = "gP", agents = "A",
+    toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
+    plan_agents = "gP", agents = "A", chat_input = "i", chat_selection = "<CR>",
+    first_row = "gg", last_row = "G",
   },
   -- Work-item detail view.
   workitem_view = {
     open = "<CR>", state = "gs", assign = "ga", priority = "gp",
-    edit_title = "ge", move_sprint = "gi", comment = "gc", link_pr = "gl",
+    edit_title = "ge", description = "gE", move_sprint = "gi", set_parent = "gU", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
-    back = "<BS>", quit = "q", help = "?", palette = "g.", chat = "gq",
+    back = "<BS>", quit = "q", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
   },
   -- The chat panel (both its conversation and its input box).
   chat = {
-    send = "<CR>", send_insert = "<C-s>", focus_input = { "i", "a" }, new_chat = "gn",
+    -- newline: <S-CR> where the terminal reports it, <C-j> everywhere.
+    send = "<CR>", send_insert = { "<CR>", "<C-s>" }, newline = { "<S-CR>", "<C-j>" },
+    focus_input = { "i", "a" }, new_chat = "gn",
     cancel = "<C-c>", model = "gm", agent = "gM", prompts = "gp", history = "gh", audit = "gH",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
-    back = "<BS>", hide = "q", toggle = "gq", help = "?", palette = "g.", resize_less = "<", resize_more = ">",
+    back = "<BS>", hide = "q", help = "?", palette = "g.", resize_less = "<", resize_more = ">",
     changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
+    -- On a message queued while the agent answers (conversation only).
+    queue_drop = "dd", queue_edit = "cc",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
-    open = "<CR>", changes = "gd", run_log = "gH", chat = "gq", cancel = "<C-c>", refresh = "r",
-    quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W",
-    show_finished = "gF",
+    open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
+    quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
+    show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
     open = "<CR>", back = "<BS>", ask = "ga", approve = "gA", revise = "gR", open_file = "gf",
     expand_thread = "<Tab>", next_thread = "]t", prev_thread = "[t", view_thread = "K",
-    refresh = "r", chat = "gq", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
+    refresh = "r", chat_input = "i", chat_selection = "<CR>", resize_less = "<", resize_more = ">", help = "?", palette = "g.", quit = "q",
     goto_code = "gd", request = "gc", delete_thread = "dd", since = "gi", run_log = "gH", answer = "gr",
+    edit_request = "cc",
+    revisions = "gh",
+    discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
+  },
+  -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
+  -- and on everything opened from it (a PR's reviewer). pick's keys go to
+  -- the strip's entries in order - g1 the home list, g2 the first item.
+  tabs = {
+    next = "]r", prev = "[r", pick = { "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "g9" },
   },
 }
 
@@ -126,7 +147,13 @@ local DEFAULT_KEYS = {
 -- warning when it was remapped, since that binding is gone.
 local REMOVED_KEYS = {
   ["dashboard.auto_complete"] = { default = "ga", why = "auto-complete is a checkbox in gm's dialog now" },
+  ["chat.toggle"] = { default = "gq", why = "q hides the chat" },
+  ["agents.chat"] = { default = "gq", why = "Enter (keys.agents.open) opens the row's agent" },
 }
+-- gq (issue #118): i opens the chat on every screen now.
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "plan" }) do
+  REMOVED_KEYS[s .. ".chat"] = { default = "gq", why = "i opens the chat now (keys." .. s .. ".chat_input)" }
+end
 
 -- setup({timing=...}) tunables - each replaces one hard-coded constant a UI
 -- file used to own outright:
@@ -142,6 +169,12 @@ local REMOVED_KEYS = {
 --   cached_prs           cache.lua's M.MAX_PRS
 --   threads_ttl_seconds  cache.lua's M.THREADS_TTL
 --   aged_days            dashboard.lua's "aged" (AzureCliAged) threshold
+--   idle_after           poll.lua: seconds without a key before the polls
+--                        above (and chat.watch_seconds') slow down, as
+--                        they do while Neovim is unfocused
+--   max_poll_seconds     poll.lua: how slow they get while you're away -
+--                        each tick doubles the interval up to this (never
+--                        below poll_seconds; = poll_seconds turns it off)
 -- cached_prs/threads_ttl_seconds are applied to cache.lua directly inside
 -- M.setup() below (not read live from M.get() at use time, unlike the
 -- others - cache.lua's own M.MAX_PRS/M.THREADS_TTL fields are what every
@@ -155,6 +188,8 @@ local DEFAULT_TIMING = {
   cached_prs = 24,
   threads_ttl_seconds = 120,
   aged_days = 14,
+  idle_after = 300,
+  max_poll_seconds = 300,
 }
 
 -- setup({hide_ancient_days=...}) - exported to the provider as
@@ -205,11 +240,63 @@ local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto", confirm = "popup" }
 local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
 
+-- setup({dashboard_web=...}): the phone dashboard (lua/azure-cli/web.lua,
+-- #97) - a read-only web page of the Agents screen. Off unless `enabled`;
+-- :AzureCli web start then serves it on `bind`:`port`. Loopback by default:
+-- to reach it from a phone, set `bind` to this machine's LAN or VPN address.
+-- An address that listens everywhere (0.0.0.0, ::) is refused.
+-- `persist_token` (#105): keep the token in stdpath("state") (0600) so the
+-- phone link survives a restart, until :AzureCli web rotate.
+local DEFAULTS_DASHBOARD_WEB = { enabled = false, bind = "127.0.0.1", port = 8797, persist_token = true }
+local ALL_INTERFACES = { [""] = true, ["*"] = true, ["0.0.0.0"] = true, ["::"] = true, ["[::]"] = true,
+  ["0:0:0:0:0:0:0:0"] = true }
+
+-- setup({images=...}): images in a PR's description and comments
+-- (review/images.lua, #134). Enter/gx always opens one; `inline` also shows
+-- them under their line in the Overview when snacks.nvim or image.nvim is
+-- installed and the terminal can draw images.
+local DEFAULTS_IMAGES = { inline = true }
+
 local DEFAULTS = {
   keys = DEFAULT_KEYS, timing = DEFAULT_TIMING, hide_ancient_days = DEFAULT_HIDE_ANCIENT_DAYS,
   notifications = DEFAULT_NOTIFICATIONS, collapsed_sections = DEFAULT_COLLAPSED_SECTIONS,
   row_numbers = DEFAULT_ROW_NUMBERS, chat = DEFAULTS_CHAT, ui = DEFAULTS_UI,
+  dashboard_web = DEFAULTS_DASHBOARD_WEB, images = DEFAULTS_IMAGES,
 }
+
+local function validate_images(t)
+  if type(t) ~= "table" then error("azure-cli.setup: `images` must be a table") end
+  local out = vim.deepcopy(DEFAULTS_IMAGES)
+  for k, v in pairs(t) do
+    if k ~= "inline" then error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in images") end
+    if type(v) ~= "boolean" then error("azure-cli.setup: images.inline must be true or false") end
+    out[k] = v
+  end
+  return out
+end
+
+local function validate_dashboard_web(w)
+  if type(w) ~= "table" then error("azure-cli.setup: `dashboard_web` must be a table") end
+  local out = vim.deepcopy(DEFAULTS_DASHBOARD_WEB)
+  for k, v in pairs(w) do
+    if k == "enabled" or k == "persist_token" then
+      if type(v) ~= "boolean" then error("azure-cli.setup: dashboard_web." .. k .. " must be true or false") end
+    elseif k == "bind" then
+      if type(v) ~= "string" or ALL_INTERFACES[(v:gsub("^%s+", ""):gsub("%s+$", ""))] then
+        error("azure-cli.setup: dashboard_web.bind must be one address (this machine's LAN or VPN address, "
+          .. "or 127.0.0.1) - listening on every interface (0.0.0.0, ::) isn't allowed")
+      end
+    elseif k == "port" then
+      if type(v) ~= "number" or v ~= math.floor(v) or v < 0 or v > 65535 then
+        error("azure-cli.setup: dashboard_web.port must be a whole number from 0 to 65535 (0: any free port)")
+      end
+    else
+      error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in dashboard_web")
+    end
+    out[k] = v
+  end
+  return out
+end
 
 local function validate_ui(ui)
   if type(ui) ~= "table" then error("azure-cli.setup: `ui` must be a table") end
@@ -244,10 +331,13 @@ local CHAT_FIELDS = {
   position = "string", size = "number", input_height = "number", agent = "table", agents = "table",
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
+  plan_revisions = "number",
   test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
 }
+-- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
+  idle_timeout_seconds = "number", max_turn_seconds = "number", interrupt_grace_seconds = "number",
   models = "table", strip = "table", acp = "boolean", premium_requests = "table",
   planner_model = "string", implementer_model = "string",
 }
@@ -310,6 +400,9 @@ local function validate_chat(chat)
   end
   if out.plan_first ~= nil and out.plan_first ~= true and out.plan_first ~= false and out.plan_first ~= "stories" then
     error("azure-cli.setup: chat.plan_first must be true, false or \"stories\"")
+  end
+  if out.plan_revisions ~= nil and (out.plan_revisions < 1 or out.plan_revisions ~= math.floor(out.plan_revisions)) then
+    error("azure-cli.setup: chat.plan_revisions must be a whole number, at least 1")
   end
   if out.input_height < 1 then error("azure-cli.setup: chat.input_height must be at least 1") end
   local function check_agent(a, where)
@@ -438,10 +531,14 @@ end
 local ACCOUNT_FIELDS = {
   project_name = "string", org_url = "string", pat_file = "string",
   hide_ancient = "boolean", clones_dir = "string", work_items = "table",
+  host = "string", owner = "string", api_url = "string", issues = "table",
 }
 local WORK_ITEM_FIELDS = {
   team = "string", assignee = "string", types = "list", states = "list", sprint_scope = "string",
 }
+-- A GitHub account's issues: block (github_issues.py): project is a
+-- Projects v2 number or title.
+local ISSUES_FIELDS = { project = "scalar", repo = "string", scope = "string" }
 
 local function check_fields(tbl, allowed, where)
   for k, v in pairs(tbl) do
@@ -459,6 +556,10 @@ local function check_fields(tbl, allowed, where)
             error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a list of strings")
           end
         end
+      end
+    elseif want == "scalar" then
+      if type(v) ~= "string" and type(v) ~= "number" then
+        error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a number or a string")
       end
     elseif type(v) ~= want then
       error("azure-cli.setup: `" .. k .. "` in " .. where .. " must be a " .. want)
@@ -483,6 +584,35 @@ local function validate_accounts(accounts)
         .. "so the token goes in a file of its own: pat_file = \"~/.config/azure-cli/pat\"")
     end
     check_fields(a, ACCOUNT_FIELDS, where)
+    local host = a.host or "azure"
+    if host ~= "azure" and host ~= "github" then
+      error("azure-cli.setup: " .. where .. ".host must be \"azure\" or \"github\" (got " .. host .. ")")
+    end
+    if host == "github" then
+      -- owner/api_url are optional, and so is pat_file: without one the
+      -- provider asks `gh auth token`.
+      if a.api_url ~= nil and not a.api_url:match("^[Hh][Tt][Tt][Pp][Ss]?://") then
+        error("azure-cli.setup: " .. where .. ".api_url must start with https:// (got " .. a.api_url .. ")")
+      end
+      if a.work_items ~= nil then
+        error("azure-cli.setup: " .. where .. ".work_items isn't supported on a GitHub account yet")
+      end
+      if a.issues ~= nil then
+        check_fields(a.issues, ISSUES_FIELDS, where .. ".issues")
+        if a.issues.project == nil or tostring(a.issues.project) == "" then
+          error("azure-cli.setup: " .. where .. ".issues needs a `project` (a Projects v2 number or title)")
+        end
+        local scope = a.issues.scope
+        if scope ~= nil and scope ~= "mine" and scope ~= "all" then
+          error("azure-cli.setup: " .. where .. ".issues.scope must be \"mine\" or \"all\"")
+        end
+      end
+      goto continue
+    end
+    if a.issues ~= nil then
+      error("azure-cli.setup: " .. where .. ".issues is for a GitHub account (host = \"github\"); "
+        .. "an Azure DevOps account uses work_items")
+    end
     for _, req in ipairs({ "project_name", "org_url" }) do
       if type(a[req]) ~= "string" or a[req] == "" then
         error("azure-cli.setup: " .. where .. " needs a non-empty `" .. req .. "`")
@@ -504,6 +634,7 @@ local function validate_accounts(accounts)
         error("azure-cli.setup: " .. where .. ".work_items.sprint_scope must be \"parent\" or \"all\"")
       end
     end
+    ::continue::
   end
   return accounts
 end
@@ -630,6 +761,10 @@ function M.setup(opts)
   if opts.chat ~= nil then chat = validate_chat(opts.chat) end
   local ui = DEFAULTS.ui
   if opts.ui ~= nil then ui = validate_ui(opts.ui) end
+  local dashboard_web = DEFAULTS.dashboard_web
+  if opts.dashboard_web ~= nil then dashboard_web = validate_dashboard_web(opts.dashboard_web) end
+  local images = DEFAULTS.images
+  if opts.images ~= nil then images = validate_images(opts.images) end
   local timing = merge_timing(DEFAULTS.timing, opts.timing)
   resolved = {
     keys = merge_keys(DEFAULTS.keys, opts.keys),
@@ -642,6 +777,8 @@ function M.setup(opts)
     row_numbers = (opts.row_numbers == nil) and DEFAULTS.row_numbers or opts.row_numbers,
     chat = chat,
     ui = ui,
+    dashboard_web = dashboard_web,
+    images = images,
   }
   if ui.palette == "azure-vicli" then
     pcall(function() require("azure-cli.palette").apply({ follow = true }) end)
@@ -682,11 +819,12 @@ end
 -- README's order, actions alphabetically, so a diff of two generated files
 -- is meaningful. Multi-key defaults render as Lua lists.
 local SURFACE_ORDER = { "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan",
-  "agents" }
+  "agents", "tabs" }
 local SURFACE_TITLES = {
   dashboard = "Pull-request dashboard", list = "Reviewer: file list", diff = "Reviewer: diff pane",
   overview = "Reviewer: Overview page", nav = "Reviewer: gd/gr/gf revision buffers and peek",
   workitems = "Work-items dashboard", workitem_view = "Work-item detail view", chat = "Chat panel", plan = "Agent plan window", agents = "Agents screen",
+  tabs = "Inner tabs (a home tab and what's opened from it)",
 }
 local function lua_literal(v)
   if type(v) == "string" then return string.format("%q", v) end
@@ -753,8 +891,22 @@ function M.render_options()
     w("    " .. k .. " = " .. lua_literal(DEFAULTS.ui[k]) .. ",")
   end
   w("  },")
+  w("  -- The phone dashboard (:AzureCli web): a read-only web page of the Agents screen.")
+  w("  -- Off by default; set bind to this machine's LAN or VPN address to reach it.")
+  w("  dashboard_web = {")
+  for _, k in ipairs(sorted_keys(DEFAULTS.dashboard_web)) do
+    w("    " .. k .. " = " .. lua_literal(DEFAULTS.dashboard_web[k]) .. ",")
+  end
+  w("  },")
+  w("  -- Images in PR descriptions and comments: Enter/gx opens one; inline also shows")
+  w("  -- them in the Overview when snacks.nvim or image.nvim can draw in this terminal.")
+  w("  images = {")
+  for _, k in ipairs(sorted_keys(DEFAULTS.images)) do
+    w("    " .. k .. " = " .. lua_literal(DEFAULTS.images[k]) .. ",")
+  end
+  w("  },")
   w("")
-  w("  -- The chat panel (gq) and its agents - docs/chat.md. No agent by default;")
+  w("  -- The chat panel (i) and its agents - docs/chat.md. No agent by default;")
   w("  -- the commented lines are examples, not defaults.")
   w("  chat = {")
   w("    position = " .. lua_literal(DEFAULTS.chat.position) .. ",  -- \"right\", \"left\", \"bottom\" or \"top\"")
@@ -777,6 +929,7 @@ function M.render_options()
   w("    -- prompts = { security = \"Look for injection and secrets in this PR.\", standup = false },")
   w("    -- plan_first = true,           -- plan before changing code")
   w("    -- plan_template = \"...\",       -- the plan's sections")
+  w("    -- plan_revisions = 3,          -- revisions kept per plan (and the approved one)")
   w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
   w("    -- max_agents = 3,              -- agents working at once")
   w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")

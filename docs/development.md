@@ -22,7 +22,18 @@ _Part of the [azure-vicli](../README.md) docs._
   time, in the order Actionable, created by me, Drafts, Signed off, Waiting,
   with one repository-wide fetch per clone only when something changed.
 - **Polling that stays out of the way.** One list poll and one thread poll
-  per minute, never overlapping themselves, and a half-second hover debounce.
+  every `timing.poll_seconds` (30 s), slower while Neovim is idle or
+  unfocused, never overlapping themselves, and a half-second hover debounce.
+- **Kept-alive connections.** Idle connections to the same host are reused
+  from a pool (up to 8 per host, dropped after 60 s idle), and a read that
+  fails on a pooled one is retried once on a fresh connection.
+  `AZVICLI_NO_POOL=1` turns the pool off.
+- **`connectionData` once per organization.** Under `--serve` the daemon
+  keeps each organization's `connectionData` for 10 minutes, keyed by
+  organization and PAT, and drops it when a request there answers 401, 403
+  or 203.
+- **Every account at once.** `--list` fetches all accounts together on one
+  pool of 8 and prints them in config order.
 
 The cache is keyed by PR id and its last-activity timestamp, so a push
 invalidates it automatically. It holds 24 PRs by default. Every number in
@@ -51,9 +62,14 @@ lua/azure-cli/
   cache.lua       per-PR content cache + prefetch pipeline
   notify.lua      desktop toast notifications + in-editor flash notifications
   merge.lua       the complete-PR dialog shared by the dashboard's and the reviewer's gm
+  hosts.lua       what each code host offers (votes, thread statuses, merge methods, mention form) and the PR key
   log.lua         in-session error log (M.record/M.summary) + :AzureCli log
   editor.lua      floating comment editor (drafts, @ mentions)
-  home.lua        the three home screens (Pull requests, Work items, Agents), each in its own tab; P/W/A switch, closing a PR goes back to the tab it came from
+  home.lua        the home screens (Pull requests, Work items, Agents, and Issues with a GitHub issues: account), each in its own tab; P/W/A/I switch, closing a plan goes back to the tab it came from
+  innertabs.lua   inner tabs: PRs stay grouped under Pull requests, work items under Work items, issues under Issues, plans and changes under Agents (hidden from the tab line, the strip in the winbar, giving way to the window's own), ]r/[r/g1..g9, q goes to the previous one
+  poll.lua        the one scheduler every network poll runs on: slower while Neovim is unfocused or idle, a refresh on return
+  perf.lua        :AzureCli perf, a summary of the provider's perf log (AZVICLI_DEBUG=1)
+  web.lua         the phone dashboard: :AzureCli web start/stop/status/rotate, its token, the rows it pushes to azure-cli.py --web-dashboard
   chat/           the chat panel: init.lua (conversations, the panel), run.lua (running the agent:
                   send, cancel, its MCP config), actions.lua (what the panel's keys do), view.lua (what's on screen),
                   tools.lua (the agent's MCP tools), bridge.lua (the 127.0.0.1 endpoint --mcp relays to),
@@ -64,7 +80,8 @@ lua/azure-cli/
                   notes.lua (annotate_code's notes, saved per PR), watch.lua (the chat's
                   PRs, polled for new comments: suggest /triage, or start an agent),
                   skills.lua (the agent's SKILL.md skills, the /skills popup; an allowed one's prompts don't ask),
-                  tools_agents.lua (the main chat's start_agents / list_agents / message_agent)
+                  tools_agents.lua (the main chat's start_agents / list_agents / message_agent),
+                  plan_changes.lua (the plan view's Changes section), plan_discard.lua (dd / gD: discarding a plan)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard
   review/
@@ -76,14 +93,20 @@ lua/azure-cli/
     batch.lua                reviewer-feature module: batched review
     since.lua                reviewer-feature module: changes since my last review
     filelist.lua             file-list layout: status letters, +/- stats, directory grouping
+    images.lua               reviewer-feature module: images in the description and comments (<CR>/gx, inline)
+    overview_syntax.lua      the Overview's azurecli-overview filetype: Markdown only in the description and comment bodies
   workitems/
     dashboard.lua   work-items dashboard
     view.lua        work-item detail view
+    parent.lua      gU: change or remove a work item's parent
 plugin/azure-cli.lua   defines :AzureCli (see Commands) - no side effects beyond that
 standalone/init.lua    the launcher's Neovim entry point: adds the plugin root
                        to 'runtimepath', calls setup(), applies the standalone
                        colour palette, opens the dashboard in the current window
 azure-cli.py           headless data provider + launcher + daemon (repo root)
+github_host.py         its GitHub backend: GitHub PRs/threads/pushes in the shapes azure-cli.py's Azure code uses
+github_issues.py       GitHub Issues and a Projects v2 project as the work-items backend (the Issues tab)
+github_rest.py         github_host.py's queries answered from GitHub's REST API where GraphQL is refused
 azure-cli, azure-cli.cmd   one-line launchers (repo root)
 ```
 
@@ -149,12 +172,13 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/review/init.lua` | Reviewer: file list, diffs, comments, optimistic writes, code navigation and peek view - `EXT.provider` builds the `azure-cli.py` argv every write/fetch runs, sent through `EXT.rpc`/`ctx.rpc` (`rpc.lua`). |
 | `lua/azure-cli/cache.lua` | Per-PR content cache shared by dashboard and reviewer, and the prefetch pipeline that fills it - its own provider calls (the threads fetch) go through `rpc.lua` too; git stays direct. |
 | `lua/azure-cli/notify.lua` | OS-level toast notifications (Windows/Linux/macOS), rate-limited, `require()`'d by the dashboard; also `M.flash` - the in-editor floating status notifications (see [setup() options](configuration.md#setup-options)' `notifications`). |
+| `lua/azure-cli/hosts.lua` | Per-host capabilities: the vote choices (with their glyphs and which count as signed), the thread statuses `s` offers, the merge methods, the form an `@` mention is sent in, and the PR's key and display ref. A PR record's `host` picks the table (Azure when absent) and its `caps` override parts of it; `is_open` is the one rule for whether a thread is unresolved. Pure. |
 | `lua/azure-cli/merge.lua` | The complete-PR dialog (merge type, work-item/branch toggles, build/threads/votes summary and warnings) that both the dashboard's `gm` and the reviewer's `gm` open; its `MERGE_TYPES` list, `build_label`, `warnings` and `lines` are pure and shared with the winbar. |
 | `lua/azure-cli/log.lua` | The in-session error log every provider-failure path records into (`M.record`) and shows a one-line summary from (`M.summary`); `M.open` is [`:AzureCli log`](commands-and-keys.md#commands). |
 | `lua/azure-cli/chat/*.lua` | The [chat panel](chat.md): `init.lua` the split (transcript + input) that follows you into every azure-vicli tab, and each message's headless agent run (session resume via `followup`, else replay); `view.lua` the "what's on screen" snapshot every screen registers a describer for; `tools.lua` the agent's tools (reads, direct writes, writes that ask); `bridge.lua` the 127.0.0.1 + token endpoint `azure-cli.py --mcp` forwards MCP tool calls to. |
 | `lua/azure-cli/chat/core.lua`, `store.lua`, `refs.lua` | The chat's pure helpers (message composition, the stream reader for Claude Code's stream-json / json / plain output, saved prompts, `!`/`#` reference parsing, transcript rendering); saved conversations and the audit log under `stdpath("data")/azure-cli-chat/`; resolving, describing, completing and opening references. |
 | `lua/azure-cli/chat/tools_pr.lua`, `tools_board.lua`, `tools_fix.lua`, `tools_agents.lua` | The agent's tool groups beyond the basics: build log, failed tests, thread status, reviewers, description, create/complete PR, re-queue, `open_in_ui`, `annotate_code`; child tasks, assignment, sprints, comments; the fix flow (a worktree under `stdpath("cache")/azure-cli/fix-worktrees`, its diff, commit and push); the main chat coordinating the agents (start, list, message them - refused inside an agent's own conversation). `tools.lua` holds the registry, per-tool permissions, the audit log and the undoers. |
-| `lua/azure-cli/review/chat.lua` | Reviewer-feature module: `gq` (and `gq` on a selection) in the reviewer, its describer (file, line, code, the change around the cursor, a selection's file lines, the thread), `STATE.review_openers` for `open_in_ui`, and drawing `annotate_code` notes (called from `decorate_comments`). |
+| `lua/azure-cli/review/chat.lua` | Reviewer-feature module: `i` (and `<CR>` on a selection) in the reviewer, its describer (file, line, code, the change around the cursor, a selection's file lines, the thread), `STATE.review_openers` for `open_in_ui`, and drawing `annotate_code` notes (called from `decorate_comments`). |
 | `lua/azure-cli/editor.lua` | The floating comment editor (see [Reviewer](reviewer.md#reviewer)'s "Comment editor") - drafts, title formatting, `@` mention translation. |
 | `lua/azure-cli/rpc.lua` | Shared client for the `azure-cli.py --serve` daemon - one daemon per Neovim session, `require()`'d by every file above; `M.run(argv, opts)` is a `vim.fn.jobstart`-compatible drop-in that routes a provider call to the daemon when it's usable and falls back to a plain job otherwise. |
 | `lua/azure-cli/review/nav.lua` | Reviewer-feature module (see "Extending the reviewer" below): code navigation without an LSP - `gd` (go to definition, ranked by `def_score`), `gr` (find references), `gf` (open this file at the PR's revision), `g/` (search the changed files), the two-float peek view and the read-only revision buffers you keep navigating from, with `<BS>` walking back one jump. Loaded **first** of the review modules: `review/{commits,followup,since}.lua` reach the peek and those buffers through the `ctx` fields filled in from its return value. |
@@ -165,6 +189,15 @@ daemon lifecycle/fallback rules and wire protocol.
 | `lua/azure-cli/review/since.lua` | Reviewer-feature module: `gi` toggles showing only changes since your last review. |
 | `lua/azure-cli/review/followup.lua` | Reviewer-feature module: `gu` opens a picker of every thread you started, tagged closed-as-is/changed/unchanged/addressed/n/a for whether anything landed nearby since your last review and whether the thread has since been resolved. Its per-path since-diffs are cached on (base, source tip, path) - the tip belongs in the key because a push moves the answer without moving the base. |
 | `lua/azure-cli/review/filelist.lua` | The file list's layout: `M.build` (pure) groups files by directory, trims their common prefix, and formats each row's status letter/+-stats/comment count; `M.render` writes it into the list buffer. `EXT.refresh_file_list` (review/init.lua) is the only caller - every row->file lookup goes through the model it returns instead of indexing `files` by row. |
+| `lua/azure-cli/review/images.lua` | Reviewer-feature module: image references in the Overview and the K popup; `<CR>`/`gx` (chained onto the keys' previous handlers through `ctx.add_key`'s `chain`) download one with `azure-cli.py --fetch-image` into a `0600` temp file and open it; with snacks.nvim's image module or image.nvim and a terminal that draws images, `ctx.on_overview_render` places them inline (`images.inline`). |
+| `lua/azure-cli/review/overview_syntax.lua` | The Overview's `azurecli-overview` filetype: Vim's markdown syntax as a contained cluster, used only in the description and comment-body regions, `markdownError` cleared in that buffer only. |
+| `lua/azure-cli/poll.lua` | The one scheduler every network poll runs on (the PR dashboard, a review, the boards, the chat's watched PRs): each ticks at its base rate while you're here; while Neovim is unfocused or idle for `timing.idle_after`, each tick doubles its interval up to `timing.max_poll_seconds`, and on return an overdue poll ticks once at once. |
+| `lua/azure-cli/perf.lua` | [`:AzureCli perf`](commands-and-keys.md#commands): reads the perf log `AZVICLI_DEBUG=1` makes `azure-cli.py` write and summarises it per screen, per endpoint and by the slowest requests. |
+| `lua/azure-cli/web.lua` | The [phone dashboard](chat.md#phone-dashboard): `:AzureCli web`, starting `azure-cli.py --web-dashboard` with the token's file path (never the token) on its command line, the stored token under `stdpath("state")`, rotating it, and pushing the Agents screen's rows. |
+| `lua/azure-cli/chat/plan_changes.lua`, `plan_discard.lua` | The plan view's Changes section (the agent's diff beside the plan, file by file); discarding a plan (`dd` on the Agents screen, `gD` in the plan), asking first and checking its worktree only afterwards, in the background. |
+| `lua/azure-cli/workitems/parent.lua` | `gU`: change or remove a work item's (or issue's) parent, from the board and the item view. |
+| `github_rest.py` | Where GraphQL is refused (a REST-only proxy, an Enterprise Server with GraphQL off, or `AZVICLI_GITHUB_REST=1`), each of `github_host.py`'s queries answered from REST calls in the same shape, so its converters and the Lua side don't change. `Client.graphql` switches an API root to it at the first refusal; see [Configuration](configuration.md#github-accounts) for what REST can't do. |
+| `github_issues.py` | GitHub Issues and a Projects v2 project as the work-items backend: answers `--wi-list`/`--wi-detail`/`--wi-state`/`--wi-edit` for a GitHub account's `issues:` block (iterations or milestones as tabs, the Status field as state). |
 | `lua/azure-cli/workitems/dashboard.lua`, `lua/azure-cli/workitems/view.lua` | Work-item dashboard and detail view - run `azure-cli.py` for every work-item fetch/action (`--wi-list`/`--wi-detail`/`--wi-state`/`--wi-edit`), the same `PROVIDER_CMD` pattern `dashboard.lua` uses, through `rpc.lua`; no bash in the loop. |
 | `lua/azure-cli/workitems/states.lua` | Pure `work_items.states:` rank/highlight mapping (see [Work items](work-items.md#work-items)), shared by `workitems/dashboard.lua`/`workitems/view.lua`; falls back to the pre-`states:` hard-coded tables when the provider sends no `states` field. |
 | `install.sh` | Dependency check/install for the standalone launcher (Neovim, git, python). The config template is written by `lua/azure-cli/firstrun.lua` through `azure-cli.py --init-config` on the first launch. |
@@ -186,10 +219,19 @@ python3.
 Most files use CRLF line endings; edit them byte-wise. The Lua files can be
 syntax-checked with `luajit -bl` on a CR-stripped copy and the scripts with
 `bash -n`. `azure-cli.py` and `tests/test_*.py` are plain LF. Build outputs
-(`__pycache__/`) are ignored by git; prefetch markers and the `.userid`
-cache live under Neovim's/the platform's cache directory (see
-`AZVICLI_PREFETCH_DIR` in [Environment variables](configuration.md#environment-variables)),
+(`__pycache__/`) are ignored by git; prefetch markers live under
+Neovim's/the platform's cache directory (see `AZVICLI_PREFETCH_DIR` in [Environment variables](configuration.md#environment-variables)),
 not inside the repo.
+
+Every `tests/*.lua` test (the `gen-keys-table.lua` generator aside) loads
+`tests/sandbox.lua` first, and `run.sh` checks it does. The sandbox runs
+each test with its own XDG directories and an empty `HOME` in a temp dir,
+so a test never reads your `~/.claude/skills`, `~/.gitconfig` or the like
+(the scripts loaded into a harness's nvim get theirs from `run.sh` and
+`demo.sh --headless`). `run.sh` itself
+clears every `AZVICLI_*` variable plus `VIM`, `VIMRUNTIME`, `NVIM`,
+`MYVIMRC` and `NVIM_LOG_FILE`, and sets its own `XDG_DATA_HOME`,
+`XDG_CACHE_HOME`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` under a temp dir.
 
 `tests/run.sh` is the whole test suite (bash, git, luajit and python3; a
 real `nvim` on PATH enables the stricter Neovim load check and the headless
@@ -198,10 +240,11 @@ smokes - see below): a `luajit -bl` syntax check and a global-name scan
 these long, forward-referencing files) over every file under `lua/`,
 `plugin/` and `standalone/` (globbed, not a hand-written list, so a new
 module is picked up automatically), `bash -n` over every shell script (and
-the `azure-cli` launcher), twenty-nine Lua unit tests under `tests/` run
-by `luajit`, `python3 -m unittest discover` over `tests/test_*.py`, and,
-in headless `nvim`, ten more Lua tests that need Neovim itself (marked
-"Runs in headless nvim" below) and eight smokes:
+the `azure-cli` launcher), thirty-seven Lua unit tests under `tests/` run
+by `luajit` (plus `test-sandbox.lua`, started from a polluted environment
+to prove the sandbox holds), `python3 -m unittest discover` over
+`tests/test_*.py`, and, in headless `nvim`, twenty more Lua tests that need
+Neovim itself (marked "Runs in headless nvim" below) and eight smokes:
 
 | Test | Covers |
 |---|---|
@@ -219,15 +262,24 @@ in headless `nvim`, ten more Lua tests that need Neovim itself (marked
 | `test-review-comments.lua` | `review/comments.lua`'s pure helpers: the line-to-comment mapping over a synthetic popup rendering, and optimistic edit/delete apply-and-revert against a synthetic thread table with a fake `run_write` that succeeds or fails |
 | `test-review-commits.lua` | `review/commits.lua`'s pure helpers: parsing an Overview commit row and pulling a sha out of one, finding the commit under the cursor scoped to the "Commits (who pushed):" block, parsing `git show --name-status` output (including a rename), and root-commit detection from `git rev-list --parents` output |
 | `test-review-range.lua` | `review/range.lua`'s pure helpers: resolving a visual selection to a `{side, start, stop}` range over a synthetic diff map (forward/reversed selections, a single-line collapse, mixed-side and non-commentable ends), and the `--post` argv it builds, with and without an `endLine` |
-| `test-review-batch.lua` | `review/batch.lua`'s pure helpers: the winbar tag text, queueing/removing/serialising items, the argv a queued item submits with, and submission order/vote timing against a fake `run_write` (a failed item staying queued while the rest confirm, and the vote going out last and only when chosen) |
+| `test-review-batch.lua` | `review/batch.lua`'s pure helpers: the winbar tag text, queueing/removing/serialising items, the argv a queued item submits with, and submission order/vote timing against a fake `run_write` (a failed item staying queued while the rest confirm, and the vote going out last and only when chosen), and for a native-review host (GitHub) the one-review payload (verdict, body from the reason/PR comments/Conversation replies, the rest as items) and its all-or-nothing submit |
 | `test-review-since.lua` | `review/since.lua`'s pure helpers: ISO-8601 timestamp normalisation (fraction padding, numeric UTC-offset folding across a day/month/year boundary) and comparison, picking my last review point out of a synthetic thread list (including a vote-only "system" comment, and "no comments at all"), picking the base iteration to diff from out of a synthetic iterations list (including "every iteration is newer than my last review"), and the `since:<short-sha>`/`:iws` variant and range string composition |
 | `test-review-followup.lua` | `review/followup.lua`'s pure helpers: selecting "my" anchored/unanchored threads out of a synthetic flat thread list (first-comment authorship, someone else's thread excluded, file-level/PR-level threads routed to "unanchored"), parsing `git diff --unified=0` hunk headers (add-only, delete-only, a modify, an omitted single-line count), the new-side overlap/window check, the old-side -> new-side line-mapping rule (shift accumulation across several hunks, a line inside a deleted range returning nil), classification ("n/a" for a target-side thread, "unchanged" for no nearby/no hunks at all, "changed" otherwise), the resolved-status crossing (closed-as-is/addressed) and its sort order, the hunk cache being keyed on the source tip as well as the base (and never caching a tip that didn't resolve to a sha), row formatting and changed-first/path/line sorting, and the summary-line/row-map builder (singular/plural iteration and thread counts, the "Unanchored" section only appearing when there is one) |
-| `test-review-pane.lua` | `review/pane.lua`'s pure fold-level and gutter computations: far context folding while 3 lines either side of a change (and of a commented line) stay open, a too-short foldable run left unfolded, the old/new line-number gutter across a hunk (context shows both, deleted old only, added new only, widths following the max, an unmapped line blank), `set_keep` recomputing levels, and `forget` |
-| `test-review-viewed.lua` | `review/viewed.lua` against an in-memory store: marking/counting viewed files, a new push clearing the mark, separate PRs kept apart, toggling off/on, and next/previous unviewed file (wrapping, `nil` once all are viewed) |
+| `test-review-pane.lua` | `review/pane.lua`'s pure fold-level and gutter computations: far context folding while 3 lines either side of a change (and of a commented line) stay open, a too-short foldable run left unfolded, the one-column line-number gutter across a hunk (context and added lines show the new number, a deleted line its old one, dimmed; the width following the larger side, an unmapped line blank), `set_keep` recomputing levels, and `forget` |
+| `test-review-viewed.lua` | `review/viewed.lua` against an in-memory store: marking/counting viewed files, a new push clearing the mark, separate PRs kept apart, toggling off/on, next/previous unviewed file (wrapping, `nil` once all are viewed), remembered folds (round trip, per variant and PR, nothing open deleting the record, `folds_drop`) beside the marks, and a store written before folds were remembered still loading its marks |
+| `test-review-folds.lua` | `review/folds.lua`'s pure parts: fold runs and their new-side line-range ids, which runs a remembered set reopens (exact, zR's every run, a fold split by a new comment reopening both halves, junk ignored), the diff stamp (same lines same stamp, changed lines a new one), and the remember/drop rules through `review/viewed.lua` |
+| `test-review-bom.lua` | `review/bom.lua` on real `cache.lua` `parse_diff` output: a UTF-8 BOM on both sides, on the new or old side only (one unchanged line 1, the rest of a removal kept, gutter numbers still the file's), none (the same tables back), alongside a real line-1 change, a comment on line 1 landing on buffer line 1, and `fix` normalizing a cache entry once |
+| `test-review-images.lua` | `review/images.lua`: finding image references on a line, the terminal/renderer detection with stubbed snacks.nvim / image.nvim (present and absent), placing and removing with a stubbed renderer, and `<CR>`/`gx` end to end against `tests/fake-provider.py`'s `--fetch-image` - a `0600` download, credentials only for the PR's own host, another host opened in the browser without them, and the keys on other lines doing what they did |
+| `test-review-overview-syntax.lua` | Runs in headless nvim: `review/overview_syntax.lua` - only the description and comment bodies are Markdown, the header, branches, reviewers and commits are plain text, an intraword `_` is never a `markdownError`, and the user's own `markdownError` highlight stays as it was |
 | `test-keys.lua` | `config.lua`'s `setup()` merge/validate (override, unbind via `false`, a multi-key action, per-surface `prefix`, an unknown action/surface name erroring clearly) and `keys.lua`'s `resolve`/`bind`/`line`/`label` against it |
 | `test-keys-palette.lua` | Runs in headless nvim: `keys.lua`'s action palette (`M.palette`, `g.`) - binding a screen's keys binds its palette, it lists that buffer's normal-mode actions once each, the pick runs in the window it was opened from, cancelling runs nothing, each buffer lists its own actions, `?` lists the palette key, and `palette = false` binds and lists none |
 | `test-key-hints.lua` | Runs in headless nvim with the main loop (real input): `keyhints.lua`'s pure `wanted`/`lines` (`ui.key_hints` `"auto"`/`true`/`false`, the write marker, a "N more" row, a long description cut), `keys.lua`'s `writes_on`, then the g-key float - `g` and a pause put it up with vote marked, the next key closes it and runs, `gg` typed fast shows no float, a count still applies, `<Esc>` does nothing - and which-key (under `"auto"`) or `ui.key_hints = false` leaving `g` unmapped |
+| `test-perf.lua` | `perf.lua`'s pure helpers behind `:AzureCli perf`: which screen a request belongs to, folding ids out of a path, and the summary and its lines |
+| `test-web.lua` | `web.lua`'s pure helpers: the phone dashboard's page JSON built from the Agents screen's rows (keeping only what the page may show) and its URL |
+| `test-shell.lua` | `shell.lua`'s `open_url` without `vim.ui.open` (Neovim 0.9): it starts `xdg-open` / `open` itself, detached |
+| `test-sandbox.lua` | `tests/sandbox.lua`'s own probe, started straight from a polluted environment (XDG dirs and `HOME` at a sentinel directory, a bogus `VIMRUNTIME`, `AZVICLI_CHAT_*` set) under both `luajit` and headless nvim: it ends up in a fresh sandbox with its own `HOME`, and `run.sh` checks the sentinel directory stayed empty |
 | `test-merge.lua` | `merge.lua`'s pure helpers: `build_label` for every build state (queued included), `warnings` (a green build/no conflict/zero threads is clean, an unknown thread count is not a warning, singular/plural threads), and `lines` for a full spec and a bare one (toggle states, merge-type cycling, the `?` placeholders, the warning line only when there is one) |
+| `test-hosts.lua` | `hosts.lua`: the host falls back to Azure, record overrides layer without touching the host's table, the key and ref, vote lookup and glyphs, which statuses are open, and mention tokens |
 | `test-prs.lua` | `prs.lua`'s pure PR-record helpers: `surname` parsing, applying/undoing my vote (key, ratio, summary, adding me when absent), `iso_epoch` of the provider's UTC stamps (a summer and a winter stamp pinned so the local-offset correction is checked, unparseable/`nil` as 0, ordering), and `drop_completed`/`mark_completed` (a PR completed this session hidden while ADO still lists it, forgotten once gone, back after the grace period, undo unmarking) |
 | `test-pr-workitems.lua` | `pr_workitems.lua`'s pure helpers: a PR row's linked-work-item badge (none/one/several), `describe` (full and id-only), and `gW`'s picker lines (with and without an assignee) |
 | `test-migrate.lua` | `migrate.lua`'s `M.ensure`: old present/new absent copies the old file's content into the new one verbatim (line-for-line, multi-line included), new already present leaves it untouched and never even needs to read the old file, and neither existing is a harmless no-op - with a shimmed `vim.fn.filereadable`/`readfile`/`writefile` against a tiny in-memory fake filesystem |
@@ -236,18 +288,38 @@ in headless `nvim`, ten more Lua tests that need Neovim itself (marked
 | `test-linked-prs.lua` | `workitems/linked_prs.lua`'s pure helpers: the dashboard's PR marker (none/one/several), PR status (active, draft, a completed draft as completed, unread), the detail view's PR lines (an unread PR as just its id, no author), and `marker_range`/`marker_group` for highlighting the marker column |
 | `test-config.lua` | `config.lua`'s `setup()` options beyond `keys` (already `test-keys.lua`'s): `python`/`config` precedence (env `AZVICLI_PY` > `setup()` > probe; `setup({config=...})` always wins) and validation, `M.config_path()`, the `AZVICLI_PREFETCH_DIR`/`AZVICLI_HIDE_ANCIENT_DAYS` defaults `provider_cmd()` sets (never overwriting an ambient value), `timing`/`hide_ancient_days` defaults/partial-override/validation, `cached_prs`/`threads_ttl_seconds` actually landing on a real `cache.lua` instance via `setup()` (pre-seeded into `package.loaded` so `config.lua`'s own internal `require("azure-cli.cache")` resolves to the same table the test inspects), and `collapsed_sections` defaults/override/reset/empty-table/validation |
 | `test-ui.lua` | `ui.lua`'s pure `UI.winbar` (context/tags/help joining, blank entries skipped) and `UI.layout` (growing to ideal by weight, `grow` columns soaking up leftover width, the lowest-priority-first drop order when even the minimums don't fit, an undroppable column surviving regardless) |
+| `test-innertabs.lua` | `innertabs.lua`'s pure helpers: next/previous wrapping around the strip, where closing an inner tab goes (the one before it, else the list), and the strip's text (the list first, the current entry bracketed and in the title group, long titles cut with an ellipsis, the current one keeping more, `%` escaped) |
 | `test-confirm.lua` | Runs in headless nvim with the main loop (real input): `ui.lua`'s question popup (`UI.choose`/`UI.confirm`) - its lines (buttons in a row or one per line, the focused one lit, wrapping), every way out (`y`/`n`, `<CR>` on the focused or `default` button, `<Tab>`/`j`/`k`, `q`/`<Esc>`, `opts.cancel`, leaving the window), stray editing keys ignored, `arm_ms` ignoring an instant answer but not `<Esc>`, the details window above it, `ui.confirm = "select"`, keeping insert mode across it, and the two callers: the chat's "may the agent ...?" and approving a plan (Approve / Approve and push / Cancel) |
 | `test-review-filelist.lua` | `review/filelist.lua`'s pure `M.diff_stats` (add/del counts from a parsed-diff map) and `M.build` (directory grouping and sorting, common-prefix trimming - including "no common prefix" and a lone file still getting its own header row - the row_to_file/file_to_row/ordered_files maps, status-letter/stats/thread-count row formatting including the uncached "(?)" and no-status-yet cases, and the AzureCliFileDir/Added/Deleted/Renamed highlight assignment, "M" deliberately getting none) |
 | `test-chat.lua` | Runs in headless nvim (needs `vim.json`/`vim.api` at load): the chat's message composition (first/resumed/replayed), answer parsing (Claude Code's envelope, plain text, `session_pattern`), `can_resume`, models, transcript rendering, the view description, the tool list's shape and ask/write split, a declined "ask" tool never running, and `review/chat.lua`'s thread shape; the stream reader (partial lines, stream-json events, our own MCP tools not listed twice, `strip`), saved prompts, reference parsing/resolution/completion, permissions (overrides, a denied tool hidden and refused), the store (in a scratch directory: saving, a slim audit entry, undone marks) and the reviewer's hunk/selection-line helpers |
 | `test-chat-plan.lua` | Runs in headless nvim: the pure parts of `chat/plan.lua` (sections, missing template sections, planned files and `check_files`, resolving a line by its text, plan/code links, `revision_changes`, the plan gate, `push_check`, `run_log`, `section_text`, `pr_description`, skill detection/listing, `chat.skill_dirs` and the `/skills` popup (`<Space>` allows / asks again, `<CR>` uses one), `approval_message`, `pr_allowed`), the questions under a line (`chat/threads.lua`) and the change viewer's file list (`chat/changes.lua`), and the Agents screen's rows |
-| `test-chat-persistent.lua` | Runs in headless nvim against `tests/fake-persistent-agent.py`: `chat/init.lua`'s `send` keeping one agent process across messages (same pid, turn 2, one process ever started), per-turn cost, a new chat stopping it, `gm` starting a new process with the conversation replayed, one conversation per plan key (two processes at once, the main one staying current), restoring a plan's conversation, and a one-shot CLI (`tests/fake-oneshot-agent.py`) reported as one that can't stay running |
-| `test-chat-acp.lua` | Runs in headless nvim against `tests/fake-acp-agent.py`: `agent.acp` (`send_acp` + `chat/acp.lua`) keeping one ACP session warm across messages and handing an http-only agent `azure-cli.py --mcp-http`; tool permissions (reads allowed, edits asked, planning refusing edits, an approved plan's files/build/test commands not asking, an unplanned file asking and joining the plan once allowed, read-only shell searches, skills allowed from the popup, the `chat.permissions` groups, `run_tests`), `usage_update` cost/context and premium-request counting, `planner_model`/`implementer_model` switching, and the main chat coordinating plan agents (`/plan`, `list_agents`, `message_agent`, `start_agents`) |
+| `test-chat-persistent.lua` | Runs in headless nvim against `tests/fake-persistent-agent.py`: `chat/init.lua`'s `send` keeping one agent process across messages (same pid, turn 2, one process ever started), per-turn cost, a new chat stopping it, `gm` starting a new process with the conversation replayed, one conversation per plan key (two processes at once, the main one staying current), restoring a plan's conversation, and the main chat's `message_agent` to a plan's agent mid-turn queued in that agent's queue and delivered in order when the turn ends (#60), the timeouts (#27: a quiet agent stopped by the idle one, steady output past it never stopped, the cap stopped however steady, each saying which - also on the Agents screen), and a one-shot CLI (`tests/fake-oneshot-agent.py`) reported as one that can't stay running |
+| `test-chat-watchdog.lua` | Runs in headless nvim, pure: `chat/watchdog.lua` on a hand-turned clock - the idle timeout (reset by output, paused while a tool works or a popup waits), the cap (less popup time), the old `timeout_seconds` name, and the status and line saying which fired |
+| `test-chat-acp.lua` | Runs in headless nvim against `tests/fake-acp-agent.py`: `agent.acp` (`send_acp` + `chat/acp.lua`) keeping one ACP session warm across messages and handing an http-only agent `azure-cli.py --mcp-http`; tool permissions (reads allowed, edits asked, planning refusing edits, an approved plan's files/build/test commands not asking, an unplanned file asking and joining the plan once allowed, read-only shell searches, skills allowed from the popup, the `chat.permissions` groups, `run_tests`), `usage_update` cost/context and premium-request counting, `planner_model`/`implementer_model` switching, the main chat coordinating plan agents (`/plan`, `list_agents`, `message_agent`, `start_agents`), and the idle timeout over ACP (stopped through `session/cancel`, the session surviving it, a popup's wait not counted) |
 | `test-chat-bridge.lua` | Runs in headless nvim: `chat/bridge.lua` over a real socket - it listens with a 32-hex-digit token, a request with the token is answered, a wrong token is refused, and one growing past `MAX_REQUEST` without a newline is dropped while the bridge keeps answering |
 | `test-chat-exit.lua` | Runs in headless nvim (`luafile`, under `timeout 30`): quitting while agents work with more queued (`max_agents = 1`, `tests/fake-persistent-agent.py`) exits straight away - `run.sh` fails it if it takes 10s or more or never reports an agent working |
+| `test-chat-insert-send.lua` | Runs in headless nvim with the main loop (real input): in the chat's input box `<CR>` while typing sends and leaves insert mode, `<C-j>` (and `<S-CR>` where the terminal reports it) breaks the line, `<C-s>` sends, `<CR>` with the completion menu open picks the entry, and while the agent answers `<CR>` queues the message instead |
+| `test-agents-enter-mode.lua` | Runs in headless nvim with the main loop (real input): `<CR>` on an Agents row opens its agent - the plan with its conversation, or before it has planned the conversation in a popup - and leaves you in normal mode; only `i` goes into the chat's input box |
+| `test-plan-discard.lua` | Runs in headless nvim: `dd` on the Agents screen and `gD` in a plan view discard a plan - asking first (Cancel leaves everything), refused while its agent works, a worktree with uncommitted or unpushed changes kept and a clean one removed, the files moved to `plans/discarded/`, a plan with no agent conversation and a queued one handled too - against real git worktrees in the sandbox |
+| `test-plan-tabline.lua` | Runs in headless nvim: the tab line's "N plans wait for you" is redrawn whenever the plans index changes (a discard, an approval, a new plan), without a chat render or a tab switch, and once for a burst of saves |
+| `test-start-story.lua` | Runs in headless nvim: `start_story` against a real scratch origin and clone - the worktree on the branch (detached only when git can't, saying why), the clone found from `clones_dir` before the PR list has loaded, a story on an existing branch pushed straight to it with no PR step, and the read-only worktree before the plan is approved becoming the story's once it is |
+| `test-web-token.lua` | Runs in headless nvim: the phone dashboard's token end to end, `web.lua` starting the real `azure-cli.py --web-dashboard` - two starts give the same URL, the stored file is `0600`, `rotate` changes the URL (running) or deletes the file (stopped), an unsafe file is replaced with a warning, and the token is on neither the server's argv nor in a message or `:AzureCli log` |
+| `test-poll.lua` | Runs in headless nvim: `poll.lua` on a hand-turned clock - polls slowing while Neovim is unfocused or idle and refreshing once on return, the phone dashboard's feed keeping its rate - and, run again on a `tests/fake-provider.py` workspace, every real poll (the PR dashboard, both boards, a review, the chat's watched PRs) going through it |
+| `test-boards.lua` | Runs in headless nvim on a `tests/fake-provider.py` workspace, twice: with only an Azure account there's no `I` in any key map, help or palette and three home tabs open; with a GitHub account that has `issues:`, `I` is bound on the PR dashboard, Work items and Agents, four home tabs open, and `I` goes to the Issues tab |
+| `demo-smoke.lua` | The headless half of `tests/demo.sh --headless` (the fake-provider demo smoke below): each check prints its own marker, so one failure doesn't take the later ones down with it |
 | `test-chat-acp-live.lua` | Manual only - not run by `tests/run.sh`: needs a locally authenticated `copilot` CLI and makes two small real requests; `agent.acp` against a real `copilot --acp` - both turns answer and reuse the same tracked ACP connection. Run by hand (`nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-chat-acp-live.lua`) after touching the ACP code |
 | `test-chat-acp-mcp-live.lua` | Manual only - not run by `tests/run.sh`: needs a locally authenticated `copilot` CLI and makes one real request; checks azure-vicli's tools reach a real `copilot --acp` session over `--mcp-http` (the agent reports `current_view`'s screen). `test-chat-acp.lua` covers the same path against a fake agent |
 | `test_chat_provider.py` | `azure-cli.py`'s `--wi-edit create-branch` (the exact source ref out of a prefix-matched `filter=`, the all-zero `oldObjectId` POST, the `vstfs:///Git/Ref/...%2FGB<branch>` "Branch" link, no link without a work item, a rejected update, a failed link still reporting the branch) and the `--mcp` relay (`initialize`, notifications, `tools/list`/`tools/call` relayed, tool errors as tool results, an unreachable bridge, `mcp_serve`'s line loop, and a real TCP round trip carrying the token); also `delete-branch` (refusing once someone pushed), `--build-log` (failed records, issues, log tails, a JSON-lines log body), `--test-results` (each run's failed results, a server ignoring `outcomes`, stack traces cut to 30 lines), `--add-reviewer` (identity search on vssps for Services, the collection on Server, an ambiguous name), `--set-description` and `--create-pr` (work item refs, draft) |
 | `test_provider.py` | `azure-cli.py`'s YAML-subset config parser; PR classification (every branch of the assigned/created/draft/declined/signed-off/waiting/actionable rules, including `AZVICLI_HIDE_ANCIENT_DAYS` widening/narrowing/falling back on an invalid value from the hard-coded 30); thread and @-mention counting; build-status aggregation and policy/missing-reviewer derivation; vote ratio, reviewer summary and humanized-date formatting; `Config.path()`'s `AZVICLI_CONFIG` override (with `~` expansion); and an NDJSON serialization check of the emitted field list. HTTP is mocked by swapping `AzureDevOpsPullRequestSource.fetch` for a fake - no network access or live Azure DevOps instance is needed. |
+| `test_github.py` | `github_host.py`, the GitHub backend: the GraphQL/`gh` host names (github.com and Enterprise Server), a PR's reviews as Azure votes (a re-requested reviewer waits again, a comment doesn't undo an approval, the author and teams), fork PRs sourced from `refs/pull/<n>/head`, review threads and the Conversation tab as Azure threads (line, range, left side, file-level, outdated), `@login` mentions, commits and force pushes as iterations plus my last review's commit, `--list`'s sections and record fields (key, location, counts that leave the Conversation thread out), the per-PR thread cache, `host:`/`owner:`/`api_url:` in the config, which account an action belongs to, and the fork prefetch refspec. The writes: line and range comments (either side, on the head commit, a line outside the hunks explained), file and Conversation comments, replies in a thread and in the Conversation, edits and deletes of either kind, resolving and reopening by the thread's first comment, votes as reviews (a stock reason for changes requested, dismissing my latest review), a batch as one review (every comment into a pending review then submitted with the verdict, a pending review of mine joined, deleted again when a step fails, items that can't be in a review refused up front), GitHub's error text, and merging still refused. The GraphQL/REST client is faked; no network. |
+| `test_github_rest.py` | `github_rest.py`: a GraphQL refusal switching the host to REST (not a rate limit or a bad token; `AZVICLI_GITHUB_REST=1`; a query with no builder saying so), search hits and repository listings as PR nodes (reviewers and votes, dismissed reviews, teams, conflicts, checks, a gone branch, forks), the clones in `clones_dir` as the repositories to list, `--list` over REST, review comments grouped into threads (ranges, the left side, outdated, file-level, the Conversation, resolved through the proxy's route or not at all), resolving by the first comment, pushes and force pushes as iterations, a batch as one REST review with the replies and file comments after it (nothing posted when the review fails, a later failure reported rather than retried, a pending review of mine refused), reviewers by login or team, the description, the body's closing lines as the PR's issues, merge state (a draft, a failed check) and auto-merge through the proxy's route. REST is faked by method and path; no network. |
+| `test_github_issues.py` | `github_issues.py`: a GitHub account's Projects v2 project answering `--wi-list`/`--wi-detail`/`--wi-state`/`--wi-edit`. The client's fetch answers GraphQL by a word in the query and REST by method and path, and records every call; no network. |
+| `test_fetch_image.py` | `--fetch-image`: an image is downloaded with the PAT or token only from the PR's own server, the credential never reaches another host (directly or through a redirect) or the log, and the file is `0600`, named from its Content-Type - against two real HTTP servers on 127.0.0.1, never the network. |
+| `test_web_dashboard.py` | The phone dashboard's server (`--web-dashboard`): what the page JSON keeps, which binds are refused, and the token, cookie, GET-only and header rules over real HTTP. |
+| `test_http_pool.py` | The keep-alive connection pool: requests to one host share a connection, a stale one is retried once for a read and never for a write, proxies (`HTTPS_PROXY`'s CONNECT tunnel, `HTTP_PROXY`, `NO_PROXY`) still apply, and the perf log says new/reused - against a local server and proxy. |
+| `test_connection_data_cache.py` | The `--serve` daemon's connectionData cache: one request per org and PAT within its TTL, refetched after it, on a 401/403/203, a PAT change, a config load or a daemon start; one request for concurrent workers; a retry once when a cached identity fails; off outside the daemon, for `--doctor`/`--whoami` and for GitHub. |
+| `test_list_parallel.py` | `--list` listing accounts (orgs and GitHub accounts) at once on a pool of 8: records in the same order as a serial run, one account's error or timeout reported for that account only, connectionData still fetched once per org. |
+| `test_perf.py` | The perf log: with `AZVICLI_DEBUG` on, one line per provider HTTP request and one total per command in `<AZVICLI_PREFETCH_DIR>/perf.log`, never a header, PAT or token; with it off, nothing written. |
 | `test_pr_actions.py` | `azure-cli.py`'s PR-action subcommands (`PrActions` - threads/iterations passthrough, posting/replying/editing/deleting comments, thread status, vote, complete, auto-complete) and the `AZVICLI_PREFETCH=1`/`all` branch-prefetch modes. HTTP is mocked the same way `test_provider.py` mocks it (`PrActions.fetch` swapped for a fake); git is exercised for real for `post_inline`'s git-show line-length lookup. Also `default_prefetch_dir()`'s platform branches (Windows `%LOCALAPPDATA%`, else `$XDG_CACHE_HOME`, each with its own no-env fallback) and both call sites (`PrActions.__init__`, `cmd_prefetch`) actually using it when `AZVICLI_PREFETCH_DIR` is unset. |
 | `test_work_items.py` | `azure-cli.py`'s work-item subcommands (`WorkItemActions` - `--wi-list`'s sprint resolution/WIQL/batch fetch, `--wi-detail`'s parent/child/comment/pull-request assembly and HTML flattening, `--wi-state`'s transitions/reasons derivation and state changes, `--wi-edit`'s create/set/comment/link-pr/unlink-pr JSON Patch bodies). HTTP is mocked the same way, via `WorkItemActions.fetch`. Also `work_items.states:`/`sprint_scope:` parsing and defaults, and the `states`/wider-iteration-list `--wi-list current`/`sprints` output they carry (including an undated iteration sorting last under `sprint_scope: all`). |
 | `test_serve.py` | `azure-cli.py`'s `--serve` daemon: `dispatch()`'s in-process request runner (a `--ping`, a missing config returning 1 instead of exiting the process, an unhandled handler exception being caught, per-request `env` threaded through rather than read off `os.environ`, a monkeypatched handler's captured output coming back verbatim, and concurrent `dispatch()` calls on different threads never seeing each other's captured stdout) and `serve()`'s request loop (a real `--ping` round trip, a clean exit on EOF, a malformed/non-object JSON line getting an `"id": null` error response, concurrent requests completing out of order and still matched up by id, and a request's `env` overrides reaching `dispatch()` merged over the daemon's own environment) - stdin/stdout are faked (`sys.stdin.buffer` an `io.BytesIO` pre-loaded with every request line, `sys.stdout` a plain `io.StringIO`), everything else (the `ThreadPoolExecutor`, real threads) is real. Also covers `get_cached_config()` (a serving daemon keeps its start-up config whatever happens to the file afterwards; outside `--serve` every call reads the file) and the `.userid` cache's atomic (temp-file-then-`os.replace`) write. |
@@ -258,7 +330,7 @@ runner builds in a temp dir (two branches, `tgt` and `src`, exposed as
 `refs/remotes/origin/{tgt,src}` since that's what the prefetch pipeline
 diffs). Everything is cleaned up on exit.
 
-The eight headless `nvim` smokes and the ten nvim-run Lua tests
+The eight headless `nvim` smokes and the twenty nvim-run Lua tests
 (skipped, not failed, when `nvim` isn't on PATH). The smokes: `gO`'s menu
 naming both config files (the options as `azure-cli.lua` in standalone
 mode, `setup()` otherwise) and `:AzureCli status`'s `options` line; `setup()`/`config.lua` - `require('azure-cli').setup()` then asserting
@@ -311,7 +383,8 @@ harmless on another, unless the acting one asks first: it lists those in
 DevOps goes in `WRITES`, so `?` marks it and the check covers it.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `bash tests/run.sh` on
-every push and pull request.
+every push and pull request, on ubuntu-latest with the distro's Neovim
+installed by apt (0.9.x, the minimum the plugin supports).
 
 ### Trying it without Azure DevOps
 
@@ -349,7 +422,9 @@ subcommand (`--list`, `--threads`, `--post`, `--vote`, `--wi-list`, ...,
 - **Isolated.** `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` point
   into the workspace, so your real `azure-cli.yml`, viewed marks and
   prefetch cache are never read or written; `AZVICLI_TOASTS=0` keeps
-  desktop notifications quiet.
+  desktop notifications quiet. `--headless` also gets an empty `HOME` in
+  the workspace; the interactive modes keep yours, so a real agent opened
+  from the demo's chat keeps its login.
 
 Fixtures: repo `widgets` with PRs #101 (Actionable, an inline thread
 that @-mentions you, a resolved one and a general one), #102 (yours),
@@ -376,7 +451,8 @@ python3 tests/screenshots.py            # rewrites docs/images/*.png
 The images under `docs/images/` are generated, not hand-taken: the script
 runs `tests/demo.sh --standalone` in a fixed-size detached `tmux` pane,
 walks through the fake provider's fixtures (dashboard, PR #101, its diff,
-the inline thread, the complete dialog, work items, a work item, then the
+the inline thread, the complete dialog, a GitHub PR's merge dialog, work
+items, a work item, then the
 chat's plan window, a question under a line of a change, the Agents
 screen and the `/skills` popup - those scenes are seeded by
 `tests/shot-{plan,change,agents,skills}.lua` through `:luafile`, since no agent runs), captures each screen with its colours and rasterises it through ImageMagick's
@@ -391,7 +467,7 @@ display. Re-run it after a UI change and commit the result; add a step to
 200-active-local ceiling (98+ keymap/help/winbar call sites, the whole
 reviewer's state), so every reviewer feature hangs off one table, `EXT`,
 instead of adding its own top-level `local`s, and lives in its own module
-under `review/` (`review/{nav,comments,commits,range,batch,since,followup}.lua`)
+under `review/` (`review/{nav,comments,commits,range,batch,since,followup,workitems,chat,images}.lua`)
 - each `require()`d module is a separate compiled chunk with its own
 200-local budget. To add a feature:
 
@@ -431,6 +507,14 @@ under `review/` (`review/{nav,comments,commits,range,batch,since,followup}.lua`)
    four kinds above and isn't configurable through `keys.lua` - use
    `ctx.on_comment_popup(fn)` instead; `fn(fbuf, threads)` runs each time the
    popup opens; there is no persistent buffer to re-apply `EXT.keys.*` to.
+   Two features can share one key: `ctx.add_key(kind, action, fn, desc,
+   mode, { chain = true })` calls `fn(prev, key)`, `prev` being the handler
+   an earlier module registered for that key and mode (nil if none), which
+   this one replaces - so it can hand over where it has nothing to do
+   (`review/images.lua`'s `<CR>` on a line with no image goes on to
+   `review/commits.lua`'s `open_commit`, which is why images.lua loads after
+   it). `ctx.on_overview_render(fn)` runs `fn(buf, lines)` after every
+   Overview render (images.lua draws its inline images there).
 4. Never add a top-level `local` to `review/init.lua` itself - everything
    new goes in the module, or in a nested function inside that closing block.
 5. If your module needs a field the closing `(function() ... end)()` block
@@ -460,7 +544,7 @@ under `review/` (`review/{nav,comments,commits,range,batch,since,followup}.lua`)
 `PROJECT` / `SOURCE` / `TARGET` / `REPO_PATH` / `EMBED`,
 `provider` (`EXT.provider` - builds the `azure-cli.py` argv a module's own
 job should run, e.g. `review/since.lua`'s `--iterations` fetch),
-`add_key`, `on_comment_popup`, `decorate_diff`, `ft_for_path`, `parse_diff`
+`add_key`, `on_comment_popup`, `on_overview_render`, `decorate_diff`, `ft_for_path`, `parse_diff`
 (`cache.lua`'s `M.parse_diff`), `nav_show`, `nav_back`,
 `mark_current_file`, `overview_commits()`, `post_new_thread`,
 `add_pending_thread`, `confirm_pending_thread`, `drop_pending_thread`,

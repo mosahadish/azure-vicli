@@ -18,6 +18,15 @@ _Part of the [azure-vicli](../README.md) docs._
   always ends with `(:AzureCli log)` as a reminder. Set `AZVICLI_DEBUG=1`
   (see [Environment variables](configuration.md#environment-variables)) to also have
   `azure-cli.py` print a full traceback when run directly from a terminal.
+- **Measuring requests (slow dashboards)**: start Neovim with
+  `AZVICLI_DEBUG=1`, use the dashboard, a review and the board for a poll
+  tick or two, then `:AzureCli perf`. The provider logs every HTTP request
+  (method, host, path with the query's values dropped, status, bytes, ms,
+  new or reused connection) and each command's totals to `perf.log` in the
+  plugin's cache dir (`stdpath("cache")/azure-cli`, rotated at 1 MB). It never
+  logs headers, PATs or tokens. `:AzureCli perf` shows requests and wall ms per poll
+  tick for each screen, the slowest requests and the most-called endpoints;
+  `r` there reads the log again. With `AZVICLI_DEBUG` off nothing is logged.
 - **"Configuration does not exist"**: open the dashboard (`./azure-cli` or
   `:AzureCli`) - it writes a template at the path printed and opens it - or
   run `azure-cli --init-config` from a terminal.
@@ -31,12 +40,30 @@ _Part of the [azure-vicli](../README.md) docs._
   very least add it to that repository's `.gitignore`.
 - **"No PAT available" / "no configured PAT"**: add `pat:` (or `pat_file:`) to the matching
   account. The org URL is compared case-insensitively with the trailing
-  slash ignored. Every account needs one - there is no Azure AD sign-in.
+  slash ignored. Every Azure DevOps account needs one - there is no Azure AD
+  sign-in. A GitHub account without one falls back to `gh auth token`.
+- **"No GitHub token" / "no GitHub token for …"**: set `pat_file` on the
+  account, or sign in with `gh auth login`.
+- **"… the token needs the project scope"** (the Issues tab): run
+  `gh auth refresh -s project`.
+- **"Auto-merge isn't allowed on owner/repo (its settings)."**: turn on
+  auto-merge in the repository's settings, or merge it instead.
+- **"Auto-merge needs <branch> to require checks or reviews (branch
+  protection); merge it instead."**: GitHub only auto-merges into a
+  protected branch with required checks or reviews; merge it now instead.
+- **"GitHub GraphQL is not available" / a GitHub account lists nothing**:
+  the GraphQL API is refused where you are (a REST-only proxy, say).
+  azure-vicli switches that account to REST by itself; if the list is still
+  empty, GitHub's search is refused too, and only the repositories cloned in
+  the account's `clones_dir` are listed - clone the one you want there, or
+  name it in `AZVICLI_GITHUB_REPOS=owner/name`. See [GitHub
+  accounts](configuration.md#github-accounts) for what REST can't do.
 - **A PR won't open, "branch not found"**: the source branch was deleted, or
   `clones_dir` points at a different repository. Check the clone path in the
   error.
 - **Comments show but the badge or counts look stale**: the thread poll runs
-  once a minute; press `r` in the dashboard to refresh now.
+  every `timing.poll_seconds` (30 s), slower while Neovim is idle or
+  unfocused; press `r` in the dashboard to refresh now.
 - **Peek panes have no titles**: Neovim is older than 0.9. Everything else works.
 - **Slow first open on a big repo**: the warm-all pass may still be running.
   The `⇣` badge shows which PRs are in progress; `◆` means ready.
@@ -63,7 +90,7 @@ _Part of the [azure-vicli](../README.md) docs._
   `AZVICLI_CONFIG` (see [setup() options](configuration.md#setup-options)/[Environment
   variables](configuration.md#environment-variables)) - a `setup({config=...})` call
   overrides the config path outright.
-- **Where are prefetch markers/the `.userid` cache?**: under
+- **Where are prefetch markers?**: under
   `AZVICLI_PREFETCH_DIR` (see [Environment variables](configuration.md#environment-variables))
   - Neovim's own cache directory's `azure-cli/` subfolder by default (a
   plain `stdpath("cache")`, printable with `:lua print(vim.fn.stdpath("cache"))`),

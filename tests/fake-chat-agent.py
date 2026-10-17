@@ -15,8 +15,8 @@ What it does depends on the message:
   "fix it"  start_fix, an edit, show_fix, commit_and_push_fix on PR 101
   "implement"  start_story for work item 3001 (twice: the second reuses
             it), a new file, show_fix, commit_and_push_fix
-  "make a plan"  start_story for 3002 (refused: no plan yet), submit_plan,
-            start_story again (refused: not approved yet)
+  "make a plan"  start_story for 3002 (a read-only worktree: no plan yet),
+            submit_plan, start_story again (the same: not approved yet)
   "About ..."  (a question from a plan / change-viewer line) answers
             "BECAUSE-<the quoted line>" and nothing else
   "revise the plan"  counts the line requests, submit_plan revision 3
@@ -24,6 +24,13 @@ What it does depends on the message:
   "I approve the plan"  start_story for 3002, an edit, show_fix, run_tests
   "Make a plan for this ... Work item #N"  (an agent started from the board)
             waits a second, then submit_plan for #N
+  "Make a plan for this ... GitHub issue #N"  (gP on the Issues board)
+            get_work_item without a board (its view says github), then
+            submit_plan for #N
+  "work the issue"  (i on the Issues board's #12) the board tools on
+            GitHub: list, read, state, comment, a sub-issue, start_story in
+            gizmos, create_pull_request closing #12, and linking gizmos#7
+            to #13
   anything else: current_view only
 It always reports the tools it saw, the model (--model) and which turn of
 this process it is ("turn: 1" for a fresh process).
@@ -124,7 +131,18 @@ def answer_turn(mcp, init, message, turn, model, session):
     out.append("selection: " + str(view.get("selection_lines")) + " " + str((view.get("selection") or "")[:40]))
     out.append("hunk: " + str(bool(view.get("hunk"))))
     out.append("refs: " + ("PR !102" in message and "Referenced in the message" in message and "yes" or "no"))
-    if asked.startswith("Make a plan for this") and "Work item #" in asked:
+    if asked.startswith("Make a plan for this") and "GitHub issue #" in asked:
+        # gP on the Issues board: the agent's view names the board, so a
+        # tool call without board= reads the GitHub issue.
+        import re
+        wid = int(re.search(r"GitHub issue #(\d+)", asked).group(1))
+        item, err = mcp.call("get_work_item", {"id": wid})
+        title = (json.loads(item).get("item") or {}).get("title") if not err else "ERROR " + item
+        call("submit_plan", {"work_item_id": wid, "title": "Plan for issue {0}".format(wid), "markdown": "\n".join([
+            "# Plan for issue {0}".format(wid), "", "## Goal", "G", "", "## Approach", "A", "", "## Files",
+            "- `gizmo.py` - x"])})
+        out[:] = ["planned issue #{0} on board {1}: {2}".format(wid, view.get("board"), title)]
+    elif asked.startswith("Make a plan for this") and "Work item #" in asked:
         # One of several agents started from the board (chat/agents.lua):
         # slow enough that two would overlap, then the plan for its item.
         import re
@@ -145,6 +163,31 @@ def answer_turn(mcp, init, message, turn, model, session):
             "# Fix the comments on {0}".format(pid), "", "## Goal", "G", "", "## Approach", "A", "", "## Files",
             "- `src/auth.py` - x"])})
         out[:] = ["planned PR !{0} for {1}".format(pid, threads.group(1).strip() if threads else "every active thread")]
+    elif "work the issue" in asked:
+        # i on the Issues board's #12: calls without board= go to GitHub
+        # because the view says so; the rest name it.
+        out.append("view board: {0}, item {1}".format(view.get("board"), (view.get("work_item") or {}).get("id")))
+        call("list_work_items")
+        call("list_work_items", {"board": "azure"})
+        call("get_work_item", {"id": 12, "board": "github"})
+        call("set_work_item_state", {"id": 12, "state": "In Progress"})
+        call("comment_on_work_item", {"id": 12, "text": "Picking this up.", "board": "github"})
+        call("create_child_task", {"parent_id": 12, "title": "Write the wobble test"})
+        # No iteration given: the current one (Iteration 2); then one named.
+        call("create_work_item", {"title": "Wobble at high speed", "body": "Seen on the test rig.", "board": "github"})
+        call("create_work_item", {"title": "Document the wobble", "iteration": "Iteration 3", "board": "github"})
+        call("list_work_items", {"board": "github", "sprint": "none"})
+        # Azure's No sprint: the team's backlog iteration and the root.
+        call("list_work_items", {"board": "azure", "sprint": "none"})
+        res, err = call("start_story", {"work_item_id": 12, "repo": "gizmos", "from": "main",
+                                        "name": "feature/12-wobble", "board": "github"})
+        if not err:
+            with open(os.path.join(json.loads(res)["directory"], "WOBBLE.md"), "w", encoding="utf-8") as f:
+                f.write("clamped\n")
+        call("create_pull_request", {"repo": "gizmos", "source": "feature/12-wobble", "target": "main",
+                                     "title": "Clamp the wobble", "description": "Clamps it.", "work_item_ids": [12],
+                                     "board": "github"})
+        call("link_pr_to_work_item", {"pr_id": 7, "work_item_id": 13, "board": "github"})
     elif "I approve the plan" in asked:
         import re
         wid = int((re.search(r"I approve the plan for #(\d+)", asked) or re.search(r"(3002)", "3002")).group(1))
@@ -234,6 +277,8 @@ def answer_turn(mcp, init, message, turn, model, session):
         call("find_implementations", {"repo": "widgets", "name": "Nothing"})
     elif "plan" in asked:
         call("create_child_task", {"parent_id": 3001, "title": "Write the lockout tests"})
+        call("create_work_item", {"title": "Lockout emails go to spam", "body": "Reported by support.\nTwice.",
+                                  "type": "Bug", "iteration": "Sprint 43", "board": "azure"})
         call("move_to_sprint", {"id": 3002, "sprint": "Sprint 43"})
         call("link_pr_to_work_item", {"pr_id": 102, "work_item_id": 3002})
     out.append("FAKE-CHAT-RAN")

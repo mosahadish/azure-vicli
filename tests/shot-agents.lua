@@ -3,6 +3,7 @@
 -- waiting for review, #3012's approved, #2990's finished (its PR merged).
 -- Written here (no agent runs while screenshots are taken), so the picture
 -- is the same every run.
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local CHAT = require("azure-cli.chat")
 local TOOLS = require("azure-cli.chat.tools")
 local PLAN = require("azure-cli.chat.plan")

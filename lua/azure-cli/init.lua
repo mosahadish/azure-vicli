@@ -64,19 +64,50 @@ function M.open_workitems()
   if M._standalone then require("azure-cli.home").open_all() end
 end
 
+-- The Issues tab (a GitHub account's issues: project - :AzureCli issues,
+-- or I), like open_workitems. Says so instead when no GitHub account has
+-- an issues: block.
+function M.open_issues()
+  local UI = require("azure-cli.ui")
+  if UI.goto_tab(function(b) return vim.bo[b].filetype == "azurecli-issues" end) then return end
+  if not require("azure-cli.firstrun").ensure(M.open_issues) then return end
+  local BOARD = require("azure-cli.workitems.board")
+  local function open()
+    if not BOARD.has_issues() then
+      require("azure-cli.shell").notify("No GitHub account has an issues: block - add issues: { project: "
+        .. "<number or title> } to one (:AzureCli options) to get the Issues tab.", vim.log.levels.WARN)
+      return
+    end
+    if not M._standalone then vim.cmd("tabnew") end
+    require("azure-cli.workitems.dashboard").open("github")
+    if M._standalone then require("azure-cli.home").open_all() end
+  end
+  if BOARD.has_issues() ~= nil then return open() end
+  -- --boards hasn't answered yet: ask, and decide when it does.
+  BOARD.enabled(function() end)
+  local ok = vim.wait(5000, function() return BOARD.has_issues() ~= nil end, 20)
+  if ok then open() end
+end
+
 -- Opens the reviewer for PR `id` directly (:AzureCli review <id>), always in
 -- a new tab - same as pressing <CR> on a dashboard row. Needs the PR's
 -- org/project/source/target/repo, which only the dashboard's list fetch
 -- knows; this looks it up in the shared list cache (lua/azure-cli/state.lua)
 -- rather than re-implementing that fetch, so it only works for a PR the
 -- dashboard has already listed this session.
+-- `id` is a PR id, or a PR key (lua/azure-cli/hosts.lua: "owner~repo~12" on
+-- GitHub, where the same number can be in two repositories); the key wins.
 function M.open_review(id)
   id = tostring(id)
   local state = require("azure-cli.state")
+  local HOSTS = require("azure-cli.hosts")
   local cache = state.PR_LIST_CACHE
   local pr
   if cache and cache.prs then
     for _, p in ipairs(cache.prs) do
+      if tostring(HOSTS.key(p)) == id then pr = p; break end
+    end
+    for _, p in ipairs(pr and {} or cache.prs) do
       if tostring(p.id) == id then pr = p; break end
     end
   end

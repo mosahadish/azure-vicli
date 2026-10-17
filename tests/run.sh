@@ -6,6 +6,10 @@
 # a build step first.
 #
 # What it checks, in order:
+#   0. Every tests/*.lua loads tests/sandbox.lua first (its own XDG dirs,
+#      an empty HOME and a clean environment however it's started); step 4 and the
+#      smokes also start some straight from a polluted environment and
+#      check nothing reached the sentinel "real" dirs.
 #   1. luajit -bl syntax check on every Lua UI file, plus (when nvim is on
 #      PATH) loading every file with a real Neovim, which is stricter.
 #   2. A global-name scan on every Lua UI file: any name luajit resolves as
@@ -14,7 +18,7 @@
 #      (shadowing what looks like a builtin, or just a typo) - a real bug
 #      class in this codebase's style of long files with forward references.
 #   3. bash -n on every shell script.
-#   4. The twenty-nine Lua unit tests below it in this directory, against a
+#   4. The thirty-five Lua unit tests below it in this directory, against a
 #      synthetic scratch git repo and a stubbed provider --threads.
 #   5. `python3 -m unittest` over tests/test_*.py - unit tests for
 #      azure-cli.py (the YAML-subset config parser, PR classification,
@@ -38,6 +42,16 @@ set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Nothing from the environment we were started in: a run from inside
+# Neovim (the chat agent's run_tests, a :terminal) inherits the plugin's
+# AZVICLI_* exports - the prefetch dir, the PR the dashboard last opened -
+# which the tests would otherwise read as their own.
+for v in $(env | sed -n 's/^\(AZVICLI_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+# Nor the parent Neovim's runtime: an nvim started from a :terminal or an
+# agent would otherwise use that one's VIMRUNTIME, whatever nvim PATH finds.
+# NVIM_LOG_FILE too, so a run from inside Neovim sees what CI sees.
+unset VIM VIMRUNTIME NVIM MYVIMRC NVIM_LOG_FILE
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -50,6 +64,7 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
 
 PASS=0
 FAIL=0
+SKIPPED=0  # smoke checks skipped for an earlier smoke failure
 FAILED_NAMES=()
 
 pass() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
@@ -100,6 +115,21 @@ for f in "${SH_FILES[@]}"; do
   tr -d '\r' < "$REPO_ROOT/$f" > "$TMP/sh/$f"
 done
 
+# 0. Every Lua test loads tests/sandbox.lua before anything else, so it gets
+# its own XDG dirs however it is started - not only from here. Not
+# gen-keys-table.lua: a generator, not a test.
+echo "== 0. sandbox guard =="
+for f in tests/*.lua; do
+  case "$f" in tests/sandbox.lua|tests/gen-keys-table.lua) continue ;; esac
+  first="$(tr -d '\r' < "$f" | awk '!/^[[:space:]]*(--|$)/{print; exit}')"
+  if [[ "$first" == 'dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")('* ]]; then
+    pass "sandbox: $f"
+  else
+    fail "sandbox: $f" "its first statement must load tests/sandbox.lua (see that file), not: $first"
+  fi
+done
+
+echo
 echo "== 1. luajit -bl syntax check =="
 for f in "${LUA_FILES[@]}"; do
   bc="$TMP/lua/$f.bc"
@@ -229,6 +259,8 @@ NOTIFY_LUA="$TMP/lua/lua/azure-cli/notify.lua"
 RPC_LUA="$TMP/lua/lua/azure-cli/rpc.lua"
 EDITOR_LUA="$TMP/lua/lua/azure-cli/editor.lua"
 LOG_LUA="$TMP/lua/lua/azure-cli/log.lua"
+PERF_LUA="$TMP/lua/lua/azure-cli/perf.lua"
+WEB_LUA="$TMP/lua/lua/azure-cli/web.lua"
 COMMENTS_LUA="$TMP/lua/lua/azure-cli/review/comments.lua"
 COMMITS_LUA="$TMP/lua/lua/azure-cli/review/commits.lua"
 RANGE_LUA="$TMP/lua/lua/azure-cli/review/range.lua"
@@ -238,12 +270,18 @@ FOLLOWUP_LUA="$TMP/lua/lua/azure-cli/review/followup.lua"
 CONFIG_LUA="$TMP/lua/lua/azure-cli/config.lua"
 KEYS_LUA="$TMP/lua/lua/azure-cli/keys.lua"
 UI_LUA="$TMP/lua/lua/azure-cli/ui.lua"
+INNERTABS_LUA="$TMP/lua/lua/azure-cli/innertabs.lua"
 PROMPT_LUA="$TMP/lua/lua/azure-cli/prompt.lua"
 PRS_LUA="$TMP/lua/lua/azure-cli/prs.lua"
 MERGE_LUA="$TMP/lua/lua/azure-cli/merge.lua"
+HOSTS_LUA="$TMP/lua/lua/azure-cli/hosts.lua"
+SHELL_LUA="$TMP/lua/lua/azure-cli/shell.lua"
 PANE_LUA="$TMP/lua/lua/azure-cli/review/pane.lua"
 VIEWED_LUA="$TMP/lua/lua/azure-cli/review/viewed.lua"
+FOLDS_LUA="$TMP/lua/lua/azure-cli/review/folds.lua"
+BOM_LUA="$TMP/lua/lua/azure-cli/review/bom.lua"
 FILELIST_LUA="$TMP/lua/lua/azure-cli/review/filelist.lua"
+IMAGES_LUA="$TMP/lua/lua/azure-cli/review/images.lua"
 MIGRATE_LUA="$TMP/lua/lua/azure-cli/migrate.lua"
 STATES_LUA="$TMP/lua/lua/azure-cli/workitems/states.lua"
 STATE_DIALOG_LUA="$TMP/lua/lua/azure-cli/workitems/state_dialog.lua"
@@ -292,6 +330,8 @@ run_lua_test test-notify.lua "$REPO_ROOT" "$NOTIFY_LUA"
 run_lua_test test-rpc.lua "$REPO_ROOT" "$RPC_LUA"
 run_lua_test test-editor.lua "$REPO_ROOT" "$EDITOR_LUA"
 run_lua_test test-log.lua "$REPO_ROOT" "$LOG_LUA"
+run_lua_test test-perf.lua "$REPO_ROOT" "$PERF_LUA"
+run_lua_test test-web.lua "$REPO_ROOT" "$WEB_LUA"
 run_lua_test test-review-comments.lua "$REPO_ROOT" "$COMMENTS_LUA"
 run_lua_test test-review-commits.lua "$REPO_ROOT" "$COMMITS_LUA"
 run_lua_test test-review-range.lua "$REPO_ROOT" "$RANGE_LUA"
@@ -303,15 +343,51 @@ run_lua_test test-migrate.lua "$REPO_ROOT" "$MIGRATE_LUA"
 run_lua_test test-states.lua "$REPO_ROOT" "$STATES_LUA"
 run_lua_test test-config.lua "$REPO_ROOT" "$CONFIG_LUA" "$CACHE_LUA"
 run_lua_test test-ui.lua "$REPO_ROOT" "$UI_LUA"
+run_lua_test test-innertabs.lua "$REPO_ROOT" "$INNERTABS_LUA"
 run_lua_test test-prompt.lua "$REPO_ROOT" "$PROMPT_LUA"
 run_lua_test test-prs.lua "$REPO_ROOT" "$PRS_LUA"
 run_lua_test test-merge.lua "$REPO_ROOT" "$MERGE_LUA"
+run_lua_test test-hosts.lua "$REPO_ROOT" "$HOSTS_LUA"
+run_lua_test test-shell.lua "$REPO_ROOT" "$SHELL_LUA"
 run_lua_test test-state-dialog.lua "$REPO_ROOT" "$STATE_DIALOG_LUA"
 run_lua_test test-linked-prs.lua "$REPO_ROOT" "$LINKED_PRS_LUA"
 run_lua_test test-pr-workitems.lua "$REPO_ROOT" "$PR_WORKITEMS_LUA"
 run_lua_test test-review-pane.lua "$REPO_ROOT" "$PANE_LUA"
 run_lua_test test-review-viewed.lua "$REPO_ROOT" "$VIEWED_LUA"
+run_lua_test test-review-folds.lua "$REPO_ROOT" "$FOLDS_LUA" "$PANE_LUA" "$VIEWED_LUA"
+run_lua_test test-review-bom.lua "$REPO_ROOT" "$BOM_LUA" "$CACHE_LUA" "$PANE_LUA"
 run_lua_test test-review-filelist.lua "$REPO_ROOT" "$FILELIST_LUA"
+run_lua_test test-review-images.lua "$REPO_ROOT" "$IMAGES_LUA" "$REPO_ROOT/tests/fake-provider.py"
+
+# A test started straight from a polluted environment - XDG dirs at a
+# sentinel "real" directory, the parent nvim's runtime vars, the chat's
+# AZVICLI_CHAT_* - must not write a byte there (tests/sandbox.lua).
+# The outer nvim creates its log at startup, before any test code runs, so
+# it gets NVIM_LOG_FILE outside $REAL - as an nvim started from Neovim
+# would; test-sandbox.lua checks that file doesn't reach the sandbox.
+REAL="$TMP/real"
+OUTER_LOG="$TMP/outer-nvim.log"
+mkdir -p "$REAL/data" "$REAL/state" "$REAL/cache" "$REAL/config" "$REAL/home" "$TMP/bogus-runtime"
+sentinel() {
+  local name="$1"
+  shift
+  local out rc left
+  out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX \
+    XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" \
+    HOME="$REAL/home" VIM="$TMP/bogus-runtime" VIMRUNTIME="$TMP/bogus-runtime" NVIM="$TMP/bogus-nvim.sock" MYVIMRC="$REAL/config/nvim/init.lua" \
+    NVIM_LOG_FILE="$OUTER_LOG" \
+    AZVICLI_CHAT_AGENT=leak AZVICLI_CHAT_BRIDGE=leak AZVICLI_CHAT_TOKEN=leak \
+    timeout 120 "$@" 2>&1)"
+  rc=$?
+  left="$(find "$REAL" -mindepth 2 2>/dev/null)"
+  if [ $rc -eq 0 ] && [ -z "$left" ]; then
+    pass "sandbox: $name leaves the real data dir alone"
+  else
+    fail "sandbox: $name leaves the real data dir alone" "rc $rc; written to the real dirs: ${left:-nothing}
+$out"
+  fi
+}
+sentinel "test-sandbox.lua (luajit, started directly)" luajit "$REPO_ROOT/tests/test-sandbox.lua" "$REAL"
 
 echo
 echo "== 5. python tests (azure-cli.py) =="
@@ -461,12 +537,76 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
+  # A chat turn's idle timeout and hard cap (chat/watchdog.lua), on a
+  # clock the test turns by hand.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-watchdog.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat-watchdog tests passed"* ]]; then
+    pass "test-chat-watchdog.lua (headless nvim)"
+  else
+    fail "test-chat-watchdog.lua (headless nvim)" "$out"
+  fi
+
+  # The reviewer Overview's highlighting (review/overview_syntax.lua, #135):
+  # Markdown only in the description and comment bodies, no markdownError.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-review-overview-syntax.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all overview syntax tests passed"* ]]; then
+    pass "test-review-overview-syntax.lua (headless nvim)"
+  else
+    fail "test-review-overview-syntax.lua (headless nvim)" "$out"
+  fi
+
+  # poll.lua (#93): the network polls slow while unfocused or idle and
+  # refresh once on return, on a clock the test turns by hand; the phone
+  # dashboard's feed keeps its pace.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-poll.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all poll tests passed"* ]]; then
+    pass "test-poll.lua (headless nvim)"
+  else
+    fail "test-poll.lua (headless nvim)" "$out"
+  fi
+
+  # The phone dashboard's token across restarts (#105), against the real
+  # --web-dashboard server: same URL after a restart, 0600, rotate, never
+  # on argv or in the log.
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-web-token.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all web-token tests passed"* ]]; then
+    pass "test-web-token.lua (headless nvim)"
+  else
+    fail "test-web-token.lua (headless nvim)" "$out"
+  fi
+
+  # start_story against a scratch origin and clone: the worktree on its
+  # branch (#59), the clone from clones_dir (#64), no PR on an existing
+  # branch (#57).
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-start-story.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all start_story tests passed"* ]]; then
+    pass "test-start-story.lua (headless nvim)"
+  else
+    fail "test-start-story.lua (headless nvim)" "$out"
+  fi
+
   # The comment editor leaves insert mode behind it (needs the main loop).
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-editor-mode.lua" 2>&1)"
   if [[ "$out" == *EDITOR-MODE-OK* ]]; then
     pass "test-editor-mode.lua (headless nvim, real input)"
   else
     fail "test-editor-mode.lua (headless nvim, real input)" "$out"
+  fi
+
+  # The chat input: <CR> sends while typing, <C-j> breaks the line (real input).
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-chat-insert-send.lua" 2>&1)"
+  if [[ "$out" == *CHAT-INSERT-SEND-OK* ]]; then
+    pass "test-chat-insert-send.lua (headless nvim, real input)"
+  else
+    fail "test-chat-insert-send.lua (headless nvim, real input)" "$out"
+  fi
+
+  # Enter on an Agents row opens its agent in normal mode; i types (#118).
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-agents-enter-mode.lua" 2>&1)"
+  if [[ "$out" == *AGENTS-ENTER-MODE-OK* ]]; then
+    pass "test-agents-enter-mode.lua (headless nvim, real input)"
+  else
+    fail "test-agents-enter-mode.lua (headless nvim, real input)" "$out"
   fi
 
   # The chat bridge over a real socket: the token, and the request size cap.
@@ -520,6 +660,25 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-plan.lua (headless nvim)" "$out"
   fi
 
+  # dd on the Agents screen (#98): discarding a row's plan, against real
+  # worktrees - asks first, refused while working, keeps a worktree with
+  # changes, moves the files to plans/discarded/.
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-plan-discard.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all plan-discard tests passed"* ]]; then
+    pass "test-plan-discard.lua (headless nvim)"
+  else
+    fail "test-plan-discard.lua (headless nvim)" "$out"
+  fi
+
+  # The tab line's "N plans wait for you" (#117): redrawn once whenever the
+  # plans index changes - discard, approve, a new plan - with no chat render.
+  out="$(timeout 60 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-plan-tabline.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all plan-tabline tests passed"* ]]; then
+    pass "test-plan-tabline.lua (headless nvim)"
+  else
+    fail "test-plan-tabline.lua (headless nvim)" "$out"
+  fi
+
   # chat/init.lua's `send`: one agent process for the whole conversation
   # (tests/fake-persistent-agent.py), a new one after gm, and a one-shot
   # CLI (tests/fake-oneshot-agent.py) reported as one that can't stay up.
@@ -540,6 +699,65 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-acp.lua (headless nvim)" "$out"
   fi
 
+  # The same sentinel check as step 4's, under nvim: the probe, then the
+  # chat tests that used to leave conversations behind when run by hand.
+  for t in test-sandbox.lua test-chat.lua test-chat-persistent.lua test-chat-acp.lua; do
+    sentinel "$t (nvim -l, started directly)" nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/$t" "$REAL"
+  done
+  # A script loaded into an already-running nvim can't start again in a
+  # sandbox of its own, so outside one it refuses (and touches nothing).
+  out="$(cd "$REPO_ROOT" && env -u AZVICLI_TEST_SANDBOX XDG_DATA_HOME="$REAL/data" XDG_STATE_HOME="$REAL/state" \
+    XDG_CACHE_HOME="$REAL/cache" XDG_CONFIG_HOME="$REAL/config" HOME="$REAL/home" NVIM_LOG_FILE="$OUTER_LOG" \
+    timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-boards.lua" -c 'qa!' 2>&1)"
+  rc=$?
+  left="$(find "$REAL" -mindepth 2 2>/dev/null)"
+  if [ $rc -ne 0 ] && [[ "$out" == *"refusing to run outside a sandbox"* ]] && [ -z "$left" ]; then
+    pass "sandbox: test-boards.lua outside a sandbox refuses to run"
+  else
+    fail "sandbox: test-boards.lua outside a sandbox refuses to run" "rc $rc; written: ${left:-nothing}
+$out"
+  fi
+
+  # tests/test-boards.lua: I (the Issues tab) only when --boards lists a
+  # GitHub account with issues: - once on the demo config, once on it
+  # trimmed to its Azure account. Each on its own fake workspace, wired up
+  # the way tests/demo.sh does.
+  for expect in issues azure; do
+    ws="$TMP/boards-$expect"
+    python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
+    printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
+    mkdir -p "$ws/home"
+    out="$(BOARDS_EXPECT=$expect AZVICLI_FAKE_WS="$ws" AZVICLI_TEST_SANDBOX="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
+      AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" HOME="$ws/home" \
+      XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
+      AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \
+      timeout 120 nvim --headless -u "$ws/init.lua" \
+      -c "lua local ok, err = pcall(dofile, [[$REPO_ROOT/tests/test-boards.lua]]); if not ok then print('BOARDS-TEST-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')" 2>&1)"
+    if [[ "$out" == *BOARDS-TEST-OK* ]]; then
+      pass "test-boards.lua ($expect): I only when a GitHub account has issues:"
+    else
+      fail "test-boards.lua ($expect): I only when a GitHub account has issues:" "$out"
+    fi
+  done
+
+  # tests/test-poll.lua on the real screens (#93): the PR dashboard, both
+  # boards, a review and the chat's watched PRs all poll through poll.lua.
+  ws="$TMP/poll-surfaces"
+  python3 "$REPO_ROOT/tests/fake-provider.py" setup "$ws" --fresh >/dev/null 2>&1
+  printf 'vim.opt.rtp:prepend([[%s]])\nrequire("azure-cli").setup({})\n' "$REPO_ROOT" > "$ws/init.lua"
+  mkdir -p "$ws/home"
+  out="$(POLL_SURFACES=1 AZVICLI_FAKE_WS="$ws" AZVICLI_TEST_SANDBOX="$ws" AZVICLI_PY="$REPO_ROOT/tests/fake-provider.py" \
+    AZVICLI_EXE="$ws/azure-cli" XDG_CONFIG_HOME="$ws/config" XDG_DATA_HOME="$ws/data" HOME="$ws/home" \
+    XDG_CACHE_HOME="$ws/cache" XDG_STATE_HOME="$ws/xdg-state" AZVICLI_TOASTS=0 \
+    AZVICLI_CONFIG= AZVICLI_PROVIDER= AZVICLI_PREFETCH_DIR= \
+    timeout 120 nvim --headless -u "$ws/init.lua" \
+    -c "lua local ok, err = pcall(dofile, [[$REPO_ROOT/tests/test-poll.lua]]); if not ok then print('POLL-TEST-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')" 2>&1)"
+  if [[ "$out" == *POLL-TEST-OK* ]]; then
+    pass "test-poll.lua (surfaces): every network poll goes through poll.lua"
+  else
+    fail "test-poll.lua (surfaces): every network poll goes through poll.lua" "$out"
+  fi
+
   # Fake-provider smoke: tests/demo.sh --headless builds a scratch workspace
   # (tests/fake-provider.py setup: two file:// git remotes, one clone, a
   # state.json of PRs/threads/work items), then runs tests/demo-smoke.lua
@@ -555,80 +773,74 @@ if command -v nvim >/dev/null 2>&1; then
   # all three references) - the reviewer's least automated surface, and the
   # one whose helpers the other review/* modules reach through ctx.
   out="$(bash "$REPO_ROOT/tests/demo.sh" --headless --fresh --workspace "$TMP/demo-ws" 2>&1)"
-  if [[ "$out" == *DEMO-SMOKE-OK* ]]; then
-    pass "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer"
+  # One result per check of demo-smoke.lua's (see its header). A failed one
+  # shows its own DEMO-SMOKE-FAIL[<marker>] lines and what it printed with
+  # them, not the whole output again; one skipped because a check it builds
+  # on failed is listed as skipped - that failure is reported once, there.
+  smoke_check() {
+    local desc="$1" m why="" skipped=""
+    shift
+    for m in "$@"; do
+      [[ "$out" == *"$m-SMOKE-OK"* ]] && continue
+      if [[ "$out" == *"SMOKE-SKIP[$m]"* ]]; then
+        skipped="$(printf '%s\n' "$out" | grep -aF "SMOKE-SKIP[$m]" | head -1)"
+      elif [[ "$out" == *"DEMO-SMOKE-FAIL[$m]"* ]]; then
+        why+="$(printf '%s\n' "$out" | awk -v tag="DEMO-SMOKE-FAIL[$m]" '
+          index($0, tag) { on = 1; n = 0 }
+          on && !index($0, tag) && (/-SMOKE-OK/ || /SMOKE-SKIP\[/ || /DEMO-SMOKE-FAIL\[/) { on = 0 }
+          on && n++ < 60')"$'\n'
+      else
+        why+="no result for $m: the smoke stopped before it (see the SMOKE-DONE check)"$'\n'
+      fi
+    done
+    if [ -n "$why" ]; then
+      fail "$desc" "$why"
+    elif [ -n "$skipped" ]; then
+      SKIPPED=$((SKIPPED + 1))
+      printf 'SKIP  %s\n      %s\n' "$desc" "$skipped"
+    else
+      pass "$desc"
+    fi
+  }
+  smoke_check "smoke: demo.sh --headless renders the fake dashboard, numbers its rows, <Space> folds a section" DEMO
+  smoke_check "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" NAV
+  smoke_check "smoke: gu lists my comments and gA filters them there like everywhere else" FOLLOWUP
+  smoke_check "smoke: an unfolded diff fold stays open across files, a reopen and a restart; a push drops it; zR/zM and toggle_fold" FOLDS
+  smoke_check "smoke: a PR row shows its linked work item, PR #101 opens in the reviewer, and gW opens the item from the dashboard and the reviewer" PRWI REVIEW-WI
+  smoke_check "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" LINK
+  smoke_check "smoke: I lists the GitHub project by iteration; open, gc, gs Done/Closed and n work on issues" ISSUES
+  smoke_check "smoke: W and I never share #3001, and only I's calls carry AZVICLI_WI_HOST=github" BOARDS
+  smoke_check "smoke: the agent's board tools on I (state, comment, sub-issue, start_story, Closes #n, link + undo), gW, gP" ISSUE-TOOLS
+  smoke_check "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" CHATPLUS
+  smoke_check "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" PLAN
+  smoke_check "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" AGENTS
+  smoke_check "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" BATCHQ
+  smoke_check "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" CHAT
+  smoke_check "smoke: i on the PR dashboard, Issues and Agents types in the chat, keeping a draft" CHATI
+  smoke_check "smoke: both dashboards number their rows relatively inside the box, following the cursor" ROWNUM
+  smoke_check "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them" TREE
+  smoke_check "smoke: the dashboard marks linked PRs and the item view lists them with title and status" PRS
+  smoke_check "smoke: gs on a visual selection maps the other items onto the first one's state" SELECTION
+  smoke_check "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" GS
+  smoke_check "smoke: gU moves a work item under another parent (picked, then typed) and the tree regroups" PARENT
+  smoke_check "smoke: W's No sprint tab lists my open backlog/root items, and gi files one there" NOSPRINT
+  smoke_check "smoke: two PRs open as inner tabs of Pull requests: one tab-line entry, the strip, ]r/[r/g2 keep each cursor, no twin, q goes back" INNERTABS
+  smoke_check "smoke: two work items in W and two issues in I open as inner tabs: the strip, ]r/[r/g1..g3, no twin, q goes back, <CR> retitles, the chat sees each, gW's q returns to the review" INNERTABS-WI
+  smoke_check "smoke: two plans open as inner tabs of Agents: the strip, ]r/[r/g1..g3, <CR> again keeps the older revision and the Changes file, a new revision reloads, q goes back, dd closes the open tab" INNERTABS-PLAN
+  smoke_check "smoke: with 1, 3 and 4 plans open at 80 and 120 columns, the plan's status shows in full and the current plan stays identifiable" INNERTABS-FIT
+  smoke_check "smoke: gr and the agent's requeue_build on a GitHub #7 re-run that PR's checks with its own env, never Azure's --requeue" GH_REQUEUE
+  smoke_check "smoke: a GitHub account lists PR #7 from two repos, each in its own reviewer; the merge dialog and complete_pull_request keep to each repo's rules" GITHUB
+  smoke_check "smoke: after a push (updatedIso unchanged), a deleted file is D with only deletions, and every row's counts match its diff" PUSHDIFF
+  smoke_check "smoke: a push to an Azure PR (updatedIso unchanged) re-warms it on the next list load, keyed on its source commit" REWARM
+  smoke_check "smoke: GitHub PRs are marked warm under their key at their head commit, never under their number" REWARM-GH
+  smoke_check "smoke: a dashboard warm callback queued while the reviewer fetches runs once, with the fetch's success" REWARM-REVIEW
+  # Every check above got its own result only if the script ran to its end:
+  # a crash, a hang (demo.sh's timeout) or a Lua error outside a check
+  # stops it short, and shows here with the end of the output.
+  if [[ "$out" == *SMOKE-DONE* ]]; then
+    pass "smoke: demo-smoke.lua ran to its end"
   else
-    fail "smoke: demo.sh --headless renders the fake dashboard and opens PR #101 in the reviewer" "$out"
-  fi
-  if [[ "$out" == *NAV-SMOKE-OK* ]]; then
-    pass "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference"
-  else
-    fail "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" "$out"
-  fi
-  if [[ "$out" == *FOLLOWUP-SMOKE-OK* ]]; then
-    pass "smoke: gu lists my comments and gA filters them there like everywhere else"
-  else
-    fail "smoke: gu lists my comments and gA filters them there like everywhere else" "$out"
-  fi
-  if [[ "$out" == *PRWI-SMOKE-OK* && "$out" == *REVIEW-WI-SMOKE-OK* ]]; then
-    pass "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer"
-  else
-    fail "smoke: a PR row shows its linked work item, and gW opens it from the dashboard and the reviewer" "$out"
-  fi
-  if [[ "$out" == *LINK-SMOKE-OK* ]]; then
-    pass "smoke: gl/gL popups link and unlink from either dashboard, and both update at once"
-  else
-    fail "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" "$out"
-  fi
-  if [[ "$out" == *CHATPLUS-SMOKE-OK* ]]; then
-    pass "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh"
-  else
-    fail "smoke: chat streaming, selection/refs, /prompts, build log, show-me, notes, the fix flow, board tools + undo, gr, ga, gh" "$out"
-  fi
-  if [[ "$out" == *PLAN-SMOKE-OK* ]]; then
-    pass "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves"
-  else
-    fail "smoke: no story without an approved plan; the plan's window, ga answers under a line (plan and change), gf edits, gA approves" "$out"
-  fi
-  if [[ "$out" == *AGENTS-SMOKE-OK* ]]; then
-    pass "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation"
-  else
-    fail "smoke: gP on the board starts an agent per work item (queued past max_agents), each planning in its own conversation" "$out"
-  fi
-  if [[ "$out" == *BATCHQ-SMOKE-OK* ]]; then
-    pass "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once"
-  else
-    fail "smoke: gQ shows each queued comment's place in the diff as you move, <Tab> goes there, gS sends them all at once" "$out"
-  fi
-  if [[ "$out" == *CHAT-SMOKE-OK* ]]; then
-    pass "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting"
-  else
-    fail "smoke: the chat panel sees the cursor's PR/file/thread, drafts, creates a branch, asks before voting" "$out"
-  fi
-  if [[ "$out" == *ROWNUM-SMOKE-OK* ]]; then
-    pass "smoke: both dashboards number their rows relatively inside the box, following the cursor"
-  else
-    fail "smoke: both dashboards number their rows relatively inside the box, following the cursor" "$out"
-  fi
-  if [[ "$out" == *TREE-SMOKE-OK* ]]; then
-    pass "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them"
-  else
-    fail "smoke: progress counts, T shows children and grandchildren (remembered), za/zM/zR fold them" "$out"
-  fi
-  if [[ "$out" == *PRS-SMOKE-OK* ]]; then
-    pass "smoke: the dashboard marks linked PRs and the item view lists them with title and status"
-  else
-    fail "smoke: the dashboard marks linked PRs and the item view lists them with title and status" "$out"
-  fi
-  if [[ "$out" == *SELECTION-SMOKE-OK* ]]; then
-    pass "smoke: gs on a visual selection maps the other items onto the first one's state"
-  else
-    fail "smoke: gs on a visual selection maps the other items onto the first one's state" "$out"
-  fi
-  if [[ "$out" == *GS-SMOKE-OK* ]]; then
-    pass "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones"
-  else
-    fail "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" "$out"
+    fail "smoke: demo-smoke.lua ran to its end" "$(printf '%s\n' "$out" | tail -40)"
   fi
 else
   echo "(nvim not on PATH - smokes skipped; CI installs neovim so they run there)"
@@ -636,7 +848,7 @@ fi
 
 echo
 echo "== summary =="
-echo "passed: $PASS  failed: $FAIL"
+echo "passed: $PASS  failed: $FAIL  skipped: $SKIPPED"
 if [ "$FAIL" -gt 0 ]; then
   echo "failing checks:"
   for n in "${FAILED_NAMES[@]}"; do echo "  - $n"; done

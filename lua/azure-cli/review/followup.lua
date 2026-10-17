@@ -263,8 +263,7 @@ end
 -- open ones are named, so an unknown status reads as open rather than
 -- silently counting as resolved. Same rule M.comment_marker applies. Pure.
 function M.is_resolved(status)
-  status = status or "active"
-  return not (status == "active" or status == "pending")
+  return not require("azure-cli.hosts").is_open(status)
 end
 
 -- The display state of an anchored row: its code-side classification,
@@ -334,7 +333,7 @@ end
 -- 1 - the same place decorate_comments surfaces those. Pure.
 function M.comment_marker(row, clamped)
   local status = row.status or "active"
-  local resolved = not (status == "active" or status == "pending")
+  local resolved = M.is_resolved(row.status)
   if clamped then
     return string.format("  \u{258C} your comment is on line %d, past the end of this file at this revision",
       row.lineno or 0), "AzureCliCommentStale"
@@ -790,7 +789,7 @@ local function open_picker(ctx, kind, new_iterations, review_point, anchored, un
     if not (row and row.thread) then return end
     local target = ctx.find_thread(row.thread.id) or row.thread
     require("azure-cli.prompt").select({ prompt = "Set thread " .. tostring(target.id) .. " status",
-      items = ctx.STATUS_OPTIONS,
+      items = ctx.status_options(),
       current = function(o) return target.status == o.key end }, function(o)
       if not o then return end
       ctx.apply_status(target, o, function()

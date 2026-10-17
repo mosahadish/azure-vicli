@@ -35,19 +35,27 @@ azure-vicli ships no agent configuration; you choose the agent and model
 
 ## Using it
 
-`gq` on any azure-vicli screen (or `:AzureCli chat`) takes you to the chat:
+`i` on any azure-vicli screen (or `:AzureCli chat`) takes you to the chat:
 it opens the panel, or jumps into it if it's already showing, and puts you
-in its input box. `gq` (or `q`) inside the panel hides it, and `<BS>` goes
-back to the screen next to it while leaving it open. Once shown, the panel
-appears in every azure-vicli tab you visit (dashboard, reviewer, work items)
-until you hide it. The conversation is the same in every tab.
+in its input box, typing - keeping whatever you had typed there. The
+screens are read-only views, so `i` there has nothing else to do. `q`
+inside the panel hides it, and `<BS>` goes back to the screen next to it
+while leaving it open. Once shown, the panel appears in every azure-vicli
+tab you visit (dashboard, reviewer, work items) until you hide it. The
+conversation is the same in every tab. (`gq` did this before; it's gone -
+a `gq` left in your `setup()` is skipped, with a warning when you had
+changed it.) `chat.allowed_skills` is gone too: `setup()` stops with an
+error until you remove it, and you allow a skill from `/skills` instead
+(see [What the agent can do](#what-the-agent-can-do)).
 
 | Key (in the panel) | Action |
 |---|---|
-| `<CR>` (input box, normal mode) / `<C-s>` (while typing) | Send the message |
+| `<CR>` (input box, normal mode or while typing) / `<C-s>` (while typing) | Send the message; with the completion menu open, `<CR>` picks the entry instead |
+| `<S-CR>` / `<C-j>` (while typing) | A new line in the message (`<S-CR>` where the terminal reports it, `<C-j>` everywhere) |
 | `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
-| `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor |
+| `<CR>` (conversation) | Open the `!PR` or `#work item` under the cursor; on a queued message, send it |
+| `dd` / `cc` (conversation, on a queued message) | Cancel it / edit it in the input box (sending it again puts it back in its place in the queue) |
 | `<Tab>` (conversation) | Unfold a long answer, or the list of tool calls folded into one line ("· 6 lookups, 2 changes"); again folds it |
 | `ga` (conversation) | Ask the agent why it did the step under the cursor (one of its tool calls, `✎ create_branch (...)`) or wrote that line |
 | `gr` (conversation) | Draft the answer under the cursor as a reply to the thread its question was about (or a PR comment), queued for `gS` |
@@ -57,10 +65,10 @@ until you hide it. The conversation is the same in every tab.
 | `gh` | Open an earlier conversation |
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `gM` / `gm` | Choose the agent / the model |
-| `<C-c>` | Stop the agent |
+| `<C-c>` | Stop the agent's answer - its session stays for your next message (what you queued is held until you send it) |
 | `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
 | `<BS>` | Back to the screen next to the panel |
-| `q` / `gq` | Hide the panel (`gq` on a screen brings you back to it) |
+| `q` | Hide the panel (`i` on a screen brings you back to it) |
 | `?` | These keys |
 
 Every message is sent together with a description of what you're looking at:
@@ -79,6 +87,16 @@ seconds. With the panel hidden, put it in your statusline:
 `require("azure-cli.chat").status()` is `⠹ Copilot 42s` while the agent
 works and `""` otherwise (lualine: `{ function() return
 require("azure-cli.chat").status() end }`).
+
+**Sending while it works.** A message you send while the agent is still
+answering is queued: it shows under the conversation as `You · queued (1 of
+2)` (and `[⌛ 2 queued]` in the title bar), with what you were looking at
+when you sent it. When the answer is done, the queued messages go out in
+order, each as a turn of its own. On a queued message, `dd` cancels it and
+`cc` puts it back in the input box to change; sending it again keeps its
+place. Stopping the agent with `<C-c>` holds the queue: nothing more goes
+out until you press `<CR>` on a queued message. This is the same in a plan's
+agent's conversation and its popup.
 
 **The status strip.** One line says what needs you, from any tab: the
 agent working (`⠹ Copilot 42s`), a question waiting for your yes or no
@@ -131,7 +149,7 @@ back the same way. In the conversation, `<CR>` on one opens the PR in the
 reviewer or the work item in its view.
 
 **Selections.** Select lines (in a diff, the Overview, a work item), then
-press `gq`: the panel opens and the next message carries the selected text
+press `<CR>`: the panel opens and the next message carries the selected text
 and, in a diff, which file lines it covers. The winbar shows
 `[selection: N lines]` until it's sent. Without a selection, a message from
 a diff carries the change (the run of added/removed lines) around the cursor.
@@ -241,12 +259,32 @@ picks goes through `session/set_config_option`.
   (`↳ $ git status  (allowed: only looks)`, `(you denied it)`), and so in
   the run log (`gH`). Reading and searching files never ask -
   they're always allowed, and so is searching or listing through the
-  shell: `grep`, `rg`, `find`, `ls`, `cat`, `head`, `git log` / `diff` /
-  `show` / `status` / `blame` / `grep`, PowerShell's `Get-ChildItem`,
-  `Get-Content`, `Select-String`, `Where-Object Name -like …`, and pipes
+  shell: `grep`, `egrep`, `fgrep`, `findstr`, `rg`, `find`, `fd` (not
+  `-x` / `-X`), `ls`, `dir`, `tree`, `cat`, `head`, `tail`, `wc`, `sort`
+  (not `-o`), `uniq`, `cut`, `echo`, `printf` (not `-v`), `pwd`, `cd`,
+  `stat`, `which` / `where`, `basename` / `dirname` / `realpath`, `file`,
+  `diff`, `cmp`, `comm`, `nvim --version`, a `sed` or `awk` that only
+  prints (no `-i` or `-f`, no `w` / `e` commands, no `system` or pipes),
+  `git log` / `diff` / `show` / `status` / `blame` / `grep` / `ls-files` /
+  `ls-tree` / `rev-parse` / `describe` / `shortlog` / `cat-file` /
+  `merge-base` / `show-ref`, `git remote [-v]` / `show` / `get-url`,
+  `git worktree list` (`--porcelain`, `-v`,
+  `-z`), plain `git fetch [-q] [--prune] [remote [branch…]]` (no
+  `--upload-pack` or other options, no `x:y` refspecs), `gh run list` /
+  `view` / `watch`, `gh pr view` / `checks` / `diff` / `list` /
+  `status`, `gh issue view` / `list` / `status` (not with `--web`),
+  `gh api graphql` queries (no mutation, `@file`, `--input` or other
+  method),
+  PowerShell's `Get-ChildItem`, `Get-Item`,
+  `Get-Content`, `Select-String`, `Where-Object`, `Test-Path`,
+  `Resolve-Path`, `Get-Location`, `Select-Object`, `Sort-Object`,
+  `Measure-Object`, `Format-Table` / `Format-List`, `Out-String` and
+  `Out-Null`, and pipes
   of them, throwing errors away or not (`2>$null`, `2>/dev/null`,
-  `2>&1`). **Skills you allow** don't ask either: while an answer uses one
-  of the agent's skills (a `SKILL.md` in the repository's `.github/skills`,
+  `2>&1`), and `for` / `while read` loops of them (`while read l; do
+  grep -n "$l" src; done < file`). **Skills you allow** don't ask
+  either: while an answer uses one of the agent's skills (a `SKILL.md`
+  in the repository's `.github/skills`,
   `.claude/skills`, `.agents/skills` or `.copilot/skills`, or yours in your
   home folder) - your message names it (`/triage-pr-comments`, "use the
   triage-pr-comments skill") or the agent reports loading it - its
@@ -266,7 +304,8 @@ picks goes through `session/set_config_option`.
   altogether, see `chat.permissions`' groups ([below](#what-the-agent-can-do)).
   azure-vicli's own questions - posting, voting, pushing - still ask. A
   command that could
-  write or run something else - a redirect, `$(...)`, a script block,
+  write or run something else - a redirect, a `$(...)` that writes or runs
+  something (one whose commands only look is allowed), a script block,
   `find -exec`, `rg --pre`, any other program - still asks. While a
   `/plan` message runs, editing, deleting or moving a file is refused
   without asking (a plan changes no code). Once you've approved the plan, changing a file it lists under
@@ -287,9 +326,10 @@ picks goes through `session/set_config_option`.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this
   work item": the agent edits files in a worktree under `{fix_root}`, never
   in your checkout. Leave it out if you don't want the agent changing code.
-- **Stopping** a message (`<C-c>`, a timeout) first asks Copilot to stop the
-  turn (`session/cancel`), and only stops the process if that doesn't work
-  within 5s - so the session normally survives it.
+- **Stopping** a message (`<C-c>`, a [timeout](#fields)) first asks Copilot
+  to stop the turn (`session/cancel`), and only stops the process if that
+  doesn't work within 5s - so the session normally survives it. (Claude
+  Code's turns are interrupted the same way: see [Timeouts](#fields).)
 
 Check `--add-dir` and `--allow-tool` against your `copilot --help`; if
 Copilot rejects a flag, the error shows in the chat.
@@ -302,19 +342,43 @@ agent = {
   models = { "sonnet", "opus", "haiku" },   -- gm picks one; the first is the default
   cmd = { "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
           "--model", "{model}", "--mcp-config", "{mcp_config}", "--add-dir", "{fix_root}",
-          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob,Edit,Write" },
+          "--allowedTools", "mcp__azure-vicli,Read,Grep,Glob",
+          "--permission-prompt-tool", "mcp__azure-vicli__permission" },
 },
 ```
 
 - Each message goes to its stdin as one line of Claude Code's stream-json
   "user message" (the default `stdin`), and its events stream into the
   panel as they're written.
-- `--allowedTools "mcp__azure-vicli"` lets Claude Code use azure-vicli's
-  tools without its own prompts (it can't show them in a headless run);
-  which changes still ask you is azure-vicli's business, see
-  [below](#what-the-agent-can-do).
-- `Edit,Write` and `--add-dir {fix_root}` are for the fix and story flows,
-  as above.
+- **Permissions.** Claude Code can't show a prompt in a headless run, so
+  `--permission-prompt-tool mcp__azure-vicli__permission` hands every
+  request `--allowedTools` doesn't cover to azure-vicli, which answers it
+  exactly as it answers Copilot's (see [GitHub Copilot
+  CLI](#github-copilot-cli) above): searching and listing through the shell
+  doesn't ask, nor do an approved plan's tests and allowed skills; an edit
+  outside the plan's files, and any other command, pops up the yes/no
+  prompt with the command or the diff; while `/plan` runs, editing is
+  refused. Without that flag a tool `--allowedTools` doesn't list is
+  refused silently - the agent says it was denied, and you never see why.
+- **Its questions.** When Claude Code asks you something (its
+  `AskUserQuestion` tool), each question pops up as itself rather than as
+  Allow/Deny: its header as the title, the question, and its options with
+  their descriptions. `1`-`9` (or `<CR>` on one) picks an option; with
+  `multiSelect` they're tick boxes - `1`-`9`, `<Space>` or `<CR>` tick
+  them, and **Done** answers. **Other…** opens the comment editor for an
+  answer in your own words (`q` there goes back to the question). Several
+  questions come one after another. Your answer goes back as the tool's
+  `updatedInput.answers` (each question's text → the label picked, several
+  joined with ", ", or your own words), so the agent carries on with it;
+  `<Esc>` or **Cancel**, on any of them, declines them all - the agent is
+  told you declined to answer. No setting ever answers one for you, and
+  like every other question it waits while another is open. (Over ACP
+  there's no way to send an answer back, so there it stays Allow/Deny.)
+- `--allowedTools "mcp__azure-vicli,Read,Grep,Glob"`: azure-vicli's tools
+  and reading never ask. Leave `Edit`/`Write` and `Bash` out of it - listed
+  there, they'd skip azure-vicli's checks (the plan's Files, a plan that
+  changes no code).
+- `--add-dir {fix_root}` is for the fix and story flows, as above.
 
 ### Fields
 
@@ -331,7 +395,31 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 | `planner_model` / `implementer_model` | A plan's own agent (`gP`, `/plan`, `start_agents`) plans on `planner_model`, and once you approve its plan, implements on `implementer_model`; the main chat stays on `model`. Either missing: that stage uses `model`. An ACP agent switches in its session; another starts again on the new model and gets the conversation. `gm` picks a model for the conversation you're in only, over all of these. |
 | `label` | The agent's name in the panel. |
 | `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls). Unused with `acp`. |
-| `env`, `timeout_seconds` | Extra environment; how long a message may take (default 900) - a timeout stops the process (`acp`: asks the agent to stop the turn first). |
+| `env` | Extra environment. |
+| `idle_timeout_seconds` | How long the agent may go quiet in a message before it's stopped (default 600). Everything it sends - a chunk of its answer, a tool call, a permission request - starts the count again, and it doesn't run while one of azure-vicli's tools works (`run_tests`, a push) or a popup waits for you. `timeout_seconds`, its old name, still works. |
+| `max_turn_seconds` | How long one message may take in all, however busy the agent is (default 7200), less the time popups waited for you. |
+| `interrupt_grace_seconds` | How long a stopped message may take to end once the agent is asked to stop it, before its process is killed (default 5). |
+
+**Timeouts.** When either one fires, the message is stopped as `<C-c>`
+would, its status says which and how long - `timed out (idle 10m)`,
+`timed out (cap 2h)`, also on the Agents screen - and a line under it
+names the setting:
+`✗ timed out: no output from the agent for 10m (idle_timeout_seconds = 600)`.
+Claude Code sends nothing while its own shell runs a command, so keep the
+idle timeout above your longest build.
+
+**Stopping keeps the session.** A stopped message (`<C-c>` in the chat or
+on the Agents screen, or a timeout) only stops that turn: Claude Code is
+sent a stream-json interrupt (`control_request`), Copilot a
+`session/cancel`. The process, its session and the worktree it was in stay,
+and your next message continues it - `· interrupted - the session stays,
+your next message continues it`. If the turn hasn't ended
+`interrupt_grace_seconds` later (or you press `<C-c>` again meanwhile), the
+process is killed instead: the status says so - `timed out (idle 10m,
+killed)`, `stopped (killed)` - and so does a line under it, and your next
+message starts the agent again and replays the conversation to it. An
+agent with its own `stdin` template is a CLI that may not understand the
+interrupt, so it's stopped by killing it straight away.
 
 `followup`, `session_pattern` and `persistent` are gone: they were for
 starting a process per message and resuming a session each time. A config
@@ -354,7 +442,7 @@ The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `skill_dirs` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
 (`"suggest"` or `"plan"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
-(default true) and `plan_template` ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
+(default true), `plan_template` and `plan_revisions` (default 3) ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).
 
 The agent runs in the local clone of the PR you're looking at, when there is
@@ -402,9 +490,10 @@ couldn't confirm.
    - choosing a model, and the valid model names (`acp` agents get it over
      ACP - no flag needed);
    - for "fix this comment": letting it edit files in an extra directory,
-     `{fix_root}` (Claude Code: `--add-dir {fix_root}` and `Edit,Write` in
-     `--allowedTools`; Copilot: `--add-dir {fix_root}`) - only if the user
-     wants the agent changing code.
+     `{fix_root}` (Claude Code: `--add-dir {fix_root}` and
+     `--permission-prompt-tool mcp__azure-vicli__permission`; Copilot:
+     `--add-dir {fix_root}`) - only if the user wants the agent changing
+     code.
 3. **Find where the user's options live.** If their Neovim config calls
    `require("azure-cli").setup({...})`, edit that call. Otherwise it's the
    standalone launcher's `azure-cli.lua` next to `azure-cli.yml`:
@@ -416,7 +505,7 @@ couldn't confirm.
    the examples in this file: `chat = { agent = { label, acp, models, cmd } }`.
    Use `{model}` where the model flag goes (not for `acp`), and list the
    model names from step 2 in `models`.
-5. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `gq`
+5. **Tell the user** to restart azure-vicli (or re-run `setup()`), press `i`
    on the PR dashboard and ask "what am I looking at?", then something
    else. The first answer should name the PR under the cursor, which shows
    the azure-vicli tools work; the second should come back without the
@@ -433,7 +522,9 @@ in the main chat that starts an agent for it (see
 
 ![The agent's plan: sections on the left, the plan with questions answered under its lines, the chat on the right](images/chat-plan.png)
 
-The plan opens in a tab of its own, laid out like the reviewer: its
+A plan never opens by itself: when the agent submits it you're told it's
+ready (a notification, and the Agents screen marks it), and `<CR>` on its
+row there opens it - as an inner tab of Agents, laid out like the reviewer: its
 sections on the left (with a count of the files it touches, and of the
 questions you asked in each), the plan on the right as rendered markdown,
 the chat alongside. It follows a template: Goal, Approach, Files, Risks,
@@ -462,8 +553,9 @@ with `]C` / `[C` between the questions there.
 (or a selection) queues what should change there - drawn under the line,
 like a comment in the reviewer's batch queue - and `gS` sends everything
 queued in one message ("please change these: auth.py line 13 ..."), with a
-note of your own. `dd` forgets one. The agent fixes them in the worktree
-and shows the change again.
+note of your own. `dd` forgets one. The agent fixes them in the worktree,
+and the change viewer, if it's still open, redraws with the new change in
+place.
 
 **Running the plan's tests.** The plan's Test plan section gives the
 command that checks the change, in a ` ```sh ` block - or, when the
@@ -487,7 +579,8 @@ for `gb` and for the agent's `run_tests` alike.
 **Letting an approved plan push and open its PR.** `gA` offers two ways
 to approve: just approve, or approve *and let it push and open the PR
 once the tests pass*. With the second, the agent is told so and carries
-on by itself: it makes the change and shows it, runs the plan's tests
+on by itself: it makes the change (`show_fix` tells you it's ready),
+runs the plan's tests
 with `run_tests` (tests it runs in its own shell don't count), fixes the
 change until they pass, pushes, and - for a work item - opens its pull
 request, a normal one, linking the work item with the plan as its
@@ -515,19 +608,22 @@ their line when the text around them changes.
 |---|---|
 | `gA` | Approve the plan - the agent is told to go ahead (optionally: and may push and open the PR once the tests pass) |
 | `gc` | Queue a change on this line (in visual mode: these lines) - shown under it, sent by `gR` |
-| `gR` | Ask for changes: what you write, plus every change queued with `gc`; the agent submits a new revision |
-| `gr` | Answer the open question under the cursor (its Open questions section) - sent along when you approve |
-| `dd` | Forget the question or change under this line |
-| `gi` | Mark what this revision changed against the one before (on by default; toggles) |
+| `gR` | Ask for changes or send your answers: what you write, plus every change queued with `gc` and your unsent answers; the agent submits a new revision |
+| `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
+| `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
+| `cc` | Edit the change queued under this line |
+| `gD` | Discard this plan, as `dd` on the Agents screen: the question appears at once (with Discard all too), refused while its agent works; the files move to `plans/discarded/` and the plan's tab closes, then its worktree is checked in the background - removed if clean, kept if it has changes |
+| `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles) |
+| `gh` | Open an older revision, read-only (on one: back to the current one) |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
 | `gd` | The code this line became (in the change viewer; `gp` there comes back) |
 | `gH` | The run log: everything that happened to the plan and its change, as one page |
 | `gf` | Edit the plan's file yourself; saving it makes your version the one the agent gets (and it needs approving again) |
-| `<CR>` (section list) | Go to the section; moving through the list scrolls the plan |
+| `<CR>` (section list) | Go to the section; moving through the list scrolls the plan (a file under Changes: its diff in the plan pane) |
 | `<BS>` | Back to the section list |
-| `r` / `gq` / `<` `>` / `q` / `?` | Reload / the chat / resize / close / keys |
+| `r` / `i` / `<` `>` / `q` / `?` | Reload / type in the chat / resize / close / keys |
 
 **The change against the plan.** When the agent shows its change
 (`show_fix`, `gd`), the change viewer compares it with the plan's Files
@@ -535,26 +631,67 @@ section: a changed file the plan doesn't list is marked `✗ not in the plan`,
 and the files the plan lists but the change didn't touch are listed under
 the changed ones ("In the plan, not changed"); the winbar counts both (`[1 off plan]`, `[2 untouched]`). The
 agent gets the same list back from `show_fix`, so it can explain or fix it.
+Only the approved revision's Files count, and a file you let the agent
+change on top of it counts until the next revision. In a Files entry, every
+path before its description is a file (`a.lua, b.lua - ...`); code words
+like `M.open(host)`, `B.words` or `#3001` aren't, and a bare or partial
+name (`state_dialog.lua`, `chat/agents_view.lua`) matches the changed path
+that ends in it. The same files decide when an edit asks because it
+isn't in the plan.
+
+**The change inside the plan.** Once the agent has changed files, the
+section list ends with `Changes (N files)` and each file under it (`A
+b.lua  +3 −0`, `D` for a deleted one, `✗ not in the plan` as above).
+Moving onto a file - or `<CR>` on it - shows its diff in the plan pane,
+drawn as the change viewer draws it; a plan section puts the plan back,
+and `<BS>` goes to the list. On a diff line `ga` asks about it and `gc`
+queues a change to the code (both kept with the change viewer's, so `gd`
+shows them too); `dd` / `cc` drop or edit one, `]c` / `[c` go from
+change to change, and `gR` there sends the queued code changes - the
+winbar says `gR sends N code changes`, it isn't a plan revision. The
+section follows the agent's edits; after it pushes it shows the pushed
+commit (`Changes (2 files, pushed abc1234)`), and it's gone while nothing
+changed.
 
 **Asking for changes, line by line.** `gc` on a line (or a selection)
 queues what should change there; it shows under the line (`✎ use a
 decorator here`), like a review comment waiting in the batch queue. `gR`
 then sends them all in one message - with a note of your own - and the
-agent answers with a new revision. Sent ones stay under their lines,
-marked as sent, until you clear them with `dd`.
+agent answers with a new revision. Until then a queued change can be
+taken back: `dd` on its line drops it (after asking) and `cc` edits it,
+and the `[✎N queued]` in the winbar follows. Sent ones stay under their
+lines, marked as sent, as history - `dd` and `cc` leave them alone.
 
 **Answering its questions.** The agent puts what it needs you to decide
 under Open questions. `gr` on one of them opens an editor for your answer,
 which shows under the question (`↪ you: no, admins too`); the winbar
-counts the ones still open (`[1 to answer]`). Approving - or asking for
-changes - sends your answers along with each question, so the agent goes
-ahead knowing them.
+and the Open questions row in the section list count the ones still open
+(`[1 to answer]`). A lead-in that isn't about questions - a `###` heading,
+a bold line or one ending in `:`, like "Follow-ups, out of scope:" - ends
+them, so the follow-ups under it don't count. Once you've answered, the
+winbar says `[2 answers unsent]` and the section list `2 answers unsent -
+gR sends them`: `gR` with no changes queued opens ready to send just your
+answers ("See my answers to your questions.", `+2 answers` in its title),
+and the agent revises the plan with them. Asking for changes or approving
+sends them too, each with its question, so the agent goes ahead knowing
+them; sent answers say so under their question. A board agent's plan
+sends all of this to that agent's own conversation.
 
 **What changed since the last revision.** When the agent sends a new
 revision (or you save your own), the lines it changed get a bar beside
-them, the lines it took out show struck through where they were, and the
-section list marks the sections that changed (`±`); the winbar says which
-revision it compares with. `gi` turns the marks off and on.
+them and the section list marks the sections that changed (`±`); the
+winbar says which revision it compares with. The text it took out isn't
+shown - `gh` opens the revision before. `gi` turns the marks off and on.
+
+**Older revisions.** `gh` lists the plan's revisions, newest first, with
+who wrote each and when (`rev 3 (approved) · by the agent · 10-14 16:39`);
+picking an older one shows it in the plan pane, read-only - the winbar
+says `rev 3 of 5 · read-only`, the questions under the lines and the keys
+that write stay with the current one, and `gh` again (or `r`, or a new
+revision) goes back. A plan keeps its last `chat.plan_revisions` (3)
+revisions, and always the one last approved - with 5 revisions and the
+2nd approved, it keeps 2, 4 and 5. They keep their numbers. A plan with
+more from before is cut down the next time it's saved.
 
 **From the plan to the code and back.** `gd` on a plan line opens the
 code it became: the agent ties the parts of its change to the plan lines
@@ -590,22 +727,27 @@ stories, `"stories"` only for work items (comment fixes go straight
 ahead), `false` for neither (`/plan` still works).
 
 Plans live under Neovim's data directory, `azure-cli-chat/plans/<wi-3001 |
-pr-101>.md` (the text `gf` edits) and `.json` (status, revisions,
-questions).
+pr-101>.md` (the text `gf` edits) and `.json` (status, the revisions
+kept, questions).
 
 ## Several agents at once
 
 `gP` on the work-items board hands the work item under the cursor - or,
 in visual mode, every one in the selected rows - to an agent of its own,
 which writes that item's plan in a conversation of its own while you
-carry on. At most `chat.max_agents` (default 3) work at the same time;
-the rest wait and start as the others finish. An agent working in the
-background doesn't pull you into its plan when it's done: the status
-strip counts the plans waiting for you.
+carry on. At most `chat.max_agents` (default 3) work at the same time
+(only plan agents count, not the main chat); the rest wait and start
+as the others finish. No agent pulls you into its plan or its change
+when it's done - neither opens by itself, from the main chat or from an
+agent's own: you're told it's ready, the status strip counts the plans
+waiting for you, and `<CR>` (the plan) or `gd` (the change) on the
+Agents screen opens it. A plan or change viewer you already have open is
+redrawn in place when the agent submits a new revision, runs the tests
+or changes the code, without taking the focus.
 
 ### The main chat coordinates
 
-The main chat (`gq` anywhere outside a plan) hands planning and code
+The main chat (`i` anywhere outside a plan) hands planning and code
 changes to agents rather than doing them itself:
 
 - **`/plan`** there starts an agent - for the work item or PR on screen (on a
@@ -616,9 +758,21 @@ changes to agents rather than doing them itself:
   !101", "what are the agents doing?", "tell #3001 to use the existing
   cache". It has three tools for that: `start_agents`, `list_agents` and
   `message_agent` (the message shows in that agent's own chat, as coming
-  from the main chat, and it answers there).
-- It's a strong default, not a lock: ask the main chat to do something
-  itself and it will.
+  from the main chat, and it answers there; while that agent is mid-turn the
+  message is queued, like one you type there, and goes when the turn ends).
+  `start_agents` takes `board` like the other work-item tools, and each
+  agent reads its item from that board; without it, the board a list showed
+  the item on, else the one you're looking at.
+- It's a lock, not a default: `submit_plan`, `start_story` and `start_fix`
+  refuse the main chat's calls and tell it to `start_agents` instead, even
+  when you ask it to do the work itself. To work hands-on, talk to the
+  agent in its own conversation (`<CR>` on its row on the Agents screen).
+- **A plan with no agent** - one the main chat wrote before this, or whose
+  conversation was pruned - gets an idle agent conversation of its own when
+  the plans are restored, so the Agents screen lists it. Approve it (`gA`)
+  to hand it to that agent, or discard it: `dd` on its row, `gD` in the
+  plan itself, or ask the main chat to `discard_plan` it (all ask first;
+  the files move to `plans/discarded/`).
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
   tab. The main chat can't approve a plan, and an agent can't start or
   message other agents.
@@ -649,10 +803,12 @@ question waits for you · ● 2 plans wait for you`.
 first - Needs you, Working, In progress, Finished - with the most recent
 first in each group (finished ones over 7 days old are hidden until `gF`).
 For each it shows what it's doing (working, with its latest step; waiting
-for an agent; its plan waiting for you; approved; revising; pushed;
-`PR !123 open` once it opened one; finished - `merged` or `PR abandoned` -
-once that PR is closed, which it learns from the
-[watched PRs](#conversations-agents-and-models) check), how long since it
+for an agent; its plan waiting for you; changes asked, not revised yet;
+approved; pushed; `PR !123 open` once it opened one; finished - `merged`
+or `PR abandoned` - once that PR is closed, which it learns from the
+[watched PRs](#conversations-agents-and-models) check; failed or timed
+out; idle). A timed-out agent is always under Needs you; a failed one is
+there only when its plan isn't already approved or pushed. It also shows how long since it
 last did something, and what it has used so far, centred in its window, and the winbar adds it up: its cost when the
 agent reports one (Claude Code does, and an ACP agent can, through ACP's
 `usage_update`), else its premium requests (`agent.premium_requests`:
@@ -663,13 +819,16 @@ latest step). The chat's winbar shows the same for the conversation in it
 
 | Key (Agents screen) | Action |
 |---|---|
-| `<CR>` | The row's plan |
+| `<CR>` | The row's agent: its plan, as an inner tab of Agents (`]r` / `[r` / `g1`..`g9` switch, `q` goes back; already open: back to it as you left it), with that agent's conversation in the chat; before it has planned, its conversation in a popup (watch it, or `i` to talk to it), the panel keeping the main chat |
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
-| `gq` | Its plan's tab, with that agent's conversation in the chat |
 | `<C-c>` | Stop what it's doing |
+| `dd` | Discard its plan, any plan (an agent's too). It asks at once, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is looked at only after you answer, in the background: removed when there's nothing in it, kept when it has uncommitted or unpushed changes (or git can't tell), and a toast says which. The question also offers **Discard all**: it asks once more with the count and the names, then discards every plan the screen lists whose agent isn't working (finished ones hidden after 7 days are left out), keeping worktrees with changes, with one toast for all. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
+| `i` | The main chat (its input box), whatever row you're on |
+| `gg` / `G` | First / last row (with a count, that row) |
+| `P` / `W` / `I` | The Pull requests / Work items / Issues tab |
 | `r` / `q` / `?` | Redraw / close / keys |
 
 **For review comments, too.** `gP` in the reviewer, on a comment
@@ -687,14 +846,74 @@ worktree and pushes to the PR's branch. On the PR dashboard, the agent
 column shows each PR's agent and what it's doing, and `ga` there opens
 its conversation in a popup ([dashboard](dashboard.md)).
 
-Every plan opens in a tab of its own, and so does every change - opening
-another doesn't replace the one you were reading, and `r`, `gA` or `ga`
-in a tab always act on that tab's plan or change.
+Every plan you open gets an inner tab of its own under Agents, and so does
+every change - opening another doesn't replace the one you were reading,
+and `r`, `gA` or `ga` in one always act on that tab's plan or change.
 
 Each plan's tabs (its plan window, its change viewer) show that plan's
 agent in the chat panel - its winbar names it (`Chat · Claude · #3001`) -
 so asking why, approving or asking for changes there goes to the agent
 that wrote the plan; everywhere else the panel is your main conversation.
+
+### Phone dashboard
+
+To watch the agents from a phone, `:AzureCli web start` serves a
+read-only web page of the Agents screen from this machine: each row as the
+screen shows it (#id, title, status, age, cost, the current step), "Needs
+you" first, and the totals line. It updates itself every few seconds -
+also while Neovim is unfocused or idle, when the network polls slow down
+(`timing.idle_after`, [Configuration](configuration.md)) - fits a phone's
+width, and follows its light or dark mode. It shows no plan
+text, code, diffs or tokens, and has no buttons - approving and the rest
+stay in Neovim.
+
+It's off until you turn it on, and listens only where you say:
+
+```lua
+require("azure-cli").setup({
+  dashboard_web = { enabled = true, bind = "100.101.102.103" },  -- this machine's Tailscale (or LAN) address
+})
+```
+
+`start` shows the URL, token included, in a float - open it on the phone
+(`status` shows it again). The link serves the page itself, with no
+redirect, so it works whether you tap it in another app or paste it. The
+page keeps the token in memory, takes it out of the address bar
+(`history.replaceState`), and sends it with each update in an
+`X-Azvicli-Token` header, never in a URL. The same response sets an
+HttpOnly, SameSite=Lax cookie, only so that a reload works. A request
+without the token gets 401, and so does one with a wrong header, even if
+its cookie is good. `:AzureCli web stop` stops it (so does leaving Neovim).
+
+The token is kept across restarts, so a bookmarked link keeps working:
+it's stored in `stdpath("state")/azure-cli/web-token` (e.g.
+`~/.local/state/nvim/azure-cli/web-token`), a file created with mode
+`0600` - never chmod-ed after the fact - and replaced in one step. The
+server reads or makes that file itself: only its path is on the server's
+command line, never the token (so `ps` doesn't show it), and the token is
+in no log - not `:AzureCli log`, not the `AZVICLI_DEBUG` perf log. If the
+file is missing, unreadable or malformed, the next start makes a new
+token. If it's a symlink, someone else's, or readable by other users (say
+`0644`), it isn't trusted: the start makes a new token, writes a fresh
+`0600` file and warns you to send the new URL (on Windows the
+permission check is skipped). `dashboard_web.persist_token = false` keeps
+the token in memory only, new every start, as before.
+
+`:AzureCli web rotate` makes a new token. While the dashboard runs, the old
+link, open pages and their cookies get 401 at once; the new token is
+saved, and the float shows the new URL. While it's stopped, rotate deletes
+the stored token, so the next `start` makes a new URL. `status` says
+whether a token is stored.
+
+Two Neovims share the one file: both serve the same token (with a fixed
+`port` only the first can listen; with `port = 0` both do). Rotating in
+one swaps its own server's token at once, but the other Neovim's running
+server keeps the old token until it restarts. `bind` defaults to `127.0.0.1` (this machine
+only), `port` to `8797`; `0.0.0.0` and `::` (every interface) are refused.
+The page is plain HTTP, so prefer a VPN such as Tailscale - which encrypts
+the traffic - over an open Wi-Fi. The server is `azure-cli.py
+--web-dashboard`, a process of its own: GET only, no CORS, a strict
+Content-Security-Policy, and no request log.
 
 ## What the agent can do
 
@@ -702,40 +921,46 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 
 | Tool | What it does | Asks you first? |
 |---|---|---|
-| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
-| `submit_plan`, `get_plan` | Shows you its plan for a PR or work item (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions | - |
+| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item (on `board`) or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
+| `submit_plan`, `get_plan` | Hands you its plan for a PR or work item - you're told it's ready, nothing opens (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions. `submit_plan` (like `start_fix` and `start_story`) is a plan agent's only: the main chat's call is refused | - |
+| `discard_plan` | The main chat only: discards a plan no agent has worked on (one the main chat wrote itself); its files move to `plans/discarded/` | yes |
 | `current_view` | What you're looking at when you sent the message (see above) | - |
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details - any PR in the project by id, not only your dashboard's (after it, the other PR tools work for that PR too) | - |
 | `find_implementations`, `find_definition` | Across a whole repository (the fix/story worktree, a PR's source branch, or a local clone): the types implementing an interface or deriving from a class, and the ones deriving from those; where a type or member is declared. Text-based (`git grep` and declaration patterns for C#, Java, TypeScript, Kotlin, Python, ...), no build needed | - |
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
 | `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
-| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items; one item in full; the team's sprints | - |
+| `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items (each with its iteration: the path on Azure; on GitHub the name, and `iteration_id` for `move_to_sprint`); one item in full; the team's sprints. These and the other work-item tools also work on GitHub issues (see [Issues on GitHub](#issues-on-github)) | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
-| `link_pr_to_work_item` | Links a PR and a work item | no |
+| `link_pr_to_work_item` | Links a PR and a work item | no (**yes** on GitHub, where it edits the PR's description) |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
 | `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
+| `create_work_item` | A new top-level work item (title, body, type, sprint), assigned to you | **yes** |
 | `requeue_build` | Queues the PR's build again | no |
-| `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (shown to you in a tab like the reviewer: changed files on the left, `]c`/`[c` through the changes); throwing it away | no |
-| `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in. `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
+| `start_fix`, `show_fix`, `discard_fix` | A worktree of the PR's branch to change code in; the change so far (you're told it's ready; `gd` on the Agents screen opens it like the reviewer - changed files on the left, `]c`/`[c` through the changes - and an open one is redrawn in place); throwing it away | no |
+| `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in (before its plan is approved, only a read-only worktree of the branch, to plan in). `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
 | `run_tests` | Runs the plan's test command (or another) in the fix/story worktree; returns the exit code and the end of the output | **yes**, showing the command |
 | `delete_fix_file` | Deletes a file in the fix/story worktree (the agent's own file tools can't delete); any path outside the worktree is refused, so it needs no shell permission | no |
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
-| `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description | **yes** (the description is shown) |
+| `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description, and the title when one is given | **yes** (the description, and any new title, is shown) |
 | `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items; its description from the approved plan unless it writes one); merges one | **yes** |
 | `vote` | Votes on a PR | **yes** |
 | `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
+| `set_work_item_parent` | Moves a work item under another parent, or off its own (`"none"`) - on GitHub, makes the issue a sub-issue of the parent. Undoable: the undo puts the old parent back | **yes** |
 
 When a tool asks, a popup comes up in the middle of the screen ("The agent
 wants to vote "Approve" on PR #101."), with the diff or text it would send
-in a window above it (`<C-d>` / `<C-u>` scroll it), and two buttons:
-**Allow** and **Deny**. It can come up while you're typing something else,
-so Deny is the one focused, and for the first moment keys don't count -
-the buttons light up once they do; then `y` / `n`, or `<Tab>` and `<CR>`.
-`<Esc>`, `q` or leaving it is Deny. A deny is reported back to the agent,
+in a window above it (`<C-d>` / `<C-u>` and `<C-e>` / `<C-y>` scroll it),
+and two buttons: **Allow** and **Deny**. It can come up while you're typing
+something else, so Deny is the one focused, and for the first moment keys
+don't count - the buttons light up once they do; then `y` / `n`, or
+`<Tab>` (or `h` / `j` / `k` / `l`, or the arrows) and `<CR>`. `o` opens the
+whole request in a window of its own, where `q` comes back and the popup
+keeps asking. `<Esc>` or leaving it is Deny; `q` does nothing here, since
+it may be a stray key. A deny is reported back to the agent,
 which carries on without it. Approving a plan (`gA`) asks the same way:
 Approve, Approve and let it push, or Cancel. `ui.confirm = "select"`
 ([Configuration](configuration.md)) asks through `vim.ui.select` instead,
@@ -780,15 +1005,18 @@ tasks and pushes can't be undone from here; the list says so.
 2. The agent calls `start_fix`: a git worktree of the PR's source branch at
    its latest commit, under `{fix_root}` (Neovim's cache directory), never
    your own checkout.
-3. It edits the files there with its own tools, then `show_fix` opens the
-   change in a tab of its own, laid out like the reviewer: the changed files
+3. It edits the files there with its own tools, then calls `show_fix`,
+   which tells you the change is ready - it doesn't open it (the plan's
+   Changes section shows its diff). `gd` on the Agents screen opens the
+   change as an inner tab, laid out like the reviewer: the changed files
    on the left (moving through them previews each), the file's diff on the
    right with the reviewer's keys - `]c` / `[c` jump between changes and on
    into the next file, `<BS>` goes back to the files, `gf` opens the file in
    the worktree to edit it yourself, `<` / `>` resize, `q` closes. The chat
-   comes along into that tab: `gq` goes to it (in visual mode, with the
-   selected lines), and it knows the file and line you're on. The view
-   doesn't follow the agent's edits by itself - `r` refreshes it, staying on
+   comes along into that tab: `i` goes to it (`<CR>` in visual mode, with
+   the selected lines), and it knows the file and line you're on. While
+   it's open, the agent's next `show_fix` or `run_tests` redraws it in
+   place, without taking the focus; `r` refreshes it by hand, staying on
    the same file and line.
 4. `commit_and_push_fix` asks you, with the diff next to the question, then
    commits (with your git identity) and pushes to the PR's branch. If
@@ -804,8 +1032,15 @@ tasks and pushes can't be undone from here; the list says so.
    the base branch (e.g. `feature/3001-login-throttle` from `develop`),
    linked to the work item like `create_branch`, and a worktree of it under
    `{fix_root}`. An existing branch of that name is used as it is, and
-   asking again for the same work item picks up where it left off.
-3. It edits files there, then `show_fix` shows you the change.
+   asking again for the same work item picks up where it left off. When the
+   branch already exists on origin (e.g. `from` = `name`), no branch is
+   made: the change is pushed straight to it, and no PR is offered. While
+   planning (before you approve), `start_story` only makes a read-only
+   worktree of that branch, detached, with nothing created on the server:
+   the agent reads the code it plans for there, and the same directory
+   becomes the story's worktree once you approve.
+3. It edits files there, then `show_fix` tells you the change is ready
+   (`gd` on the Agents screen opens it).
 4. `commit_and_push_fix` asks, with the diff, then pushes to the branch.
 5. It offers `create_pull_request` (which asks too), linking the work item.
 
@@ -813,15 +1048,39 @@ The repository has to be cloned locally: `<clones_dir>/<repo>`, as for
 reviews. `u` in `gH` deletes the branch again as long as nothing was pushed
 to it.
 
-**The agent has to be allowed to edit there.** Claude Code runs headless, so
-it can't ask you for its own permissions: anything you didn't allow up front
-is refused, and the agent stops with something like "permission denied and
-could not request permission from user". Allow file edits in `{fix_root}`
-(Claude Code: `--add-dir {fix_root}` and `Edit,Write`). Copilot over ACP
-asks you through azure-vicli's yes/no prompt instead, but still needs
-`--add-dir {fix_root}` to reach that directory (see
-[above](#github-copilot-cli)). Allowing a shell as well (to build and run
-tests) is your call; azure-vicli never needs it.
+**The agent has to be allowed to edit there.** The agent's CLI runs
+headless, so it asks you through azure-vicli: Copilot over ACP, Claude Code
+through `--permission-prompt-tool mcp__azure-vicli__permission` (see
+[Claude Code](#claude-code)). Without that flag, anything Claude Code wasn't
+allowed up front is refused, and the agent stops with something like
+"permission denied and could not request permission from user". Either
+still needs `--add-dir {fix_root}` to reach that directory.
+
+### Issues on GitHub
+
+With a GitHub account's `issues:` block (the [Issues tab](work-items.md#issues-github)),
+the same board tools work on its project. Each takes `board` (`azure` or
+`github`) and, on GitHub, `repo` (`owner/repo`) when the project spans
+several repositories and the number alone is ambiguous. Without `board`,
+a tool uses the board you're looking at: `i` on the Issues tab or an
+issue's view, a `gP` agent started for an issue, a `#12` only the Issues
+tab lists, or the only board your config has. Otherwise it's Azure's.
+
+- `set_work_item_state` takes a Status option, or `Closed` with reason
+  `completed` or `not planned`. `create_child_task` makes a sub-issue in its
+  parent's iteration; `create_work_item` a new issue in the default
+  repository.
+- `start_story` and `create_branch` make the branch with GitHub's linked
+  branches, so it shows in the issue's Development section.
+- `create_pull_request` into a GitHub repository adds a `Closes #12` line
+  for each issue in `work_item_ids`.
+- `link_pr_to_work_item` adds `Closes #12` to the PR's description, which
+  is GitHub's only way to link an existing PR, and asks first there because
+  merging that PR into the default branch closes the issue. `u` in `gH`
+  removes the line again.
+
+GitHub only honours `Closes` on a PR into the repository's default branch;
+for any other, the tool's answer says the line won't link it yet.
 
 ## How it works
 

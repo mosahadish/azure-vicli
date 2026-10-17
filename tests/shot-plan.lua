@@ -3,6 +3,7 @@
 -- submit_plan itself, two questions under its lines (one answered, one still
 -- being asked) and a short conversation in the chat panel - written here, not
 -- by an agent, so the picture is the same every run.
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local PLAN = require("azure-cli.chat.plan")
 local TOOLS = require("azure-cli.chat.tools")
 local md = table.concat({
@@ -30,7 +31,8 @@ rec.threads = {
     question = "Why not change login() itself?", status = "asking", agent = "Copilot", at = os.time() },
 }
 PLAN.save(rec)
-PLAN.refresh()
+-- submit_plan doesn't open it (#120): Enter on its Agents row does.
+PLAN.open("wi-3001")
 local st = require("azure-cli.state")
 local CHAT = require("azure-cli.chat")
 CHAT.agents = function() return { copilot = { label = "Copilot" } } end

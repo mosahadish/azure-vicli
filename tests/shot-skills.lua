@@ -1,6 +1,7 @@
 -- tests/shot-skills.lua: the scene for docs/images/chat-skills.png - the
 -- /skills popup over the chat, with a few made-up skills in a scratch home
 -- folder (so their folders show as ~/...), two of them allowed.
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local SKILLS = require("azure-cli.chat.skills")
 local home = vim.fn.tempname()
 local skills = {

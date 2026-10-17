@@ -68,6 +68,12 @@ export XDG_CACHE_HOME="$WS/cache"
 export XDG_STATE_HOME="$WS/xdg-state"
 export AZVICLI_TOASTS="${AZVICLI_TOASTS:-0}"   # no desktop notifications from a demo
 unset AZVICLI_CONFIG AZVICLI_PROVIDER AZVICLI_PREFETCH_DIR
+# The workspace is the sandbox tests/sandbox.lua wants for the scripts
+# loaded into this nvim (demo-smoke.lua, shot-*.lua); and none of the nvim
+# or chat this was started from: its runtime, its agent's bridge.
+export AZVICLI_TEST_SANDBOX="$WS"
+unset VIM VIMRUNTIME NVIM MYVIMRC
+for v in $(env | sed -n 's/^\(AZVICLI_CHAT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 
 cat > "$WS/init.lua" <<EOF
 -- Written by tests/demo.sh: what a plugin manager's install boils down to.
@@ -100,13 +106,20 @@ case "$MODE" in
     run="$run; if not ok then print('DEMO-SMOKE-FAIL: ' .. tostring(err)) end; vim.cmd('qa!')"
     limit=()
     if command -v timeout >/dev/null 2>&1; then limit=(timeout 300); fi
-    out="$("${limit[@]}" nvim --headless -u "$WS/init.lua" -c "$run" 2>&1)"
+    # An empty HOME too, so the smoke never sees your ~/.claude/skills or
+    # ~/.gitconfig. Only here: the interactive modes keep the real one, so
+    # a real agent opened from the demo's chat keeps its login.
+    mkdir -p "$WS/home"
+    out="$(HOME="$WS/home" "${limit[@]}" nvim --headless -u "$WS/init.lua" -c "$run" 2>&1)"
     rc=$?
     if [ "$rc" -eq 124 ]; then out="$out"$'\n'"DEMO-SMOKE-FAIL: timed out after 300s"; fi
     printf '%s\n' "$out"
+    # Passed: ran to its end (SMOKE-DONE) with no check failing on the way.
     case "$out" in
-      *DEMO-SMOKE-OK*) exit 0 ;;
-      *) echo "demo.sh: headless smoke failed (see $WS/calls.log)" >&2; exit 1 ;;
+      *DEMO-SMOKE-FAIL*) ;;
+      *SMOKE-DONE*) exit 0 ;;
     esac
+    echo "demo.sh: headless smoke failed (see $WS/calls.log)" >&2
+    exit 1
     ;;
 esac

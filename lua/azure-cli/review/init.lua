@@ -99,6 +99,9 @@ function M.open()
 
 local env       = vim.env
 local ID        = env.AZVICLI_PR or "?"
+-- The key every per-PR table uses (lua/azure-cli/hosts.lua): the PR id on
+-- Azure, "owner~repo~number" on GitHub, where numbers repeat across repos.
+local KEY       = tostring(env.AZVICLI_PR_KEY or ID)
 local ORG       = env.AZVICLI_ORG or ""
 local PROJECT   = env.AZVICLI_PROJECT or ""
 local SOURCE    = env.AZVICLI_SOURCE or ""
@@ -128,12 +131,17 @@ end
 -- Leave the reviewer: close the tab when embedded, else quit nvim. The
 -- timers and scratch buffers this reviewer created go with it
 -- (EXT.cleanup, assigned near the end of this file once everything it
--- has to reach exists) - they used to linger until their next tick /
+-- has to reach exists, and kept in STATE.reviews[KEY]) - they used to linger until their next tick /
 -- forever.
 local function leave(force)
   local function go()
-    if STATE.review_cleanup then pcall(STATE.review_cleanup) end
+    -- This review's own cleanup: several can be open at once (inner tabs,
+    -- lua/azure-cli/innertabs.lua), each with its own timers and buffers.
+    local cleanup = STATE.reviews and STATE.reviews[KEY]
+    if cleanup then pcall(cleanup) end
     if EMBED then
+      -- An inner tab of Pull requests: back to the review before it.
+      pcall(function() require("azure-cli.innertabs").closing() end)
       pcall(vim.cmd, "tabclose")
     else
       vim.cmd("qa!")
@@ -150,11 +158,11 @@ local function leave(force)
   -- Items gS is already sending don't count when this is a tab: the shared
   -- daemon (rpc.lua) finishes them after the tab closes. Standalone, quitting
   -- exits Neovim and stops the daemon with them, so they still ask.
-  local b = STATE.batch and STATE.batch[ID]
+  local b = STATE.batch and STATE.batch[KEY]
   local queued = (b and b.items and not (b.submitting and EMBED)) and #b.items or 0
   local drafts = 0
   for k in pairs(STATE.editor_drafts or {}) do
-    if k:sub(1, #ID + 1) == ID .. "\0" then drafts = drafts + 1 end
+    if k:sub(1, #KEY + 1) == KEY .. "\0" then drafts = drafts + 1 end
   end
   if queued == 0 and drafts == 0 then
     go()
@@ -163,9 +171,15 @@ local function leave(force)
   local what = {}
   if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") .. " (gS submits)" end
   if drafts > 0 then what[#what + 1] = drafts .. " unsent draft" .. (drafts == 1 and "" or "s") end
+  -- How this PR is named (merge.lua's pr_words): current_pr_record and
+  -- EXT.pr_words come further down, so its cache lookup is done here.
+  local rec
+  for _, p in ipairs(STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs or {}) do
+    if tostring(require("azure-cli.hosts").key(p)) == KEY then rec = p break end
+  end
   require("azure-cli.prompt").confirm({
     title = EMBED and "Close the reviewer?" or "Quit?",
-    prompt = "PR #" .. ID .. " has " .. table.concat(what, " and ")
+    prompt = require("azure-cli.merge").pr_words(rec, ID).name .. " has " .. table.concat(what, " and ")
       .. (EMBED and " - kept until Neovim exits." or " - they will be lost."),
   }, function(yes) if yes then go() end end)
 end
@@ -208,7 +222,7 @@ local function resolve_my_identity(on_done)
   -- as; the dashboard hands the record over in STATE.PR_CURRENT. Using it here
   -- saves a --whoami spawn (a .NET start-up plus an ADO round-trip) per org.
   local rec = STATE.PR_CURRENT
-  if rec and tostring(rec.id) == tostring(ID) and rec.myId and rec.myId ~= "" then
+  if rec and tostring(require("azure-cli.hosts").key(rec)) == KEY and rec.myId and rec.myId ~= "" then
     STATE.whoami[cache_key] = { id = rec.myId, displayName = rec.myName or "" }
     my_id = rec.myId
     if on_done then on_done() end
@@ -378,6 +392,13 @@ local mark_current_file  -- highlights the file-list row for the shown diff; ass
 local EXT = { keys = { list = {}, diff = {}, overview = {}, nav = {} },
               help = { list = {}, diff = {}, overview = {}, nav = {} } }
 EXT.on_comment_popup = {}
+-- EXT.on_overview_render: callbacks render_overview runs with (buf, lines)
+-- after each render - review/images.lua's inline images (#134).
+EXT.on_overview_render = {}
+-- The record the dashboard handed over for THIS PR (STATE.PR_CURRENT is
+-- rewritten for every PR opened after it, and several reviews can be open
+-- at once - inner tabs, lua/azure-cli/innertabs.lua).
+EXT.pr_current = STATE.PR_CURRENT
 -- EXT.rpc is the shared daemon client for the data provider (azure-cli.py
 -- --serve - see rpc.lua's own header comment): every
 -- vim.fn.jobstart(EXT.provider(...), opts) below becomes
@@ -385,7 +406,27 @@ EXT.on_comment_popup = {}
 -- the already-running daemon when one is usable and falls back to a plain
 -- jobstart otherwise. A statement, not a new top-level local - see EXT's
 -- own comment above.
-EXT.rpc = require("azure-cli.rpc")
+--
+-- Every call carries THIS reviewer's PR (EXT.pr_env, captured when it
+-- opened): rpc.lua otherwise forwards whatever AZVICLI_* the global
+-- environment holds, and the dashboard rewrites those for each PR it opens
+-- - so with two reviewer tabs, a vote or comment from the first went to
+-- the second PR. A caller's own opts.env still wins, field by field.
+EXT.pr_env = {
+  AZVICLI_PR = ID, AZVICLI_PR_KEY = KEY, AZVICLI_ORG = ORG, AZVICLI_PROJECT = PROJECT,
+  AZVICLI_REPO = env.AZVICLI_REPO or "", AZVICLI_SOURCE = SOURCE, AZVICLI_TARGET = TARGET,
+  AZVICLI_REPO_PATH = REPO_PATH,
+}
+EXT.rpc = setmetatable({
+  run = function(argv, opts)
+    opts = opts or {}
+    local e = {}
+    for k, v in pairs(EXT.pr_env) do e[k] = v end
+    for k, v in pairs(opts.env or {}) do e[k] = v end
+    opts.env = e
+    return require("azure-cli.rpc").run(argv, opts)
+  end,
+}, { __index = require("azure-cli.rpc") })
 -- EXT.provider builds the argv every PR-action/prefetch job runs: the
 -- python data provider (azure-cli.py) directly, next to review-pr.sh's
 -- old $BASH/$SCRIPT pair. AZVICLI_PY/AZVICLI_PROVIDER are exported by the
@@ -470,7 +511,10 @@ local function parse_threads(json, by_key, file_by_path, general)
     end
 
     if #comments > 0 then
-      local entry = { id = thread.id, status = thread.status, comments = comments }
+      -- `conversation`: a GitHub PR's Conversation tab, one flat thread
+      -- nobody resolves (github_host.py) - shown, never counted unresolved.
+      local entry = { id = thread.id, status = thread.status, comments = comments,
+        conversation = thread.conversation or nil }
       local ctx = thread.threadContext
       local side, lineno, end_lineno
       if ctx and ctx.rightFileStart then
@@ -570,7 +614,7 @@ local function notify_new_comments(events)
       or "a PR-level comment"
     local msg = "New comment from " .. e.author .. " on " .. where .. "."
     notify(msg)
-    if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+    if EXT.notify then EXT.notify.toast(EXT.pr_words().name, msg) end
     return
   end
   local authors = {}
@@ -580,7 +624,7 @@ local function notify_new_comments(events)
   table.sort(names)
   local msg = #events .. " new comments (" .. table.concat(names, ", ") .. ") on threads involving you."
   notify(msg)
-  if EXT.notify then EXT.notify.toast("PR #" .. ID, msg) end
+  if EXT.notify then EXT.notify.toast(EXT.pr_words().name, msg) end
 end
 
 
@@ -610,18 +654,26 @@ local HELP_NOTE_SENDING =
 -- dashboard refreshes it on its poll, whereas PR_CURRENT is frozen at open time.
 local function current_pr_record()
   local cache = STATE.PR_LIST_CACHE
+  local HOSTS = require("azure-cli.hosts")
   if cache and cache.prs then
     for _, p in ipairs(cache.prs) do
-      if tostring(p.id) == tostring(ID) then
+      if tostring(HOSTS.key(p)) == KEY then
         return p
       end
     end
   end
-  local cur = STATE.PR_CURRENT
-  if cur and tostring(cur.id) == tostring(ID) then
+  local cur = EXT.pr_current
+  if cur and tostring(HOSTS.key(cur)) == KEY then
     return cur
   end
   return cur
+end
+
+-- This PR's name and its host's merge words for the texts below:
+-- "PR #101" / "Completing" on Azure, "owner/repo#7" / "Merging" on
+-- GitHub (merge.lua's pr_words). A field, not a top-level local.
+EXT.pr_words = function()
+  return require("azure-cli.merge").pr_words(current_pr_record(), ID)
 end
 
 -- Whether I authored this PR, computed once (state doesn't change during a
@@ -693,7 +745,7 @@ end
 -- Auto-complete label for the winbar, or nil when it isn't set on this PR.
 local function auto_complete_label()
   local pr = current_pr_record()
-  if pr and pr.autoComplete then return "auto-complete" end
+  if pr and pr.autoComplete then return EXT.pr_words().auto_verb end
   return nil
 end
 
@@ -712,8 +764,8 @@ local pending_status = {}   -- thread id -> status key
 local pending_seq = 0
 
 local function my_display_name()
-  local rec = STATE.PR_CURRENT
-  if rec and tostring(rec.id) == tostring(ID) and rec.myName and rec.myName ~= "" then
+  local rec = EXT.pr_current
+  if rec and tostring(require("azure-cli.hosts").key(rec)) == KEY and rec.myName and rec.myName ~= "" then
     return rec.myName
   end
   local w = STATE.whoami and STATE.whoami[ORG .. "|" .. PROJECT]
@@ -827,7 +879,7 @@ local function run_write(args, on_ok, on_fail)
       -- with a pointer back to the rest - see shell.lua's job_error, which
       -- both dashboards' write helpers share now, log.lua's own header
       -- comment and README's Troubleshooting.
-      on_fail(require("azure-cli.shell").job_error("PR #" .. ID, code, out))
+      on_fail(require("azure-cli.shell").job_error(EXT.pr_words().name, code, out))
     end,
   })
 end
@@ -968,13 +1020,21 @@ end
 -- a stale diff.
 local function diff_cache_key()
   local pr = current_pr_record()
-  return CACHE.key(ID, pr and pr.updatedIso or "")
+  return CACHE.key(KEY, pr and pr.updatedIso or "")
 end
 local cache_key = diff_cache_key()
 -- path -> {lines, map} for the current ignore_ws variant; reassigned by
 -- toggle_ignore_ws (below), which updates every closure that captured this
 -- local the same way apply_threads_json swaps in a fresh threads_by_key.
 local content_cache = CACHE.diffs(cache_key, ignore_ws)
+-- What that bucket was at open: the commits it was built from (if anyone
+-- recorded them) and whether it held anything. EXT.check_source_sha's first
+-- run compares them with the live refs - on Azure DevOps/TFS the key above
+-- doesn't change on a push (updatedIso is the creation date), so a bucket
+-- filled before one would otherwise be shown as current (#121). Taken now,
+-- not then: a prefetch started meanwhile may re-record the bucket.
+EXT.opened_refs = CACHE.refs(cache_key)
+EXT.opened_with_content = next(content_cache) ~= nil or CACHE.files(cache_key) ~= nil
 
 -- Fetches (or joins an in-flight fetch of) a file's diff content, calling
 -- cb(lines, map) once available. Serves from content_cache instantly when
@@ -986,7 +1046,9 @@ local content_cache = CACHE.diffs(cache_key, ignore_ws)
 -- of reading content_cache again from the completion callback.
 local diff_content_cbs = {}  -- "path\tvariant" -> pending callbacks while a fetch is in flight
 local function ensure_diff_content(path, cb)
-  local cached = content_cache[path]
+  -- A leading BOM never reaches the buffer, the map or the comments
+  -- (review/bom.lua); a prefetched entry is fixed in place, once.
+  local cached = content_cache[path] and require("azure-cli.review.bom").fix(content_cache, path)
   if cached then
     cb(cached.lines, cached.map)
     return
@@ -1008,6 +1070,7 @@ local function ensure_diff_content(path, cb)
   table.insert(diff_content_cbs[dkey], cb)
   if #diff_content_cbs[dkey] > 1 then return end  -- already in flight
   build_diff_async(path, want_ws, function(lines, map)
+    lines, map = require("azure-cli.review.bom").normalize(lines, map)
     bucket[path] = { lines = lines, map = map }
     local cbs = diff_content_cbs[dkey] or {}
     diff_content_cbs[dkey] = nil
@@ -1031,26 +1094,18 @@ local function comment_here()
     return
   end
   local where = path .. "\t" .. m.side .. "\t" .. m.lineno
-  -- Reviewer entries as { name, id } for the floating editor's "@" mention
-  -- completion (see editor.lua's own header comment) - built fresh here
-  -- rather than off a shared top-level local (this file is at LuaJIT's
-  -- 200-local ceiling for M.open's own chunk - see the comment at EXT's
-  -- declaration further up), same small snippet repeated at every comment/
-  -- reply call site below.
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  -- Reviewer entries for the floating editor's "@" mention completion, with
+  -- the form a mention takes on this PR's host (lua/azure-cli/hosts.lua) -
+  -- built fresh at every comment/reply call site rather than off a shared
+  -- top-level local (this file is near LuaJIT's 200-local ceiling).
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("line", { path = path, lineno = m.lineno }),
     context_lines = { (vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false))[1] or "" },
     anchor = { win = diff_win, row = lnum },
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "line", where),
+    draft_key = EDITOR.draft_key(KEY, "line", where),
     on_submit = function(text)
       post_new_thread({ "--post", path, m.side, tostring(m.lineno), text }, "line", where,
         path, m.side, m.lineno, text,
@@ -1066,19 +1121,13 @@ local function comment_on_file(path)
     notify("No file selected.", vim.log.levels.WARN)
     return
   end
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("file", { path = path }),
     anchor = "center",
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "file", path),
+    draft_key = EDITOR.draft_key(KEY, "file", path),
     on_submit = function(text)
       post_new_thread({ "--file-comment", path, text }, "file", path, path, nil, nil, text,
         "File comment on " .. path, "file comment (" .. path .. ")")
@@ -1088,19 +1137,13 @@ end
 
 -- Post a PR-level (general) comment, not tied to any file or line.
 local function comment_on_pr()
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("pr", {}),
     anchor = "center",
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "pr", ""),
+    draft_key = EDITOR.draft_key(KEY, "pr", ""),
     on_submit = function(text)
       post_new_thread({ "--pr-comment", text }, "general", nil, nil, nil, nil, text,
         "PR comment", "PR comment (#" .. ID .. ")")
@@ -1225,7 +1268,7 @@ local function decorate_comments(buf, path, map)
         -- the status rides along and a fully-resolved line is dimmed.
         local all_resolved = true
         for _, t in ipairs(threads) do
-          if t.status == "active" or t.status == "pending" or t.status == nil then all_resolved = false end
+          if require("azure-cli.hosts").is_open(t.status) then all_resolved = false end
         end
         local status = all_resolved and "resolved" or (#threads == 1 and tostring(threads[1].status or "active") or "active")
         local label = string.format("  ▌ %s%d comment%s — %s [%s]", any_new and "🆕 " or "", count,
@@ -1399,19 +1442,13 @@ local function reply_to_thread(target, on_success)
     end
   end
 
-  local mentions = {}
-  do
-    local pr = current_pr_record()
-    for _, r in ipairs((pr and pr.reviewers) or {}) do
-      if r.name and r.name ~= "" then mentions[#mentions + 1] = { name = r.name, id = r.id } end
-    end
-  end
+  local mentions = require("azure-cli.hosts").mentions(current_pr_record())
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("reply", { author = target.comments[1] and target.comments[1].author }),
     anchor = fwin and { win = fwin, row = #thread_lines + 1 } or "center",
     mentions = mentions,
-    draft_key = EDITOR.draft_key(ID, "reply", tostring(target.id)),
+    draft_key = EDITOR.draft_key(KEY, "reply", tostring(target.id)),
     on_submit = function(text)
       close_thread_float()
       -- Show the reply at once; the write confirms or removes it.
@@ -1447,16 +1484,12 @@ local function reply_here()
   end, "Reply to which thread?")
 end
 
--- ADO comment-thread statuses the reviewer can set, in menu order. The keyword
--- is what review-pr.sh --status expects; the label is what the menu shows.
-local STATUS_OPTIONS = {
-  { key = "active",   label = "Active" },
-  { key = "fixed",    label = "Resolved (fixed)" },
-  { key = "wontfix",  label = "Won't fix" },
-  { key = "closed",   label = "Closed" },
-  { key = "bydesign", label = "By design" },
-  { key = "pending",  label = "Pending" },
-}
+-- The comment-thread statuses the reviewer can set on this PR's host, in
+-- menu order (lua/azure-cli/hosts.lua). The key is what --status expects;
+-- the label is what the menu shows.
+local function status_options()
+  return require("azure-cli.hosts").caps(current_pr_record()).thread_statuses
+end
 
 -- PATCH a thread's status via the --status subcommand. On success updates the
 -- thread's status locally and calls on_success.
@@ -1575,17 +1608,17 @@ local function set_thread_status(target, on_success, host)
     end
 
     local lines = { "Set thread " .. target.id .. " status:", "" }
-    for i, o in ipairs(STATUS_OPTIONS) do
+    for i, o in ipairs(status_options()) do
       lines[#lines + 1] = string.format("  %d. %s%s", i, o.label,
         (target.status == o.key) and "  (current)" or "")
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "(1-" .. #STATUS_OPTIONS .. ": choose   q/Esc: cancel)"
+    lines[#lines + 1] = "(1-" .. #status_options() .. ": choose   q/Esc: cancel)"
     vim.bo[host.buf].modifiable = true
     pcall(vim.api.nvim_buf_set_lines, host.buf, 0, -1, false, lines)
     vim.bo[host.buf].modifiable = false
 
-    for i, status in ipairs(STATUS_OPTIONS) do
+    for i, status in ipairs(status_options()) do
       local key = tostring(i)
       numkeys[#numkeys + 1] = key
       vim.keymap.set("n", key, function() finish(status) end, kopts)
@@ -1595,7 +1628,7 @@ local function set_thread_status(target, on_success, host)
     return
   end
 
-  require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = STATUS_OPTIONS,
+  require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = status_options(),
     current = function(o) return target.status == o.key end }, function(o)
     if o then apply_status(target, o, on_success) end
   end)
@@ -1700,31 +1733,22 @@ local function set_status_here()
   end)
 end
 
--- PR-level votes the reviewer can cast, in menu order. The key is the numeric
--- vote review-pr.sh --vote expects (ADO: 10 approve, 5 approve w/ suggestions,
--- -5 wait for author, -10 reject, 0 reset).
-local VOTE_OPTIONS = {
-  { key = "10",  label = "Approve" },
-  { key = "5",   label = "Approve with suggestions" },
-  { key = "-5",  label = "Wait for author" },
-  { key = "-10", label = "Reject" },
-  { key = "0",   label = "Reset (no vote)" },
-}
-
--- Prompt for a vote and cast it on the PR via the --vote subcommand.
+-- Prompt for a vote and cast it on the PR via the --vote subcommand. The
+-- choices are the PR's host's (lua/azure-cli/hosts.lua).
 local function cast_vote()
   local rec = current_pr_record()
   local PRS = require("azure-cli.prs")
   local cur = rec and PRS.my_vote_key(rec) or nil
-  require("azure-cli.prompt").select({ prompt = "Your vote on PR #" .. ID .. ((rec and rec.title) and ("  " .. rec.title) or ""),
-    items = VOTE_OPTIONS,
+  local W = EXT.pr_words()
+  require("azure-cli.prompt").select({ prompt = "Your vote on " .. W.name .. ((rec and rec.title) and ("  " .. rec.title) or ""),
+    items = require("azure-cli.hosts").caps(rec).votes,
     current = function(o) return cur ~= nil and tostring(o.key) == cur end },
     function(vote)
   if not vote then return end
-  local function go()
+  local function go(reason)
   notify("Voting: " .. vote.label .. "...")
   local out = {}
-  EXT.rpc.run(EXT.provider({ "--vote", vote.key }), {
+  EXT.rpc.run(EXT.provider({ "--vote", vote.key, reason }), {
     detach = true,
     stdout_buffered = true,
     stderr_buffered = true,
@@ -1732,26 +1756,29 @@ local function cast_vote()
     on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
       if code == 0 then
-        notify("PR #" .. ID .. " vote set: " .. vote.label .. ".")
+        notify(W.name .. " vote set: " .. vote.label .. ".")
         -- Reflect it now: the Overview's Votes line and the winbar badges
         -- read the shared cached record, which only the dashboard's next
         -- poll would otherwise update.
-        if rec then PRS.apply_my_vote(rec, tonumber(vote.key) or 0) end
+        if rec then PRS.apply_my_vote(rec, vote.key) end
         if EXT.render_overview then pcall(EXT.render_overview) end
         if set_list_winbar then pcall(set_list_winbar) end
       else
         local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
         local LOG = require("azure-cli.log")
-        LOG.record("PR #" .. ID .. " vote", raw)
+        LOG.record(W.name .. " vote", raw)
         notify("Vote failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
           vim.log.levels.ERROR)
       end
     end,
   })
   end
-  if vote.key == "-10" then
-    require("azure-cli.prompt").confirm({ title = "Reject PR #" .. ID .. "?" },
+  if vote.confirm then
+    require("azure-cli.prompt").confirm({ title = "Reject " .. W.name .. "?" },
       function(yes) if yes then go() end end)
+  elseif vote.reason then
+    require("azure-cli.prompt").input({ prompt = vote.label .. " - what needs changing?" },
+      function(text) if text then go(text) end end)
   else
     go()
   end
@@ -1761,13 +1788,21 @@ end
 -- Complete (merge) the PR: the shared dialog (lua/azure-cli/merge.lua -
 -- the dashboard's gm opens the same one) with this reviewer's live thread
 -- counts, then --complete with what was picked - or --auto-complete, when
--- its auto-complete box was checked (or x cancelled it).
-local function complete_pr()
+-- its auto-complete box was checked (or x cancelled it). On GitHub, `m`
+-- is the mergeability --get-pr reads first (false: that failed).
+local function complete_pr(m)
   local rec = current_pr_record()
+  if m == nil and rec and require("azure-cli.hosts").host(rec) == "github" then
+    notify("Checking whether " .. require("azure-cli.hosts").ref(rec) .. " can be merged…")
+    return require("azure-cli.merge").fetch_state(EXT.provider({ "--get-pr" }), nil, function(state)
+      complete_pr(state or false)
+    end)
+  end
+  local W = EXT.pr_words()
   local unresolved = 0
   local function count(list)
     for _, t in ipairs(list or {}) do
-      if t.status == "active" or t.status == "pending" then unresolved = unresolved + 1 end
+      if not t.conversation and require("azure-cli.hosts").is_open(t.status) then unresolved = unresolved + 1 end
     end
   end
   for _, list in pairs(threads_by_key) do count(list) end
@@ -1777,8 +1812,8 @@ local function complete_pr()
   -- --auto-complete on/off; on success the shared record (and so this
   -- winbar's [auto-complete] tag and the dashboard's A badge) follows.
   local function set_auto(on, args)
-    local what = on and "Setting auto-complete on" or "Cancelling auto-complete on"
-    notify(what .. " PR #" .. ID .. "...")
+    local what = (on and "Setting " or "Cancelling ") .. W.auto_verb .. " on " .. W.name
+    notify(what .. "...")
     local out = {}
     EXT.rpc.run(EXT.provider(args), {
       detach = true,
@@ -1790,19 +1825,20 @@ local function complete_pr()
         local LOG = require("azure-cli.log")
         if code ~= 0 then
           local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
-          LOG.record("PR #" .. ID .. " auto-complete", raw)
-          notify("Auto-complete failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+          LOG.record(W.name .. " " .. W.auto_verb, raw)
+          notify(W.auto_verb:gsub("^%l", string.upper) .. " failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
             vim.log.levels.ERROR)
           return
         end
         if rec then rec.autoComplete, rec.autoCompleteSetBy = on, on and (rec.myName or "") or "" end
-        notify(what .. " PR #" .. ID .. ": done.")
+        notify(what .. ": done.")
         if set_list_winbar then pcall(set_list_winbar) end
       end,
     })
   end
 
-  require("azure-cli.merge").dialog({
+  local MERGE = require("azure-cli.merge")
+  MERGE.dialog(MERGE.host_spec({
     id = ID,
     title = rec and rec.title or "",
     source = SOURCE,
@@ -1814,12 +1850,12 @@ local function complete_pr()
     auto_on = rec and rec.autoComplete and true or false,
     auto_by = rec and rec.autoCompleteSetBy or "",
     on_auto_off = function() set_auto(false, { "--auto-complete", "off" }) end,
-  }, function(mt, delete_branch, work_items, auto)
+  }, rec, m or nil), function(mt, delete_branch, work_items, auto)
     if auto then
       set_auto(true, { "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) })
       return
     end
-    notify("Completing PR #" .. ID .. " (" .. mt.label .. ")...")
+    notify(W.ing .. " " .. W.name .. " (" .. mt.label .. ")...")
     local out = {}
     EXT.rpc.run(EXT.provider({
       "--complete", mt.key,
@@ -1832,7 +1868,7 @@ local function complete_pr()
       on_stderr = function(_, d) if d then vim.list_extend(out, d) end end,
       on_exit = function(_, code)
         if code == 0 then
-          notify("PR #" .. ID .. " completed (" .. mt.label .. ").")
+          notify(W.name .. " " .. W.done .. " (" .. mt.label .. ").")
           -- It's gone from the active list: drop it from the dashboard's
           -- cache and close this reviewer rather than leaving it open on a
           -- PR that no longer exists.
@@ -1841,7 +1877,7 @@ local function complete_pr()
           local cache = STATE.PR_LIST_CACHE
           if cache and cache.prs then
             for i, p in ipairs(cache.prs) do
-              if tostring(p.id) == tostring(ID) then table.remove(cache.prs, i) break end
+              if tostring(require("azure-cli.hosts").key(p)) == KEY then table.remove(cache.prs, i) break end
             end
           end
           require("azure-cli.prs").mark_completed(STATE.PR_COMPLETED, ID, os.time())
@@ -1849,8 +1885,8 @@ local function complete_pr()
         else
           local raw = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "\n")
           local LOG = require("azure-cli.log")
-          LOG.record("PR #" .. ID .. " complete", raw)
-          notify("Complete failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
+          LOG.record(W.name .. " " .. W.verb, raw)
+          notify(W.verb:gsub("^%l", string.upper) .. " failed (exit " .. code .. "): " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)",
             vim.log.levels.ERROR)
         end
       end,
@@ -1952,7 +1988,7 @@ local function build_overview()
   local comment_map = {}
 
   local title = pr and pr.title or ""
-  lines[#lines + 1] = "PR #" .. ID .. (title ~= "" and ("  " .. title) or "")
+  lines[#lines + 1] = EXT.pr_words().name .. (title ~= "" and ("  " .. title) or "")
   lines[#lines + 1] = SOURCE .. " -> " .. TARGET
   if pr then
     local meta = "Author: " .. ((pr.author and pr.author ~= "") and pr.author or "?")
@@ -2006,7 +2042,8 @@ local function build_overview()
     for _, t in ipairs(comments) do
       lines[#lines + 1] = ""
       thread_map[#lines + 1] = { t }
-      lines[#lines + 1] = "┌─ thread [" .. tostring(t.status or "?") .. "]" .. sending_tag(t) .. (thread_is_new(t) and "  🆕" or "")
+      lines[#lines + 1] = (t.conversation and "┌─ conversation" or ("┌─ thread [" .. tostring(t.status or "?") .. "]"))
+        .. sending_tag(t) .. (thread_is_new(t) and "  🆕" or "")
       for _, c in ipairs(t.comments) do
         lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
         comment_map[#lines] = { thread = t, comment = c }
@@ -2034,6 +2071,9 @@ local function render_overview()
   vim.api.nvim_buf_set_lines(overview_buf, 0, -1, false, lines)
   vim.bo[overview_buf].modifiable = false
   mark_threads_read(filtered(general_threads))
+  for _, f in ipairs(EXT.on_overview_render) do
+    pcall(f, overview_buf, lines)
+  end
 end
 
 -- Fetch the PR's commit list for the Overview page in the background and
@@ -2124,7 +2164,7 @@ HELP.overview_help = {
 
 local function set_overview_winbar()
   if not (diff_win and vim.api.nvim_win_is_valid(diff_win)) then return end
-  UI.wo(diff_win, "winbar", UI.winbar({ "Overview", "PR #" .. ID }, EXT.mode_tags and EXT.mode_tags() or {}))
+  UI.wo(diff_win, "winbar", UI.winbar({ "Overview", EXT.pr_words().name }, EXT.mode_tags and EXT.mode_tags() or {}))
 end
 
 -- Overview keys, shown by `?` there.
@@ -2175,7 +2215,8 @@ local function open_overview(focus)
   if not overview_buf or not vim.api.nvim_buf_is_valid(overview_buf) then
     overview_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[overview_buf].buftype = "nofile"
-    vim.bo[overview_buf].filetype = "markdown"
+    -- Markdown only in the description and comment bodies (#135).
+    require("azure-cli.review.overview_syntax").attach(overview_buf)
     setup_overview_keymaps(overview_buf)
   end
   render_overview()
@@ -2207,6 +2248,7 @@ HELP.diff_help = {
   { "find_references", "references to the identifier under the cursor (peek)" },
   { "open_file", "this file at the PR's revision, on the same line" },
   { "back", "back to the file list" },
+  { "toggle_fold", "fold / unfold the unchanged lines here (remembered, like zR / zM)" },
   "Comment",
   { "comment", "comment on the current line (or on a visual selection)" },
   { "comment_file", "comment on the whole file" },
@@ -2251,6 +2293,8 @@ local function setup_diff_keymaps(buf)
   KEYS.bind(buf, "diff", "reply", reply_here, { desc = "reply to the thread on the current line" })
   KEYS.bind(buf, "diff", "expand_thread", function() EXT.toggle_inline() end,
     { desc = "expand/collapse the thread on this line under it" })
+  KEYS.bind(buf, "diff", "toggle_fold", function() require("azure-cli.review.folds").toggle(buf) end,
+    { desc = "fold / unfold the unchanged lines here" })
   KEYS.bind(buf, "diff", "toggle_viewed", function() EXT.toggle_viewed(paths_by_buf[buf]) end,
     { desc = "toggle this file's viewed mark" })
   KEYS.bind(buf, "diff", "next_unviewed", function() EXT.jump_unviewed(1) end, { desc = "next file not yet viewed" })
@@ -2344,11 +2388,15 @@ local function open_file(path, focus)
     vim.bo[buf].buftype = "nofile"
     vim.bo[buf].filetype = ft_for_path(path) or "text"
     paths_by_buf[buf] = path
+    -- Remembered folds (review/folds.lua), per PR, file and diff variant -
+    -- gw and since-mode fold differently from the plain diff.
+    require("azure-cli.review.folds").attach(buf, { key = KEY, path = path,
+      variant = (ignore_ws and "w" or "") .. (EXT.since and ("s:" .. tostring(EXT.since.variant or "")) or "") })
     setup_diff_keymaps(buf)
     entry = { buf = buf, map = {}, loaded = false }
     diff_cache[path] = entry
 
-    local cached = content_cache[path]
+    local cached = content_cache[path] and require("azure-cli.review.bom").fix(content_cache, path)
     if cached then
       entry.loaded = true
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, cached.lines)
@@ -2386,6 +2434,8 @@ local function open_file(path, focus)
     -- review/pane.lua.
     UI.plain_window(diff_win, {})
     require("azure-cli.review.pane").apply(diff_win)
+    -- Fold afresh and reopen the folds you had open here (review/folds.lua).
+    require("azure-cli.review.pane").refresh(diff_win, entry.buf)
     set_diff_winbar(path)
     if mark_current_file then mark_current_file(path) end
     if focus then
@@ -2434,6 +2484,11 @@ local files_loaded = false
 local function prefetch_all_diffs()
   local pr = current_pr_record()
   CACHE.prefetch({
+    -- The bucket this reviewer reads (cache_key), not one rebuilt from ID +
+    -- updatedIso: after a push it's keyed on the new commits, and on GitHub
+    -- KEY isn't ID - either way the warmed diffs and +/- counts landed
+    -- where nothing looked.
+    key = cache_key,
     id = ID, updatedIso = pr and pr.updatedIso or "",
     source = SOURCE, target = TARGET, repo = REPO_PATH, ignore_ws = ignore_ws,
     range = EXT.since and EXT.since.range or nil,
@@ -2448,7 +2503,7 @@ end
 
 -- Count comment threads anchored to a file: line-anchored threads (keyed
 -- "path\tside\tline") plus file-level ones. Returns (closed, total), where
--- "closed" is every thread whose status isn't "active" (fixed/won't-fix/closed).
+-- "closed" is every settled thread (hosts.is_open: not active or pending).
 -- Respects the gA active-only filter, same as the diff view and PR comments:
 -- when active_only is on, non-active threads are dropped before counting, so
 -- e.g. "1 active, 1 closed" (0/2) becomes "0/1" instead of "0/2".
@@ -2457,7 +2512,7 @@ local function file_thread_count(path)
   local function tally(list)
     for _, t in ipairs(filtered(list) or {}) do
       total = total + 1
-      if t.status ~= "active" then closed = closed + 1 end
+      if not require("azure-cli.hosts").is_open(t.status) then closed = closed + 1 end
     end
   end
   local prefix = path .. "\t"
@@ -2505,7 +2560,11 @@ end
 -- comment for the model it builds (row_to_file/file_to_row/ordered_files),
 -- which EXT.filelist (below) holds the live copy of.
 local list_buf = vim.api.nvim_create_buf(false, true)
-vim.b[list_buf].azure_cli_pr = tostring(ID)  -- lets the dashboard find this tab again
+vim.b[list_buf].azure_cli_pr = tostring(ID)
+-- The key lets the dashboard find this tab again; the ref names it in the
+-- tab line ("PR !101", "PR repo#12").
+vim.b[list_buf].azure_cli_pr_key = KEY
+vim.b[list_buf].azure_cli_pr_ref = require("azure-cli.hosts").ref(current_pr_record() or { id = ID })
 local OVERVIEW_ROW = 1
 local current_file_path  -- path (or OVERVIEW_MARK) currently shown in the diff pane, for re-marking after redraws.
 local function list_lines()
@@ -2533,11 +2592,11 @@ EXT.refresh_file_list = function()
   local FILELIST = require("azure-cli.review.filelist")
   local stats, threads_info = {}, {}
   for _, f in ipairs(files) do
-    local entry = content_cache[f]
+    local entry = content_cache[f] and require("azure-cli.review.bom").fix(content_cache, f)
     if entry and entry.map then stats[f] = FILELIST.diff_stats(entry.map) end
     local closed, total = file_thread_count(f)
     threads_info[f] = { closed = closed, total = total, new = file_has_new(f),
-      viewed = EXT.viewed_stamp and require("azure-cli.review.viewed").is_viewed(ID, f, EXT.viewed_stamp()) or false }
+      viewed = EXT.viewed_stamp and require("azure-cli.review.viewed").is_viewed(KEY, f, EXT.viewed_stamp()) or false }
   end
   EXT.filelist = FILELIST.build(files, stats, EXT.file_status, threads_info)
   FILELIST.render(list_buf, EXT.filelist)
@@ -2595,7 +2654,7 @@ local function set_list_winbar_impl()
   local clabel = merge_conflict_label()
   local alabel = auto_complete_label()
 
-  local parts = { "PR #" .. ID, SOURCE .. " \u{2192} " .. TARGET }
+  local parts = { EXT.pr_words().name, SOURCE .. " \u{2192} " .. TARGET }
   if files_loaded then
     local viewed = EXT.viewed_count and EXT.viewed_count() or nil
     parts[#parts + 1] = #files .. " files" .. (viewed and (", " .. viewed .. " viewed") or "")
@@ -2623,13 +2682,14 @@ set_list_winbar()
 -- Refresh the build badge from the shared cache (which the dashboard polls).
 -- No extra API calls here; it just re-reads the record. Standalone runs have no
 -- cache, so the badge stays hidden and this is a cheap no-op.
-if STATE.review_badge_timer then pcall(vim.fn.timer_stop, STATE.review_badge_timer) end
-STATE.review_badge_timer = vim.fn.timer_start(10000, function()
+-- This review's own timer (EXT, not STATE): with several reviews open at
+-- once, opening one used to stop the other's.
+EXT.badge_timer = vim.fn.timer_start(10000, function()
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     set_list_winbar()
   else
-    pcall(vim.fn.timer_stop, STATE.review_badge_timer)
-    STATE.review_badge_timer = nil
+    pcall(vim.fn.timer_stop, EXT.badge_timer)
+    EXT.badge_timer = nil
   end
 end, { ["repeat"] = -1 })
 
@@ -2728,7 +2788,7 @@ toggle_ignore_ws = function()
     end
   end
   diff_cache = {}
-  if shown and shown ~= OVERVIEW_MARK and files_loaded then
+  if shown and shown ~= OVERVIEW_MARK and files_loaded and not (EXT.nav and EXT.nav.showing_revision()) then
     open_file(shown, false)
   end
   if shown_entry and shown_entry.buf and vim.api.nvim_buf_is_valid(shown_entry.buf) then
@@ -2841,7 +2901,7 @@ manage_ignore_texts = function(on_change)
     local matches = threads_matching_text(f.text)
     require("azure-cli.prompt").select({
       prompt = "Set status for " .. #matches .. " comment(s) matching '" .. f.text .. "'",
-      items = STATUS_OPTIONS,
+      items = status_options(),
     }, function(o)
       if not o then return end
       apply_status_to_matches(matches, o, "'" .. f.text .. "'", function()
@@ -3039,6 +3099,11 @@ vim.api.nvim_create_autocmd("CursorMoved", {
         line = target
       end
     end
+    -- Still on the row it was on: Neovim 0.9 fires CursorMoved just for
+    -- entering the list (0.10+ doesn't). Previewing then would put that
+    -- row's file over whatever the diff window shows - a gd jump a gw
+    -- rebuild deliberately left alone, say - so only a real move previews.
+    if line == EXT.list_last_line then return end
     EXT.list_last_line = line
     if preview_timer then vim.fn.timer_stop(preview_timer) end
     preview_timer = vim.fn.timer_start(require("azure-cli.diffbuf").PREVIEW_MS, function()
@@ -3050,6 +3115,14 @@ vim.api.nvim_create_autocmd("CursorMoved", {
       if path then open_file(path, false) end
     end)
   end,
+})
+-- The row the list is left on is the one coming back to it starts from: a
+-- cursor set from code (<CR> right after nvim_win_set_cursor, say) fires no
+-- CursorMoved on 0.9 before focus leaves, so without this, entering the
+-- list again would look like a move there and preview it.
+vim.api.nvim_create_autocmd("WinLeave", {
+  buffer = list_buf,
+  callback = function() EXT.list_last_line = vim.api.nvim_win_get_cursor(0)[1] end,
 })
 
 -- Start on the Overview row and prime it in the diff pane, same as any file.
@@ -3109,7 +3182,7 @@ local function apply_files(list, status)
   EXT.refresh_file_list()
   set_list_winbar()
   prefetch_all_diffs()
-  notify("PR #" .. ID .. ": " .. #files
+  notify(EXT.pr_words().name .. ": " .. #files
     .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
 end
 -- `git diff --name-status` (not just --name-only) so the file list can show
@@ -3136,9 +3209,9 @@ local function load_files()
         if not vim.api.nvim_buf_is_valid(list_buf) then return end
         if code ~= 0 then
           if cached then return end  -- already showing the cached list; the status refresh alone failing isn't fatal
-          notify("Cannot diff PR #" .. ID .. " (" .. range .. "): branch not found in "
+          notify("Cannot diff " .. EXT.pr_words().name .. " (" .. range .. "): branch not found in "
             .. (REPO_PATH ~= "" and REPO_PATH or "the current repo")
-            .. ". It may be deleted, or repo '" .. (env.AZVICLI_REPO or "?")
+            .. ". It may be deleted, or repo '" .. (EXT.pr_env.AZVICLI_REPO ~= "" and EXT.pr_env.AZVICLI_REPO or "?")
             .. "' isn't cloned here.", vim.log.levels.ERROR)
           if EMBED then leave() end
           return
@@ -3168,8 +3241,8 @@ load_files()
 -- The shared body toggle_ignore_ws (gw) and review/since.lua's gi
 -- both rebuild the reviewer for: recompute the active content_cache bucket
 -- (ignore_ws and/or EXT.since's variant - see cache.lua's M.diffs),
--- drop every diff buffer (the shown one is rebuilt in place via open_file,
--- others are deleted outright), optionally reload the file list (load_files
+-- drop every diff buffer (the shown one is rebuilt in place via open_file
+-- unless a revision buffer is on screen, others are deleted outright), optionally reload the file list (load_files
 -- - a since-range change can add/drop files, unlike a plain gw toggle) or
 -- just re-run prefetch_all_diffs, then refresh every winbar/decoration.
 -- Assigned to EXT.rebuild_view (never a new top-level local - see EXT's own
@@ -3204,7 +3277,9 @@ EXT.rebuild_view = function(reload_files)
     load_files()
   end
 
-  if shown and shown ~= OVERVIEW_MARK and files_loaded then
+  -- Not while a gd/gr/gf jump is on screen: that would pull you out of the
+  -- revision you're reading. <BS> reopens the rebuilt diff (review/nav.lua).
+  if shown and shown ~= OVERVIEW_MARK and files_loaded and not EXT.nav.showing_revision() then
     open_file(shown, false)
   end
   if shown_entry and shown_entry.buf and vim.api.nvim_buf_is_valid(shown_entry.buf) then
@@ -3319,10 +3394,13 @@ local function apply_threads_json(json, opts)
         end
 
         redecorate_all()
-        refresh_overview_row()
         refresh_file_rows()
         render_overview()
       end
+      -- Every time, not only on a change: a PR with no comments at all
+      -- never changes from "none" to "none", which left its Overview row
+      -- saying "loading..." for good. One line, so it costs nothing.
+      refresh_overview_row()
       if not opts.seed then threads_baseline_established = true end
 
       if opts.announce then
@@ -3352,7 +3430,7 @@ refresh_threads = function(opts)
         local LOG = require("azure-cli.log")
         local shown
         if raw ~= "" then
-          LOG.record("PR #" .. ID .. " comments", raw)
+          LOG.record(EXT.pr_words().name .. " comments", raw)
           shown = ": " .. LOG.summary(raw, vim.o.columns) .. "  (:AzureCli log)"
         else
           shown = " - check azure-cli.yml (PAT/org_url) and connectivity."
@@ -3366,7 +3444,7 @@ refresh_threads = function(opts)
       -- Keep the shared cache current so re-opening this PR (or the
       -- dashboard's next prefetch) starts from what was just fetched.
       local pr = current_pr_record()
-      CACHE.set_threads(ID, json, pr and pr.totalThreads or nil)
+      CACHE.set_threads(KEY, json, pr and pr.totalThreads or nil)
       apply_threads_json(json, opts)
       if opts.on_done then opts.on_done() end
     end,
@@ -3504,13 +3582,21 @@ end
 EXT.fetch_new_commits = function()
   local warm = STATE.warm
   local warming = warm and warm.warming
-  if warming and warming[tostring(ID)] then return end  -- dashboard already on it
+  if warming and warming[KEY] then return end  -- dashboard already on it
   if EXT.fetch_inflight then return end
   EXT.fetch_inflight = true
-  if warming then warming[tostring(ID)] = true end
-  local function done()
+  if warming then warming[KEY] = true end
+  -- While this held warming[KEY], a dashboard open or hover prefetch of
+  -- this PR queued its callback in warm_cbs[KEY] instead of fetching; hand
+  -- it this fetch's result (#125). Taken out before running, as the
+  -- dashboard's own fetch does, so each runs once.
+  local function done(fetched)
     EXT.fetch_inflight = false
-    if warming then warming[tostring(ID)] = nil end
+    if warming then warming[KEY] = nil end
+    local cbs = warm and warm.warm_cbs and warm.warm_cbs[KEY]
+    if not cbs then return end
+    warm.warm_cbs[KEY] = nil
+    for _, f in ipairs(cbs) do vim.schedule(function() f(fetched) end) end
   end
   local ok = pcall(EXT.rpc.run, EXT.provider({}), {
     env = {
@@ -3518,17 +3604,17 @@ EXT.fetch_new_commits = function()
       AZVICLI_PR = tostring(ID),
       AZVICLI_ORG = ORG,
       AZVICLI_PROJECT = PROJECT,
-      AZVICLI_REPO = env.AZVICLI_REPO or "",
+      AZVICLI_REPO = EXT.pr_env.AZVICLI_REPO,
       AZVICLI_SOURCE = SOURCE,
       AZVICLI_TARGET = TARGET,
       AZVICLI_REPO_PATH = REPO_PATH,
     },
     on_exit = function(_, code)
-      done()
+      done(code == 0)
       if code == 0 then EXT.check_source_sha() end
     end,
   })
-  if not ok then done() end
+  if not ok then done(false) end
 end
 
 -- True while pulling the view out from under the user would lose something
@@ -3572,7 +3658,15 @@ EXT.reload_after_push = function()
   -- against the new origin/<source> rather than serving the old lines.
   -- Reassigning this local updates every closure that captured it, the same
   -- way rebuild_view swaps content_cache.
-  if EXT.source_sha then cache_key = CACHE.key(ID, EXT.source_sha) end
+  --
+  -- The target's commit is part of the key too: the diff is three-dot, so
+  -- a moved target can change its merge-base. The pair is recorded on the
+  -- new key, so CACHE.prefetch (prefetch_all_diffs) fills it rather than
+  -- emptying it again.
+  if EXT.source_sha then
+    cache_key = CACHE.key(KEY, EXT.source_sha .. ":" .. (EXT.target_sha or ""))
+    CACHE.set_refs(cache_key, EXT.source_sha .. " " .. (EXT.target_sha or ""))
+  end
 
   local path = current_file_path
   local anchor, want_path = nil, nil
@@ -3609,34 +3703,45 @@ end
 
 -- The reload half of the poll: cheap local `git rev-parse` (no network -
 -- see EXT.check_new_push's comment for why the fetch isn't ours to run),
--- rebuilding only once the ref the diffs are built from has actually
--- moved.
+-- rebuilding only once a ref the diffs are built from - the source, or the
+-- target the three-dot diff takes its merge-base from - has actually moved.
+EXT.target_sha = nil       -- origin/<target> the shown diffs were built against
 EXT.check_source_sha = function()
-  if SOURCE == "" or EXT.sha_inflight then return end
+  if SOURCE == "" or TARGET == "" or EXT.sha_inflight then return end
   EXT.sha_inflight = true
   local out = {}
   -- jobstart answers <= 0 when the spawn itself failed, and then never
   -- calls on_exit - without clearing the flag here the guard above would
   -- latch and this check would be dead for the rest of the session.
-  local job = vim.fn.jobstart(git_args("rev-parse", "origin/" .. SOURCE), {
+  local job = vim.fn.jobstart(CACHE.refs_args(REPO_PATH, SOURCE, TARGET), {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
       EXT.sha_inflight = false
-      if code ~= 0 then return end
-      local sha = vim.trim(table.concat(out, ""))
-      if sha == "" then return end
+      local refs = CACHE.refs_from(code, out)
+      if not refs then return end
+      local sha, target_sha = refs:match("^(%S+) (%S+)$")
       -- Decide and act in one scheduled context: EXT.source_sha must only
       -- move when the rebuild actually happens, or a push deferred for
       -- being mid-edit would be marked as shown and never reloaded.
       vim.schedule(function()
         if EXT.source_sha == nil then
-          EXT.source_sha = sha  -- baseline: what the view already shows
+          -- Baseline: what the view already shows - unless the bucket it
+          -- opened with was built from other commits, or holds content
+          -- nobody recorded the commits of (#121). Then it's reloaded
+          -- just like a push seen while open.
+          local stale = (EXT.opened_refs ~= nil and EXT.opened_refs ~= refs)
+            or (EXT.opened_refs == nil and EXT.opened_with_content)
+          if not stale then
+            EXT.source_sha, EXT.target_sha = sha, target_sha
+            if CACHE.refs(cache_key) == nil then CACHE.set_refs(cache_key, refs) end
+            return
+          end
+        elseif sha == EXT.source_sha and target_sha == EXT.target_sha then
           return
         end
-        if sha == EXT.source_sha then return end
         if EXT.reload_would_interrupt() then return end  -- try again next poll
-        EXT.source_sha = sha
+        EXT.source_sha, EXT.target_sha = sha, target_sha
         notify("New commits pulled in \u{2014} reloading the diff\u{2026}")
         EXT.reload_after_push()
       end)
@@ -3646,7 +3751,7 @@ EXT.check_source_sha = function()
 end
 
 do
-  local cached = CACHE.threads(ID)
+  local cached = CACHE.threads(KEY)
   if cached then
     apply_threads_json(cached.json, { announce = true, seed = true })
   end
@@ -3682,33 +3787,46 @@ refresh_threads = function(opts)
   end
 end
 
-if STATE.review_threads_timer then pcall(vim.fn.timer_stop, STATE.review_threads_timer) end
-STATE.review_threads_timer = vim.fn.timer_start(
-  require("azure-cli.config").get().timing.poll_seconds * 1000, function()
-  if list_win and vim.api.nvim_win_is_valid(list_win) then
-    refresh_threads()
-    EXT.check_new_push()
-    EXT.check_source_sha()
-  else
-    pcall(vim.fn.timer_stop, STATE.review_threads_timer)
-    STATE.review_threads_timer = nil
-  end
-end, { ["repeat"] = -1 })
+-- Per review, like the badge timer above; poll.lua slows it while you're
+-- away.
+EXT.threads_timer = require("azure-cli.poll").every("review:" .. KEY, {
+  base = function() return require("azure-cli.config").get().timing.poll_seconds end,
+  tick = function()
+    if list_win and vim.api.nvim_win_is_valid(list_win) then
+      refresh_threads()
+      EXT.check_new_push()
+      EXT.check_source_sha()
+    else
+      EXT.threads_timer = nil
+      return false
+    end
+  end,
+})
 -- The same refetch the poll above runs, for tests/demo-smoke.lua (opts as
--- for refresh_threads: on_done runs once it lands).
-STATE.review_refresh_threads = function(opts) refresh_threads(opts) end
+-- for refresh_threads: on_done runs once it lands). The last review opened.
+EXT.refresh_hook = function(opts) refresh_threads(opts) end
+STATE.review_refresh_threads = EXT.refresh_hook
+-- Whether the file list's preview-on-move is still waiting to open a row,
+-- also for tests/demo-smoke.lua (its NAV step: entering the list mustn't).
+EXT.preview_hook = function()
+  return preview_timer ~= nil and #vim.fn.timer_info(preview_timer) > 0
+end
+STATE.review_preview_pending = EXT.preview_hook
+-- The poll's "have the refs moved?" check, run now, for tests/demo-smoke.lua
+-- (its PUSHDIFF step, #121) rather than waiting out poll_seconds.
+STATE.review_check_refs = function() EXT.check_source_sha() end
 
 -- The file list keeps its absolute width across a terminal resize
 -- otherwise, with the diff pane absorbing all of the change.
 vim.api.nvim_create_autocmd("VimResized", {
-  group = vim.api.nvim_create_augroup("AzureCliReviewResize", { clear = true }),
+  group = vim.api.nvim_create_augroup("AzureCliReviewResize" .. KEY, { clear = true }),
   callback = function()
     if list_win and vim.api.nvim_win_is_valid(list_win) then fit_list_width() end
   end,
 })
 
 -- review/followup.lua ("follow up on my comments", gu) needs open_file,
--- ensure_diff_content, reply_to_thread, apply_status and STATUS_OPTIONS on
+-- ensure_diff_content, reply_to_thread, apply_status and status_options on
 -- ctx, none of which any earlier module needed - assigned onto EXT here
 -- (never a new top-level local - see EXT's own comment), at the main
 -- chunk's top level rather than inside the closing `do...end` IIFE below,
@@ -3719,10 +3837,15 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- (see the block right before `local ctx = {}` there) - reading them off
 -- EXT, which the IIFE already closes over for a dozen other fields, costs
 -- it no additional upvalues at all.
-STATE.review_cleanup = function()
-  STATE.review_refresh_threads = nil
-  for _, name in ipairs({ "review_threads_timer", "review_badge_timer" }) do
-    if STATE[name] then pcall(vim.fn.timer_stop, STATE[name]); STATE[name] = nil end
+-- This review's cleanup, in STATE.reviews[KEY] (leave() runs it); several
+-- reviews can be open at once (inner tabs). STATE.review_cleanup cleans up
+-- every open one (tests/demo-smoke.lua's reset).
+EXT.cleanup = function()
+  if STATE.reviews and STATE.reviews[KEY] == EXT.cleanup then STATE.reviews[KEY] = nil end
+  if STATE.review_refresh_threads == EXT.refresh_hook then STATE.review_refresh_threads = nil end
+  if STATE.review_preview_pending == EXT.preview_hook then STATE.review_preview_pending = nil end
+  for _, name in ipairs({ "threads_timer", "badge_timer" }) do
+    if EXT[name] then require("azure-cli.poll").stop(EXT[name]); EXT[name] = nil end
   end
   local bufs = {}
   for _, entry in pairs(diff_cache) do bufs[#bufs + 1] = entry.buf end
@@ -3735,6 +3858,11 @@ STATE.review_cleanup = function()
     end
   end)
 end
+STATE.reviews = STATE.reviews or {}
+STATE.reviews[KEY] = EXT.cleanup
+STATE.review_cleanup = function()
+  for _, cleanup in pairs(vim.tbl_values(STATE.reviews or {})) do pcall(cleanup) end
+end
 -- "Viewed" files (review/viewed.lua) - marked when a file is opened with
 -- focus, toggled by hand, counted in the winbar, skipped by ]m/[m.
 EXT.viewed_stamp = function()
@@ -3742,13 +3870,13 @@ EXT.viewed_stamp = function()
   return (rec and rec.updatedIso) or ""
 end
 EXT.viewed_count = function()
-  return require("azure-cli.review.viewed").count(ID, files, EXT.viewed_stamp())
+  return require("azure-cli.review.viewed").count(KEY, files, EXT.viewed_stamp())
 end
 EXT.mark_viewed = function(path)
   local VIEWED = require("azure-cli.review.viewed")
   if not path or path == OVERVIEW_MARK then return end
-  if VIEWED.is_viewed(ID, path, EXT.viewed_stamp()) then return end
-  VIEWED.set(ID, path, EXT.viewed_stamp(), true)
+  if VIEWED.is_viewed(KEY, path, EXT.viewed_stamp()) then return end
+  VIEWED.set(KEY, path, EXT.viewed_stamp(), true)
   if refresh_file_rows then refresh_file_rows() end
   if set_list_winbar then set_list_winbar() end
 end
@@ -3757,7 +3885,7 @@ EXT.toggle_viewed = function(path)
     notify("Not on a file.", vim.log.levels.WARN)
     return
   end
-  local on = require("azure-cli.review.viewed").toggle(ID, path, EXT.viewed_stamp())
+  local on = require("azure-cli.review.viewed").toggle(KEY, path, EXT.viewed_stamp())
   notify((on and "Viewed: " or "Not viewed: ") .. path)
   if refresh_file_rows then refresh_file_rows() end
   if set_list_winbar then set_list_winbar() end
@@ -3766,7 +3894,7 @@ EXT.jump_unviewed = function(dir)
   local model = EXT.filelist
   if not (model and #model.ordered_files > 0) then return end
   local from = (current_file_path and current_file_path ~= OVERVIEW_MARK and EXT.file_index(current_file_path)) or 0
-  local idx = require("azure-cli.review.viewed").next_unviewed(ID, model.ordered_files, EXT.viewed_stamp(), from, dir)
+  local idx = require("azure-cli.review.viewed").next_unviewed(KEY, model.ordered_files, EXT.viewed_stamp(), from, dir)
   if not idx then
     notify("Every file is marked viewed.")
     return
@@ -3793,13 +3921,12 @@ EXT.toggle_inline = function()
   end
 end
 
-EXT.cleanup = STATE.review_cleanup
 EXT.render_overview = render_overview
 EXT.open_file = open_file
 EXT.ensure_diff_content = ensure_diff_content
 EXT.reply_to_thread = reply_to_thread
 EXT.apply_status = apply_status
-EXT.STATUS_OPTIONS = STATUS_OPTIONS
+EXT.status_options = status_options
 
 -- Reviewer-feature wiring: build `ctx` (the surface every review/*.lua
 -- module gets) and load the modules themselves. This has to be the very last
@@ -3838,7 +3965,9 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   local ctx = {}
 
   ctx.ID, ctx.ORG, ctx.PROJECT, ctx.SOURCE, ctx.TARGET = ID, ORG, PROJECT, SOURCE, TARGET
+  ctx.KEY = KEY
   ctx.REPO_PATH, ctx.EMBED = REPO_PATH, EMBED
+  ctx.REPO = EXT.pr_env.AZVICLI_REPO
   ctx.provider = EXT.provider
   ctx.rpc = EXT.rpc
 
@@ -3880,14 +4009,13 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- reapply_pending - run after every thread refetch - keeps carrying a
   -- queued item's synthetic entry the same way it already does for an
   -- in-flight optimistic write), remove_entry for pulling a dropped queued
-  -- item's synthetic thread/comment back out, and VOTE_OPTIONS so the
-  -- submit-with-a-vote prompt offers the same choices cast_vote does.
+  -- item's synthetic thread/comment back out. (The submit-with-a-vote
+  -- prompt reads its choices from ctx.current_pr_record's host.)
   ctx.confirm_pending_thread = confirm_pending_thread
   ctx.drop_pending_thread = drop_pending_thread
   ctx.pending_threads = function() return pending_threads end
   ctx.pending_replies = function() return pending_replies end
   ctx.remove_entry = remove_entry
-  ctx.VOTE_OPTIONS = VOTE_OPTIONS
 
   -- Extra fields review/commits.lua needed that weren't already
   -- above: decorate_diff/ft_for_path/CACHE.parse_diff to build and colour a
@@ -3942,14 +4070,14 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- IIFE, for why. open_file/ensure_diff_content let it open a thread's
   -- file and land the cursor on its line the same way the diff pane's own
   -- ]c/]C cross-file stepping does; reply_to_thread/apply_status/
-  -- STATUS_OPTIONS let its picker's R/s keys reuse the exact same
+  -- status_options let its picker's R/s keys reuse the exact same
   -- optimistic-write flow every other reply/status change in this file
   -- goes through, instead of reimplementing it.
   ctx.open_file = EXT.open_file
   ctx.ensure_diff_content = EXT.ensure_diff_content
   ctx.reply_to_thread = EXT.reply_to_thread
   ctx.apply_status = EXT.apply_status
-  ctx.STATUS_OPTIONS = EXT.STATUS_OPTIONS
+  ctx.status_options = EXT.status_options
 
   -- Registers { key = key, fn = fn, desc = desc } for surface `kind`
   -- ("list" | "diff" | "overview" | "nav") into EXT.keys[kind]/EXT.help[kind].
@@ -3966,12 +4094,29 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- not a duplicate). Call while a module loads (below) - before the
   -- re-apply pass a few lines down, and before any buffer of that kind
   -- created afterwards (which reads EXT.keys.<kind> itself when it's set up).
-  ctx.add_key = function(kind, action, fn, desc, mode)
+  -- opts.chain: fn is called as fn(prev, key) - prev the handler an
+  -- earlier module registered for the same key and mode on this surface
+  -- (nil if none), which this registration replaces - so two features can
+  -- share one key, the later one handing over to the earlier where it has
+  -- nothing to do (review/images.lua's <CR> on a non-image line goes on to
+  -- review/commits.lua's open_commit).
+  ctx.add_key = function(kind, action, fn, desc, mode, opts)
     local keyspec = KEYS.resolve(kind, action)
     if not keyspec then return end
     local keylist = type(keyspec) == "table" and keyspec or { keyspec }
+    local function same(a, b)
+      return vim.api.nvim_replace_termcodes(a, true, true, true) == vim.api.nvim_replace_termcodes(b, true, true, true)
+    end
     for _, k in ipairs(keylist) do
-      table.insert(EXT.keys[kind], { key = k, fn = fn, desc = desc, mode = mode or "n" })
+      local handler = fn
+      if opts and opts.chain then
+        local prev
+        for _, e in ipairs(EXT.keys[kind]) do
+          if (e.mode or "n") == (mode or "n") and same(e.key, k) then prev = e.fn end
+        end
+        handler = function() fn(prev, k) end
+      end
+      table.insert(EXT.keys[kind], { key = k, fn = handler, desc = desc, mode = mode or "n" })
     end
     table.insert(EXT.help[kind], { key = table.concat(keylist, " / "), desc = desc })
   end
@@ -3981,6 +4126,11 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   -- comment for why that surface can't be reached through EXT.keys.*.
   ctx.on_comment_popup = function(fn)
     table.insert(EXT.on_comment_popup, fn)
+  end
+  -- Registers a callback render_overview runs with (buf, lines) after
+  -- every Overview render.
+  ctx.on_overview_render = function(fn)
+    table.insert(EXT.on_overview_render, fn)
   end
 
   EXT.notify = require("azure-cli.notify")
@@ -4011,8 +4161,12 @@ EXT.STATUS_OPTIONS = STATUS_OPTIONS
   ctx.fetch_since_base = EXT.since_mod.fetch_base
   EXT.followup = require("azure-cli.review.followup")(ctx)
   EXT.workitems = require("azure-cli.review.workitems")(ctx)
-  -- gq: the chat panel, and what it's told this reviewer shows.
+  -- i: the chat panel, and what it's told this reviewer shows.
   EXT.chat = require("azure-cli.review.chat")(ctx)
+  -- Images in the description and comments (#134): Enter/gx opens one,
+  -- and the Overview shows them inline when an image plugin can. Loaded
+  -- after review/commits.lua: its <CR> chains onto open_commit.
+  EXT.images = require("azure-cli.review.images")(ctx)
 
   -- File-list access for code defined before `files`/`open_file` exist
   -- (jump_change's cross-file stepping - ]c/]C crossing from the last/first

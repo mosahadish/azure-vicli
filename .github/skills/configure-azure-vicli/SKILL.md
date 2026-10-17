@@ -55,7 +55,7 @@ There are two files, side by side in one folder:
 
 | File | Holds | Windows | Linux / macOS |
 |---|---|---|---|
-| `azure-cli.yml` | accounts: org URL, project, PAT, clones folder, work items | `%APPDATA%\azure-cli.yml` | `$XDG_CONFIG_HOME/azure-cli.yml` (default `~/.config/azure-cli.yml`) |
+| `azure-cli.yml` | accounts: Azure DevOps (org URL, project, PAT, work items) or GitHub (owner, token, issues), clones folder | `%APPDATA%\azure-cli.yml` | `$XDG_CONFIG_HOME/azure-cli.yml` (default `~/.config/azure-cli.yml`) |
 | `azure-cli.lua` | everything else (the `setup()` options): keys, timing, ui, chat | `%APPDATA%\azure-cli.lua` | `~/.config/azure-cli.lua` |
 
 Per install type:
@@ -104,6 +104,39 @@ accounts:
 The PAT needs Code (read & write) and Work Items (read & write). Prefer
 `pat_file`, kept outside any git checkout. Every field:
 [docs/configuration.md](../../../docs/configuration.md#configuration).
+
+### A GitHub account
+
+Ask whether they review on GitHub too (or only). A GitHub account goes in
+the same `accounts:` list, beside any Azure DevOps ones:
+
+```yaml
+accounts:
+  - host: github
+    owner: my-org                     # optional: only this user's or org's repositories
+    clones_dir: ~/src
+    # api_url: https://ghe.example.com/api/v3   # GitHub Enterprise Server only
+    # pat_file: ~/.config/azure-cli/gh-token    # optional, see below
+    # issues: { project: 3 }                    # optional: the Issues tab (I)
+```
+
+- **Token.** If `gh auth status` shows them signed in, nothing more is
+  needed: without `pat`/`pat_file` the provider asks `gh auth token`. Else
+  a `pat_file` with a token that has the `repo` scope. After a new
+  `gh auth login`, azure-vicli needs a restart to see it.
+- **`issues:`** (optional) turns on the Issues tab for one GitHub Projects
+  v2 project: `project` (required: its number from the URL, or its title),
+  `repo` (optional: where new issues go, `name` or `owner/name`; needed
+  when the project links several repositories), `scope` (`mine`, the
+  default, or `all`). The token then also needs the `project` scope: with
+  gh, `gh auth refresh -s project`.
+- **Not on a GitHub account:** `project_name`, `org_url`, `work_items:`
+  (`work_items:` there is an error, as is `issues:` on an Azure account).
+  There's no `token:` field - an unknown field in the yml is silently
+  ignored, so spell them exactly.
+
+Every GitHub field:
+[docs/configuration.md](../../../docs/configuration.md#github-accounts).
 
 ## Options (`azure-cli.lua` or `setup()`)
 
@@ -180,7 +213,8 @@ makes setup fail - take it out.
 Run these here, in the repository, and fix what they report:
 
 - `python azure-cli.py --doctor`: the yml parses, its fields are filled
-  in, and sign-in works for every organization. A FAIL line says what to
+  in, and sign-in works for every organization and GitHub account (and,
+  with `issues:`, that the project can be read). A FAIL line says what to
   fix.
 - The options file (standalone launcher):
   `nvim -u NONE --headless --cmd "set rtp+=." -c "lua local ok, e = pcall(function() require('azure-cli').setup(dofile(require('azure-cli.config').options_path())) end) print(ok and 'azure-cli.lua: ok' or e)" -c q`
@@ -188,7 +222,7 @@ Run these here, in the repository, and fix what they report:
   `setup()` is checked when their Neovim starts.)
 
 Then tell the user to start azure-vicli (`./azure-cli`, `azure-cli.cmd`,
-or `:AzureCli`), or restart it if it was running. For the chat: `gq` on
+or `:AzureCli`), or restart it if it was running. For the chat: `i` on
 the PR dashboard and ask "what am I looking at?" - the answer should name
 the PR under the cursor.
 

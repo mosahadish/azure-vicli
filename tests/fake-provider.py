@@ -52,6 +52,18 @@ MY_ID = "11111111-1111-1111-1111-111111111111"
 MY_NAME = "Demo User"
 ORG = "https://dev.azure.com/demo-org"
 PROJECT = "Demo"
+# The team's backlog iteration (teamsettings' backlogIteration).
+BACKLOG = PROJECT + "\\Team"
+# The GitHub account (github_host.py): PRs whose AZVICLI_ORG is this API
+# root are GitHub's, keyed "owner~repo~number" - two repos below share a
+# PR number on purpose.
+GH_API = "https://api.github.com"
+GH_OWNER = "demo-gh"
+# The PR actions github_host.py answers so far (azure-cli.py's _GITHUB_ACTIONS).
+GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
+              "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
+              "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description",
+              "--requeue", "--build-log", "--test-results", "--fetch-image")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -93,8 +105,11 @@ WI_STATES = {
     None: [("New", "Proposed"), ("Active", "InProgress"), ("Implemented", "InProgress"),
            ("Resolved", "Resolved"), ("Closed", "Completed"), ("Removed", "Removed")],
 }
+# Backlog levels (the real one reads them from processconfiguration): a
+# parent is on a higher one.
+WI_LEVELS = {"Task": 0, "User Story": 1, "Bug": 1, "Feature": 2, "Epic": 3}
 WI_REASONS = {
-    "Active": ["Implementation started", "Work started"],
+    "Active":["Implementation started", "Work started"],
     "Resolved": ["Code complete and unit tests pass", "Fixed"],
     "Closed": ["Acceptance tests pass", "Verified"],
     "Removed": ["Removed from the backlog"],
@@ -254,6 +269,54 @@ PR_FIXTURES = [
     },
 ]
 
+# GitHub PRs: the same number (7) in two repositories.
+GH_FIXTURES = [
+    {
+        "id": 7, "repo": "gizmos", "host": "github", "source": "feature/spin-faster", "author": "alice",
+        "title": "Gizmo: spin faster", "build": "succeeded",
+        # What github_host.mergeability would make of it: mergeable.
+        "merge": {"status": "CLEAN", "blockers": [], "checks": [{"name": "build", "state": "ok", "required": True}],
+                  "autoMergeAllowed": False},
+        "description": "Doubles the spin rate.",
+        "reviewers": [("me", 0), ("bob", 0)],
+        "commits": [
+            ("Spin twice as fast", {"gizmo.py": "def spin():\n    return 'whirr whirr'\n"}),
+        ],
+        "threads": [
+            {"by": "bob", "status": "active", "path": "gizmo.py", "side": "R", "line": 2,
+             "comments": [("bob", "Gizmo thread: is twice enough?")]},
+        ],
+        "conversation": [("carol", "Gizmo conversation: nice one")],
+    },
+    {
+        "id": 7, "repo": "doohickeys", "host": "github", "source": "fix/doohickey-wobble", "author": "bob",
+        "title": "Doohickey: stop the wobble", "build": "failed",
+        # Blocked by a required check; auto-merge waits it out.
+        "merge": {"status": "BLOCKED", "blockers": ["required check `ci / test` failed"],
+                  "checks": [{"name": "ci / test", "state": "failed", "required": True},
+                             {"name": "lint", "state": "ok", "required": False}],
+                  "autoMergeAllowed": True},
+        "description": "Clamps the wobble.",
+        "reviewers": [("me", 10)],
+        "commits": [
+            ("Clamp the wobble", {"gizmo.py": "def spin():\n    return 'whirr'\n\n\ndef wobble():\n    return 0\n"}),
+        ],
+        "threads": [
+            {"by": "alice", "status": "fixed", "path": "gizmo.py", "side": "R", "line": 5,
+             "comments": [("alice", "Doohickey thread: resolved already")]},
+        ],
+    },
+]
+
+
+def skey(pr):
+    """A PR's key in state.json's threads/iterations: its id on Azure,
+    owner~repo~number on GitHub (hosts.lua's key)."""
+    if pr.get("host") == "github":
+        return "{0}~{1}~{2}".format(GH_OWNER, pr["repo"], pr["id"])
+    return str(pr["id"])
+
+
 SPRINTS = [
     ("Sprint 41", -14, -1, "past"),
     ("Sprint 42", 0, 13, "current"),
@@ -297,6 +360,42 @@ WI_FIXTURES = [
     {"id": 3014, "type": "Task", "state": "To Do", "title": "Cover the sixth attempt",
      "assignedTo": "bob", "priority": 3, "tags": "", "parentId": 3012, "sprint": 1,
      "description": "", "prs": [], "comments": []},
+    # In no sprint: only W's last tab, No sprint, lists the open ones of mine
+    # (the team's backlog iteration, "backlog", and the project root, None).
+    {"id": 3021, "type": "User Story", "state": "New", "title": "Export the audit log",
+     "assignedTo": "me", "priority": 3, "tags": "", "parentId": None, "sprint": "backlog",
+     "description": "", "prs": [], "comments": []},
+    {"id": 3022, "type": "Bug", "state": "Active", "title": "Crash on an empty config",
+     "assignedTo": "me", "priority": 2, "tags": "", "parentId": None, "sprint": None,
+     "description": "", "prs": [], "comments": []},
+    {"id": 3023, "type": "Bug", "state": "Closed", "title": "Flaky clock test",
+     "assignedTo": "me", "priority": 3, "tags": "", "parentId": None, "sprint": "backlog",
+     "description": "", "prs": [], "comments": []},
+    {"id": 3024, "type": "User Story", "state": "New", "title": "Dark mode",
+     "assignedTo": "alice", "priority": 4, "tags": "", "parentId": None, "sprint": "backlog",
+     "description": "", "prs": [], "comments": []},
+]
+
+# The GitHub account's issues: project (github_issues.py's shapes), answered
+# for --wi-* calls carrying AZVICLI_WI_HOST=github - the I tab. #3001 is
+# also an Azure work item on purpose: the two boards must never mix them up.
+GH_PROJECT = "Demo board"
+GH_STATUS = ["Todo", "In Progress", "Done"]
+GH_ITERATIONS = [("it1", "Iteration 1", -14, 14), ("it2", "Iteration 2", 0, 14), ("it3", "Iteration 3", 14, 14)]
+GH_ISSUES = [
+    {"number": 3001, "repo": "gizmos", "title": "Spin faster on demand", "status": "In Progress", "iteration": "it2",
+     "assignees": ["demo-user"], "labels": ["perf"], "parent": None, "prs": [7],
+     "body": "## Why\n\nThe gizmo should **spin faster** when asked.\n\n- `--fast` flag\n- no restart",
+     "comments": [("alice", "Started on it in gizmos#7.")]},
+    {"number": 12, "repo": "gizmos", "title": "Doohickey wobbles at speed", "status": "Todo", "iteration": "it2",
+     "assignees": [], "labels": ["bug"], "parent": None, "prs": [], "body": "Seen above 3000 rpm.", "comments": []},
+    {"number": 13, "repo": "gizmos", "title": "Measure the wobble", "status": "Todo", "iteration": "it2",
+     "assignees": ["bob"], "labels": [], "parent": 12, "prs": [], "body": "", "comments": []},
+    {"number": 14, "repo": "gizmos", "title": "Gizmo docs", "status": "Todo", "iteration": "it3",
+     "assignees": ["demo-user"], "labels": ["docs"], "parent": None, "prs": [], "body": "", "comments": []},
+    # In no iteration: only the Issues tab's last tab shows it.
+    {"number": 15, "repo": "gizmos", "title": "Orphaned issue", "status": "Todo", "iteration": None,
+     "assignees": ["demo-user"], "labels": [], "parent": None, "prs": [], "body": "", "comments": []},
 ]
 
 
@@ -493,12 +592,15 @@ def cmd_setup(root, fresh=False):
     branches = {}
     branches["widgets"] = build_repo(ws, "widgets", BASE_FILES, by_repo["widgets"], day0)
     branches["gadgets"] = build_repo(ws, "gadgets", GADGET_FILES, by_repo["gadgets"], day0)
+    for pr in GH_FIXTURES:
+        branches[pr["repo"]] = build_repo(ws, pr["repo"], GADGET_FILES, [pr], day0)
+        git(ws.root, "clone", "-q", ws.clone_url(pr["repo"]), os.path.join(ws.clones, pr["repo"]))
     # widgets is cloned already; gadgets deliberately is not (clone-on-open).
     git(ws.root, "clone", "-q", ws.clone_url("widgets"), os.path.join(ws.clones, "widgets"))
 
     state = {"next_id": 5000, "prs": [], "threads": {}, "iterations": {}, "workitems": [], "sprints": [],
              "members": [PEOPLE[k]["displayName"] for k in ("me", "alice", "bob", "carol")]}
-    for pr in PR_FIXTURES:
+    for pr in PR_FIXTURES + GH_FIXTURES:
         shas = branches[pr["repo"]][pr["source"]]
         rec = {
             "id": pr["id"], "title": pr["title"], "repo": pr["repo"], "source": pr["source"], "target": "main",
@@ -511,9 +613,19 @@ def cmd_setup(root, fresh=False):
             "reviewers": [{"name": PEOPLE[k]["displayName"], "id": PEOPLE[k]["id"], "vote": v} for k, v in pr["reviewers"]],
             "updatedIso": shas[-1][1], "completed": False,
         }
+        if pr.get("host"):
+            rec["host"] = pr["host"]
+            rec["buildUrl"] = "https://github.com/{0}/{1}/pull/{2}/checks?buildId={2}".format(
+                GH_OWNER, pr["repo"], pr["id"])
+            rec["merge"] = pr["merge"]
         state["prs"].append(rec)
-        state["threads"][str(pr["id"])] = [make_thread(state, pr, t) for t in pr["threads"]]
-        state["iterations"][str(pr["id"])] = [
+        threads = [make_thread(state, pr, t) for t in pr["threads"]]
+        if pr.get("conversation"):
+            conv = make_thread(state, pr, {"status": "active", "comments": pr["conversation"]})
+            conv["id"], conv["conversation"] = 0, True
+            threads.append(conv)
+        state["threads"][skey(rec)] = threads
+        state["iterations"][skey(rec)] = [
             {"id": i + 1, "description": "", "createdDate": when, "updatedDate": when,
              "sourceRefCommit": {"commitId": sha}, "targetRefCommit": {"commitId": ""}}
             for i, (sha, when) in enumerate(shas)
@@ -531,13 +643,25 @@ def cmd_setup(root, fresh=False):
         rec["createdBy"] = PEOPLE["alice"]["displayName"]
         rec["createdDate"] = iso(changed - timedelta(days=10))
         rec["changedDate"] = iso(changed)
-        rec["iterationPath"] = state["sprints"][wi["sprint"]]["path"] if wi["sprint"] is not None else PROJECT
+        rec["iterationPath"] = BACKLOG if wi["sprint"] == "backlog" else \
+            state["sprints"][wi["sprint"]]["path"] if wi["sprint"] is not None else PROJECT
         rec["areaPath"] = PROJECT + "\\Core"
         rec["reason"] = "New" if wi["state"] == "New" else "Work started"
         rec["comments"] = [{"author": PEOPLE[who]["displayName"], "date": iso(changed), "text": text}
                            for who, text in wi["comments"]]
         rec.pop("sprint", None)
         state["workitems"].append(rec)
+    state["gh_iterations"] = [{"id": i, "title": t, "start": iso(day0 + timedelta(days=s)),
+                               "finish": iso(day0 + timedelta(days=s + d - 1)),
+                               "timeframe": "past" if s < 0 else ("current" if s == 0 else "future")}
+                              for i, t, s, d in GH_ITERATIONS]
+    state["issues"] = []
+    for n in GH_ISSUES:
+        rec = dict(n)
+        rec["state"] = "OPEN"
+        rec["updated"] = iso(day0 - timedelta(hours=n["number"] % 30))
+        rec["comments"] = [{"author": who, "date": rec["updated"], "text": text} for who, text in n["comments"]]
+        state["issues"].append(rec)
     ws.save(state)
 
     with open(os.path.join(ws.root, "config", "azure-cli.yml"), "w", encoding="utf-8", newline="\n") as fh:
@@ -549,7 +673,11 @@ def cmd_setup(root, fresh=False):
                  "    pat: not-a-real-token\n"
                  "    clones_dir: {2}\n"
                  "    work_items:\n"
-                 "      team: {3}\n".format(PROJECT, ORG, ws.clones, TEAM))
+                 "      team: {3}\n"
+                 "  - host: github\n"
+                 "    owner: {4}\n"
+                 "    clones_dir: {2}\n"
+                 "    issues: {{ project: 1, scope: all }}\n".format(PROJECT, ORG, ws.clones, TEAM, GH_OWNER))
     exe = os.path.join(ws.root, "azure-cli")
     with open(exe, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("#!/usr/bin/env bash\n# Stands in for the repo's azure-cli launcher (AZVICLI_EXE).\n"
@@ -583,7 +711,9 @@ def classify(pr):
 
 def thread_counts(threads):
     live = [t for t in threads if not t.get("isDeleted") and t["comments"]]
-    active = [t for t in live if t["status"] in ("active", "pending")]
+    # A GitHub PR's Conversation thread is nobody's to resolve (github_host.py).
+    active = [t for t in live if t["status"] in ("active", "pending") and not t.get("conversation")]
+    live = [t for t in live if not t.get("conversation")]
     my_active = [t for t in active if t["comments"][0]["author"]["id"] == MY_ID]
     mention_all = [t for t in live if any("@<" + MY_ID + ">" in (c.get("content") or "") for c in t["comments"])]
     mention_active = [t for t in mention_all if t["status"] in ("active", "pending")]
@@ -603,13 +733,25 @@ def others_comments(threads, only_mine):
     return n
 
 
+def source_commit(ws, pr):
+    """The origin's current tip of the PR's source branch - what the real
+    providers send as sourceCommit (Azure's lastMergeSourceCommit, GitHub's
+    headRefOid), so a push in a smoke moves it while updatedIso stays put."""
+    try:
+        return git(ws.clone_url(pr["repo"]), "rev-parse", "--verify", "-q",
+                   "refs/heads/" + pr["source"]).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+
+
 def to_record(ws, pr, threads):
     active, total, my_active, mention, mention_total = thread_counts(threads)
     signed = sum(1 for r in pr["reviewers"] if int(r["vote"]) in (10, 5))
-    return {
+    rec = {
         "id": pr["id"], "title": pr["title"], "repo": pr["repo"], "project": PROJECT, "org": ORG,
         "source": pr["source"], "target": pr["target"], "author": PEOPLE[pr["author"]]["displayName"],
         "updatedIso": pr["updatedIso"], "updatedHuman": humanize(pr["updatedIso"]),
+        "sourceCommit": source_commit(ws, pr),
         "isDraft": pr["isDraft"], "state": classify(pr),
         "autoComplete": pr["autoComplete"], "autoCompleteSetBy": pr["autoCompleteSetBy"],
         "voteRatio": "{0} / {1}".format(signed, len(pr["reviewers"])),
@@ -624,6 +766,32 @@ def to_record(ws, pr, threads):
         "cloneUrl": ws.clone_url(pr["repo"]), "clonesDir": ws.clones,
         "myId": MY_ID, "myName": MY_NAME, "reviewers": pr["reviewers"],
     }
+    if pr.get("host") == "github":
+        rec.update({"host": "github", "key": skey(pr), "org": GH_API, "project": GH_OWNER,
+                    "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, pr["repo"], pr["id"]),
+                    "caps": {"merge_methods": GH_MERGE_METHODS,
+                             "auto_complete": bool(gh_merge(pr)["autoMergeAllowed"]),
+                             "delete_branch_on_merge": False}})
+    return rec
+
+
+# The fake GitHub repos allow these (not rebase), like github_host.merge_methods.
+GH_MERGE_METHODS = [{"key": "squash", "label": "Squash and merge"}, {"key": "merge", "label": "Create a merge commit"}]
+
+
+def gh_merge(pr):
+    """A GitHub PR's fixture `merge` (mergeable, when a state.json from
+    before it has none)."""
+    return pr.get("merge") or {"status": "CLEAN", "blockers": [], "checks": [], "autoMergeAllowed": False}
+
+
+def gh_mergeability(pr):
+    """--get-pr's `mergeability` for a GitHub PR (github_host.mergeability's
+    shape), from its fixture's `merge`."""
+    m = gh_merge(pr)
+    return {"status": m["status"], "blockers": list(m["blockers"]), "warnings": [], "checks": m["checks"],
+            "conflict": False, "deleteBranchOnMerge": False, "autoMergeAllowed": m["autoMergeAllowed"],
+            "autoMerge": bool(pr.get("autoComplete")), "base": pr["target"], "defaultBranch": "main"}
 
 
 class Fake:
@@ -637,15 +805,25 @@ class Fake:
     def pr_id(self):
         return self.env.get("AZVICLI_PR") or ""
 
+    def is_github(self):
+        return (self.env.get("AZVICLI_ORG") or "").rstrip("/") == GH_API
+
+    def skey(self):
+        """This call's PR key (see skey()): GitHub's from owner/repo/number."""
+        if self.is_github():
+            return "{0}~{1}~{2}".format(self.env.get("AZVICLI_PROJECT") or "", self.env.get("AZVICLI_REPO") or "",
+                                        self.pr_id())
+        return self.pr_id()
+
     def pr(self):
-        pid = self.pr_id()
+        want = self.skey()
         for p in self.state["prs"]:
-            if str(p["id"]) == pid:
+            if skey(p) == want:
                 return p
         return None
 
     def threads(self):
-        return self.state["threads"].setdefault(self.pr_id(), [])
+        return self.state["threads"].setdefault(self.skey(), [])
 
     def find_thread(self, tid):
         for t in self.threads():
@@ -673,19 +851,21 @@ class Fake:
         for pr in self.state["prs"]:
             if pr.get("completed"):
                 continue
-            print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(str(pr["id"]), [])), ensure_ascii=False))
+            print(json.dumps(to_record(self.ws, pr, self.state["threads"].get(skey(pr), [])), ensure_ascii=False))
         return 0
 
     def cmd_get_pr(self):
         # Any PR by id, completed ones included (unlike --list).
         pid = self.env.get("AZVICLI_PR") or ""
-        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid), None)
+        pr = self.pr()
         if pr is None:
             print("ERROR: HTTP 404 GET: pull request {0} not found".format(pid), file=sys.stderr)
             return 1
-        rec = to_record(self.ws, pr, self.state["threads"].get(pid, []))
+        rec = to_record(self.ws, pr, self.state["threads"].get(skey(pr), []))
         # As the real --get-pr: `state` is the PR's status, not a dashboard section.
         rec["state"] = "completed" if pr.get("completed") else "active"
+        if self.is_github():
+            rec["mergeability"] = gh_mergeability(pr)
         print(json.dumps(rec, ensure_ascii=False))
         return 0
 
@@ -723,7 +903,7 @@ class Fake:
     def cmd_iterations(self):
         if not self.need_pr():
             return 1
-        its = self.state["iterations"].get(self.pr_id(), [])
+        its = self.state["iterations"].get(self.skey(), [])
         print(json.dumps({"value": its, "count": len(its)}))
         return 0
 
@@ -775,6 +955,15 @@ class Fake:
             return 1
         tid, text = (rest + ["", ""])[:2]
         t = self.find_thread(tid)
+        if t is None and tid == "0" and self.is_github() and text.strip():
+            # GitHub's Conversation tab (thread 0) starts with its first comment.
+            t = {"id": 0, "status": "active", "isDeleted": False, "conversation": True, "comments": [],
+                 "publishedDate": now_iso(), "lastUpdatedDate": now_iso(), "threadContext": None, "properties": {}}
+            self.threads().append(t)
+            t["comments"].append(self.new_comment(text, 0, 1))
+            self.ws.save(self.state)
+            print("Reply posted.")
+            return 0
         if not tid.isdigit() or t is None:
             print("Invalid thread id.")
             return 1
@@ -836,10 +1025,52 @@ class Fake:
 
     def cmd_work_items(self):
         pid = self.pr_id()
+        if self.is_github():
+            # A GitHub PR's issues: the ones it closes (github_host.py).
+            repo = self.env.get("AZVICLI_REPO") or ""
+            for n in self.state.get("issues", []):
+                if n["repo"] == repo and pid.isdigit() and int(pid) in n.get("prs", []):
+                    print(json.dumps({"id": n["number"], "type": "Issue", "state": self.gh_state(n),
+                                      "title": n["title"], "assignedTo": ", ".join(n["assignees"]),
+                                      "repo": n["repo"], "key": self.gh_key(n), "host": "github"},
+                                     ensure_ascii=False))
+            return 0
         for w in self.state["workitems"]:
             if pid.isdigit() and int(pid) in w.get("prs", []):
                 print(json.dumps({k: w[k] for k in ("id", "type", "state", "title", "assignedTo")},
                                  ensure_ascii=False))
+        return 0
+
+    # -- images (#134) ------------------------------------------------------
+
+    def cmd_fetch_image(self, rest):
+        """As azure-cli.py's --fetch-image: a URL on the PR's own server
+        (ORG's or github.com's origin) gets a fixture PNG at <stem>.png, made
+        0600 and O_EXCL, and an "auth: yes" line in calls.log; any other host
+        exits 3 with no file, logged "auth: no". No network either way."""
+        if not self.need_pr():
+            return 1
+        url, stem = (rest + ["", ""])[:2]
+        own = ("https://github.com/", "https://raw.githubusercontent.com/") if self.is_github() else (ORG + "/",)
+        allowed = url.startswith(own) and "/../" not in url
+        self.ws.log(["--fetch-image auth: " + ("yes" if allowed else "no"), url], {})
+        if not allowed:
+            m = re.match(r"^[a-zA-Z]+://([^/?#]+)", url)
+            print("not this PR's host: {0}".format(m.group(1) if m else "?"), file=sys.stderr)
+            return 3
+        if not os.path.isabs(stem) or not os.path.isdir(os.path.dirname(stem)):
+            print("Image download failed: the destination must be an absolute file path", file=sys.stderr)
+            return 1
+        path = stem + ".png"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except OSError as ex:
+            print("Image download failed: could not create the file: {0}".format(ex.strerror), file=sys.stderr)
+            return 1
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(png)
+        print(json.dumps({"path": path, "contentType": "image/png", "bytes": len(png)}))
         return 0
 
     # -- the chat panel's PR tools -----------------------------------------
@@ -891,6 +1122,8 @@ class Fake:
         if not self.need_pr():
             return 1
         self.pr()["description"] = rest[0] if rest else ""
+        if len(rest) > 1 and rest[1].strip():
+            self.pr()["title"] = rest[1].strip()
         self.ws.save(self.state)
         print("Description updated.")
         return 0
@@ -901,6 +1134,8 @@ class Fake:
             print("create-pr needs <source> <target> <title>", file=sys.stderr)
             return 1
         repo = self.env.get("AZVICLI_REPO") or ""
+        if self.is_github():
+            return self.gh_create_pr(repo, source, target, title, desc, wis)
         pid = max(p["id"] for p in self.state["prs"]) + 1
         self.state["prs"].append({
             "id": pid, "title": title, "repo": repo, "source": source, "target": target, "author": "me",
@@ -933,9 +1168,79 @@ class Fake:
         print("Vote set to {0}.".format(vote))
         return 0
 
+    def cmd_submit_review(self, rest):
+        """GitHub's whole-queue review (github_host.py's submit_review): each
+        item through the same handler it would have gone out by alone, the
+        body as a Conversation comment, then the verdict - as one call."""
+        if not self.is_github():
+            print("--submit-review is for GitHub pull requests; Azure DevOps has no review to submit.",
+                  file=sys.stderr)
+            return 1
+        if not self.need_pr():
+            return 1
+        payload = json.loads(rest[0]) if rest else {}
+        handlers = {"--post": self.cmd_post, "--file-comment": self.cmd_file_comment, "--reply": self.cmd_reply}
+        with contextlib.redirect_stdout(io.StringIO()):
+            for args in payload.get("items") or []:
+                if args[0] not in handlers or handlers[args[0]](args[1:]) != 0:
+                    print("{0} can't be part of a review.".format(args[0]), file=sys.stderr)
+                    return 1
+            if payload.get("body"):
+                self.cmd_reply(["0", payload["body"]])
+            if str(payload.get("event")) in ("10", "-5"):
+                self.cmd_vote([str(payload["event"])])
+        n = len(payload.get("items") or [])
+        print("Review submitted ({0} comment{1}).".format(n, "" if n == 1 else "s"))
+        return 0
+
+    def gh_complete(self, rest):
+        """--complete on a GitHub PR, as github_host.Actions.complete: only
+        the repo's methods, refused with the blockers' reasons, and the
+        branch deleted when asked."""
+        pr = self.pr()
+        strategy = rest[0] if rest else ""
+        keys = [m["key"] for m in GH_MERGE_METHODS]
+        if strategy not in keys:
+            print("{0} isn't allowed on {1}/{2}: {3}.".format(strategy, GH_OWNER, pr["repo"], ", ".join(keys)),
+                  file=sys.stderr)
+            return 1
+        blockers = gh_merge(pr)["blockers"]
+        if blockers:
+            print("Can't merge PR #{0}: {1}.".format(pr["id"], "; ".join(blockers)), file=sys.stderr)
+            return 1
+        pr["completed"] = True
+        self.ws.save(self.state)
+        delete = (rest[1] if len(rest) > 1 else "true") == "true"
+        print("PR #{0} merged ({1}){2}.".format(pr["id"], strategy,
+                                               "; branch {0} deleted".format(pr["source"]) if delete else ""))
+        return 0
+
+    def gh_auto_merge(self, rest):
+        pr = self.pr()
+        mode = rest[0] if rest else ""
+        if mode == "off":
+            pr["autoComplete"], pr["autoCompleteSetBy"] = False, ""
+            self.ws.save(self.state)
+            print("Auto-merge disabled for PR #{0}.".format(pr["id"]))
+            return 0
+        if not gh_merge(pr)["autoMergeAllowed"]:
+            print("Auto-merge isn't allowed on {0}/{1} (its settings).".format(GH_OWNER, pr["repo"]), file=sys.stderr)
+            return 1
+        strategy = rest[1] if len(rest) > 1 and rest[1] else "squash"
+        if strategy not in [m["key"] for m in GH_MERGE_METHODS]:
+            print("{0} isn't allowed on {1}/{2}.".format(strategy, GH_OWNER, pr["repo"]), file=sys.stderr)
+            return 1
+        pr["autoComplete"], pr["autoCompleteSetBy"] = True, MY_NAME
+        self.ws.save(self.state)
+        print("Auto-merge enabled for PR #{0} ({1}); the branch is deleted on merge only by the repository's own "
+              "setting, which is off.".format(pr["id"], strategy))
+        return 0
+
     def cmd_complete(self, rest):
         if not self.need_pr():
             return 1
+        if self.is_github():
+            return self.gh_complete(rest)
         strategy = rest[0] if rest else ""
         if strategy not in MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
@@ -952,6 +1257,8 @@ class Fake:
     def cmd_auto_complete(self, rest):
         if not self.need_pr():
             return 1
+        if self.is_github():
+            return self.gh_auto_merge(rest)
         mode = rest[0] if rest else ""
         pr = self.pr()
         if mode == "off":
@@ -969,8 +1276,24 @@ class Fake:
         return 0
 
     def cmd_requeue(self, rest):
+        """Like azure-cli.py's cmd_requeue (#111): a GitHub PR's env re-runs
+        that PR's failed checks; otherwise Azure's, by number among the
+        Azure PRs only - a GitHub PR is never re-queued that way."""
         pid = rest[0] if rest else ""
-        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid), None)
+        if self.is_github():
+            if (self.env.get("AZVICLI_PR") or "") != pid:
+                print("--requeue {0} doesn't match AZVICLI_PR {1}; nothing re-queued.".format(
+                    pid, self.env.get("AZVICLI_PR") or "(unset)"), file=sys.stderr)
+                return 1
+            pr = self.pr()
+            if pr is None or pr["buildStatus"] != "failed":
+                print("No failed workflow run to re-queue for PR {0}.".format(pid))
+                return 0
+            pr["buildStatus"] = "running"
+            self.ws.save(self.state)
+            print("Re-queued the failed jobs of 1 workflow run(s) for PR {0}.".format(pid))
+            return 0
+        pr = next((p for p in self.state["prs"] if str(p["id"]) == pid and not p.get("host")), None)
         if pr is None:
             print("PR {0} was not found in any configured account.".format(pid))
             return 1
@@ -1022,7 +1345,8 @@ class Fake:
     def wi_list_record(self, w):
         return {"id": w["id"], "type": w["type"], "state": w["state"], "title": w["title"],
                 "assignedTo": w["assignedTo"], "priority": w.get("priority"), "tags": w.get("tags", ""),
-                "parentId": w.get("parentId"), "pullRequests": [{"id": p} for p in w.get("prs", [])],
+                "iterationPath": w.get("iterationPath", ""), "parentId": w.get("parentId"),
+                "pullRequests": [{"id": p} for p in w.get("prs", [])],
                 "childIds": [x["id"] for x in self.state["workitems"] if x.get("parentId") == w["id"]],
                 "changedIso": w["changedDate"], "changedHuman": humanize(w["changedDate"]),
                 "url": "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])}
@@ -1044,9 +1368,22 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'".format(select), file=sys.stderr)
             return 1
+        if select == "parents":
+            # Like the real one: open items on a higher backlog level.
+            w = self.wi(item_path)
+            if w is None:
+                print("ERROR: HTTP 404 GET: work item {0} does not exist".format(item_path), file=sys.stderr)
+                return 2
+            print(json.dumps({"_parents": True, "type": w["type"], "levels": True}))
+            mine = WI_LEVELS.get(w["type"], 1)
+            for x in sorted(self.state["workitems"], key=lambda x: x.get("changedDate") or "", reverse=True):
+                cat = dict(WI_STATES.get(x["type"]) or WI_STATES[None]).get(x["state"])
+                if x["id"] != w["id"] and WI_LEVELS.get(x["type"], 1) > mine and cat not in ("Completed", "Removed"):
+                    print(json.dumps(self.wi_list_record(x), ensure_ascii=False))
+            return 0
         if select == "tree":
             roots = [int(x) for x in item_path.split(",") if x.strip().isdigit()]
             if not roots:
@@ -1077,7 +1414,9 @@ class Fake:
             out = {"_sprints": True, "quarter": PROJECT, "currentIndex": ci, "types": ["User Story", "Bug"],
                    "sprints": [{"name": s["name"], "label": s["name"], "path": s["path"], "start": s["start"],
                                 "finish": s["finish"], "timeframe": s["timeframe"], "current": s["timeframe"] == "current"}
-                               for s in sprints]}
+                               for s in sprints] + [
+                       {"name": "No sprint", "label": "No sprint", "path": "-", "start": "", "finish": "",
+                        "timeframe": "", "current": False}]}
             print(json.dumps(out, ensure_ascii=False))
             return 0
         if select == "members":
@@ -1095,9 +1434,15 @@ class Fake:
                 print("ERROR: could not determine {0} sprint".format(select), file=sys.stderr)
                 return 1
             print(json.dumps(meta, ensure_ascii=False))
-        # Like the real WIQL: the configured assignee's (= my) items in that sprint.
+        # Like the real WIQL: the configured assignee's (= my) items in that
+        # sprint; for No sprint ("-"), the open ones in the backlog or root.
         for w in self.state["workitems"]:
-            if w["iterationPath"] == path and w["assignedTo"] == MY_NAME:
+            if path == "-":
+                cat = dict(WI_STATES.get(w["type"]) or WI_STATES[None]).get(w["state"])
+                listed = w["iterationPath"] in (BACKLOG, PROJECT) and cat not in ("Completed", "Removed")
+            else:
+                listed = w["iterationPath"] == path
+            if listed and w["assignedTo"] == MY_NAME:
                 print(json.dumps(self.wi_list_record(w), ensure_ascii=False))
         return 0
 
@@ -1212,7 +1557,8 @@ class Fake:
             self.state["workitems"].append({
                 "id": wid, "type": a2, "state": "New", "title": a3, "assignedTo": MY_NAME, "createdBy": MY_NAME,
                 "createdDate": now_iso(), "changedDate": now_iso(), "priority": 2, "areaPath": PROJECT + "\\Core",
-                "iterationPath": sprint["path"] if sprint else PROJECT, "tags": "", "reason": "New",
+                "iterationPath": BACKLOG if a5 == "-" else sprint["path"] if sprint else PROJECT, "tags": "",
+                "reason": "New",
                 "description": "", "acceptanceCriteria": "", "reproSteps": "",
                 "parentId": int(a4) if a4.isdigit() else None, "prs": [], "comments": [],
             })
@@ -1233,6 +1579,8 @@ class Fake:
                 return 1
             key, caster = WI_FIELDS[a3]
             value = a4 if a4 or a3 != "assignedTo" else MY_NAME
+            if a3 == "iteration" and value == "-":
+                value = BACKLOG
             try:
                 value = caster(value)
             except (TypeError, ValueError):
@@ -1283,10 +1631,428 @@ class Fake:
             self.ws.save(self.state)
             print(json.dumps({"unlinked": pid}))
             return 0
+        if cmd == "set-parent":
+            w = self.wi(a2)
+            if w is None or not a3:
+                print("ERROR: set-parent needs <id> <parentId|none>", file=sys.stderr)
+                return 1
+            new = None if a3.lower() == "none" else (int(a3.lstrip("#")) if a3.lstrip("#").isdigit() else "")
+            if new == "" or (new is not None and (self.wi(str(new)) is None or new == w["id"])):
+                print("ERROR: #{0}'s parent wasn't changed: no work item {1} to put it under".format(a2, a3),
+                      file=sys.stderr)
+                return 2
+            old = w.get("parentId")
+            out = {"id": w["id"], "parent": new, "previous": old}
+            if old == new:
+                out["unchanged"] = True
+            else:
+                w["parentId"], w["changedDate"] = new, now_iso()
+                self.ws.save(self.state)
+            print(json.dumps(out))
+            return 0
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | set <id> <field> <value> | "
-              "comment <id> <text> | link-pr <wiId> <orgUrl> <project> <repoName> <prId> | unlink-pr <wiId> <prId>",
+              "comment <id> <text> | link-pr <wiId> <orgUrl> <project> <repoName> <prId> | unlink-pr <wiId> <prId> | "
+              "set-parent <id> <parentId|none>",
               file=sys.stderr)
         return 1
+
+    # -- the GitHub project (AZVICLI_WI_HOST=github: github_issues.py) --------
+
+    def gh_issue(self, ref):
+        """An issue by key (owner~repo~n), owner/repo#n, #n or n; None when
+        there's none, and an error when a bare number names two."""
+        ref = str(ref or "").strip()
+        m = re.match(r"^(?:([^~/#]+)[~/]([^~/#]+)[~#])?#?(\d+)$", ref)
+        if not m:
+            return None
+        hits = [n for n in self.state.setdefault("issues", []) if n["number"] == int(m.group(3))
+                and (not m.group(2) or n["repo"] == m.group(2))]
+        if len(hits) > 1:
+            raise ValueError("#{0} is an issue in {1}; say which, as owner/repo#{0}".format(
+                m.group(3), " and ".join(sorted(n["repo"] for n in hits))))
+        return hits[0] if hits else None
+
+    def gh_key(self, n):
+        return "{0}~{1}~{2}".format(GH_OWNER, n["repo"], n["number"])
+
+    def gh_state(self, n):
+        return "Closed" if n["state"] == "CLOSED" else (n.get("status") or "No Status")
+
+    def gh_record(self, n):
+        kids = [c["number"] for c in self.state["issues"] if c.get("parent") == n["number"] and c["repo"] == n["repo"]]
+        return {"id": n["number"], "type": "Issue", "state": self.gh_state(n), "title": n["title"],
+                "assignedTo": ", ".join(n["assignees"]), "priority": n.get("priority"),
+                "tags": "; ".join(n["labels"]), "parentId": n.get("parent"),
+                "pullRequests": [{"id": p, "repo": n["repo"]} for p in n.get("prs", [])], "childIds": kids,
+                "changedIso": n["updated"], "changedHuman": humanize(n["updated"]),
+                "url": "https://github.com/{0}/{1}/issues/{2}".format(GH_OWNER, n["repo"], n["number"]),
+                "repo": n["repo"], "key": self.gh_key(n), "iteration": n.get("iteration") or "",
+                "iterationPath": next((s["title"] for s in self.state.get("gh_iterations") or []
+                                       if s["id"] == n.get("iteration")), "")}
+
+    def gh_summary(self, n):
+        return {"id": n["number"], "type": "Issue", "state": self.gh_state(n), "title": n["title"],
+                "assignedTo": ", ".join(n["assignees"])}
+
+    def gh_sprints(self):
+        its = self.state.get("gh_iterations") or []
+        cur = next((i for i, s in enumerate(its) if s["timeframe"] == "current"), 0)
+        return [{"name": s["title"], "label": s["title"], "path": s["id"], "start": s["start"], "finish": s["finish"],
+                 "timeframe": s["timeframe"], "current": i == cur} for i, s in enumerate(its)] + [
+            {"name": "No iteration", "label": "No iteration", "path": "-", "start": "", "finish": "",
+             "timeframe": "", "current": False}], cur
+
+    def gh_touch(self, n):
+        n["updated"] = now_iso()
+        self.ws.save(self.state)
+
+    def gh_wi(self, flag, rest):
+        try:
+            return {"--wi-list": self.gh_wi_list, "--wi-detail": self.gh_wi_detail,
+                    "--wi-state": self.gh_wi_state, "--wi-edit": self.gh_wi_edit}[flag](rest)
+        except ValueError as e:
+            print("ERROR: {0}".format(e), file=sys.stderr)
+            return 1
+
+    def gh_wi_list(self, rest):
+        select = rest[0] if rest else "current"
+        arg = rest[1] if len(rest) > 1 else ""
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            raise ValueError("selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+                             .format(select))
+        states = GH_STATUS + ["Closed"]
+        if select == "parents":
+            # Open issues but itself and what's under it (no levels on GitHub).
+            n = self.gh_issue(arg)
+            if n is None:
+                raise ValueError("no issue {0}".format(arg))
+            print(json.dumps({"_parents": True, "type": "", "levels": False, "subIssues": True}))
+            for c in self.state["issues"]:
+                p, under = c, False
+                for _ in range(20):
+                    if p is None or p.get("parent") is None:
+                        break
+                    if p["parent"] == n["number"] and p["repo"] == n["repo"]:
+                        under = True
+                        break
+                    p = next((x for x in self.state["issues"] if x["number"] == p["parent"] and x["repo"] == p["repo"]),
+                             None)
+                if c["state"] != "CLOSED" and c is not n and not under:
+                    print(json.dumps(self.gh_record(c), ensure_ascii=False))
+            return 0
+        if select == "sprints":
+            sprints, cur = self.gh_sprints()
+            print(json.dumps({"_sprints": True, "quarter": GH_PROJECT, "currentIndex": cur + 1, "sprints": sprints,
+                              "states": states, "types": ["Issue"]}, ensure_ascii=False))
+            return 0
+        if select == "members":
+            for login in ("demo-user", "alice", "bob"):
+                print(json.dumps({"name": login, "email": ""}))
+            return 0
+        if select in ("ids", "tree"):
+            refs = [x.strip() for x in arg.split(",") if x.strip()]
+            if not refs:
+                raise ValueError("'{0}' needs a comma-separated list of issues".format(select))
+            found = [self.gh_issue(r) for r in refs]
+            if select == "ids":
+                for n in found:
+                    if n is None:
+                        raise ValueError("no such issue")
+                    print(json.dumps(self.gh_record(n), ensure_ascii=False))
+                return 0
+            queue = [n for n in found if n is not None]
+            seen = set(self.gh_key(n) for n in queue)
+            while queue:
+                p = queue.pop(0)
+                for c in self.state["issues"]:
+                    if c.get("parent") == p["number"] and c["repo"] == p["repo"] and self.gh_key(c) not in seen:
+                        seen.add(self.gh_key(c))
+                        queue.append(c)
+                        print(json.dumps(self.gh_record(c), ensure_ascii=False))
+            return 0
+        if select == "items":
+            if not arg:
+                raise ValueError("'items' needs an iteration path")
+            path = arg
+        else:
+            sprints, cur = self.gh_sprints()
+            nxt = sprints[cur + 1] if cur + 1 < len(sprints) else None
+            if select == "next":
+                if nxt is None:
+                    raise ValueError("could not determine next sprint")
+                target = nxt
+                meta = {"_meta": True, "timeframe": "next", "sprintName": nxt["name"], "sprintPath": nxt["path"],
+                        "sprintStart": nxt["start"], "sprintFinish": nxt["finish"]}
+            else:
+                target = sprints[cur]
+                meta = {"_meta": True, "timeframe": "current", "sprintName": target["name"],
+                        "sprintPath": target["path"], "sprintStart": target["start"], "sprintFinish": target["finish"],
+                        "nextSprintName": (nxt or {}).get("name", ""), "nextSprintPath": (nxt or {}).get("path", ""),
+                        "nextStart": (nxt or {}).get("start", ""), "nextFinish": (nxt or {}).get("finish", "")}
+            meta["states"] = states
+            path = target["path"]
+            print(json.dumps(meta, ensure_ascii=False))
+        # The demo config's issues: has scope: all - everyone's issues. Like
+        # GitHub's, the project listing shows a new issue only a while after
+        # its create (ids/tree/detail read the issue itself, at once).
+        for n in self.state["issues"]:
+            if time.time() < n.get("listed_from", 0):
+                continue
+            if path in ("*", "-"):
+                listed = n["state"] != "CLOSED" and (path == "*" or not n.get("iteration"))
+            else:
+                listed = n.get("iteration") == path
+            if listed:
+                print(json.dumps(self.gh_record(n), ensure_ascii=False))
+        return 0
+
+    def gh_linked_pr(self, n, pid):
+        pr = next((p for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == n["repo"]
+                   and str(p["id"]) == str(pid)), None)
+        if pr is None:
+            return {"id": pid, "repo": n["repo"]}
+        return {"id": pr["id"], "title": pr["title"], "status": "completed" if pr.get("completed") else "active",
+                "isDraft": pr["isDraft"], "repo": pr["repo"], "source": pr["source"], "target": pr["target"],
+                "author": pr["author"], "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, pr["repo"], pr["id"])}
+
+    def gh_wi_detail(self, rest):
+        n = self.gh_issue(rest[0] if rest else "")
+        if n is None:
+            raise ValueError("issue {0} not found".format(rest[0] if rest else ""))
+        item = self.gh_record(n)
+        item.update({"createdBy": "alice", "createdDate": n["updated"], "changedDate": n["updated"],
+                     "areaPath": "{0}/{1}".format(GH_OWNER, n["repo"]),
+                     "reason": n.get("reason", ""), "description": n.get("body", ""), "acceptanceCriteria": "",
+                     "reproSteps": "", "pullRequests": [self.gh_linked_pr(n, p) for p in n.get("prs", [])],
+                     "branches": n.get("branches", [])})
+        for k in ("changedIso", "changedHuman", "childIds", "parentId"):
+            item.pop(k, None)
+        parent = self.gh_issue("{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["parent"])) if n.get("parent") else None
+        kids = [c for c in self.state["issues"] if c.get("parent") == n["number"] and c["repo"] == n["repo"]]
+        print(json.dumps({"item": item, "parent": self.gh_summary(parent) if parent else None,
+                          "children": [self.gh_summary(c) for c in kids],
+                          "comments": [dict(c, id=i + 1) for i, c in enumerate(n.get("comments", []))],
+                          "commentsUnsupported": False}, ensure_ascii=False))
+        return 0
+
+    def gh_wi_state(self, rest):
+        cmd = rest[0] if rest else ""
+        a = list(rest[1:]) + ["", "", ""]
+        if cmd == "states":
+            for i, name in enumerate(GH_STATUS):
+                print(name + "\t" + ("Proposed" if i == 0 else ("Completed" if i == len(GH_STATUS) - 1 else "InProgress")))
+            print("Closed\tCompleted")
+            return 0
+        if cmd == "transitions":
+            # Like the real one: every state, the current one too.
+            for s in GH_STATUS + ["Closed"]:
+                print(s)
+            return 0
+        if cmd == "reasons":
+            if a[1] == "Closed":
+                print("completed")
+                print("not planned")
+            return 0
+        if cmd == "set":
+            n = self.gh_issue(a[0])
+            if n is None or not a[1]:
+                raise ValueError("set needs <id> <newState>")
+            if a[1] == "Closed":
+                why = (a[2] or "completed").strip().lower()
+                if why not in ("completed", "not planned"):
+                    raise ValueError("a closed issue is completed or not planned, not '{0}'".format(a[2]))
+                n["state"], n["reason"] = "CLOSED", why
+            elif a[1] in GH_STATUS:
+                # Like the real one: Done is a Status, not a close.
+                n["status"], n["state"], n["reason"] = a[1], "OPEN", ""
+            else:
+                raise ValueError("'{0}' isn't a state here (one of: {1})".format(a[1], ", ".join(GH_STATUS + ["Closed"])))
+            self.gh_touch(n)
+            print(a[1])
+            return 0
+        raise ValueError("usage: --wi-state transitions <type> <currentState> | reasons <type> <toState> | "
+                         "states <type> | set <id> <newState> [reason]")
+
+    def gh_wi_edit(self, rest):
+        cmd = rest[0] if rest else ""
+        a = list(rest[1:]) + ["", "", "", ""]
+        if cmd == "create":
+            if not a[0] or not a[1]:
+                raise ValueError("create needs <type> <title>")
+            parent = self.gh_issue(a[2]) if a[2] else None
+            number = max([n["number"] for n in self.state["issues"] if n["repo"] == "gizmos"] or [0]) + 1
+            n = {"number": number, "repo": "gizmos", "title": a[1], "status": GH_STATUS[0],
+                 "iteration": a[3] if a[3] not in ("", "*", "-") else None, "assignees": ["demo-user"], "labels": [],
+                 "parent": parent["number"] if parent else None, "prs": [], "body": "", "comments": [],
+                 "state": "OPEN", "updated": now_iso(), "listed_from": time.time() + 120}
+            self.state["issues"].append(n)
+            self.ws.save(self.state)
+            print(json.dumps({"id": number, "title": a[1], "key": self.gh_key(n)}, ensure_ascii=False))
+            return 0
+        if cmd == "set":
+            n = self.gh_issue(a[0])
+            fields = ("title", "assignedTo", "priority", "iteration", "tags", "description")
+            if a[1] not in fields:
+                raise ValueError("unknown field '{0}', expected one of: {1}".format(a[1], ", ".join(sorted(fields))))
+            if n is None:
+                raise ValueError("issue {0} not found".format(a[0]))
+            value = a[2]
+            if a[1] == "title":
+                n["title"] = value
+            elif a[1] == "description":
+                n["body"] = value
+            elif a[1] == "assignedTo":
+                n["assignees"] = [x.strip().lstrip("@") for x in (value or "demo-user").split(",") if x.strip()]
+                value = ", ".join(n["assignees"])
+            elif a[1] == "tags":
+                n["labels"] = [x.strip() for x in re.split(r"[;,]", value) if x.strip()]
+                value = "; ".join(n["labels"])
+            elif a[1] == "priority":
+                n["priority"] = value = int(value)
+            else:
+                n["iteration"] = value if value not in ("", "*", "-") else None
+            self.gh_touch(n)
+            print(json.dumps({"id": n["number"], "field": a[1], "value": value}, ensure_ascii=False))
+            return 0
+        if cmd == "comment":
+            n = self.gh_issue(a[0])
+            if n is None or not a[1]:
+                raise ValueError("comment needs <id> <text>")
+            n.setdefault("comments", []).append({"author": "demo-user", "date": now_iso(), "text": a[1]})
+            self.gh_touch(n)
+            print(json.dumps({"id": len(n["comments"])}))
+            return 0
+        a = list(rest[1:]) + ["", "", "", "", "", ""]
+        if cmd == "create-branch":
+            # <id|0> <apiUrl> <owner> <repo> <from> <new>: a real branch in the
+            # bare origin, in the issue's Development section (createLinkedBranch).
+            sha, err = self.make_branch(a[3].split("/")[-1], a[4], a[5])
+            if err:
+                raise ValueError(err)
+            n = self.gh_issue(a[0]) if a[0] and a[0] != "0" else None
+            if n is not None:
+                n.setdefault("branches", []).append({"repo": a[3].split("/")[-1], "name": a[5]})
+                self.gh_touch(n)
+            print(json.dumps({"branch": a[5], "objectId": sha, "linked": n["number"] if n else None}))
+            return 0
+        if cmd == "delete-branch":
+            return self.cmd_wi_edit(["delete-branch", a[0], a[1], a[2].split("/")[-1], a[3], a[4]])
+        if cmd == "link-pr":
+            # <id> <apiUrl> <owner> <repo> <pr>: "Closes #n" in the PR's body.
+            n, pr = self.gh_issue(a[0]), self.gh_pr(a[3], a[4])
+            if n is None or pr is None:
+                raise ValueError("no issue {0} or pull request {1}#{2}".format(a[0], a[3], a[4]))
+            line = "Closes " + ("#{0}".format(n["number"]) if n["repo"] == pr["repo"]
+                                else "{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["number"]))
+            if line not in (pr.get("description") or "").splitlines():
+                pr["description"] = ((pr.get("description") or "").rstrip() + "\n\n" + line).strip()
+            if pr["id"] not in n.setdefault("prs", []):
+                n["prs"].append(pr["id"])
+            self.gh_touch(n)
+            out = {"linked": n["number"], "pr": pr["id"], "line": line}
+            if pr["target"] != "main":
+                out["note"] = ("GitHub links (and closes) issues only from pull requests into main; this one is "
+                               "into {0}, so the Closes line won't link it until it is retargeted").format(pr["target"])
+            print(json.dumps(out))
+            return 0
+        if cmd == "unlink-pr":
+            # <id> <pr> [owner/repo]
+            n = self.gh_issue(a[0])
+            pr = self.gh_pr((a[2] or (n or {}).get("repo") or "").split("/")[-1], a[1])
+            if n is None or pr is None:
+                raise ValueError("no issue {0} or pull request {1}".format(a[0], a[1]))
+            body = [l for l in (pr.get("description") or "").splitlines()
+                    if not re.match(r"^(close[sd]?|fix(e[sd])?|resolve[sd]?):?\s+(\S+/\S+)?#{0}\.?\s*$".format(
+                        n["number"]), l.strip(), re.I)]
+            pr["description"] = "\n".join(body).strip()
+            if pr["id"] in n.get("prs", []):
+                n["prs"].remove(pr["id"])
+            self.gh_touch(n)
+            print(json.dumps({"unlinked": n["number"], "pr": pr["id"], "changed": True}))
+            return 0
+        if cmd == "set-parent":
+            # <id> <parent|none>: a sub-issue of the parent, in its repository.
+            n = self.gh_issue(a[0])
+            if n is None or not a[1]:
+                raise ValueError("set-parent needs <id> <parent|none>")
+            p = None if a[1].lower() == "none" else self.gh_issue(a[1])
+            if a[1].lower() != "none" and (p is None or p is n):
+                raise ValueError("{0}'s parent wasn't changed: no issue {1} to put it under".format(self.gh_key(n), a[1]))
+            if p is not None and p["repo"] != n["repo"]:
+                raise ValueError("the fake keeps sub-issues in their parent's repository")
+            old = n.get("parent")
+            out = {"id": n["number"], "parent": p["number"] if p else None, "previous": old}
+            if old == out["parent"]:
+                out["unchanged"] = True
+            else:
+                n["parent"] = out["parent"]
+                self.gh_touch(n)
+            print(json.dumps(out))
+            return 0
+        raise ValueError("usage: --wi-edit create <type> <title> [parentId] [iteration] | set <id> <field> <value> | "
+                         "comment <id> <text> | link-pr | unlink-pr | set-parent | create-branch | delete-branch")
+
+    def gh_pr(self, repo, number):
+        return next((p for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == repo
+                     and str(p["id"]) == str(number)), None)
+
+    def make_branch(self, repo, from_branch, new_branch):
+        """Branch `new_branch` at `from_branch`'s tip in the bare origin:
+        (sha, None) or (None, error)."""
+        bare = self.ws.clone_url(repo)
+        if not os.path.isdir(bare):
+            return None, "repository '{0}' not found".format(repo)
+        sha = subprocess.run(["git", "--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/" + from_branch],
+                             capture_output=True, text=True).stdout.strip()
+        if not sha:
+            return None, "branch '{0}' not found in {1}".format(from_branch, repo)
+        made = subprocess.run(["git", "--git-dir", bare, "branch", new_branch, sha], capture_output=True, text=True)
+        if made.returncode != 0:
+            return None, "could not create '{0}': {1}".format(new_branch, made.stderr.strip())
+        return sha, None
+
+    def gh_create_pr(self, repo, source, target, title, desc, wis):
+        """--create-pr on a GitHub repository: a "Closes #n" line per issue."""
+        strip = lambda b: b[len("refs/heads/"):] if b.startswith("refs/heads/") else b  # noqa: E731
+        lines = []
+        for w in [x.strip().lstrip("#") for x in wis.split(",") if x.strip()]:
+            n = self.gh_issue(w)
+            if n is None:
+                continue
+            lines.append("Closes " + ("#{0}".format(n["number"]) if n["repo"] == repo
+                                      else "{0}/{1}#{2}".format(GH_OWNER, n["repo"], n["number"])))
+        body = (desc.rstrip() + "\n\n" if desc.strip() else "") + "\n".join(lines)
+        pid = max([p["id"] for p in self.state["prs"] if p.get("host") == "github" and p["repo"] == repo] or [0]) + 1
+        self.state["prs"].append({
+            "id": pid, "title": title, "repo": repo, "host": "github", "source": strip(source), "target": strip(target),
+            "author": "me", "isDraft": False, "autoComplete": False, "autoCompleteSetBy": "", "description": body.strip(),
+            "buildStatus": "none", "queuePosition": -1, "buildUrl": "", "policies": [], "missingReviewers": [],
+            "mergeConflict": False, "reviewers": [], "updatedIso": now_iso(), "completed": False,
+        })
+        for w in [x.strip().lstrip("#") for x in wis.split(",") if x.strip()]:
+            n = self.gh_issue(w)
+            if n is not None and pid not in n.setdefault("prs", []):
+                n["prs"].append(pid)
+        self.ws.save(self.state)
+        out = {"id": pid, "url": "https://github.com/{0}/{1}/pull/{2}".format(GH_OWNER, repo, pid),
+               "key": "{0}~{1}~{2}".format(GH_OWNER, repo, pid)}
+        print(json.dumps(out))
+        return 0
+
+    def cmd_boards(self):
+        """--boards, from the workspace's config like azure-cli.py's boards()."""
+        with open(os.path.join(self.ws.root, "config", "azure-cli.yml"), encoding="utf-8") as fh:
+            text = fh.read()
+        issues = [{"owner": GH_OWNER, "project": "1", "scope": "all", "apiUrl": GH_API}] if "issues:" in text else []
+        print(json.dumps({"workItems": "work_items:" in text, "issues": issues}))
+        return 0
+
+
+# The flags azure-cli.py routes to a PR (cmd_pr_action's PR_ACTION_FLAGS).
+PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
+                   "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
+                   "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
+                   "--get-pr", "--submit-review", "--fetch-image")
 
 
 def dispatch(ws, argv, env):
@@ -1305,7 +2071,10 @@ def dispatch(ws, argv, env):
         print("pong")
         return 0
     f = Fake(ws, env)
+    if env.get("AZVICLI_WI_HOST") == "github" and flag in ("--wi-list", "--wi-detail", "--wi-state", "--wi-edit"):
+        return f.gh_wi(flag, rest)
     table = {
+        "--boards": lambda: f.cmd_boards(),
         "--list": lambda: f.cmd_list(),
         "--whoami": lambda: f.cmd_whoami(rest),
         "--print-pat": lambda: (sys.stdout.write("not-a-real-token"), 0)[1],
@@ -1334,8 +2103,14 @@ def dispatch(ws, argv, env):
         "--set-description": lambda: f.cmd_set_description(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
+        "--submit-review": lambda: f.cmd_submit_review(rest),
+        "--fetch-image": lambda: f.cmd_fetch_image(rest),
     }
     handler = table.get(flag)
+    if handler is not None and f.is_github() and flag.startswith("--") and flag not in GH_ACTIONS \
+            and flag in PR_ACTION_FLAGS:
+        print("{0} isn't available for GitHub pull requests yet.".format(flag), file=sys.stderr)
+        return 1
     if handler is None:
         print("fake-provider: unsupported invocation {0}".format(json.dumps(argv)), file=sys.stderr)
         return 1

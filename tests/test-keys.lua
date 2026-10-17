@@ -5,6 +5,7 @@
 --
 -- Usage: luajit test-keys.lua <config.lua path> <keys.lua path>
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local keymap_calls = {}
 vim = {
   deepcopy = function(t)
@@ -69,18 +70,18 @@ keymap_calls = {}
 keys.bind(1, "dashboard", "vote", function() end)
 check("bind() no-ops for an unbound action", #keymap_calls == 0)
 
--- 4. A list-valued default (workitems.next_sprint responds to both "]" and
--- "<Tab>") resolves and binds every key in the list.
+-- 4. A list-valued default (workitems.toggle_fold responds to both "za" and
+-- "<Space>") resolves and binds every key in the list.
 config.setup({})  -- back to defaults
-local next_sprint = keys.resolve("workitems", "next_sprint")
-check("list default workitems.next_sprint",
-  type(next_sprint) == "table" and next_sprint[1] == "]" and next_sprint[2] == "<Tab>",
-  next_sprint)
+local toggle_fold = keys.resolve("workitems", "toggle_fold")
+check("list default workitems.toggle_fold",
+  type(toggle_fold) == "table" and toggle_fold[1] == "za" and toggle_fold[2] == "<Space>",
+  toggle_fold)
 keymap_calls = {}
-keys.bind(1, "workitems", "next_sprint", function() end, { desc = "next sprint" })
+keys.bind(1, "workitems", "toggle_fold", function() end, { desc = "fold" })
 check("bind() binds every key in a list",
-  #keymap_calls == 2 and keymap_calls[1].key == "]" and keymap_calls[2].key == "<Tab>")
-check("bind() forwards desc", keymap_calls[1].opts.desc == "next sprint")
+  #keymap_calls == 2 and keymap_calls[1].key == "za" and keymap_calls[2].key == "<Space>")
+check("bind() forwards desc", keymap_calls[1].opts.desc == "fold")
 
 -- 5. Per-surface prefix, prepended to every key resolved for that surface.
 config.setup({ keys = { prefix = { dashboard = "<leader>a" } } })
@@ -184,7 +185,7 @@ end
 do
   local ACTS = {}
   for surface, t in pairs(keys.WRITES) do for action in pairs(t) do ACTS[surface .. "." .. action] = true end end
-  ACTS["plan.approve"], ACTS["agents.approve"] = true, true
+  ACTS["plan.approve"], ACTS["agents.approve"], ACTS["agents.discard"], ACTS["plan.discard"] = true, true, true, true
   -- Acting keys that ask first (a dialog, an editor, a picker or a confirm).
   local ASKS_FIRST = {
     ["dashboard.complete"] = "the complete dialog", ["list.complete"] = "the complete dialog",
@@ -196,6 +197,7 @@ do
     ["overview.delete_comment"] = "confirms",
     ["plan.approve"] = "asks how (and whether to let it push)", ["agents.approve"] = "asks how",
     ["dashboard.requeue_build"] = "confirms (UI.confirm's popup)",
+    ["agents.discard"] = "confirms (UI.confirm's popup)", ["plan.discard"] = "confirms (UI.confirm's popup)",
   }
   local function find_clashes()
     local by_key = {}
@@ -238,6 +240,83 @@ do
   check("the clash check catches gL as both unlink and the run log",
     text:find("gL: dashboard.unlink_workitem acts without asking, but is plan.run_log elsewhere", 1, true) ~= nil, text)
   config.setup({})
+end
+
+-- 12. i types in the chat on every screen (issue #118: gq is gone) - they
+-- are all read-only views, where Vim's own i can't edit anything; <CR> on
+-- a visual selection sends it along. Agents opens a row's agent on <CR>.
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "plan", "agents" }) do
+  check("chat_input is i on " .. s, keys.resolve(s, "chat_input") == "i")
+  if s ~= "agents" then check("chat_selection is <CR> on " .. s, keys.resolve(s, "chat_selection") == "<CR>") end
+end
+do
+  local gq = {}
+  for surface, t in pairs(config.get().keys) do
+    if surface ~= "prefix" then
+      for action in pairs(t) do
+        local spec = keys.resolve(surface, action)
+        for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
+          if k == "gq" then gq[#gq + 1] = surface .. "." .. action end
+        end
+      end
+    end
+  end
+  check("no default binds gq", #gq == 0, table.concat(gq, ", "))
+  check("no chat / toggle action left", config.get().keys.dashboard.chat == nil and config.get().keys.agents.chat == nil
+    and config.get().keys.chat.toggle == nil)
+  check("Enter opens an Agents row's agent", keys.resolve("agents", "open") == "<CR>")
+  -- An old config: gq as it was is skipped quietly (a generated
+  -- azure-cli.lua has it); remapped, a warning names the new key.
+  -- (merge_keys' REMOVED_KEYS path needs these three; plain values here.)
+  vim.deep_equal = function(a, b) return a == b end
+  vim.log = { levels = { WARN = 3 } }
+  local warned = {}
+  vim.notify = function(msg) warned[#warned + 1] = msg end
+  local ok, err = pcall(config.setup, { keys = { dashboard = { chat = "gq" }, chat = { toggle = "gq" }, agents = { chat = "gq" } } })
+  check("an old config with gq loads, quietly", ok and #warned == 0, tostring(err) .. " " .. table.concat(warned, "\n"))
+  warned = {}
+  ok, err = pcall(config.setup, { keys = { diff = { chat = "<leader>c" }, agents = { chat = "x" } } })
+  local text = tostring(err) .. "\n" .. table.concat(warned, "\n")
+  check("a remapped gq warns and names the replacement", ok and #warned == 2
+    and text:find("keys.diff.chat no longer exists (i opens the chat now (keys.diff.chat_input))", 1, true) ~= nil
+    and text:find("Enter (keys.agents.open)", 1, true) ~= nil, text)
+  check("and binds nothing", config.get().keys.diff.chat == nil and keys.resolve("diff", "chat_input") == "i")
+  vim.notify, vim.deep_equal, vim.log = nil, nil, nil
+  config.setup({})
+end
+
+-- 13. Inner tabs (innertabs.lua): ]r / [r, and g1..g9 for the strip's
+-- entries. They're bound on the PR dashboard, the boards (W, I), the
+-- reviewer's, the work-item view's, the Agents screen's and the plan's
+-- buffers next to those surfaces' own keys, so none of those may have a
+-- key that starts one of them (a bare ] or [) - bound with nowait, it
+-- would fire before the r.
+-- 14. The diff pane's toggle_fold is the work items board's pair (#131).
+do
+  local spec = keys.resolve("diff", "toggle_fold")
+  check("diff.toggle_fold is za / <Space>", type(spec) == "table" and spec[1] == "za" and spec[2] == "<Space>" and #spec == 2)
+end
+
+check("tabs: ]r / [r",keys.resolve("tabs", "next") == "]r" and keys.resolve("tabs", "prev") == "[r")
+local tab_keys = {}
+do
+  local pick = keys.resolve("tabs", "pick")
+  check("tabs: pick is g1..g9", type(pick) == "table" and #pick == 9 and pick[1] == "g1" and pick[9] == "g9")
+  for _, a in ipairs({ "next", "prev", "pick" }) do
+    local spec = keys.resolve("tabs", a)
+    for _, k in ipairs(type(spec) == "table" and spec or { spec }) do tab_keys[#tab_keys + 1] = k end
+  end
+end
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "agents", "plan" }) do
+  local bad = {}
+  for action, spec in pairs(config.get().keys[s]) do
+    for _, k in ipairs(type(spec) == "table" and spec or { spec }) do
+      for _, t in ipairs(tab_keys) do
+        if type(k) == "string" and #k < #t and t:sub(1, #k) == k then bad[#bad + 1] = action .. " (" .. k .. ")" end
+      end
+    end
+  end
+  check("tabs: nothing on " .. s .. " starts an inner-tab key", #bad == 0, table.concat(bad, ", "))
 end
 
 print(fails == 0 and "test-keys: all cases pass" or ("test-keys: " .. fails .. " unexpected"))

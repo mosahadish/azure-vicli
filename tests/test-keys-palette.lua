@@ -4,6 +4,7 @@
 -- window you opened it from.
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-keys-palette.lua
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fails = 0
 local function check(name, ok, detail)
   if ok then print("ok   " .. name)

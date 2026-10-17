@@ -17,13 +17,17 @@
 -- Grouped by what needs you first (M.arrange), the most recent first in
 -- each group; finished means its PR was merged or abandoned
 -- (plan.pr_closed), and those over M.FINISHED_DAYS old hide until gF.
--- <CR> opens the row's plan, gd its change, gH its run log, gq its plan's
--- tab with that agent's conversation in the chat; <C-c> stops what it's
--- doing. Redrawn every second while it's showing.
+-- <CR> opens the row's agent: its plan as an inner tab of this one
+-- (innertabs.lua; again: back to it as you left it) with that agent's
+-- conversation in the chat, or - before it has planned - its conversation
+-- in a popup; gd its change, gH its run log; <C-c> stops what it's doing;
+-- dd discards its plan, asking first (chat/plan_discard.lua).
+-- Redrawn every second while it's showing.
 --
 --   M.rows(convs, queued, plan_of, now)  the rows (pure)
 --   M.arrange(rows, now, all)            grouped and sorted (pure)
---   M.by_pr(rows)                        PR id -> its agent's row (pure)
+--   M.by_pr(rows)                        PR key -> its agent's row (pure)
+--   M.for_pr(map, pr)                    a PR record's row in that map
 --   M.open()
 local M = {}
 
@@ -62,6 +66,10 @@ function M.rows(convs, queued, plan_of, now, frame)
         group = 4
       elseif rec and rec.pr_state == "abandoned" then
         state, hl, group = "\u{2717} PR abandoned", "AzureCliMuted", 4
+      elseif last and type(last.status) == "string" and last.status:match("^timed out") then
+        -- Before the plan's own state: an implementer that ran out of
+        -- time would otherwise still show "approved".
+        state, hl, group = "\u{2717} " .. last.status, "AzureCliStatusBad", 1
       elseif rec and rec.status == "draft" then
         state, hl, group = "\u{25CF} plan waits for you", "AzureCliStatusDraft", 1
       elseif rec and rec.status == "changes_requested" then
@@ -81,7 +89,9 @@ function M.rows(convs, queued, plan_of, now, frame)
       rows[#rows + 1] = { key = c.plan_key, label = c.label or c.plan_key, title = (rec and rec.title) or c.title or "",
         state = state, hl = hl, detail = (detail:gsub("%s+", " ")), ago = age(math.max(0, now - (started or now))),
         target = c.target, conv = c, group = group,
-        pr_id = (rec and type(rec.pr) == "table" and rec.pr.id) or (c.target and c.target.pr_id) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
+        pr_id = (rec and type(rec.pr) == "table" and rec.pr.id) or (c.target and c.target.pr_id) or nil,
+        pr_key = (rec and type(rec.pr) == "table" and (rec.pr.key or rec.pr.id))
+          or (c.target and (c.target.pr_key or c.target.pr_id)) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
         requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
         waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
     end
@@ -96,14 +106,15 @@ function M.rows(convs, queued, plan_of, now, frame)
   return rows
 end
 
--- PR id (a string) -> the row of the agent working on it: one started on
--- the PR (a review comment's fix) or one whose plan opened it. With
--- several, the one that needs you first, then the latest. Pure.
+-- PR key (hosts.lua's, a string: the id on Azure, owner~repo~number on
+-- GitHub) -> the row of the agent working on it: one started on the PR (a
+-- review comment's fix) or one whose plan opened it. With several, the
+-- one that needs you first, then the latest. Pure.
 function M.by_pr(rows)
   local out = {}
   for _, r in ipairs(rows) do
-    if r.pr_id then
-      local id = tostring(r.pr_id)
+    if r.pr_key or r.pr_id then
+      local id = tostring(r.pr_key or r.pr_id)
       local had = out[id]
       if not had or (r.group or 3) < (had.group or 3) or ((r.group or 3) == (had.group or 3) and (r.at or 0) > (had.at or 0)) then
         out[id] = r
@@ -111,6 +122,13 @@ function M.by_pr(rows)
     end
   end
   return out
+end
+
+-- PR record `pr`'s agent row in `map` (M.by_pr), or nil: the dashboard's
+-- agent column and ga both look it up here (#109).
+function M.for_pr(map, pr)
+  if type(pr) ~= "table" then return nil end
+  return map[tostring(require("azure-cli.hosts").key(pr))]
 end
 
 -- The screen's groups, in order: what needs you first.
@@ -233,10 +251,11 @@ local function render()
   if #rows > 0 then
     local waiting = 0
     for _, r in ipairs(rows) do if r.waiting then waiting = waiting + 1 end end
-    local hints = { { "agents", "open", "its plan" } }
+    local hints = { { "agents", "open", "chat" } }
     if waiting > 0 then hints[#hints + 1] = { "agents", "approve", "approve (" .. waiting .. " waiting)" } end
-    hints[#hints + 1] = { "agents", "changes", "its change" }
-    hints[#hints + 1] = { "agents", "run_log", "what happened" }
+    hints[#hints + 1] = { "agents", "changes", "changes" }
+    hints[#hints + 1] = { "agents", "run_log", "logs" }
+    hints[#hints + 1] = { "agents", "chat_input", "main chat" }
     hints[#hints + 1] = { "agents", "help", "all keys" }
     local text, hhls = require("azure-cli.keys").hint_line(hints, "  ")
     lines[#lines + 1] = ""
@@ -302,55 +321,73 @@ local function row_here()
   return view and view.rows[vim.api.nvim_win_get_cursor(0)[1]]
 end
 
-local function open_plan(r)
-  if not (r and require("azure-cli.chat.plan").load(r.key)) then
-    return notify("No plan for " .. (r and r.label or "this row") .. " yet.")
+-- <CR>: the row's agent. With a plan, its plan's inner tab (already
+-- open: that tab, as it was; q there comes back here) - the chat there
+-- shows that plan's own conversation (chat's sync_active) - and the panel
+-- opened on it; before it has planned, its conversation in the popup ga
+-- opens on the PR dashboard, the panel keeping the main one (issue #87).
+-- Either way in normal mode: only i types (issue #118).
+local function open_agent(r)
+  if not r then return end
+  local PLAN = require("azure-cli.chat.plan")
+  if PLAN.load(r.key) then
+    PLAN.open(r.key)
+    -- A plan with no conversation of its own: just the plan, not the main
+    -- chat passed off as its agent's. The panel opens without the focus:
+    -- show(true) would start insert mode, which outlives the plan taking
+    -- the focus back.
+    if CHAT().find_conversation(r.key) then vim.schedule(function() CHAT().show(false) end) end
+    return
   end
-  require("azure-cli.chat.plan").open(r.key)
+  if r.conv then return CHAT().popup(r.key) end
+  notify((r.label or "That row") .. " is waiting for an agent - nothing to show yet.")
 end
 
 local HELP = {
+  "Move",
+  { "first_row", "the first agent (a count: that row)" }, { "last_row", "the last agent (a count: that row)" },
   "This agent",
-  { "open", "the row's plan" }, { "changes", "its change, file by file" }, { "run_log", "its run log" },
-  { "chat", "its plan's tab, with that agent's conversation in the chat" },
+  { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
+  { "changes", "its change, file by file" }, { "run_log", "its run log" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
+  { "discard", "discard its plan (asks first; not while it works; a worktree with changes is kept)" },
   "Window",
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
+  { "issues", "the issues board (GitHub)" },
   { "show_finished", "show (or hide again) the agents finished over " .. M.FINISHED_DAYS .. " days ago" },
   { "refresh", "redraw" }, { "quit", "close" }, { "help", "this help" },
 }
 
 local function setup(buf)
   local K = require("azure-cli.keys")
-  K.bind(buf, "agents", "open", function() open_plan(row_here()) end, { desc = "the row's plan" })
+  K.bind(buf, "agents", "open", function() open_agent(row_here()) end,
+    { desc = "chat" })
   K.bind(buf, "agents", "changes", function()
     local r = row_here()
     if not r then return end
     require("azure-cli.chat.tools_fix").open_at(r.target, "", nil, function(err)
       if err and not err:find("isn't part of the change", 1, true) then notify(err) end
     end)
-  end, { desc = "its change" })
+  end, { desc = "changes" })
   K.bind(buf, "agents", "run_log", function()
     local r = row_here()
     if r then require("azure-cli.chat.plan").open_run_log(r.key) end
-  end, { desc = "its run log" })
-  K.bind(buf, "agents", "chat", function()
-    local r = row_here()
-    if not r then return end
-    if require("azure-cli.chat.plan").load(r.key) then
-      open_plan(r)
-      vim.schedule(function() CHAT().show(true) end)
-    else
-      notify((r.label or "") .. " hasn't written its plan yet - its conversation shows in the plan's tab once it has.")
-    end
-  end, { desc = "its conversation" })
+  end, { desc = "logs" })
+  -- i: straight into the chat's input box, the panel opened if it's hidden.
+  K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
+    { desc = "main chat" })
   K.bind(buf, "agents", "cancel", function()
     local r = row_here()
     if not (r and r.conv and r.conv.running) then return notify("That agent isn't doing anything.") end
     CHAT().cancel_conversation(r.conv)
   end, { desc = "stop it" })
+  -- dd: discard the row's plan - asks first, refused while it works (#98).
+  K.bind(buf, "agents", "discard", function()
+    require("azure-cli.chat.plan_discard").ask(row_here(), render)
+  end, { desc = "discard its plan (asks first)" })
   -- gA: approve the row's plan (in visual mode: every selected row's that
   -- waits for you) - one question for all, each goes to its own agent.
   local function approve_rows(rows)
@@ -385,6 +422,13 @@ local function setup(buf)
     { desc = "the pull-request dashboard" })
   K.bind(buf, "agents", "workitems", function() require("azure-cli.home").go("workitems") end,
     { desc = "the work-items board" })
+  -- I once --boards says a GitHub account has issues: (never on Azure only).
+  require("azure-cli.workitems.board").enabled(function()
+    if vim.api.nvim_buf_is_valid(buf) then
+      K.bind(buf, "agents", "issues", function() require("azure-cli.home").go("issues") end,
+        { desc = "the issues board" })
+    end
+  end)
   K.bind(buf, "agents", "show_finished", function()
     view.all = not view.all
     render()
@@ -396,7 +440,9 @@ local function setup(buf)
     end
   end, { desc = "close" })
   K.bind(buf, "agents", "help", function()
-    require("azure-cli.ui").open_float(K.help_lines("agents", "Agents keys", HELP, {}), { title = "Keys" })
+    local issues = require("azure-cli.workitems.board").has_issues()
+    local help = vim.tbl_filter(function(a) return issues or type(a) == "string" or a[1] ~= "issues" end, HELP)
+    require("azure-cli.ui").open_float(K.help_lines("agents", "Agents keys", help, {}), { title = "Keys" })
   end, { desc = "keys" })
 end
 
@@ -427,6 +473,8 @@ function M.open()
     view.line = go
     if go ~= to then pcall(vim.api.nvim_win_set_cursor, 0, { go, 0 }) end
   end })
+  -- gg / G: the first / last agent, not a header the step above turns back from.
+  require("azure-cli.keyhints").rows(view.buf, function() return view and view.rows end, "agents")
   local timer = (vim.uv or vim.loop).new_timer()
   view.timer = timer
   timer:start(1000, 1000, vim.schedule_wrap(function()
@@ -446,7 +494,8 @@ require("azure-cli.chat.view").register("azurecli-agents", function(win)
   local r = view and view.rows[vim.api.nvim_win_get_cursor(win)[1]]
   local snap = { screen = "agents (every plan's agent: what each is doing)" }
   if r then
-    snap.work_item = r.target and r.target.work_item_id and { id = r.target.work_item_id, title = r.title } or nil
+    snap.work_item = r.target and r.target.work_item_id and { id = r.target.work_item_id, title = r.title,
+      board = r.target.item_key and "github" or nil, key = r.target.item_key } or nil
     snap.note = "The cursor is on " .. r.label .. "'s agent: " .. r.state
   end
   return snap
