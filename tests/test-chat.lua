@@ -1221,6 +1221,62 @@ do
     and RCHAT.next_note_file(notes, order, nil, 1) == 1 and RCHAT.next_note_file(notes, order, nil, -1) == 3)
 end
 
+-- --- a plan agent planning a fix to the PR its plan opened: a new revision of that plan ----
+do
+  local PL = require("azure-cli.chat.plan")
+  local CH = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local orig = { send = CH.send, alert = CH.alert, cache = STATE.PR_LIST_CACHE }
+  CH.alert = function() end
+  STATE.PR_LIST_CACHE = { prs = { { id = 620, title = "Lockout", source = "feature/93", repo = "web" },
+    { id = 621, title = "Other", source = "feature/x", repo = "web" } } }
+  local rec = { key = "wi-93", target = { work_item_id = 93 }, title = "Lockout", status = "draft", revisions = {},
+    threads = {}, events = {} }
+  PL.add_revision(rec, "# Lockout\n\n## Goal\nthe original plan", "agent")
+  PL.save(rec)
+  rec = PL.load("wi-93")
+  rec.status, rec.approved_rev, rec.last_approved_rev = "done", 1, 1
+  table.insert(rec.events, { kind = "approved", text = "Approved revision 1" })
+  PL.save(rec)
+  PL.link_pr({ 93 }, "feature/93", { id = 620 })
+  check("link_pr: records the revision the PR was opened from", PL.load("wi-93").pr.rev == 1
+    and PL.pr_rev(PL.load("wi-93")) == 1)
+  local conv = CH.conversation("wi-93", { label = "#93", target = { work_item_id = 93 }, title = "Lockout" })
+  local env = { conv = conv, background = function() return true end, log = function() end }
+  check("plan_target_for: the PR its plan opened means its work item", PL.plan_target_for(620, env).work_item_id == 93
+    and PL.plan_target_for(621, env).pr_id == 621 and PL.plan_target_for(620, {}).pr_id == 620)
+  local res, err
+  TOOLS.by_name.submit_plan.run({ pr_id = 620, title = "Fix the build", markdown = "# Fix\n\n## Goal\nfix the build" },
+    env, function(r, e) res, err = r, e end)
+  rec = PL.load("wi-93")
+  check("submit_plan (pr_id of its own PR): a new revision of its plan, no plan of the PR's", res and rec
+    and #rec.revisions == 2 and rec.status == "draft" and rec.title == "Fix the build" and PL.load("pr-620") == nil
+    and tostring(res.stored_as):find("#93", 1, true) ~= nil, vim.inspect({ res, err }))
+  check("submit_plan: the original stays readable, as revision 1", (PL.revision(rec, 1) or {}).markdown
+    == "# Lockout\n\n## Goal\nthe original plan")
+  local got
+  TOOLS.by_name.get_plan.run({ pr_id = 620 }, env, function(r) got = r end)
+  check("get_plan (pr_id of its own PR): its plan", got and got.title == "Fix the build")
+  TOOLS.by_name.start_fix.run({ pr_id = 620 }, env, function(r, e) res, err = r, e end)
+  check("start_fix on its own PR: pointed at its story", res == nil and tostring(err):find("start_story", 1, true) ~= nil
+    and tostring(err):find("work_item_id 93", 1, true) ~= nil, err)
+  -- message_agent: by the PR, to the agent that opened it, told where its plan goes.
+  local sent = {}
+  CH.send = function(text, o) sent[#sent + 1] = { text = text, key = o.conv.plan_key } return {} end
+  TOOLS.by_name.message_agent.run({ pr_id = 620, message = "why does the build fail?" }, { main_chat = true },
+    function(r, e) res, err = r, e end)
+  check("message_agent (pr_id of a PR an agent opened): to that agent", #sent == 1 and sent[1].key == "wi-93"
+    and tostring(res):find("#93", 1, true) ~= nil, vim.inspect({ sent, res, err }))
+  check("message_agent: it's told to revise its own plan", sent[1] and sent[1].text:find("work_item_id 93", 1, true) ~= nil
+    and sent[1].text:find("PR !620", 1, true) ~= nil)
+  TOOLS.by_name.message_agent.run({ pr_id = 621, message = "x" }, { main_chat = true }, function(r, e) res, err = r, e end)
+  check("message_agent: a PR no agent opened has none", res == nil and tostring(err):find("no agent for pr-621", 1, true))
+  CH.send, CH.alert, STATE.PR_LIST_CACHE = orig.send, orig.alert, orig.cache
+  CH.drop_conversation("wi-93")
+  pcall(vim.fn.delete, PL.root() .. "/wi-93.json")
+  pcall(vim.fn.delete, PL.root() .. "/wi-93.md")
+end
+
 if fails > 0 then
   print(fails .. " failure(s)")
   vim.cmd("cq")

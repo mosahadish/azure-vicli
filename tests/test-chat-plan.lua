@@ -1564,6 +1564,68 @@ do
   pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
 end
 
+-- --- the original plan after a PR fix round: kept, with its questions; gi against it -------
+do
+  check("prune: a list of revisions to keep (the approved one, the PR's)",
+    table.concat(vim.tbl_map(function(r) return r.n end, PLAN.prune_revisions({ { n = 1 }, { n = 2 }, { n = 3 }, { n = 4 },
+      { n = 5 } }, 3, { 4, 1 })), ",") == "1,4,5")
+  check("prune: a hole in the list is fine", #PLAN.prune_revisions({ { n = 1 }, { n = 2 }, { n = 3 }, { n = 4 } }, 3,
+    { nil, 1 }) == 3 and PLAN.prune_revisions({ { n = 1 }, { n = 2 }, { n = 3 }, { n = 4 } }, 3, { nil, 1 })[1].n == 1)
+  check("pr_rev: a PR linked before it was recorded - the approved one before it",
+    PLAN.pr_rev({ pr = { id = 1 }, events = { { kind = "approved", text = "Approved revision 2" }, { kind = "pr" },
+      { kind = "approved", text = "Approved revision 4" } } }) == 2 and PLAN.pr_rev({ events = {} }) == nil)
+
+  local key = "wi-9093"
+  local function md(n) return "# Plan " .. n .. "\n\n## Goal\nrev " .. n .. " goal\n\n## Files\n- `r" .. n .. ".lua` - x" end
+  local rec = { key = key, target = { work_item_id = 9093 }, title = "Orig", status = "draft", threads = {}, revisions = {},
+    events = {} }
+  PLAN.add_revision(rec, md(1), "agent")
+  rec.threads = { { id = "q1", at = 1, line = 4, question = "Why rev 1?", answer = "Because.", anchor = "rev 1 goal" } }
+  rec.status, rec.approved_rev, rec.last_approved_rev = "done", 1, 1
+  PLAN.save(rec)
+  PLAN.link_pr({ 9093 }, nil, { id = 9930 })
+  rec = PLAN.load(key)
+  for n = 2, 5 do
+    local fresh = rec.status == "done"
+    PLAN.add_revision(rec, md(n), "agent")
+    if fresh then rec.threads = {} end
+    PLAN.save(rec)
+  end
+  rec = PLAN.load(key)
+  check("the revision its PR was opened from outlives the fix rounds",
+    (PLAN.revision(rec, 1) or {}).markdown == md(1) and #rec.revisions == 3,
+    vim.inspect(vim.tbl_map(function(r) return r.n end, rec.revisions)))
+  check("a replaced revision keeps its questions", #((PLAN.revision(rec, 1) or {}).threads or {}) == 1
+    and #rec.threads == 0)
+
+  PLAN.open(key)
+  local v = PLAN.current()
+  local function feed(k) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "x", false) end
+  local PROMPT = require("azure-cli.prompt")
+  local select = PROMPT.select
+  PROMPT.select = function(o, cb)
+    for _, it in ipairs(o.items) do if it.n == 1 then return cb(it) end end
+  end
+  vim.api.nvim_set_current_win(v.plan_win)
+  feed("gh")
+  PROMPT.select = select
+  local tns = require("azure-cli.chat.threads").ns
+  local marks = vim.api.nvim_buf_get_extmarks(v.plan_buf, tns, 0, -1, { details = true })
+  check("gh on the original: its question under its line", v.old == 1 and #marks == 1 and marks[1][2] == 3,
+    vim.inspect(marks))
+  check("its winbar offers gi", vim.wo[v.plan_win].winbar:find("against it", 1, true) ~= nil, vim.wo[v.plan_win].winbar)
+  feed("gi")
+  check("gi there: the current revision, marked against the original", v.old == nil
+    and vim.wo[v.plan_win].winbar:find("since rev 1", 1, true) ~= nil, vim.wo[v.plan_win].winbar)
+  feed("gi")
+  feed("gi")
+  check("gi twice more: off, then on against the one before again",
+    vim.wo[v.plan_win].winbar:find("since rev 4", 1, true) ~= nil, vim.wo[v.plan_win].winbar)
+  pcall(vim.cmd, "tabclose")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
+end
+
 -- --- #120: plans and changes never open by themselves, even for the foreground agent ---------
 do
   local CHAT = require("azure-cli.chat")

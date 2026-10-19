@@ -309,16 +309,34 @@ function M.last_approved(rec)
   return nil
 end
 
+-- The number of the revision `rec`'s PR was opened from: rec.pr.rev, else
+-- (a PR linked before that was recorded) the last approved before the
+-- "Opened PR" event; nil without a PR. Pure.
+function M.pr_rev(rec)
+  if type(rec.pr) ~= "table" then return nil end
+  if rec.pr.rev then return rec.pr.rev end
+  local approved
+  for _, e in ipairs(rec.events or {}) do
+    local n = e.kind == "approved" and tostring(e.text or ""):match("^Approved revision (%d+)")
+    if n then approved = tonumber(n) end
+    if e.kind == "pr" then return approved end
+  end
+  return nil
+end
+
 -- The revisions to keep of `revs` (numbered): at most `keep` - the newest,
--- then revision `protect` (the approved one) if it's there, then the
--- newest of the rest - but never fewer than those two. In their order. Pure.
+-- then revision `protect` (the approved one; or a list of numbers: also
+-- the one a PR was opened from) if it's there, then the newest of the
+-- rest - but never fewer than those. In their order. Pure.
 function M.prune_revisions(revs, keep, protect)
   keep = math.max(1, math.floor(tonumber(keep) or 3))
   if #revs <= keep then return revs end
+  local kept = {}
+  for _, p in pairs(type(protect) == "table" and protect or { protect }) do kept[p] = true end
   local take = { [#revs] = true }
   local n = 1
   for i, r in ipairs(revs) do
-    if protect and r.n == protect and not take[i] then take[i] = true n = n + 1 end
+    if kept[r.n] and not take[i] then take[i] = true n = n + 1 end
   end
   for i = #revs - 1, 1, -1 do
     if n >= keep then break end

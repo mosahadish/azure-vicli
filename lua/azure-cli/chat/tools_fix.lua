@@ -390,6 +390,15 @@ setmetatable(M, { __call = function(_, T)
         local target = require("azure-cli.chat.plan").pr_target_for(args.pr_id, env)
         local refused = require("azure-cli.chat.plan").main_chat_refusal(env, "start_fix", target)
         if refused then return done(nil, refused) end
+        -- The PR this agent's own plan opened: its fix is that story's.
+        local story = require("azure-cli.chat.plan").plan_target_for(args.pr_id, env)
+        if story and not story.pr_id then
+          local label, wi = require("azure-cli.chat.plan").target_label(story), tostring(story.work_item_id)
+          return done(nil, "PR !" .. tostring(args.pr_id) .. " is the one your plan for " .. label .. " opened: plan "
+            .. "the fix as a new revision of that plan (submit_plan with work_item_id " .. wi .. "), then make it in "
+            .. "your story's worktree (start_story for " .. label .. " reuses it) and push it with commit_and_push_fix "
+            .. "(work_item_id " .. wi .. ") - the PR picks it up")
+        end
         local planned, why = require("azure-cli.chat.plan").gate(target)
         if not planned then return done(nil, why) end
         local pr, clone = need_clone(args, done)

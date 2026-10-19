@@ -325,13 +325,16 @@ local function redraw_soon()
 end
 
 -- Saving keeps at most chat.plan_revisions (3) revisions - never the
--- newest or the one last approved dropped (#90). A plan from before that
--- with more is pruned the same way the next time it's saved.
+-- newest, the one last approved (#90) or the one its PR was opened from
+-- (the original plan, once the agent plans fixes to that PR) dropped. A
+-- plan from before that with more is pruned the same way the next time
+-- it's saved.
 function M.save(rec)
   rec.revisions = rec.revisions or {}
   M.number_revisions(rec)
   rec.last_approved_rev = M.last_approved(rec)
-  rec.revisions = M.prune_revisions(rec.revisions, config().plan_revisions or 3, rec.last_approved_rev)
+  rec.revisions = M.prune_revisions(rec.revisions, config().plan_revisions or 3,
+    { rec.last_approved_rev, M.pr_rev(rec) })
   if index then index[rec.key] = { status = rec.status, label = M.target_label(rec.target) } end
   vim.fn.mkdir(M.root(), "p")
   vim.fn.writefile({ vim.json.encode(rec) }, M.root() .. "/" .. rec.key .. ".json")
@@ -426,6 +429,12 @@ end
 function M.add_revision(rec, markdown, by)
   M.number_revisions(rec)
   rec.last_approved_rev = M.last_approved(rec)
+  -- The revision it replaces keeps its questions as they were on its
+  -- lines, so gh shows them with it (the ones going on move with the text).
+  local prev = rec.revisions[#rec.revisions]
+  if prev and #(rec.threads or {}) > 0 then
+    prev.threads = vim.json.decode(vim.json.encode(rec.threads))
+  end
   local n = M.rev_count(rec) + 1
   rec.revisions[#rec.revisions + 1] = { n = n, at = os.time(), by = by, markdown = markdown }
   rec.events = rec.events or {}
@@ -687,7 +696,7 @@ function M.link_pr(work_item_ids, source, pr, env, repo)
   if by_branch and not seen[by_branch.key] then recs[#recs + 1] = by_branch end
   local key = M.pr_target(pr).pr_key
   for _, rec in ipairs(recs) do
-    rec.pr = { id = pr.id, org = pr.org, project = pr.project, key = key }
+    rec.pr = { id = pr.id, org = pr.org, project = pr.project, key = key, rev = M.last_approved(rec) }
     rec.pr_state, rec.closed_at = nil, nil
     M.add_event(rec, "pr", "Opened PR !" .. tostring(pr.id))
     VIEW().changed(rec)
@@ -723,6 +732,24 @@ function M.owner_of_pr(pr, source)
   return nil
 end
 
+-- The plan PR `pr_id` means for `env`'s agent: its own work item's when
+-- that plan opened the PR (owner_of_pr) - so planning a fix to it is a new
+-- revision of the plan behind it, which the Agents screen shows - else
+-- the PR's own (pr_target_for).
+function M.plan_target_for(pr_id, env, repo)
+  local target = M.pr_target_for(pr_id, env, repo)
+  local own = env and env.conv and env.conv.plan_key
+  if not (target and own and own ~= M.key(target)) then return target end
+  local rec = M.load(own)
+  if not (rec and type(rec.target) == "table" and (rec.target.work_item_id or rec.target.item_key)) then
+    return target
+  end
+  local pr = require("azure-cli.chat.tools").pr_record(target.pr_key or pr_id, not target.pr_key and repo or nil)
+  local owner = M.owner_of_pr(pr or target.pr_id, pr and pr.source)
+  if owner and owner.key == own then return rec.target end
+  return target
+end
+
 -- PR `pr` (a record, or an Azure id) was completed or abandoned (`state`;
 -- chat/watch.lua saw it): the plans behind it - the PR's own, and the
 -- stories it was opened for - are finished. Returns how many it marked.
@@ -754,7 +781,7 @@ function M.tools(T)
   }
   local function target_of(args, env)
     if args.work_item_id then return M.item_target_for(args.work_item_id, env, args.repo) end
-    if args.pr_id then return M.pr_target_for(args.pr_id, env, args.repo) end
+    if args.pr_id then return M.plan_target_for(args.pr_id, env, args.repo) end
     return nil
   end
   return {
@@ -780,9 +807,12 @@ function M.tools(T)
         if type(args.markdown) ~= "string" or vim.trim(args.markdown) == "" then return done(nil, "the plan is empty") end
         local key = M.key(target)
         local rec = M.load(key) or { key = key, target = target, revisions = {}, threads = {}, created = os.time() }
-        if rec.status == "done" then rec.threads = {} end
+        -- A plan already carried out starts its next round without the old
+        -- questions - they stay with the revision they were on (gh).
+        local fresh = rec.status == "done"
         rec.title = args.title
         M.add_revision(rec, args.markdown, "agent")
+        if fresh then rec.threads = {} end
         M.save(rec)
         -- No agent pulls you into its plan, not even the one in the
         -- foreground (#120): it says it's ready, and a view of the plan
@@ -805,6 +835,9 @@ function M.tools(T)
             .. "(you'll get a message) or ask for changes. Don't call start_fix / start_story before it's approved.",
           note = "The plan isn't on screen: it waits for the user on the Agents screen - say it's ready, not that "
             .. "you opened it.",
+          stored_as = (args.pr_id and not target.pr_id) and ("a new revision of your plan for " .. M.target_label(target)
+            .. ", which opened PR !" .. tostring(args.pr_id) .. " - use its work item from here on (start_story, "
+            .. "commit_and_push_fix)") or nil,
         })
       end,
     },
