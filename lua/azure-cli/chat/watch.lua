@@ -15,12 +15,17 @@
 -- stdpath("data")/azure-cli-chat/watched.json: per PR, where it is and the
 -- comments already seen.
 --
---   M.add(pr)       starts watching PR `pr` (id, org, project, repo, title)
---   M.watched(id)   whether PR `id` is watched
+--   M.add(pr)       starts watching PR `pr` (id, org, project, repo, title,
+--                   and key/host on GitHub)
+--   M.watched(pr)   whether PR `pr` (a record, or an Azure id) is watched
 --   M.start()       the poll timer (chat.watch_seconds, default 120)
 --   M.poll(cb)      one round now; cb() once every PR's been looked at
 --   M.new_comments(threads, seen, me)  pure: the other people's comments
 --                   not in `seen`, as { keys, threads (ids) }
+--
+-- Keyed by the PR's key (hosts.lua's): its id on Azure, owner~repo~n on
+-- GitHub, where a number repeats across repos (#113). An entry from before
+-- that under a GitHub PR's bare number moves to its key at its next poll.
 local M = {}
 
 M.DEFAULT_SECONDS = 120
@@ -28,13 +33,14 @@ M.DEFAULT_SECONDS = 120
 local function CHAT() return require("azure-cli.chat") end
 local function TOOLS() return require("azure-cli.chat.tools") end
 local function STATE() return require("azure-cli.state") end
+local function HOSTS() return require("azure-cli.hosts") end
 local function SHELL() return require("azure-cli.shell") end
 local function config() return require("azure-cli.config").get().chat or {} end
 
 local function file() return require("azure-cli.chat.store").root() .. "/watched.json" end
 
 local poll_one  -- below
-local list  -- id (string) -> { id, org, project, repo, title, seen = { "tid:cid" = true }, pending }
+local list  -- key (string) -> { id, key, host, org, project, repo, title, seen = { "tid:cid" = true }, pending }
 local function load()
   if not list then
     list = SHELL().read_json(file(), {}, { validate = function(t) return type(t) == "table" end })
@@ -65,16 +71,20 @@ function M.new_comments(threads, seen, me)
   return { keys = keys, threads = ids }
 end
 
-function M.watched(id) return load()[tostring(id)] ~= nil end
+-- The list's key of watched PR record `rec`.
+local function key_of(rec) return tostring(HOSTS().key(rec)) end
+
+function M.watched(pr) return load()[tostring(HOSTS().key(pr))] ~= nil end
 
 function M.add(pr)
   if type(pr) ~= "table" or not pr.id then return end
   local w = load()
-  local id = tostring(pr.id)
-  local rec = w[id] or {}
+  local key = key_of(pr)
+  local rec = w[key] or {}
   rec.id, rec.title = pr.id, pr.title or rec.title
   rec.org, rec.project, rec.repo = pr.org or rec.org, pr.project or rec.project, pr.repo or rec.repo
-  w[id] = rec
+  if tostring(pr.key or key) ~= tostring(pr.id) then rec.key, rec.host = key, pr.host or rec.host end
+  w[key] = rec
   save()
   M.start()
   -- What's on it now isn't new: take that in right away, not at the
@@ -116,9 +126,10 @@ end
 
 local function act(rec, pr, pending)
   local n = #pending.keys
-  local what = "!" .. tostring(rec.id) .. " \"" .. tostring(rec.title or "") .. "\" got " .. n .. " new comment"
+  local ref = HOSTS().ref(pr or rec)
+  local what = ref .. " \"" .. tostring(rec.title or "") .. "\" got " .. n .. " new comment"
     .. (n == 1 and "" or "s")
-  pcall(function() CHAT().alert("azure-vicli: PR !" .. tostring(rec.id), what) end)
+  pcall(function() CHAT().alert("azure-vicli: PR " .. ref, what) end)
   if config().on_new_comments == "plan" then
     local _, added = require("azure-cli.chat.agents").start_for_prs({ pr }, { [pr.id] = pending.threads })
     -- Its agent busy (or no agent set): try again at the next poll.
@@ -130,25 +141,49 @@ local function act(rec, pr, pending)
   return true
 end
 
+-- Watched `rec` (under `was` in the list) is GitHub PR `pr`, whose key
+-- it didn't have yet (an entry from before #113): moves it there, taking
+-- in what was seen if the key has an entry already.
+local function rekey(rec, was, pr)
+  local key = tostring(pr.key)
+  rec.key, rec.host = key, pr.host or rec.host
+  if was == key then return rec end
+  local other = list[key]
+  list[was] = nil
+  if other then
+    other.seen = other.seen or rec.seen
+    for k in pairs(rec.seen or {}) do other.seen[k] = true end
+    rec = other
+  end
+  list[key] = rec
+  return rec
+end
+
 poll_one = function(rec, done)
-  local env = { AZVICLI_ORG = rec.org or "", AZVICLI_PROJECT = rec.project or "", AZVICLI_PR = tostring(rec.id) }
+  local env = { AZVICLI_ORG = rec.org or "", AZVICLI_PROJECT = rec.project or "", AZVICLI_REPO = rec.repo or "",
+    AZVICLI_PR = tostring(rec.id) }
   TOOLS().provider({ "--get-pr" }, env, function(ok, out)
     local okd, pr = pcall(vim.json.decode, out or "")
     if not (ok and okd and type(pr) == "table" and pr.id) then return done() end  -- try again later
+    local was = key_of(rec)
+    if pr.key ~= nil and tostring(pr.key) ~= tostring(pr.id) and was ~= tostring(pr.key) then
+      rec = rekey(rec, was, pr)
+    end
+    local key = key_of(rec)
     -- Not active any more: stop watching it. (--get-pr's `state` is the
     -- PR's status; a dashboard row's is its section.)
     if pr.state == "completed" or pr.state == "abandoned" then
-      list[tostring(rec.id)] = nil
+      list[key] = nil
       save()
       -- Its agents are finished (the Agents screen).
-      pcall(require("azure-cli.chat.plan").pr_closed, rec.id, pr.state)
+      pcall(require("azure-cli.chat.plan").pr_closed, pr.key and pr or rec.id, pr.state)
       return done()
     end
-    TOOLS().fetched[tostring(rec.id)] = TOOLS().pr_record(rec.id) or pr
+    TOOLS().fetched[key] = TOOLS().pr_record(key) or pr
     rec.title, rec.repo = pr.title or rec.title, pr.repo or rec.repo
     whoami(rec.org or "", rec.project or "", function(me)
       if not me then return done() end  -- can't tell whose they are: wait
-      TOOLS().provider({ "--threads" }, TOOLS().pr_env(TOOLS().pr_record(rec.id) or pr), function(tok, tout)
+      TOOLS().provider({ "--threads" }, TOOLS().pr_env(TOOLS().pr_record(key) or pr), function(tok, tout)
         local okt, decoded = pcall(vim.json.decode, tout or "", { luanil = { object = true, array = true } })
         if not (tok and okt and type(decoded) == "table") then return done() end
         local threads = decoded.value or decoded
@@ -166,7 +201,7 @@ poll_one = function(rec, done)
             if not vim.tbl_contains(rec.pending.threads, t) then table.insert(rec.pending.threads, t) end
           end
         elseif rec.pending then
-          if act(rec, TOOLS().pr_record(rec.id) or pr, rec.pending) then rec.pending = nil end
+          if act(rec, TOOLS().pr_record(key) or pr, rec.pending) then rec.pending = nil end
         end
         save()
         done()
@@ -197,18 +232,18 @@ end
 local timer
 function M.start()
   if timer or not next(load()) then return end
-  local secs = tonumber(config().watch_seconds) or M.DEFAULT_SECONDS
-  timer = vim.fn.timer_start(secs * 1000, function()
-    if vim.v.exiting ~= vim.NIL then return end
-    M.poll()
-  end, { ["repeat"] = -1 })
+  -- poll.lua slows it while you're away (up to timing.max_poll_seconds).
+  timer = require("azure-cli.poll").every("chat-watch", {
+    base = function() return tonumber(config().watch_seconds) or M.DEFAULT_SECONDS end,
+    tick = function() M.poll() end,
+  })
 end
 
 -- Tests: forget what's loaded (a "restart") and stop the timer.
 function M._reset()
   list = nil
   polling = false
-  if timer then pcall(vim.fn.timer_stop, timer); timer = nil end
+  if timer then require("azure-cli.poll").stop(timer); timer = nil end
 end
 
 return M

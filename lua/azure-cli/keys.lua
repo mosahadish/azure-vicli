@@ -138,6 +138,9 @@ end
 -- nothing when the action is unbound. `opts.mode` defaults to "n" (pass
 -- "x" for a visual-mode mapping, e.g. the diff pane's comment_range);
 -- `opts.desc` is forwarded to vim.keymap.set (which-key etc. read it).
+-- `opts.each`: fn(i) gets which of the action's keys was pressed (the
+-- i-th of the list - tabs.pick's g1..g9), and the palette's one entry
+-- calls fn() with none.
 -- A buffer's first key of a surface also binds that surface's palette.
 function M.bind(buf, surface, action, fn, opts)
   opts = opts or {}
@@ -147,11 +150,13 @@ function M.bind(buf, surface, action, fn, opts)
   local kopts = { buffer = buf, silent = true, nowait = true }
   if opts.desc then kopts.desc = opts.desc end
   local keylist = type(keyspec) == "table" and keyspec or { keyspec }
-  for _, k in ipairs(keylist) do
-    vim.keymap.set(mode, k, fn, kopts)
+  for i, k in ipairs(keylist) do
+    vim.keymap.set(mode, k, opts.each and function() fn(i) end or fn, kopts)
   end
   if mode == "n" then
-    record(buf, surface, action, keylist[1], opts.desc or (tostring(action):gsub("_", " ")), fn)
+    local label = (opts.each and #keylist > 1) and (keylist[1] .. "-" .. keylist[#keylist]) or keylist[1]
+    record(buf, surface, action, label, opts.desc or (tostring(action):gsub("_", " ")),
+      opts.each and function() fn() end or fn)
   end
 end
 
@@ -168,9 +173,9 @@ M.WRITES = {
   overview = { comment = true, reply = true, status = true, edit_comment = true, delete_comment = true, vote = true,
     complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
   workitems = { assign = true, edit_title = true, link_pr = true, unlink_pr = true, move_sprint = true, new = true,
-    priority = true, state = true },
-  workitem_view = { assign = true, comment = true, edit_title = true, link_pr = true, unlink_pr = true,
-    move_sprint = true, priority = true, state = true },
+    priority = true, state = true, set_parent = true },
+  workitem_view = { assign = true, comment = true, edit_title = true, description = true, link_pr = true,
+    unlink_pr = true, move_sprint = true, priority = true, state = true, set_parent = true },
 }
 local WRITE_MARK = "\u{2191}"
 
@@ -247,9 +252,25 @@ function M.help_lines(surface, title, table_, opts)
     open_group(opts.extra_title or "Features")
     for _, e in ipairs(opts.extra) do lines[#lines + 1] = M.line_raw(e.key, e.desc) end
   end
+  -- The inner-tab keys, on a buffer lua/azure-cli/innertabs.lua bound them on.
+  if vim.api and vim.b.azure_cli_tabs then
+    local tabs = {}
+    tabs[#tabs + 1] = M.line("tabs", "next", "next inner tab")
+    tabs[#tabs + 1] = M.line("tabs", "prev", "previous inner tab")
+    local pick = M.resolve("tabs", "pick")
+    if type(pick) == "table" and #pick > 1 then
+      tabs[#tabs + 1] = M.line_raw(pick[1] .. "-" .. pick[#pick], "go to inner tab n (" .. pick[1] .. " is the list)")
+    elseif pick then
+      tabs[#tabs + 1] = M.line("tabs", "pick", "go to the list")
+    end
+    if #tabs > 0 then
+      open_group("Tabs")
+      vim.list_extend(lines, tabs)
+    end
+  end
   if marked then
     lines[#lines + 1] = ""
-    lines[#lines + 1] = WRITE_MARK .. " changes Azure DevOps"
+    lines[#lines + 1] = WRITE_MARK .. " changes " .. (opts.service or "Azure DevOps")
   end
   local pal = M.first(surface, "palette")
   if pal then

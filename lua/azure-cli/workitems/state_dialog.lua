@@ -18,9 +18,26 @@
 -- The pure half (M.child_target, M.default_on, M.reason_options, M.lines
 -- and the toggles) runs under plain luajit for tests/test-state-dialog.lua;
 -- everything touching vim or the provider is resolved inside functions.
+--
+-- require() gives the Azure board's; M.for_board(B) a copy for another
+-- board (workitems/board.lua) - its caches, provider calls and hooks.
 local M = {}
 
 M.META_TTL = 600    -- workflow metadata rarely changes
+
+local SOURCE = debug.getinfo(1, "S").source:sub(2)
+local function board() return M._board or require("azure-cli.workitems.board").get("azure") end
+
+function M.for_board(B)
+  if not B or B.host == "azure" then return M end
+  return require("azure-cli.workitems.board").module_for(SOURCE, B)
+end
+
+-- "#7" for a GitHub ref (owner~repo~7), the id itself on Azure.
+local function shown(ref)
+  ref = tostring(ref)
+  return ref:match("~(%d+)$") or ref
+end
 
 M.DEFAULT_REASON = "(default reason)"
 M.OTHER_REASON = "(other\u{2026} type a reason)"
@@ -163,7 +180,8 @@ function M.lines(spec, st)
     lines[#lines + 1] = l
     rows[#lines] = row
   end
-  add("Set #" .. tostring(spec.id) .. "  " .. (spec.type or "") .. " \u{00B7} " .. (spec.state or ""))
+  -- The state it has now: the one it's set to is the State: line's.
+  add("#" .. tostring(spec.id) .. "  " .. (spec.type or "") .. " \u{00B7} now " .. (spec.state or ""))
   if spec.title and spec.title ~= "" then add("  " .. cut(spec.title, 60)) end
   add("")
   add("State:   " .. cycler(st.states, st.si), { kind = "state" })
@@ -196,6 +214,17 @@ function M.lines(spec, st)
   add("")
   add("<Space>/l, h: cycle or toggle   <CR>: apply   q: close")
   return lines, rows
+end
+
+-- Where the State: line starts in `states` ({{label}}): on `current` when
+-- the list has it (GitHub's, where any Status follows any other), else on
+-- the first (Azure's transitions never list the current state; GitHub's
+-- No Status isn't a Status to set).
+function M.start_index(states, current)
+  for i, s in ipairs(states or {}) do
+    if s.label == current then return i end
+  end
+  return 1
 end
 
 -- "Also set children": turning it on with nothing selected brings the
@@ -248,10 +277,10 @@ local function fetch_meta(cache, subcmd, wtype, state, cb)
     return
   end
   inflight[ikey] = cb and { cb } or {}
-  local argv = require("azure-cli.config").provider_argv("--wi-state", subcmd, wtype)
+  local argv = { "--wi-state", subcmd, wtype }
   if state then argv[#argv + 1] = state end
   local out = {}
-  require("azure-cli.rpc").run(argv, {
+  board().run(argv, {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
@@ -265,17 +294,17 @@ local function fetch_meta(cache, subcmd, wtype, state, cb)
 end
 
 function M.fetch_transitions(wtype, cur, cb)
-  fetch_meta(require("azure-cli.state").WI_TRANS_CACHE, "transitions", wtype, cur, cb)
+  fetch_meta(board().state.WI_TRANS_CACHE, "transitions", wtype, cur, cb)
 end
 
 function M.fetch_reasons(wtype, new, cb)
-  fetch_meta(require("azure-cli.state").WI_REASON_CACHE, "reasons", wtype, new, cb)
+  fetch_meta(board().state.WI_REASON_CACHE, "reasons", wtype, new, cb)
 end
 
 -- cb(map) of state name -> category for `wtype`; empty when the server
 -- reports no categories (children then match on the name alone).
 function M.fetch_categories(wtype, cb)
-  fetch_meta(require("azure-cli.state").WI_STATES_CACHE, "states", wtype, nil, function(list)
+  fetch_meta(board().state.WI_STATES_CACHE, "states", wtype, nil, function(list)
     local cats = {}
     for _, line in ipairs(list) do
       local name, cat = line:match("^(.-)\t(.*)$")
@@ -288,7 +317,7 @@ end
 -- A type's state -> category map when it's already cached, else nil (no
 -- fetch) - for renders that can't wait on one.
 function M.cached_categories(wtype)
-  local c = require("azure-cli.state").WI_STATES_CACHE[(wtype or "") .. "\0"]
+  local c = board().state.WI_STATES_CACHE[(wtype or "") .. "\0"]
   if not (c and c.list) then return nil end
   local cats = {}
   for _, line in ipairs(c.list) do
@@ -299,7 +328,7 @@ function M.cached_categories(wtype)
 end
 
 function M.transitions_cached(wtype, state)
-  local c = require("azure-cli.state").WI_TRANS_CACHE[wtype .. "\0" .. state]
+  local c = board().state.WI_TRANS_CACHE[wtype .. "\0" .. state]
   return c and (os.time() - c.ts) < M.META_TTL
 end
 
@@ -316,7 +345,7 @@ end
 -- Whatever shows `id` picks up its new state: the dashboard's record and
 -- any open detail tab (which also drops the stale detail cache entry).
 local function refresh(id)
-  local STATE = require("azure-cli.state")
+  local STATE = board().state
   STATE.WI_DETAIL_CACHE[id] = nil
   local reload = STATE.WI_VIEW_RELOAD and STATE.WI_VIEW_RELOAD[id]
   if reload then vim.schedule(reload) end
@@ -325,23 +354,24 @@ end
 -- One --wi-state set; cb(ok, err_msg).
 local function set_one(id, new, reason, cb)
   local SHELL = require("azure-cli.shell")
-  local cmd = require("azure-cli.config").provider_argv("--wi-state", "set", id, new)
+  local cmd = { "--wi-state", "set", id, new }
   if reason and reason ~= "" then cmd[#cmd + 1] = reason end
   local err = {}
-  require("azure-cli.rpc").run(cmd, {
+  board().run(cmd, {
     detach = true,  -- finish the ADO write even if the user quits before it returns
     stdout_buffered = true,
     stderr_buffered = true,
     on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
     on_exit = function(_, code)
       if code == 0 then
-        local STATE = require("azure-cli.state")
+        local STATE = board().state
         if STATE.WI_STATE_CHANGED then STATE.WI_STATE_CHANGED(id, new) end
-        require("azure-cli.pr_workitems").patch_state(id, new)
+        -- The PR dashboard's linked-item markers are Azure's.
+        if board().host == "azure" then require("azure-cli.pr_workitems").patch_state(id, new) end
         refresh(id)
         cb(true)
       else
-        cb(false, SHELL.job_error("work item #" .. id, code, err))
+        cb(false, SHELL.job_error(board().words.item .. " #" .. shown(id), code, err))
       end
     end,
   })
@@ -356,28 +386,28 @@ end
 function M.apply(id, new, reason, kids, batch)
   local notify = require("azure-cli.shell").notify
   local suffix = (reason and reason ~= "") and (" (" .. reason .. ")") or ""
-  notify("Setting #" .. id .. " \u{2192} " .. new .. suffix .. " \u{2026}")
+  notify("Setting #" .. shown(id) .. " \u{2192} " .. new .. suffix .. " \u{2026}")
   set_one(id, new, reason, function(ok, msg)
     if not ok then
-      notify("Set #" .. id .. " failed: " .. msg, vim.log.levels.ERROR)
+      notify("Set #" .. shown(id) .. " failed: " .. msg, vim.log.levels.ERROR)
       return
     end
-    notify("#" .. id .. " is now " .. new .. suffix .. ".")
+    notify("#" .. shown(id) .. " is now " .. new .. suffix .. ".")
     if #kids == 0 then return end
     local left, done, failed = #kids, 0, {}
     local function what(n)
       if batch then return n .. " more item" .. (n == 1 and "" or "s") end
-      return n .. " child" .. (n == 1 and "" or "ren") .. " of #" .. id
+      return n .. " child" .. (n == 1 and "" or "ren") .. " of #" .. shown(id)
     end
     notify("Setting " .. what(#kids) .. " \u{2026}")
     for _, k in ipairs(kids) do
-      local kid_id = tostring(k.id)
+      local kid_id = k.ref or tostring(k.id)
       set_one(kid_id, k.target, k.same and reason or "", function(kok, kmsg)
         if kok then
           done = done + 1
         else
-          failed[#failed + 1] = kid_id
-          notify("Set #" .. kid_id .. " \u{2192} " .. k.target .. " failed: " .. kmsg, vim.log.levels.ERROR)
+          failed[#failed + 1] = shown(kid_id)
+          notify("Set #" .. shown(kid_id) .. " \u{2192} " .. k.target .. " failed: " .. kmsg, vim.log.levels.ERROR)
         end
         left = left - 1
         if left > 0 then return end
@@ -410,7 +440,7 @@ function M.open(item, others)
   local notify = require("azure-cli.shell").notify
   local spec = {
     id = tostring(item.id or ""), type = item.type or "", state = item.state or "", title = item.title or "",
-    batch = others and #others > 0 or false, others = others,
+    batch = others and #others > 0 or false, others = others, ref = board().ref(item),
   }
   if spec.id == "" then return end
   if not M.transitions_cached(spec.type, spec.state) then
@@ -431,6 +461,7 @@ function M._popup(spec, states)
   local notify = require("azure-cli.shell").notify
   local st = { si = 1, ri = 1, all = false, states = {} }
   for _, s in ipairs(states) do st.states[#st.states + 1] = { label = s } end
+  st.si = M.start_index(st.states, spec.state)
   local parent_cats   -- nil until fetched
   local kid_trans, kid_cats = {}, {}   -- per child id / per child type
   local rows = {}
@@ -532,14 +563,14 @@ function M._popup(spec, states)
   end)
   -- Everything under the item, grandchildren included (one recursive
   -- query); the detail's direct children when the server won't run it.
-  local DETAIL = require("azure-cli.workitems.detail")
+  local DETAIL = require("azure-cli.workitems.detail").for_board(board())
   local function got_kids(list)
     vim.schedule(function()
       if closed then return end
       st.kids = {}
       for _, c in ipairs(list or {}) do
         local k = { id = tostring(c.id), type = c.type or "", state = c.state or "", title = c.title or "",
-          depth = c.depth or 1 }
+          depth = c.depth or 1, ref = board().ref(c) }
         st.kids[#st.kids + 1] = k
         M.fetch_transitions(k.type, k.state, function(list)
           kid_trans[k.id] = list
@@ -560,9 +591,9 @@ function M._popup(spec, states)
   if spec.batch then
     got_kids(spec.others)
   else
-    DETAIL.descendants({ spec.id }, nil, function(list)
+    DETAIL.descendants({ spec.ref }, nil, function(list)
       if list then return got_kids(M.tree_order(spec.id, list)) end
-      DETAIL.fetch(spec.id, function(data) got_kids(data and data.children or nil) end)
+      DETAIL.fetch(spec.ref, function(data) got_kids(data and data.children or nil) end)
     end)
   end
 
@@ -603,19 +634,24 @@ function M._popup(spec, states)
     if st.all then
       for _, k in ipairs(st.kids or {}) do
         if k.on and k.target then
-          kids[#kids + 1] = { id = k.id, target = k.target, same = spec.batch and k.type == spec.type and k.target == new }
+          kids[#kids + 1] = { id = k.id, ref = k.ref, target = k.target, same = spec.batch and k.type == spec.type and k.target == new }
         end
       end
     end
     local opt = st.ropts and st.ropts[st.ri]
     close()
+    -- Enter on the state it already has, with nothing else to set: no write.
+    if new == spec.state and #kids == 0 then
+      notify("#" .. shown(spec.ref) .. " is already " .. new .. ".")
+      return
+    end
     if opt and opt.other then
       require("azure-cli.prompt").input({ prompt = "Reason:", allow_empty = true }, function(r)
-        if r ~= nil then M.apply(spec.id, new, r, kids, spec.batch) end
+        if r ~= nil then M.apply(spec.ref, new, r, kids, spec.batch) end
       end)
       return
     end
-    M.apply(spec.id, new, opt and opt.reason or "", kids, spec.batch)
+    M.apply(spec.ref, new, opt and opt.reason or "", kids, spec.batch)
   end
 
   local kopts = { buffer = buf, silent = true, nowait = true }

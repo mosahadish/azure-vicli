@@ -36,6 +36,9 @@
 --   opts.on_cancel(draft)  called on q/<Esc><Esc>/an empty submit, with the
 --                       trimmed text that was kept as a draft (nil if
 --                       there was nothing worth keeping).
+--   opts.allow_empty     an empty submit is a submit: on_submit("") instead
+--                       of a cancel - for text that may be cleared (an
+--                       issue's description). q/<Esc><Esc> still cancel.
 --   opts.mentions          optional list of { name = <display name>,
 --                       id = <GUID> } reviewer entries (azure-cli.py's
 --                       --list now carries an `id` alongside each
@@ -112,7 +115,9 @@ end
 -- reviewer_info_list, which now carries each reviewer's `id` alongside
 -- their `name` for exactly this. Translates every "@Display Name"
 -- occurrence in `text` to "@<their GUID>", once, for each entry in
--- `mentions` ({ { name = ..., id = ... }, ... }) that actually has an id -
+-- `mentions` ({ { name = ..., id = ..., token = ... }, ... }) that
+-- actually has an id - into its `token` when it has one (the PR's host
+-- decides the form: lua/azure-cli/hosts.lua's M.mentions), else "@<id>" -
 -- longest names first, so "Doe, Jane" isn't shadowed by a shorter "Doe"
 -- also on the reviewer list matching first. A name with no known id is left
 -- as plain "@Name" text; it just won't notify anyone.
@@ -131,7 +136,7 @@ function M.translate_mentions(text, mentions)
     local start = text:find(needle, 1, true)
     while start do
       out[#out + 1] = text:sub(i, start - 1)
-      out[#out + 1] = "@<" .. m.id .. ">"
+      out[#out + 1] = m.token or ("@<" .. m.id .. ">")
       i = start + #needle
       start = text:find(needle, i, true)
     end
@@ -164,6 +169,8 @@ function M.format_title(kind, info)
     return "Edit comment"
   elseif kind == "workitem" then
     return "Comment \u{00B7} #" .. tostring(info.id)
+  elseif kind == "description" then
+    return "Description \u{00B7} " .. (info.id and ("#" .. tostring(info.id)) or "new")
   end
   return "Comment"
 end
@@ -346,7 +353,7 @@ function M.open(opts)
 
   local function do_submit()
     local text = current_text()
-    if text == "" then
+    if text == "" and not opts.allow_empty then
       do_cancel()
       return
     end

@@ -6,17 +6,49 @@
 -- tests keep using require("azure-cli.chat.plan").
 local M = {}
 
--- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 }, nil
--- for neither.
+-- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 },
+-- "pr-github-o~r~7" for { pr_id = 7, pr_key = "o~r~7" } (#109: a GitHub
+-- number repeats across repos), "wi-github-o~r~7" for { work_item_id = 7,
+-- item_key = "o~r~7" } (#114, the same for issues), nil for none. A key is
+-- a file name under plans/: anything but [%w._~-] becomes "_", so it holds
+-- no "/".
 function M.key(target)
   if type(target) ~= "table" then return nil end
+  if target.item_key then return "wi-github-" .. (tostring(target.item_key):gsub("[^%w%._~%-]", "_")) end
   if target.work_item_id then return "wi-" .. tostring(target.work_item_id) end
+  if target.pr_key then return "pr-github-" .. (tostring(target.pr_key):gsub("[^%w%._~%-]", "_")) end
   if target.pr_id then return "pr-" .. tostring(target.pr_id) end
   return nil
 end
 
+-- PR record `pr`'s target: { pr_id } on Azure, where its key is its id;
+-- { pr_id, pr_key } where the key is more than that (hosts.lua's key). Pure.
+function M.pr_target(pr)
+  local key = pr.key
+  if key ~= nil and tostring(key) ~= tostring(pr.id) then return { pr_id = pr.id, pr_key = tostring(key) } end
+  return { pr_id = pr.id }
+end
+
+-- Work item record `item`'s target: { work_item_id } on Azure;
+-- { work_item_id, item_key } for a GitHub issue, whose key (hosts.lua's)
+-- is more than its number (#114). Pure.
+function M.item_target(item)
+  local key = require("azure-cli.hosts").key(item)
+  if key ~= nil and tostring(key) ~= tostring(item.id) then return { work_item_id = item.id, item_key = tostring(key) } end
+  return { work_item_id = item.id }
+end
+
+-- "repo#7" for a PR or issue key "owner~repo~7", or nil. Pure.
+local function key_ref(key)
+  local repo, n = tostring(key or ""):match("^[^~]*~(.-)~(%d+)$")
+  return repo and (repo .. "#" .. n) or nil
+end
+
 function M.target_label(target)
+  if target.item_key and key_ref(target.item_key) then return key_ref(target.item_key) end
   if target.work_item_id then return "#" .. tostring(target.work_item_id) end
+  local ref = target.pr_key and key_ref(target.pr_key)
+  if ref then return "PR " .. ref end
   return "PR !" .. tostring(target.pr_id)
 end
 
@@ -48,24 +80,75 @@ function M.section_at(sections, line)
   return cur
 end
 
--- The paths the plan's Files section lists: each entry's first `code`
--- span, else its first word (a leading "./" dropped). Pure.
-function M.planned_files(lines)
+-- Extensions that make a word without a "/" a file name (B.words isn't).
+local EXTS = {}
+for e in ([[lua py md json sh bash cmd bat ps1 psm1 txt toml yml yaml ini cfg conf js mjs cjs ts tsx jsx
+  cs csproj sln go rs vim html htm css scss xml svg png jpg gif c h cpp hpp java kt rb php sql
+  lock env log rst adoc tf proto]]):gmatch("%S+") do EXTS[e] = true end
+local BARE = { README = true, LICENSE = true, Makefile = true, Dockerfile = true, CHANGELOG = true }
+
+-- Whether `tok` reads as a file path, not a code word: no call parens,
+-- globs, #refs or --flags, and a "/" in it, a known extension or a known
+-- extensionless name. Pure.
+function M.is_path_like(tok)
+  if tok == "" or tok:find("[()*#<>%[%]{}=\"']") or tok:match("^%-") or tok:match("^%.+$") then return false end
+  if tok:find("/", 1, true) then return tok:match("[%w_]") ~= nil end
+  local ext = tok:match("^[^.].*%.([%w]+)$")
+  return (ext and EXTS[ext:lower()]) or BARE[tok] or false
+end
+
+-- The path-like words of `text`, split on commas and spaces, each with
+-- its backticks, leading "./", trailing punctuation and a trailing line
+-- ref (:12, :10-20, :3:5, #L7, #L7-L9) off. A ref's ":" needs digits after
+-- it, so a drive letter (C:\x.lua) stays. Pure.
+local function path_tokens(text)
+  local out = {}
+  for tok in text:gsub("`", " "):gmatch("[^,%s]+") do
+    tok = tok:gsub("^%./", ""):gsub("[,:;.]+$", "")
+    tok = tok:gsub("#L%d+%-?L?%d*$", ""):gsub(":%d+[-:]%d+$", ""):gsub(":%d+$", "")
+    if M.is_path_like(tok) then out[#out + 1] = tok end
+  end
+  return out
+end
+
+-- The paths one Files entry (a list item's text) names: the path-like
+-- words of its head - the text before its description (" - ", ": ",
+-- " — "). A head that names none ("New: ...") gives the whole entry's
+-- instead. A line ref on a path (docs/chat.md:692, b.lua#L7) is dropped,
+-- so the entry names the file. Pure.
+function M.entry_paths(item)
+  local head = item
+  for _, sep in ipairs({ " - ", " \u{2013} ", " \u{2014} ", ": " }) do
+    local at = head:find(sep, 1, true)
+    if at then head = head:sub(1, at - 1) end
+  end
+  local out = path_tokens(head)
+  if #out == 0 and head ~= item then out = path_tokens(item) end
+  return out
+end
+
+-- Each Files entry of the plan: { line, paths } for the list items of a
+-- "## ...file..." section, outside ``` fences. Pure.
+local function file_entries(lines)
   local out, inside, fenced = {}, false, false
-  for _, l in ipairs(lines) do
+  for i, l in ipairs(lines) do
     if l:match("^%s*```") then fenced = not fenced end
     local hashes, title = l:match("^(#+)%s+(.-)%s*$")
     if hashes and not fenced then
       inside = #hashes == 2 and title:lower():find("file", 1, true) ~= nil
     elseif inside and not fenced then
       local item = l:match("^%s*[-*+]%s+(.+)$")
-      if item then
-        local path = item:match("`([^`]+)`") or item:match("^(%S+)")
-        path = path and path:gsub("^%./", ""):gsub("[,:;]$", "")
-        if path and path ~= "" then out[#out + 1] = path end
-      end
+      if item then out[#out + 1] = { line = i, paths = M.entry_paths(item) } end
     end
   end
+  return out
+end
+
+-- The paths the plan's Files section lists: every path-like name at the
+-- head of each entry (entry_paths). Pure.
+function M.planned_files(lines)
+  local out = {}
+  for _, e in ipairs(file_entries(lines)) do vim.list_extend(out, e.paths) end
   return out
 end
 
@@ -87,14 +170,17 @@ function M.paths_planned(planned, paths)
 end
 
 -- The change's files against the plan's: { unplanned = changed paths the
--- plan doesn't list, missing = planned paths the change doesn't touch }.
--- A planned path matches a changed one when either ends with the other
--- (the plan may say `throttle.py` for src/throttle.py). Pure.
-function M.check_files(planned, changed)
+-- plan doesn't list (nor `allowed`, the ones you let the agent change on
+-- top of it), missing = planned paths the change doesn't touch - never an
+-- allowed one, that was a permission, not a promise }. A planned path
+-- matches a changed one when either ends with the other (the plan may
+-- say `throttle.py` for src/throttle.py). Pure.
+function M.check_files(planned, changed, allowed)
   local out = { unplanned = {}, missing = {} }
   for _, c in ipairs(changed) do
     local hit = false
     for _, p in ipairs(planned) do if same_path(c, p) then hit = true end end
+    for _, p in ipairs(allowed or {}) do if same_path(c, p) then hit = true end end
     if not hit then out.unplanned[#out.unplanned + 1] = c end
   end
   for _, p in ipairs(planned) do
@@ -123,26 +209,16 @@ end
 
 -- The Files entry for `path` in the plan: its line, or nil. Pure.
 function M.file_entry_line(lines, path)
-  local inside, fenced = false, false
-  for i, l in ipairs(lines) do
-    if l:match("^%s*```") then fenced = not fenced end
-    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
-    if hashes and not fenced then
-      inside = #hashes == 2 and title:lower():find("file", 1, true) ~= nil
-    elseif inside and not fenced then
-      local item = l:match("^%s*[-*+]%s+(.+)$")
-      local p = item and (item:match("`([^`]+)`") or item:match("^(%S+)"))
-      p = p and p:gsub("^%./", ""):gsub("[,:;]$", "")
-      if p and same_path(p, path) then return i end
-    end
+  for _, e in ipairs(file_entries(lines)) do
+    for _, p in ipairs(e.paths) do if same_path(p, path) then return e.line end end
   end
   return nil
 end
 
--- The path a Files entry on plan line `line` names, or nil. Pure.
+-- The (first) path a Files entry on plan line `line` names, or nil. Pure.
 function M.file_at_line(lines, line)
-  for _, p in ipairs(M.planned_files(lines)) do
-    if M.file_entry_line(lines, p) == line then return p end
+  for _, e in ipairs(file_entries(lines)) do
+    if e.line == line then return e.paths[1] end
   end
   return nil
 end
@@ -185,6 +261,89 @@ function M.revision_changes(old, new, hunks)
       out.removed[at] = gone
     end
   end
+  return out
+end
+
+-- ---------------------------------------------------------------------------
+-- Revisions (#90): each keeps its real number `n`, so dropping old ones
+-- (prune_revisions) doesn't renumber the rest - "rev 5" stays rev 5, and
+-- approved_rev / allowed_rev / last_approved_rev are those numbers.
+
+-- Gives every revision of `rec` its number: one without (a plan from
+-- before #90, never pruned) is numbered by its place. Pure (changes rec).
+function M.number_revisions(rec)
+  local prev = 0
+  for i, r in ipairs(rec.revisions or {}) do
+    if type(r.n) ~= "number" then r.n = math.max(i, prev + 1) end
+    prev = r.n
+  end
+end
+
+-- The plan's newest revision number (how many it has had), 0 for none. Pure.
+function M.rev_count(rec)
+  local revs = rec.revisions or {}
+  local last = revs[#revs]
+  return last and (last.n or #revs) or 0
+end
+
+-- Revision number `n` of `rec`, or nil (pruned, or never). Pure.
+function M.revision(rec, n)
+  if not n then return nil end
+  for i, r in ipairs(rec.revisions or {}) do
+    if (r.n or i) == n then return r end
+  end
+  return nil
+end
+
+-- The number of the revision last approved: rec.last_approved_rev, else
+-- (a plan from before #90) the last "Approved revision N" event; nil when
+-- none was. A new revision doesn't clear it, unlike approved_rev. Pure.
+function M.last_approved(rec)
+  if rec.last_approved_rev then return rec.last_approved_rev end
+  if rec.approved_rev then return rec.approved_rev end
+  for i = #(rec.events or {}), 1, -1 do
+    local e = rec.events[i]
+    local n = e.kind == "approved" and tostring(e.text or ""):match("^Approved revision (%d+)")
+    if n then return tonumber(n) end
+  end
+  return nil
+end
+
+-- The number of the revision `rec`'s PR was opened from: rec.pr.rev, else
+-- (a PR linked before that was recorded) the last approved before the
+-- "Opened PR" event; nil without a PR. Pure.
+function M.pr_rev(rec)
+  if type(rec.pr) ~= "table" then return nil end
+  if rec.pr.rev then return rec.pr.rev end
+  local approved
+  for _, e in ipairs(rec.events or {}) do
+    local n = e.kind == "approved" and tostring(e.text or ""):match("^Approved revision (%d+)")
+    if n then approved = tonumber(n) end
+    if e.kind == "pr" then return approved end
+  end
+  return nil
+end
+
+-- The revisions to keep of `revs` (numbered): at most `keep` - the newest,
+-- then revision `protect` (the approved one; or a list of numbers: also
+-- the one a PR was opened from) if it's there, then the newest of the
+-- rest - but never fewer than those. In their order. Pure.
+function M.prune_revisions(revs, keep, protect)
+  keep = math.max(1, math.floor(tonumber(keep) or 3))
+  if #revs <= keep then return revs end
+  local kept = {}
+  for _, p in pairs(type(protect) == "table" and protect or { protect }) do kept[p] = true end
+  local take = { [#revs] = true }
+  local n = 1
+  for i, r in ipairs(revs) do
+    if kept[r.n] and not take[i] then take[i] = true n = n + 1 end
+  end
+  for i = #revs - 1, 1, -1 do
+    if n >= keep then break end
+    if not take[i] then take[i] = true n = n + 1 end
+  end
+  local out = {}
+  for i, r in ipairs(revs) do if take[i] then out[#out + 1] = r end end
   return out
 end
 
@@ -389,22 +548,73 @@ local function last_rev(rec) return rec.revisions[#rec.revisions] end
 
 -- The plan's questions for you: the lines of its Open questions section
 -- that ask something (a list entry, or a line ending in "?"), not "None".
--- { { line, text } }. Pure.
+-- A lead-in that isn't about questions - a "###" heading, a line ending
+-- in ":" or one in bold, like "Follow-ups, out of scope:" - ends them (one
+-- that is starts them again), and entries that say they're a follow-up
+-- or out of scope don't count. { { line, text } }. Pure.
 function M.open_questions(lines)
-  local out, inside, fenced = {}, false, false
+  local out, inside, fenced, asking = {}, false, false, true
   for i, l in ipairs(lines) do
     if l:match("^%s*```") then fenced = not fenced end
     local hashes, title = l:match("^(#+)%s+(.-)%s*$")
-    if hashes and not fenced then
-      inside = #hashes == 2 and title:lower():find("question", 1, true) ~= nil
+    if hashes and not fenced and #hashes <= 2 then
+      inside, asking = #hashes == 2 and title:lower():find("question", 1, true) ~= nil, true
     elseif inside and not fenced then
       local item = l:match("^%s*[-*+]%s+(.+)$") or l:match("^%s*%d+[.)]%s+(.+)$")
       local text = vim.trim(item or l)
-      if text ~= "" and not text:lower():match("^none") and (item or text:match("%?%s*$")) then
+      local low = text:lower()
+      if not item and text ~= "" and (hashes or text:match(":%**$") or text:match("^%*%*.*%*%*$")) then
+        asking = low:find("question", 1, true) ~= nil
+      elseif asking and text ~= "" and not low:match("^none") and (item or text:match("%?%s*$"))
+        and not low:gsub("^[%*_]+", ""):match("^follow.?ups?[%s:,]") and not low:gsub("^[%*_]+", ""):match("^out of scope") then
         out[#out + 1] = { line = i, text = text }
       end
     end
   end
+  return out
+end
+
+-- The plan's open questions (`lines`), each with your answer to it - the
+-- thread of kind "answer" on its line in `threads` - or none:
+-- { { line, text, answer = thread|nil } }. Pure.
+function M.question_status(lines, threads)
+  local answers = {}
+  for _, th in ipairs(threads or {}) do if th.kind == "answer" then answers[th.line] = th end end
+  local out = M.open_questions(lines)
+  for _, q in ipairs(out) do q.answer = answers[q.line] end
+  return out
+end
+
+-- How many of the plan's open questions (`lines`) have no answer of yours
+-- (a thread of kind "answer" on their line) in `threads`. Pure.
+function M.unanswered(lines, threads)
+  local n = 0
+  for _, q in ipairs(M.question_status(lines, threads)) do if not q.answer then n = n + 1 end end
+  return n
+end
+
+-- How many of your answers to the plan's open questions (`lines`) haven't
+-- gone to the agent yet - neither with a change request (gR) nor with the
+-- approval. One on a line that's no longer a question doesn't count. Pure.
+function M.unsent_answers(lines, threads)
+  local n = 0
+  for _, q in ipairs(M.question_status(lines, threads)) do
+    if q.answer and q.answer.status ~= "sent" then n = n + 1 end
+  end
+  return n
+end
+
+-- Where ]t / [t stop in the plan (`lines`): every open question, answered
+-- or not, and every thread's line, sorted, each once; a thread past the
+-- end is left out. Pure.
+function M.jump_stops(lines, threads)
+  local seen, out = {}, {}
+  local function add(l)
+    if l and l >= 1 and l <= #lines and not seen[l] then seen[l] = true out[#out + 1] = l end
+  end
+  for _, q in ipairs(M.open_questions(lines)) do add(q.line) end
+  for _, th in ipairs(threads or {}) do add(th.line) end
+  table.sort(out)
   return out
 end
 
@@ -429,7 +639,7 @@ end
 function M.approval_message(rec, lines)
   local label = M.target_label(rec.target)
   local rev = last_rev(rec)
-  local text = "I approve the plan for " .. label .. " (revision " .. #rec.revisions .. "). Go ahead and make the "
+  local text = "I approve the plan for " .. label .. " (revision " .. M.rev_count(rec) .. "). Go ahead and make the "
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
   if rec.allow_push then
@@ -515,7 +725,7 @@ function M.pr_description(rec, lines)
   local q = 0
   for _, th in ipairs(rec.threads or {}) do if th.kind ~= "request" and th.answer then q = q + 1 end end
   out[#out + 1] = ""
-  out[#out + 1] = "_From the plan for " .. M.target_label(rec.target) .. " (revision " .. #(rec.revisions or {})
+  out[#out + 1] = "_From the plan for " .. M.target_label(rec.target) .. " (revision " .. M.rev_count(rec)
     .. (q > 0 and (", " .. q .. " question" .. (q == 1 and "" or "s") .. " answered") or "") .. ")._"
   return table.concat(out, "\n")
 end
@@ -531,7 +741,7 @@ function M.run_log(rec, o, date)
   local out = { "# Run log: " .. M.target_label(rec.target) .. " " .. tostring(rec.title or ""), "" }
   local st = M.status_label(rec)
   out[#out + 1] = "Status: " .. st:gsub("^%S+ ", "") .. (rec.allow_push and " (pushing allowed)" or "") .. " · "
-    .. #rec.revisions .. " revision" .. (#rec.revisions == 1 and "" or "s")
+    .. M.rev_count(rec) .. " revision" .. (M.rev_count(rec) == 1 and "" or "s")
   out[#out + 1] = ""
   -- One timeline: the plan's events, the questions, the agent's tool calls.
   local tl = {}

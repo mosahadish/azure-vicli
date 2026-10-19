@@ -6,6 +6,7 @@
 -- this runs under a real headless Neovim:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -l tests/test-chat.lua
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fails = 0
 local function check(name, ok, detail)
   print((ok and "ok  " or "FAIL") .. "  " .. name .. ((not ok and detail) and ("  -- " .. tostring(detail)) or ""))
@@ -30,6 +31,43 @@ do
     { role = "you", text = "q1" }, { role = "agent", text = "a1" }, { role = "agent", text = "" } } })
   check("compose: a replay carries the preamble and the conversation",
     replay:find(CHAT.PREAMBLE, 1, true) and replay:find("## The conversation so far\n\nUser: q1\n\nYou: a1\n\n## Current view", 1, true))
+  -- Shell writes always ask; Edit/Write on a planned file doesn't (#70).
+  for name, text in pairs({ first = first, replay = replay }) do
+    local missing = {}
+    for _, phrase in ipairs({ "with your Edit and Write tools", "never with shell commands or scripts through Bash",
+      "sed -i", "always asks the user to allow it", "use delete_fix_file" }) do
+      if not text:find(phrase, 1, true) then missing[#missing + 1] = phrase end
+    end
+    check("compose: the " .. name .. " message says to edit with Edit/Write, not shell", #missing == 0,
+      "missing: " .. table.concat(missing, ", "))
+  end
+end
+
+-- #71: planners read the story's branch in start_story's read-only
+-- worktree, not copies of it out of the clone.
+do
+  local CORE = require("azure-cli.chat.core")
+  local AGENTS = require("azure-cli.chat.agents")
+  local missing = {}
+  for _, phrase in ipairs({ "start_story then only gives you a read-only worktree", "call start_story first",
+    "with your Read and Grep tools", "never by copying them out with git show or git archive",
+    "which branch and commit its line numbers refer to" }) do
+    if not CORE.PREAMBLE:find(phrase, 1, true) then missing[#missing + 1] = phrase end
+  end
+  check("#71 preamble: plan in start_story's read-only worktree", #missing == 0, "missing: " .. table.concat(missing, ", "))
+  -- #102: a soft reset onto a moved branch silently reverts its commits.
+  check("#102 preamble: never soft-reset onto a branch HEAD isn't on",
+    CORE.PREAMBLE:find("never soft-reset onto a branch HEAD isn't directly on", 1, true) ~= nil)
+  check("#102 commit_and_push_fix: its description warns off git reset --soft",
+    require("azure-cli.chat.tools").by_name.commit_and_push_fix.description:find("git reset --soft", 1, true) ~= nil)
+  check("#71 /plan: reads a work item's code in start_story's worktree",
+    CORE.DEFAULT_PROMPTS.plan:find("read-only worktree start_story gives you", 1, true) ~= nil)
+  for _, board in ipairs({ "github", "azure" }) do
+    local p = AGENTS.plan_prompt({ id = 7, title = "t", board = board ~= "azure" and board or nil })
+    check("#71 plan_prompt (" .. board .. "): start_story's read-only worktree first",
+      p:find("call start_story for its repository and branch first", 1, true)
+        and p:find("read-only worktree of that branch to read with Read/Grep", 1, true), p)
+  end
 end
 
 -- --- parse_answer / expand ---------------------------------------
@@ -114,7 +152,8 @@ do
   table.sort(asks)
   check("tools: what asks first - everything others see or that leaves the machine",
     table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
-      .. "complete_pull_request,create_pull_request,run_tests,set_thread_status,set_work_item_state,update_pr_description,vote",
+      .. "complete_pull_request,create_pull_request,create_work_item,discard_plan,run_tests,set_thread_status,set_work_item_parent,"
+      .. "set_work_item_state,update_pr_description,vote",
     table.concat(asks, ","))
   check("tools: links, branches, drafts, tasks and sprints don't",
     TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
@@ -130,6 +169,127 @@ do
   } })
   check("simplify_threads", #th == 1 and th[1].file == "a.py" and th[1].side == "R" and th[1].line == 3)
   check("clone_path", TOOLS.clone_path({ clonesDir = "C:\\src", repo = "w" }) == "C:/src/w")
+
+  -- Which board a tool works on: board=,
+  -- else the view's, else the only board, else Azure's.
+  local ST = require("azure-cli.state")
+  local saved_boards = ST.BOARDS
+  local function on(args, snap) return TOOLS.board_for(args, { view = function() return snap end }).host end
+  ST.BOARDS = { workItems = true, issues = { { owner = "o", project = "3", apiUrl = "https://api.github.com" } } }
+  check("board_for: board= first", on({ board = "github" }, { board = "azure" }) == "github"
+    and on({ board = "azure" }, { board = "github" }) == "azure")
+  check("board_for: else the view's", on({}, { board = "github" }) == "github"
+    and on({}, { work_item = { id = 1, board = "github" } }) == "github" and on({}, { screen = "x" }) == "azure")
+  ST.BOARDS = { workItems = false, issues = { { owner = "o", project = "3" } } }
+  check("board_for: else the only board", on({}, nil) == "github")
+  ST.BOARDS = { workItems = true, issues = {} }
+  check("board_for: else Azure's, and a stray board= can't reach GitHub", on({}, nil) == "azure"
+    and on({ board = "jira" }, nil) == "azure")
+  ST.BOARDS = { workItems = true, issues = { { owner = "o", project = "3" } } }
+  local GH = require("azure-cli.workitems.board").get("github")
+  local AZ = require("azure-cli.workitems.board").get("azure")
+  check("wi_ref: owner/repo#n on GitHub only", TOOLS.wi_ref(GH, 7, "o/web") == "o/web#7"
+    and TOOLS.wi_ref(GH, 7, "web") == "o/web#7" and TOOLS.wi_ref(GH, 7) == "7" and TOOLS.wi_ref(AZ, 7, "o/web") == "7")
+  ST.BOARDS = saved_boards
+  for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
+      "create_branch", "list_sprints", "create_child_task", "create_work_item", "assign_work_item", "move_to_sprint",
+      "set_work_item_parent", "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents" }) do
+    local props = TOOLS.by_name[name].schema.properties
+    check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
+      and props.board.enum[1] == "azure" and props.board.enum[2] == "github")
+  end
+
+  -- list_work_items: each row's iteration (Azure: its path; GitHub: its
+  -- name, and iteration_id for move_to_sprint).
+  local function run_tool(name, args, env)
+    local res, err
+    TOOLS.by_name[name].run(args, env or {}, function(r, e) res, err = r, e end)
+    return res, err
+  end
+  local saved_caches = { az = AZ.state.WI_LIST_CACHE, gh = GH.state.WI_LIST_CACHE }
+  AZ.state.WI_LIST_CACHE = { items = { { id = 5, title = "Az", iterationPath = "Demo\\Sprint 42" } } }
+  GH.state.WI_LIST_CACHE = { items = { { id = 12, title = "Gh", repo = "gizmos", iteration = "it2",
+    iterationPath = "Iteration 2" }, { id = 13, title = "None", repo = "gizmos", iteration = "", iterationPath = "" } } }
+  local az_rows = run_tool("list_work_items", { board = "azure" })
+  check("list_work_items: an Azure row's iteration is its path", az_rows and az_rows[1].iteration == "Demo\\Sprint 42"
+    and az_rows[1].iteration_id == nil, vim.inspect(az_rows))
+  local gh_rows = run_tool("list_work_items", { board = "github" })
+  check("list_work_items: a GitHub row's is its iteration's name, with its id", gh_rows
+    and gh_rows[1].iteration == "Iteration 2" and gh_rows[1].iteration_id == "it2" and gh_rows[2].iteration == ""
+    and gh_rows[2].iteration_id == nil, vim.inspect(gh_rows))
+
+  -- start_agents: each item goes to its agent with its board - board= first,
+  -- else the board a list has it on, else board_for's default.
+  local AGS = require("azure-cli.chat.agents")
+  local real_start, got = AGS.start_for_items, nil
+  AGS.start_for_items = function(items) got = items return "ok", {} end
+  -- An unlisted GitHub issue's key is read first (#127): not found here.
+  local real_provider = TOOLS.provider
+  TOOLS.provider = function(_, _, cb) cb(false, "", "not found") end
+  ST.BOARDS = { workItems = true, issues = {} }
+  run_tool("start_agents", { work_item_ids = { 48 }, board = "github" })
+  check("start_agents: board = github reaches the agent", got and got[1].id == 48 and got[1].board == "github",
+    vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 48 } }, { view = function() return { board = "github" } end })
+  check("start_agents: without board, the view's", got and got[1].board == "github", vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 48 } })
+  check("start_agents: else Azure's", got and got[1].id == 48 and got[1].board == nil, vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 5 } }, { view = function() return { board = "github" } end })
+  check("start_agents: an item the Azure list has stays Azure's", got and got[1].title == "Az" and got[1].board == nil,
+    vim.inspect(got))
+  run_tool("start_agents", { work_item_ids = { 5, 12 }, board = "github" })
+  check("start_agents: board = github doesn't take the Azure item with that id", got and got[1].title == nil
+    and got[1].board == "github" and got[2].title == "Gh" and got[2].repo == "gizmos", vim.inspect(got))
+  AGS.start_for_items, ST.BOARDS, TOOLS.provider = real_start, saved_boards, real_provider
+  AZ.state.WI_LIST_CACHE, GH.state.WI_LIST_CACHE = saved_caches.az, saved_caches.gh
+
+  -- set_work_item_parent: --wi-edit set-parent on the board's ref, what it
+  -- says, the undo that puts the old parent back, and the item's screens
+  -- told (workitems/parent.lua's changed: the dashboard's hook).
+  do
+    local real_provider, calls, answer = TOOLS.provider, {}, nil
+    local moved
+    local real_hook = GH.state.WI_PARENT_CHANGED
+    GH.state.WI_PARENT_CHANGED = function(ref, id, old, new) moved = { ref, id, old, new } end
+    TOOLS.provider = function(argv, _, cb)
+      calls[#calls + 1] = argv
+      if argv[4] == "none" then return cb(true, '{"id": 7, "parent": null, "previous": 3}', "") end
+      if argv[4] == "9" then return cb(true, '{"id": 7, "parent": 9, "previous": 9, "unchanged": true}', "") end
+      if argv[4] == "5" then return cb(false, "", "#7's parent wasn't changed (it is still under #3): HTTP 400: no") end
+      cb(true, '{"id": 7, "parent": 12, "previous": 3}', "")
+    end
+    ST.BOARDS = { workItems = true, issues = { { owner = "o", project = "3" } } }
+    local res, err, undo
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = 12, board = "github", repo = "o/web" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: set-parent on the issue's ref", calls[1] and calls[1][1] == "--wi-edit"
+      and calls[1][2] == "set-parent" and calls[1][3] == "o/web#7" and calls[1][4] == "12", vim.inspect(calls))
+    check("set_work_item_parent: says where it was", res == "Moved #7 under #12 (it was under #3)." and not err,
+      tostring(res))
+    check("set_work_item_parent: the screens are told", moved and moved[1] == "o/web#7" and moved[3] == 3
+      and moved[4] == 12, vim.inspect(moved))
+    check("set_work_item_parent: the undo puts #3 back", undo and undo.op == "set_parent" and undo.parent == "3"
+      and undo.ref == "o/web#7" and undo.board == "github", vim.inspect(undo))
+    TOOLS.undoers.set_parent(undo, function(ok, msg) answer = { ok, msg } end)
+    check("set_work_item_parent: undoing runs set-parent back", calls[2] and calls[2][3] == "o/web#7"
+      and calls[2][4] == "3" and answer[1] == true and answer[2] == "#7 is under #3 again.", vim.inspect(answer))
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = "none", board = "azure" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: none takes it off, undo puts it back under #3", calls[3][3] == "7"
+      and res == "#7 has no parent now (it was under #3)." and undo.parent == "3", tostring(res))
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = 9, board = "azure" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: unchanged says so, no undo", res == "#7 is already under #9 - nothing changed."
+      and undo == nil, tostring(res))
+    TOOLS.by_name.set_work_item_parent.run({ id = 7, parent_id = 5, board = "azure" }, {},
+      function(r, e, u) res, err, undo = r, e, u end)
+    check("set_work_item_parent: a failure says what didn't take", res == nil
+      and err:find("still under #3", 1, true) ~= nil, tostring(err))
+    check("set_work_item_parent: asks first, naming the move",
+      TOOLS.by_name.set_work_item_parent.confirm({ id = 7, parent_id = 12 }) == "move #7 under #12"
+        and TOOLS.by_name.set_work_item_parent.confirm({ id = 7, parent_id = "none" }) == "take #7 off its parent")
+    TOOLS.provider, GH.state.WI_PARENT_CHANGED, ST.BOARDS = real_provider, real_hook, saved_boards
+  end
 
   -- An "ask" tool: declined -> the agent hears so, run never called.
   local ran, logged, answer = false, {}, nil
@@ -184,6 +344,68 @@ do
   check("render: a running turn shows every call", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} b", 1, true) ~= nil)
   e.status, e.tools = "done", { "\u{00B7} a", "\u{00B7} b", "\u{00B7} c" }
   check("render: a few calls stay listed", table.concat(CORE.render({ e }, 0, "A"), "\n"):find("\u{00B7} c", 1, true) ~= nil)
+end
+
+-- --- render: lines with newlines (issue #101) ----------------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  check("tool_line: CRLF and a trailing newline go, inner newlines stay",
+    CORE.tool_line("\u{2717} x: a\r\n\r\nb\n\n") == "\u{2717} x: a\nb", vim.inspect(CORE.tool_line("\u{2717} x: a\r\n\r\nb\n\n")))
+  local err = "\u{2717} commit_and_push_fix: commit failed: Not currently on any branch.\nnothing to commit, working tree clean\n"
+  local entries = {
+    { role = "you", text = "push it", where = "on PR\n!101" },
+    { role = "agent", status = "failed\n(exit 1)", label = "Fake\nClaude", text = "", tools = { "\u{00B7} a", err } },
+  }
+  local lines, roles, name_end, at = CORE.render(entries, 0, "A", { { text = "next\none" } })
+  local bad
+  for i, l in ipairs(lines) do if l:find("[\r\n]") then bad = i end end
+  check("render: no line has a newline", bad == nil, vim.inspect(lines))
+  check("render: the split queued message still maps to it", at[#lines] == "q1" and at[#lines - 1] == "q1"
+    and roles[#lines] == "queued" and lines[#lines] == "one")
+  local all = table.concat(lines, "\n")
+  check("render: a multi-line tool error shows indented under its call",
+    all:find("  \u{2717} commit_and_push_fix: commit failed: Not currently on any branch.\n    nothing to commit, working tree clean", 1, true), all)
+  local k
+  for i, l in ipairs(lines) do if l:find("nothing to commit", 1, true) then k = i end end
+  check("render: its continuation is red too", k and roles[k] == "tool_err" and roles[k - 1] == "tool_err" and at[k] == 2)
+  check("render: headings stay on one line", lines[1] == "You  \u{00B7}  on PR !101" and name_end[1] == 3
+    and all:find("Fake Claude  \u{00B7}  failed (exit 1)", 1, true), all)
+  -- Collapsed: the failure is kept, with its continuation.
+  entries[2].tools = { "\u{00B7} a", "\u{00B7} b", "\u{00B7} c", err }
+  all = table.concat(CORE.render(entries, 0, "A"), "\n")
+  check("render: a kept multi-line failure keeps its continuation",
+    all:find("3 lookups  (<Tab> shows them)\n  \u{2717} commit_and_push_fix", 1, true) and all:find("\n    nothing to commit", 1, true), all)
+  -- A long one folds after TOOL_MORE_LINES, unless open.
+  local long = { "\u{2717} x: boom" }
+  for i = 1, 20 do long[#long + 1] = "detail " .. i end
+  entries[2].tools = { table.concat(long, "\n") }
+  all = table.concat(CORE.render(entries, 0, "A"), "\n")
+  check("render: a long tool error folds", all:find("    detail 6\n    \u{2026} 14 more lines  (<Tab> shows them)", 1, true)
+    and not all:find("detail 7", 1, true), all)
+  entries[2].open = true
+  all = table.concat(CORE.render(entries, 0, "A"), "\n")
+  check("render: open shows all of it", all:find("detail 20", 1, true) and not all:find("more lines", 1, true))
+end
+
+-- --- messages queued while the agent answers (issue #29) ---------------------------------
+do
+  local CORE = require("azure-cli.chat.core")
+  local entries = { { role = "you", text = "q" }, { role = "agent", status = "running", started = 0, text = "", tools = {} } }
+  local plain = CORE.render(entries, 0, "A")
+  check("render: no queue draws as before", vim.deep_equal(plain, (CORE.render(entries, 0, "A", {}))))
+  local lines, roles, name_end, at = CORE.render(entries, 0, "A", { { text = "first" }, { text = "second\nline", held = true } })
+  local n = #plain
+  check("render: queued messages after the conversation, in order",
+    lines[n + 2]:find("^You  \u{00B7}  queued %(1 of 2%)") and lines[n + 3] == "first"
+      and lines[n + 5]:find("^You  \u{00B7}  queued %(2 of 2%)") and lines[n + 6] == "second" and lines[n + 7] == "line",
+    vim.inspect(lines))
+  check("render: queued roles", roles[n + 2] == "queued_head" and roles[n + 3] == "queued" and name_end[n + 2] == 3)
+  check("render: queued lines map to q<n>", at[n + 2] == "q1" and at[n + 3] == "q1" and at[n + 7] == "q2" and at[n + 1] == nil)
+  check("render: the keys on a queued message", lines[n + 2]:find("dd cancels, cc edits", 1, true) ~= nil, lines[n + 2])
+  check("render: a held one says how to send it", lines[n + 5]:find("held - <CR> sends it", 1, true) ~= nil
+    and not lines[n + 2]:find("held", 1, true), lines[n + 5])
+  lines = CORE.render(entries, 0, "A", { { text = "x", editing = true } })
+  check("render: one being edited says so", lines[n + 2]:find("editing in the input box", 1, true) ~= nil, lines[n + 2])
 end
 
 -- --- the status strip ---------------------------------------------------------------
@@ -284,6 +506,18 @@ do
   CORE.stream_feed(q, { "no newline at the end" }, dec)
   CORE.stream_finish(q, dec)
   check("stream: finish flushes the last line", CORE.stream_text(q) == "no newline at the end")
+  -- Issue #65: Claude Code's answer to an interrupt, and the interrupted
+  -- turn's result - which has no `result` text.
+  local i = CORE.stream_new()
+  CORE.stream_feed(i, { '{"type":"assistant","message":{"content":[{"type":"text","text":"Half an answer"}]}}', "" }, dec)
+  check("stream: interrupt ack is recorded by request id", CORE.stream_feed(i,
+    { '{"type":"control_response","response":{"subtype":"success","request_id":"azvicli-int-1","response":{}}}', "" }, dec)
+    and i.control["azvicli-int-1"] == "success" and not i.ended, vim.inspect(i.control))
+  check("stream: a result without text ends the turn", CORE.stream_feed(i, { '{"type":"result","subtype":"error_during_execution",'
+    .. '"is_error":true,"session_id":"s-1","total_cost_usd":0.5}', "" }, dec) and i.ended and i.final == nil and i.cost_total == 0.5)
+  check("stream: and keeps what was streamed", CORE.stream_text(i) == "Half an answer", CORE.stream_text(i))
+  check("interrupt_line", vim.deep_equal(dec(CORE.interrupt_line("azvicli-int-7")),
+    { type = "control_request", request_id = "azvicli-int-7", request = { subtype = "interrupt" } }), CORE.interrupt_line("azvicli-int-7"))
   local text, sid, tools = CORE.parse_answer('{"type":"system","session_id":"x"}\n{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}\n{"type":"result","result":"Hi","session_id":"x"}', "", dec)
   check("parse_answer: stream-json too", text == "Hi" and sid == "x" and #tools == 0)
   local pretty = CORE.parse_answer('{\n  "result": "multi",\n  "session_id": "m"\n}', "", dec)
@@ -389,6 +623,83 @@ do
       and FIX.inside(wt, "/c/wt/App-wi10/a.cs") == nil and FIX.inside(wt, "/etc/passwd") == nil
       and FIX.inside(wt, "x/../../a") == nil and FIX.inside(wt, ".git/config") == nil and FIX.inside(wt, ".") == nil
       and FIX.inside(wt, "") == nil)
+    -- show_fix / commit_and_push_fix: the PR's CI (#51).
+    local S = require("azure-cli.state")
+    local saved = S.PR_LIST_CACHE
+    S.PR_LIST_CACHE = { prs = { { id = 120, source = "feature/x", buildStatus = "failed" },
+      { id = 121, source = "github-host", buildStatus = "" } } }
+    local by_id, by_branch = FIX.ci(120, "whatever"), FIX.ci(nil, "github-host")
+    check("ci: a fix's PR by id, with its build", by_id and by_id.pr == 120 and by_id.build == "failed"
+      and by_id.note:find("get_build_log", 1, true) ~= nil, vim.inspect(by_id))
+    check("ci: a story's PR by its branch, no build reads none", by_branch and by_branch.pr == 121
+      and by_branch.build == "none", vim.inspect(by_branch))
+    check("ci: nothing without a PR", FIX.ci(nil, "feature/none") == nil and FIX.ci(nil, nil) == nil)
+    S.PR_LIST_CACHE = saved
+  end
+  do
+    -- add_reviewer / update_pr_description follow the PR's host (#110):
+    -- GitHub's go to the provider; a host whose caps say no is refused
+    -- before anyone is asked.
+    local S = require("azure-cli.state")
+    local saved, real_provider = S.PR_LIST_CACHE, TOOLS.provider
+    S.PR_LIST_CACHE = { prs = {
+      { id = 7, key = "o~web~7", host = "github", repo = "web", project = "o", org = "https://api.github.com",
+        title = "Old title" },
+      { id = 8, key = "o~web~8", host = "github", repo = "web", project = "o", org = "https://api.github.com",
+        caps = { add_reviewer = false, set_description = false } },
+      { id = 101, repo = "w", project = "p", org = "https://dev.azure.com/x" } } }
+    local calls = {}
+    TOOLS.provider = function(argv, _, cb)
+      calls[#calls + 1] = argv
+      if argv[1] == "--add-reviewer" then
+        return cb(true, '{"added": "Bob Brown (bob)", "id": "U_bob", "note": "GitHub has no required reviewers"}', "")
+      end
+      cb(true, "Description updated.", "")
+    end
+    local asked = 0
+    local env = { log = function() end, confirm = function(_, cb) asked = asked + 1; cb(true) end }
+    local got
+    TOOLS.call("add_reviewer", { pr_id = 7, who = "bob", required = true }, env, function(t, e) got = { t, e } end)
+    check("add_reviewer: a GitHub PR asks, then goes to the provider", asked == 1 and calls[1]
+      and calls[1][1] == "--add-reviewer" and calls[1][2] == "bob" and calls[1][3] == "true", vim.inspect(calls))
+    check("add_reviewer: says who, with GitHub's note", got[2] == false
+      and got[1]:find("Added Bob Brown (bob)", 1, true) and got[1]:find("Note: GitHub has no required", 1, true),
+      vim.inspect(got))
+    TOOLS.call("update_pr_description", { pr_id = 7, description = "New" }, env, function(t, e) got = { t, e } end)
+    check("update_pr_description: a GitHub PR goes to the provider", asked == 2 and calls[2][1] == "--set-description"
+      and calls[2][2] == "New" and got[2] == false, vim.inspect(got))
+    -- #137: an optional title. Left out (or blank), nothing changes.
+    local UPD = TOOLS.by_name.update_pr_description
+    local shown
+    UPD.details({ pr_id = 7, description = "A\nB" }, function(l) shown = l end)
+    check("update_pr_description: no title, the argv, confirm and details are as before",
+      #calls[2] == 2 and got[1] == "Updated the description of PR !7." and TOOLS.last_undo.title == nil
+        and UPD.confirm({ pr_id = 7, description = "x" }) == "replace the description of PR !7"
+        and UPD.confirm({ pr_id = 7, description = "x", title = "  " }) == "replace the description of PR !7"
+        and vim.deep_equal(shown, { "A", "B" }), vim.inspect({ calls[2], got, shown }))
+    UPD.details({ pr_id = 7, description = "A\nB", title = "New title" }, function(l) shown = l end)
+    check("update_pr_description: a title shows in the confirm and details",
+      UPD.confirm({ pr_id = 7, description = "x", title = "New title" }) == "replace the title and description of PR !7"
+        and vim.deep_equal(shown, { "Title: New title", "", "A", "B" }), vim.inspect(shown))
+    TOOLS.call("update_pr_description", { pr_id = 7, description = "New", title = " New title " }, env,
+      function(t, e) got = { t, e } end)
+    check("update_pr_description: the title goes to the provider, the undo keeps the old one",
+      asked == 3 and vim.deep_equal(calls[3], { "--set-description", "New", "New title" }) and got[2] == false
+        and got[1] == "Updated the title and description of PR !7."
+        and TOOLS.last_undo.title == "Old title" and S.PR_LIST_CACHE.prs[1].title == "New title",
+      vim.inspect({ calls[3], got, TOOLS.last_undo }))
+    calls, asked = { calls[1], calls[2] }, 2
+    TOOLS.call("add_reviewer", { pr_id = 8, who = "bob" }, env, function(t, e) got = { t, e } end)
+    check("add_reviewer: a host that can't is refused without asking", asked == 2 and #calls == 2 and got[2] == true
+      and got[1] == "web#8 is on GitHub, which can't add reviewers from azure-vicli.", vim.inspect(got))
+    TOOLS.call("update_pr_description", { pr_id = 8, description = "x" }, env, function(t, e) got = { t, e } end)
+    check("update_pr_description: likewise", asked == 2 and #calls == 2 and got[2] == true
+      and got[1] == "web#8 is on GitHub, which can't change the description from azure-vicli.", vim.inspect(got))
+    check("unsupported: Azure can, an unknown PR is need_pr's to say",
+      TOOLS.by_name.add_reviewer.unsupported({ pr_id = 101 }) == nil
+        and TOOLS.by_name.update_pr_description.unsupported({ pr_id = 101 }) == nil
+        and TOOLS.by_name.add_reviewer.unsupported({ pr_id = 999 }) == nil)
+    TOOLS.provider, S.PR_LIST_CACHE = real_provider, saved
   end
   do
     -- find_implementations / find_definition's patterns against real git grep.
@@ -487,7 +798,7 @@ do
   check("tools: the groups are all there", TOOLS.by_name.start_fix and TOOLS.by_name.start_story and TOOLS.by_name.get_build_log and TOOLS.by_name.get_test_results
     and TOOLS.by_name.move_to_sprint and TOOLS.by_name.open_in_ui and TOOLS.by_name.annotate_code)
   check("tools: every undo op has an undoer", TOOLS.undoers.unlink and TOOLS.undoers.delete_branch and TOOLS.undoers.drop_draft
-    and TOOLS.undoers.set_field and TOOLS.undoers.thread_status)
+    and TOOLS.undoers.set_field and TOOLS.undoers.set_parent and TOOLS.undoers.thread_status)
 end
 
 -- --- store (in a scratch directory) --------------------------------------------------
@@ -602,7 +913,10 @@ do
   check("owner_of_pr: the plan that opened it", (PL.owner_of_pr(610) or {}).key == "wi-91" and PL.owner_of_pr(611) == nil)
   local TF = require("azure-cli.chat.tools_fix")
   local orig_find = TF.find_story
-  TF.find_story = function(id) if tostring(id) == "92" then return "/w/r-wi92", "feature/92-old" end end
+  TF.find_story = function(t)
+    local id = type(t) == "table" and t.work_item_id or t
+    if tostring(id) == "92" then return "/w/r-wi92", "feature/92-old" end
+  end
   PL.save({ key = "wi-92", target = { work_item_id = 92 }, status = "done", revisions = {}, threads = {} })
   check("owner_of_pr: an older PR, by its story's branch", (PL.owner_of_pr(700, "feature/92-old") or {}).key == "wi-92"
     and PL.owner_of_pr(700, "feature/other") == nil)
@@ -622,6 +936,244 @@ do
   CH.send, CH.current_agent = orig.send, orig.agent
   AG.reset()
   pcall(vim.fn.delete, PL.root() .. "/wi-91.json")
+end
+
+-- --- #109: two GitHub #7s in different repos are two agents and two plans --------------
+do
+  local PL = require("azure-cli.chat.plan")
+  local PV = require("azure-cli.chat.plan_view")
+  local AG = require("azure-cli.chat.agents")
+  local AV = require("azure-cli.chat.agents_view")
+  local CH = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local a7 = { id = 7, host = "github", key = "o~a~7", repo = "a", title = "A seven", source = "fa" }
+  local b7 = { id = 7, host = "github", key = "o~b~7", repo = "b", title = "B seven", source = "fb" }
+  local orig = { send = CH.send, agent = CH.current_agent, alert = CH.alert, open = PL.open, show = PV.show,
+    cache = STATE.PR_LIST_CACHE }
+  STATE.PR_LIST_CACHE = { prs = { a7, b7, { id = 7, title = "Azure seven", repo = "web" } } }
+  local sent = {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.send = function(text, o) sent[#sent + 1] = { text = text, key = o.conv.plan_key } return {} end
+  CH.alert, PL.open, PV.show = function() end, function() end, function() end
+  AG.reset()
+  AG.start_for_prs({ a7, b7 })
+  local keys = {}
+  for _, s in ipairs(sent) do keys[#keys + 1] = s.key end
+  table.sort(keys)
+  check("#109 start_for_prs: one agent per #7", table.concat(keys, "|") == "pr-github-o~a~7|pr-github-o~b~7",
+    vim.inspect(sent))
+  local ca, cb = CH.find_conversation("pr-github-o~a~7"), CH.find_conversation("pr-github-o~b~7")
+  check("#109 their conversations: separate, labelled by repo", ca and cb and ca ~= cb and ca.label == "PR a#7"
+    and cb.label == "PR b#7" and ca.target.pr_key == "o~a~7", ca and ca.label)
+  check("#109 the prompt names the repo", sent[1].text:find(" in o/", 1, true) ~= nil, sent[1].text)
+  -- Each agent's submit_plan / get_plan (pr_id 7 alone) is its own PR's.
+  local tools = {}
+  for _, t in ipairs(PL.tools({})) do tools[t.name] = t end
+  local function call(name, args, conv)
+    local res, err
+    tools[name].run(args, { conv = conv, background = function() return true end }, function(r, e) res, err = r, e end)
+    return res, err
+  end
+  call("submit_plan", { pr_id = 7, title = "Plan A", markdown = "# A\n\n## Goal\nfor a" }, ca)
+  call("submit_plan", { pr_id = 7, title = "Plan B", markdown = "# B\n\n## Goal\nfor b" }, cb)
+  local ra, rb = PL.load("pr-github-o~a~7"), PL.load("pr-github-o~b~7")
+  check("#109 submit_plan: two plan files", ra and rb and ra.title == "Plan A" and rb.title == "Plan B"
+    and vim.fn.filereadable(PL.root() .. "/pr-github-o~a~7.json") == 1 and PL.load("pr-7") == nil)
+  local ga_ = call("get_plan", { pr_id = 7 }, ca)
+  local gb_ = call("get_plan", { pr_id = 7 }, cb)
+  check("#109 get_plan: each its own", ga_ and gb_ and ga_.title == "Plan A" and gb_.title == "Plan B")
+  check("#109 pr_target_for: the main chat picks by repo", PL.pr_target_for(7, {}, "o/b").pr_key == "o~b~7"
+    and PL.pr_target_for(7, {}, "a").pr_key == "o~a~7")
+  -- The agent column and ga: chat/agents_view.lua's lookup, by key.
+  local by = AV.by_pr(AV.rows(CH.conversations(), {}, PL.load, os.time()))
+  check("#109 agent column / ga: each #7 to its own agent",
+    (AV.for_pr(by, a7) or {}).key == "pr-github-o~a~7" and (AV.for_pr(by, b7) or {}).key == "pr-github-o~b~7"
+    and AV.for_pr(by, { id = 7 }) == nil)
+  -- Linked and closed by key: closing a's #7 leaves b's.
+  PL.save({ key = "wi-95", target = { work_item_id = 95 }, status = "done", revisions = {}, threads = {} })
+  PL.link_pr({ 95 }, nil, a7)
+  check("#109 link_pr keeps the key; owner_of_pr matches only that #7", (PL.owner_of_pr(a7) or {}).key == "wi-95"
+    and PL.owner_of_pr(b7) == nil and PL.owner_of_pr(7) == nil)
+  PL.pr_closed(a7, "completed")
+  check("#109 pr_closed: only a's #7", PL.load("pr-github-o~a~7").pr_state == "completed"
+    and PL.load("wi-95").pr_state == "completed" and PL.load("pr-github-o~b~7").pr_state == nil)
+  -- An Azure plan written the old way (pr-<id>) still loads.
+  vim.fn.writefile({ vim.json.encode({ key = "pr-101", target = { pr_id = 101 }, title = "Old", status = "draft",
+    revisions = { { by = "agent", markdown = "# Old" } }, threads = {} }) }, PL.root() .. "/pr-101.json")
+  STATE.PR_LIST_CACHE.prs[#STATE.PR_LIST_CACHE.prs + 1] = { id = 101, repo = "web" }
+  check("#109 an old Azure pr-101 plan: loads by its PR",
+    (PL.load(PL.key(PL.pr_target({ id = 101 }))) or {}).title == "Old"
+    and (PL.load(PL.key(PL.pr_target_for(101, {}))) or {}).title == "Old")
+  check("#109 for_worktree: the old Azure one, and a GitHub one by its listed PR",
+    (PL.for_worktree(require("azure-cli.chat.tools_fix").root() .. "/web-101") or {}).title == "Old"
+    and (PL.for_worktree(require("azure-cli.chat.tools_fix").path(b7)) or {}).title == "Plan B")
+  CH.drop_conversation("pr-github-o~a~7")
+  CH.drop_conversation("pr-github-o~b~7")
+  require("azure-cli.state").chat.plans_restored = nil
+  CH.restore_plans()
+  check("#109 restore_plans: the old Azure plan and a GitHub one get agents again",
+    CH.find_conversation("pr-101") ~= nil and CH.find_conversation("pr-github-o~b~7") ~= nil)
+  for _, k in ipairs({ "pr-101", "pr-github-o~a~7", "pr-github-o~b~7" }) do CH.drop_conversation(k) end
+  for _, k in ipairs({ "pr-101", "pr-github-o~a~7", "pr-github-o~b~7", "wi-95" }) do
+    pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".json")
+    pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".md")
+  end
+  CH.send, CH.current_agent, CH.alert, PL.open, PV.show = orig.send, orig.agent, orig.alert, orig.open, orig.show
+  STATE.PR_LIST_CACHE = orig.cache
+  AG.reset()
+end
+
+-- --- #113: two GitHub cli#7s get a fix worktree each; old <repo>-<id> ones still work --
+do
+  local PL = require("azure-cli.chat.plan")
+  local TF = require("azure-cli.chat.tools_fix")
+  local STATE = require("azure-cli.state")
+  local c1 = { id = 7, host = "github", key = "o1~cli~7", repo = "cli", source = "f1" }
+  local c2 = { id = 7, host = "github", key = "o2~cli~7", repo = "cli", source = "f2" }
+  local az = { id = 101, repo = "web" }
+  local orig_cache = STATE.PR_LIST_CACHE
+  STATE.PR_LIST_CACHE = { prs = { c1, c2, az } }
+  local root = TF.root()
+  check("#113 path: a dir per GitHub #7, named by its plan key",
+    TF.path(c1) == root .. "/pr-github-o1~cli~7" and TF.path(c2) == root .. "/pr-github-o2~cli~7")
+  check("#113 path: an Azure PR's is still <repo>-<id>", TF.path(az) == root .. "/web-101"
+    and TF.legacy_path(c1) == root .. "/cli-7")
+  -- Each finds its own approved plan, by its dir name alone.
+  local function plan(key, target, title)
+    PL.save({ key = key, target = target, title = title, status = "approved", approved_rev = 1, threads = {},
+      revisions = { { by = "agent", markdown = "# " .. title .. "\n\n## Files\n- `src/x.lua` - x" } } })
+  end
+  plan("pr-github-o1~cli~7", PL.pr_target(c1), "One")
+  plan("pr-github-o2~cli~7", PL.pr_target(c2), "Two")
+  plan("pr-101", { pr_id = 101 }, "Azure")
+  check("#113 for_worktree: each #7's own plan", (PL.for_worktree(TF.path(c1)) or {}).title == "One"
+    and (PL.for_worktree(TF.path(c2) .. "/") or {}).title == "Two")
+  local s1, r1 = PL.edit_check({ TF.path(c1) .. "/src/x.lua" })
+  local s2, r2 = PL.edit_check({ TF.path(c2) .. "/src/x.lua" })
+  check("#113 edit_check: a file in each worktree is under its own plan", s1 == "planned" and s2 == "planned"
+    and r1.key == "pr-github-o1~cli~7" and r2.key == "pr-github-o2~cli~7")
+  check("#113 for_worktree: an Azure <repo>-<id> worktree still finds its plan",
+    (PL.for_worktree(root .. "/web-101") or {}).title == "Azure")
+  -- fix_dir: an Azure worktree as it was; a GitHub fix begun before #113
+  -- only while one listed PR could own it - never moved either way.
+  vim.fn.mkdir(root .. "/web-101/.git", "p")
+  vim.fn.mkdir(root .. "/cli-7/.git", "p")
+  check("#113 fix_dir: the existing Azure worktree", TF.fix_dir(az) == root .. "/web-101")
+  check("#113 fix_dir: an old GitHub cli-7 with both #7s listed is neither's",
+    TF.fix_dir(c1) == TF.path(c1) and TF.fix_dir(c2) == TF.path(c2))
+  STATE.PR_LIST_CACHE = { prs = { c1, az } }
+  check("#113 fix_dir: an old GitHub cli-7 with one #7 listed is its", TF.fix_dir(c1) == root .. "/cli-7")
+  check("#113 for_worktree: the old GitHub cli-7 finds that PR's plan",
+    (PL.for_worktree(root .. "/cli-7") or {}).title == "One")
+  vim.fn.mkdir(TF.path(c1) .. "/.git", "p")
+  check("#113 fix_dir: its key dir once there is one", TF.fix_dir(c1) == TF.path(c1)
+    and vim.fn.isdirectory(root .. "/cli-7/.git") == 1)
+  for _, d in ipairs({ "web-101", "cli-7", "pr-github-o1~cli~7" }) do vim.fn.delete(root .. "/" .. d, "rf") end
+  for _, k in ipairs({ "pr-github-o1~cli~7", "pr-github-o2~cli~7", "pr-101" }) do
+    pcall(vim.fn.delete, PL.root() .. "/" .. k .. ".json")
+  end
+  STATE.PR_LIST_CACHE = orig_cache
+end
+
+-- --- #113: the watch list keeps two GitHub #7s apart; old entries still work ---------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    cache = ST.PR_LIST_CACHE }
+  local closed, asked = {}, {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.note, CH.alert = function() end, function() end
+  ST.PR_LIST_CACHE = { prs = {} }
+  T.provider = function(argv, env, cb)
+    if argv[1] == "--get-pr" then
+      asked[#asked + 1] = env.AZVICLI_REPO
+      local repo = env.AZVICLI_REPO
+      if env.AZVICLI_PROJECT == "p" then
+        return cb(true, vim.json.encode({ id = 500, title = "Az", state = "active", org = "o", project = "p", repo = "r" }), "")
+      end
+      return cb(true, vim.json.encode({ id = 7, host = "github", key = "o~" .. repo .. "~7", repo = repo, org = "api",
+        project = "o", title = repo, state = closed[repo] and "completed" or "active" }), "")
+    end
+    cb(true, vim.json.encode({ value = {} }), "")
+  end
+  ST.whoami = { ["o|p"] = { id = "me" }, ["api|o"] = { id = "me" } }
+  local file = require("azure-cli.chat.store").root() .. "/watched.json"
+  W._reset()
+  -- Written before #113: an Azure PR and a GitHub #7 under their numbers.
+  vim.fn.mkdir(vim.fn.fnamemodify(file, ":h"), "p")
+  vim.fn.writefile({ vim.json.encode({
+    ["500"] = { id = 500, org = "o", project = "p", repo = "r", seen = { ["1:1"] = true } },
+    ["7"] = { id = 7, org = "api", project = "o", repo = "a", seen = { ["9:9"] = true } } }) }, file)
+  check("#113 watch: an old Azure entry still loads", W.watched(500) and W.watched({ id = 500 }))
+  W.poll()
+  local saved = vim.json.decode(table.concat(vim.fn.readfile(file), ""))
+  check("#113 watch: an old GitHub entry moves to its key, keeping what it saw", saved["o~a~7"] ~= nil
+    and saved["7"] == nil and saved["o~a~7"].seen["9:9"] == true and saved["500"] ~= nil, vim.inspect(saved))
+  W.add({ id = 7, host = "github", key = "o~b~7", org = "api", project = "o", repo = "b", title = "b" })
+  local a7, b7 = { id = 7, host = "github", key = "o~a~7" }, { id = 7, host = "github", key = "o~b~7" }
+  check("#113 watch: two #7s, two entries", W.watched(a7) and W.watched(b7)
+    and not W.watched({ id = 7, host = "github", key = "o~c~7" }))
+  asked = {}
+  W.poll()
+  table.sort(asked)
+  check("#113 watch: each is fetched in its own repo", table.concat(asked, ",") == "a,b,r", vim.inspect(asked))
+  closed.a = true
+  W.poll()
+  check("#113 watch: closing a's #7 leaves b's watched", not W.watched(a7) and W.watched(b7) and W.watched(500))
+  check("#113 watch: fetched by key", T.fetched["o~b~7"] ~= nil and T.fetched["7"] == nil)
+  W._reset()
+  pcall(vim.fn.delete, file)
+  T.fetched = {}
+  CH.current_agent, CH.note, CH.alert, T.provider = orig.agent, orig.note, orig.alert, orig.provider
+  ST.PR_LIST_CACHE = orig.cache
+end
+
+-- --- max_agents counts plan agents only: the main chat's turn takes no slot (#83) -----
+do
+  local AG = require("azure-cli.chat.agents")
+  local CH = require("azure-cli.chat")
+  local main = require("azure-cli.state").chat
+  local orig = { send = CH.send, agent = CH.current_agent }
+  local sent = {}
+  CH.current_agent = function() return { name = "x" } end
+  CH.send = function(_, o)
+    o.conv.running = { entry = {} }
+    sent[#sent + 1] = o.conv.plan_key
+    return {}
+  end
+  require("azure-cli").setup({ chat = { max_agents = 3 } })
+  AG.reset()
+  local function item(id) return { id = id, title = "T" .. id } end
+  main.running = { entry = { started = os.time() } }  -- the main chat mid-turn, calling start_agents
+  AG.start_for_items({ item(901), item(902) })
+  local msg = AG.start_for_items({ item(903) })
+  check("max_agents: with two plan agents working and the main chat mid-turn, a third starts at once",
+    #sent == 3 and sent[3] == "wi-903" and #AG.queued() == 0 and AG.working() == 3 and not msg:find("waiting", 1, true),
+    vim.inspect({ sent, msg, AG.working() }))
+  msg = AG.start_for_items({ item(904) })
+  check("max_agents: a fourth queues", #sent == 3 and #AG.queued() == 1 and msg:find("1 waiting", 1, true) ~= nil, msg)
+  main.running = nil
+  AG.pump()
+  check("max_agents: the main chat's turn ending starts nothing by itself", #sent == 3 and #AG.queued() == 1)
+  main.running = { entry = { started = os.time() } }
+  AG.pump()
+  check("max_agents: the main chat starting a turn changes nothing", #sent == 3 and #AG.queued() == 1 and AG.working() == 3)
+  CH.find_conversation("wi-901").running = nil
+  AG.pump()
+  check("max_agents: a plan agent finishing starts the queued one", #sent == 4 and sent[4] == "wi-904"
+    and #AG.queued() == 0 and AG.working() == 3, vim.inspect(sent))
+  main.running = nil
+  for _, k in ipairs({ "wi-901", "wi-902", "wi-903", "wi-904" }) do
+    local c = CH.find_conversation(k)
+    if c then c.running = nil end
+    main.convs[k] = nil
+  end
+  CH.send, CH.current_agent = orig.send, orig.agent
+  AG.reset()
+  require("azure-cli").setup({})
 end
 
 -- --- chat/notes.lua: annotate_code's notes, kept across restarts ----------------------
@@ -667,6 +1219,62 @@ do
   check("next_note_file: skips files without notes", RCHAT.next_note_file(notes, order, 1, 1) == 3
     and RCHAT.next_note_file(notes, order, 3, -1) == 1 and RCHAT.next_note_file(notes, order, 3, 1) == nil
     and RCHAT.next_note_file(notes, order, nil, 1) == 1 and RCHAT.next_note_file(notes, order, nil, -1) == 3)
+end
+
+-- --- a plan agent planning a fix to the PR its plan opened: a new revision of that plan ----
+do
+  local PL = require("azure-cli.chat.plan")
+  local CH = require("azure-cli.chat")
+  local STATE = require("azure-cli.state")
+  local orig = { send = CH.send, alert = CH.alert, cache = STATE.PR_LIST_CACHE }
+  CH.alert = function() end
+  STATE.PR_LIST_CACHE = { prs = { { id = 620, title = "Lockout", source = "feature/93", repo = "web" },
+    { id = 621, title = "Other", source = "feature/x", repo = "web" } } }
+  local rec = { key = "wi-93", target = { work_item_id = 93 }, title = "Lockout", status = "draft", revisions = {},
+    threads = {}, events = {} }
+  PL.add_revision(rec, "# Lockout\n\n## Goal\nthe original plan", "agent")
+  PL.save(rec)
+  rec = PL.load("wi-93")
+  rec.status, rec.approved_rev, rec.last_approved_rev = "done", 1, 1
+  table.insert(rec.events, { kind = "approved", text = "Approved revision 1" })
+  PL.save(rec)
+  PL.link_pr({ 93 }, "feature/93", { id = 620 })
+  check("link_pr: records the revision the PR was opened from", PL.load("wi-93").pr.rev == 1
+    and PL.pr_rev(PL.load("wi-93")) == 1)
+  local conv = CH.conversation("wi-93", { label = "#93", target = { work_item_id = 93 }, title = "Lockout" })
+  local env = { conv = conv, background = function() return true end, log = function() end }
+  check("plan_target_for: the PR its plan opened means its work item", PL.plan_target_for(620, env).work_item_id == 93
+    and PL.plan_target_for(621, env).pr_id == 621 and PL.plan_target_for(620, {}).pr_id == 620)
+  local res, err
+  TOOLS.by_name.submit_plan.run({ pr_id = 620, title = "Fix the build", markdown = "# Fix\n\n## Goal\nfix the build" },
+    env, function(r, e) res, err = r, e end)
+  rec = PL.load("wi-93")
+  check("submit_plan (pr_id of its own PR): a new revision of its plan, no plan of the PR's", res and rec
+    and #rec.revisions == 2 and rec.status == "draft" and rec.title == "Fix the build" and PL.load("pr-620") == nil
+    and tostring(res.stored_as):find("#93", 1, true) ~= nil, vim.inspect({ res, err }))
+  check("submit_plan: the original stays readable, as revision 1", (PL.revision(rec, 1) or {}).markdown
+    == "# Lockout\n\n## Goal\nthe original plan")
+  local got
+  TOOLS.by_name.get_plan.run({ pr_id = 620 }, env, function(r) got = r end)
+  check("get_plan (pr_id of its own PR): its plan", got and got.title == "Fix the build")
+  TOOLS.by_name.start_fix.run({ pr_id = 620 }, env, function(r, e) res, err = r, e end)
+  check("start_fix on its own PR: pointed at its story", res == nil and tostring(err):find("start_story", 1, true) ~= nil
+    and tostring(err):find("work_item_id 93", 1, true) ~= nil, err)
+  -- message_agent: by the PR, to the agent that opened it, told where its plan goes.
+  local sent = {}
+  CH.send = function(text, o) sent[#sent + 1] = { text = text, key = o.conv.plan_key } return {} end
+  TOOLS.by_name.message_agent.run({ pr_id = 620, message = "why does the build fail?" }, { main_chat = true },
+    function(r, e) res, err = r, e end)
+  check("message_agent (pr_id of a PR an agent opened): to that agent", #sent == 1 and sent[1].key == "wi-93"
+    and tostring(res):find("#93", 1, true) ~= nil, vim.inspect({ sent, res, err }))
+  check("message_agent: it's told to revise its own plan", sent[1] and sent[1].text:find("work_item_id 93", 1, true) ~= nil
+    and sent[1].text:find("PR !620", 1, true) ~= nil)
+  TOOLS.by_name.message_agent.run({ pr_id = 621, message = "x" }, { main_chat = true }, function(r, e) res, err = r, e end)
+  check("message_agent: a PR no agent opened has none", res == nil and tostring(err):find("no agent for pr-621", 1, true))
+  CH.send, CH.alert, STATE.PR_LIST_CACHE = orig.send, orig.alert, orig.cache
+  CH.drop_conversation("wi-93")
+  pcall(vim.fn.delete, PL.root() .. "/wi-93.json")
+  pcall(vim.fn.delete, PL.root() .. "/wi-93.md")
 end
 
 if fails > 0 then

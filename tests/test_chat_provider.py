@@ -218,6 +218,15 @@ class ChatPrActionTests(unittest.TestCase):
         self.assertEqual((fetch.calls[0]["method"], fetch.calls[0]["url"], fetch.calls[0]["data"]),
                          ("PATCH", self.PR, {"description": "New text"}))
 
+    def test_set_description_with_a_title(self):
+        """#137: the title goes in the same PATCH; a blank one is left out."""
+        rc, _, _, fetch = self.run_action("set_description", "New text", " New title ")
+        self.assertEqual(rc, 0)
+        self.assertEqual((fetch.calls[0]["method"], fetch.calls[0]["url"], fetch.calls[0]["data"]),
+                         ("PATCH", self.PR, {"description": "New text", "title": "New title"}))
+        _, _, _, fetch = self.run_action("set_description", "New text", "  ")
+        self.assertEqual(fetch.calls[0]["data"], {"description": "New text"})
+
     def test_create_pr_links_work_items(self):
         url = "https://dev.azure.com/org/proj/_apis/git/repositories/myrepo/pullrequests"
         rc, out, _, fetch = self.run_action("create_pr", "feature/x", "develop", "Title", "Body", "3001, 3002,x", "true",

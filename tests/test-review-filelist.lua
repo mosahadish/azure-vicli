@@ -4,6 +4,7 @@
 --
 -- Usage: luajit test-review-filelist.lua <filelist.lua path>
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-review-filelist.lua <filelist.lua path>")
 local M = dofile(path)

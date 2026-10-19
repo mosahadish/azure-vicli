@@ -419,7 +419,20 @@ class ReplyStatusEditDeleteTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class CurrentUserIdVoteTests(unittest.TestCase):
+class ServingTestCase(unittest.TestCase):
+    """Runs with the --serve daemon's ConnectionData cache (#94) on, and
+    leaves it off and empty afterwards."""
+
+    def setUp(self):
+        ac._conn_data_cache.clear()
+        ac._config_cache["serving"] = True
+
+    def tearDown(self):
+        ac._config_cache["serving"] = False
+        ac._conn_data_cache.clear()
+
+
+class CurrentUserIdVoteTests(ServingTestCase):
     def test_current_user_id_hits_connection_data_bare_and_caches(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions = make_actions(tmp_dir=tmp)
@@ -431,10 +444,21 @@ class CurrentUserIdVoteTests(unittest.TestCase):
             call = fetch.calls[0]
             self.assertEqual(call["url"], cd_url)
             self.assertIsNone(call["api_version"])  # bare - no api-version query param
-            # Second call reads the cache file, no second HTTP request.
+            # Second call is a cache hit under --serve, no second HTTP request.
             uid2 = actions.current_user_id()
             self.assertEqual(uid2, "uid-1")
             self.assertEqual(len(fetch.calls), 1)
+
+    def test_one_shot_runs_fetch_every_time(self):
+        ac._config_cache["serving"] = False
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            cd_url = "https://dev.azure.com/org/_apis/connectionData"
+            fetch = FakeFetch(responses={cd_url: {"authenticatedUser": {"id": "uid-1"}}})
+            actions.fetch = fetch
+            self.assertEqual(actions.current_user_id(), "uid-1")
+            self.assertEqual(actions.current_user_id(), "uid-1")
+            self.assertEqual(len(fetch.calls), 2)
 
     def test_current_user_id_failure_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -465,6 +489,182 @@ class CurrentUserIdVoteTests(unittest.TestCase):
             actions = make_actions(tmp_dir=tmp)
             actions.fetch = FakeFetch(raise_for={"https://dev.azure.com/org/_apis/connectionData": ac.AdoHttpError(400, "x")})
             self.assertEqual(actions.set_vote("10"), 1)
+
+
+# ---------------------------------------------------------------------------
+# current_user_id per PAT, and the retry-once on an auth error (#100)
+# ---------------------------------------------------------------------------
+
+CD_URL = "https://dev.azure.com/org/_apis/connectionData"
+
+
+def _who(uid):
+    return {"authenticatedUser": {"id": uid}}
+
+
+class UserIdPerPatTests(ServingTestCase):
+    def _calls(self, fetch, url=None, method=None):
+        return [c for c in fetch.calls
+                if (url is None or c["url"] == url) and (method is None or c["method"] == method)]
+
+    def test_two_accounts_on_one_org_get_their_own_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def actions_for(pat, uid):
+                a = make_actions(tmp_dir=tmp)
+                a.pat = pat
+                a.fetch = FakeFetch(responses={CD_URL: _who(uid)})
+                return a
+
+            self.assertEqual(actions_for("pat-a", "uid-a").current_user_id(), "uid-a")
+            b = actions_for("pat-b", "uid-b")
+            self.assertEqual(b.set_vote("10"), 0)
+            self.assertEqual(b.fetch.calls[-1]["url"], b._pr_url("/reviewers/uid-b"))
+            # And A's is still its own, from the cache.
+            a = actions_for("pat-a", "wrong")
+            self.assertEqual(a.current_user_id(), "uid-a")
+            self.assertEqual(a.fetch.calls, [])
+
+    def test_a_stale_cached_id_rejected_with_401_is_refetched_once_and_the_vote_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            fetch = FakeFetch(responses={CD_URL: [_who("uid-old"), _who("uid-new")]},
+                              raise_for={actions._pr_url("/reviewers/uid-old"): ac.AdoHttpError(401, "x")})
+            actions.fetch = fetch
+            self.assertEqual(actions.current_user_id(), "uid-old")  # cached now
+
+            self.assertEqual(actions.set_vote("10"), 0)
+
+            self.assertEqual(len(self._calls(fetch, CD_URL)), 2)  # the priming one, then one refetch
+            puts = self._calls(fetch, method="PUT")
+            self.assertEqual([c["url"] for c in puts],
+                             [actions._pr_url("/reviewers/uid-old"), actions._pr_url("/reviewers/uid-new")])
+            # The fresh id replaced the stale one in the cache.
+            self.assertEqual(actions.current_user_id(), "uid-new")
+            self.assertEqual(len(self._calls(fetch, CD_URL)), 2)
+
+    def test_auto_complete_with_a_stale_cached_id_retries_once_on_403(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            pr_url = actions._pr_url()
+            fetch = FakeFetch(responses={CD_URL: [_who("uid-old"), _who("uid-new")]})
+            actions.fetch = fetch
+            actions.current_user_id()
+            patches = []
+
+            def patch_then_ok(url, method="GET", data=None, **kw):
+                if method == "PATCH" and url == pr_url:
+                    patches.append(data["autoCompleteSetBy"]["id"])
+                    if len(patches) == 1:
+                        raise ac.AdoHttpError(403, url)
+                    return {}
+                return fetch(url, method=method, data=data, **kw)
+            actions.fetch = patch_then_ok
+
+            self.assertEqual(actions.set_auto_complete("on", "squash"), 0)
+            self.assertEqual(patches, ["uid-old", "uid-new"])
+
+    def test_a_second_auth_error_is_reported_not_looped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            fetch = FakeFetch(responses={CD_URL: [_who("uid-old"), _who("uid-old")]},
+                              raise_for={actions._pr_url("/reviewers/uid-old"): ac.AdoHttpError(401, "x")})
+            actions.fetch = fetch
+            actions.current_user_id()
+
+            with mock.patch("sys.stderr", new_callable=StringIO) as err:
+                self.assertEqual(actions.set_vote("10"), 1)
+            self.assertIn("REST vote failed: HTTP 401", err.getvalue())
+            self.assertEqual(len(self._calls(fetch, method="PUT")), 2)
+            self.assertEqual(len(self._calls(fetch, CD_URL)), 2)
+
+    def test_a_freshly_fetched_id_is_not_retried(self):
+        ac._config_cache["serving"] = False  # one-shot: never a cache hit
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            fetch = FakeFetch(responses={CD_URL: _who("uid-1")},
+                              raise_for={actions._pr_url("/reviewers/uid-1"): ac.AdoHttpError(401, "x")})
+            actions.fetch = fetch
+            with mock.patch("sys.stderr", new_callable=StringIO):
+                self.assertEqual(actions.set_vote("10"), 1)
+            self.assertEqual(len(self._calls(fetch, method="PUT")), 1)
+            self.assertEqual(len(self._calls(fetch, CD_URL)), 1)
+
+    def test_non_auth_errors_are_not_retried(self):
+        for status in (400, 500):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                ac._conn_data_cache.clear()
+                actions = make_actions(tmp_dir=tmp)
+                fetch = FakeFetch(responses={CD_URL: _who("uid-1")},
+                                  raise_for={actions._pr_url("/reviewers/uid-1"): ac.AdoHttpError(status, "x")})
+                actions.fetch = fetch
+                actions.current_user_id()
+                with mock.patch("sys.stderr", new_callable=StringIO):
+                    self.assertEqual(actions.set_vote("10"), 1)
+                self.assertEqual(len(self._calls(fetch, method="PUT")), 1)
+                self.assertEqual(len(self._calls(fetch, CD_URL)), 1)
+
+    def test_the_pat_is_never_written_to_disk(self):
+        pat = "s3cr3t-pat-value"
+        with tempfile.TemporaryDirectory() as tmp:
+            for serving in (True, False):
+                ac._config_cache["serving"] = serving
+                actions = make_actions(tmp_dir=tmp)
+                actions.pat = pat
+                actions.fetch = FakeFetch(responses={CD_URL: _who("uid-1")})
+                self.assertEqual(actions.set_vote("10"), 0)
+                self.assertEqual(actions.set_auto_complete("on", "squash"), 0)
+            digest = ac.hashlib.sha256(pat.encode("utf-8")).hexdigest()
+            for root, _dirs, files in os.walk(tmp):
+                for name in files:
+                    self.assertNotIn(pat, name)
+                    self.assertNotIn(digest[:12], name)
+                    self.assertFalse(name.startswith(".userid"), name)
+                    with open(os.path.join(root, name), "rb") as f:
+                        body = f.read()
+                    self.assertNotIn(pat.encode("utf-8"), body)
+                    self.assertNotIn(digest[:12].encode("utf-8"), body)
+
+
+class LegacyUserIdFilesTests(unittest.TestCase):
+    def setUp(self):
+        ac._legacy_userid_files_removed = False
+
+    def tearDown(self):
+        ac._legacy_userid_files_removed = False
+
+    def test_old_userid_files_are_removed_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            os.makedirs(actions.prefetch_dir)
+            for name in (".userid", ".userid-abcdef123456", ".userid.tmp1234", "keep-me"):
+                with open(os.path.join(actions.prefetch_dir, name), "w") as f:
+                    f.write("old-uid")
+            actions.fetch = FakeFetch(responses={CD_URL: _who("uid-1")})
+
+            self.assertEqual(actions.current_user_id(), "uid-1")
+
+            self.assertEqual(os.listdir(actions.prefetch_dir), ["keep-me"])
+            # Only on the first use in a process.
+            with open(os.path.join(actions.prefetch_dir, ".userid"), "w") as f:
+                f.write("x")
+            actions.current_user_id()
+            self.assertIn(".userid", os.listdir(actions.prefetch_dir))
+
+    def test_a_file_that_cannot_be_removed_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            os.makedirs(actions.prefetch_dir)
+            open(os.path.join(actions.prefetch_dir, ".userid"), "w").close()
+            actions.fetch = FakeFetch(responses={CD_URL: _who("uid-1")})
+            with mock.patch.object(ac.os, "unlink", side_effect=OSError("busy")):
+                self.assertEqual(actions.current_user_id(), "uid-1")
+
+    def test_a_missing_prefetch_dir_is_fine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = make_actions(tmp_dir=tmp)
+            actions.fetch = FakeFetch(responses={CD_URL: _who("uid-1")})
+            self.assertEqual(actions.current_user_id(), "uid-1")
+            self.assertFalse(os.path.exists(actions.prefetch_dir))
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +880,9 @@ class DefaultPrefetchDirTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=False), \
                  mock.patch.object(ac, "default_prefetch_dir", return_value=cache_dir), \
                  mock.patch.object(ac.subprocess, "run") as run:
+                # Absent for real: a run started from inside Neovim (the
+                # chat agent's run_tests) inherits the plugin's own value.
+                os.environ.pop("AZVICLI_PREFETCH_DIR", None)
                 run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
                 rc = ac.cmd_prefetch()
             self.assertEqual(rc, 0)

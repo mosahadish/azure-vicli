@@ -5,6 +5,7 @@
 -- a plan. Needs the main loop (insert mode, real input), so not nvim -l:
 --
 --   nvim -u NONE --headless --cmd "set rtp+=<repo>" -c "luafile tests/test-confirm.lua"
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local fails = 0
 local function check(name, ok, detail)
   if ok then io.stdout:write("ok   " .. name .. "\n")
@@ -39,6 +40,28 @@ check("lines: buttons that don't fit in a row go one per line", srows[1] == 2 an
   and vim.trim(stacked[3]) == "Approve, and let it push without asking" and shls[2][4] == "AzureCliButtonActive"
   and shls[1][3] - shls[1][2] == shls[2][3] - shls[2][2],
   vim.inspect(stacked))
+
+-- The details' rows (issue #30: a long command was one line, wrapped by
+-- Neovim in three rows, and scrolling by line skipped what didn't show).
+local words = {}
+for i = 1, 50 do words[i] = "word" .. i end
+local long_cmd = table.concat(words, " ")
+local drows = UI.wrap_details({ "Command:", "  " .. long_cmd }, 40)
+local within, indented, back = true, true, {}
+for i, l in ipairs(drows) do
+  if vim.fn.strdisplaywidth(l) > 40 then within = false end
+  if i > 1 and not l:match("^  %S") then indented = false end
+  if i > 1 then for w in l:gmatch("%S+") do back[#back + 1] = w end end
+end
+check("wrap_details: rows within the width, indented like their line, the same words", #drows > 5 and within
+  and indented and table.concat(back, " ") == long_cmd, vim.inspect(drows))
+local drows_diff = UI.wrap_details({ "+" .. string.rep("abc ", 30) }, 30, true)
+check("wrap_details: a diff line's later rows keep its +", #drows_diff > 1 and drows_diff[2]:sub(1, 1) == "+",
+  vim.inspect(drows_diff))
+local hard = UI.wrap_details({ string.rep("x", 70) }, 30)
+check("wrap_details: a word longer than a row is cut", #hard == 3 and hard[1] == string.rep("x", 30)
+  and table.concat(hard) == string.rep("x", 70), vim.inspect(hard))
+check("wrap_details: short lines as they are", vim.deep_equal(UI.wrap_details({ "a", "", "  b" }, 30), { "a", "", "  b" }))
 
 -- The popup: opens it, presses `keys` (after `wait` ms), returns its answers.
 local function float_wins()
@@ -85,6 +108,45 @@ check("arm_ms: y straight away does nothing", #early == 0 and still, vim.inspect
 check("arm_ms: <Esc> straight away still cancels", is(run("<Esc>", { arm_ms = 400 }), 2))
 check("arm_ms: y after the moment answers", is(run("y", { arm_ms = 150 }, 250), 1))
 
+-- Tick boxes (issue #31's multiSelect): <CR>, <Space>, x and their keys
+-- tick, another button answers with the ticks; nothing given, none.
+do
+  local function ticking(keys, wait)
+    local got = {}
+    local win = UI.choose({ title = "Pick", lines = { "x" }, buttons = { "A", "B", "C", "Done", "Cancel" },
+      keys = { ["1"] = 1, ["2"] = 2, ["3"] = 3 }, checks = { false, true, false }, stack = true, arm_ms = wait and 150 or nil },
+      function(i, ticks) got[#got + 1] = { i, ticks } end)
+    if wait then vim.wait(wait) end
+    local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false), "\n")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    vim.wait(150, function() return #got > 0 end, 10)
+    local answered = vim.deepcopy(got)  -- (closing it below answers cancel)
+    local open = vim.api.nvim_win_is_valid(win)
+    if open then pcall(vim.api.nvim_win_close, win, true) vim.wait(30) end
+    return answered, open, text
+  end
+  local got, _, text = ticking("<Esc>")
+  check("checks: drawn as tick boxes, the others as they are", text:find("[ ] A", 1, true) and text:find("[x] B", 1, true)
+    and text:find("  Done", 1, true) and not text:find("] Done", 1, true), text)
+  check("checks: <Esc> answers cancel, with the ticks", #got == 1 and got[1][1] == 5
+    and vim.deep_equal(got[1][2], { false, true, false }), vim.inspect(got))
+  got = ticking("<CR>")
+  check("checks: <CR> on a tick box ticks it and keeps asking", #got == 0, vim.inspect(got))
+  got = ticking("<CR>j<Space>jjx<CR>")
+  check("checks: <CR> / <Space> tick, x off a tick box does nothing, <CR> on Done answers",
+    #got == 1 and got[1][1] == 4 and vim.deep_equal(got[1][2], { true, false, false }), vim.inspect(got))
+  got = ticking("1<Tab><Tab><Tab><CR>")
+  check("checks: a tick box's key ticks it", #got == 1 and got[1][1] == 4
+    and vim.deep_equal(got[1][2], { true, true, false }), vim.inspect(got))
+  got = ticking("1", 0)
+  check("checks: arm_ms guards ticking too", #got == 0, vim.inspect(got))
+  local plain = {}
+  UI.choose({ title = "T", lines = { "x" }, buttons = { "Yes", "No" } }, function(i, t) plain = { i, t } end)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+  vim.wait(100, function() return plain[1] ~= nil end, 10)
+  check("checks: without them <CR> answers and cb gets no ticks", plain[1] == 1 and plain[2] == nil, vim.inspect(plain))
+end
+
 -- The details: a window above the popup, scrolled from it.
 do
   local details = {}
@@ -101,6 +163,9 @@ do
   local top = dwin and vim.fn.line("w0", dwin)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
   check("details: <C-d> in the popup scrolls them", dwin and vim.fn.line("w0", dwin) > top)
+  top = dwin and vim.fn.line("w0", dwin)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-e>", true, false, true), "x", false)
+  check("details: <C-e> scrolls one row", dwin and vim.fn.line("w0", dwin) == top + 1)
   vim.api.nvim_feedkeys("y", "x", false)
   vim.wait(100, function() return #got > 0 end, 10)
   check("details: gone with the popup", is(got, 1) and not vim.api.nvim_win_is_valid(dwin), vim.inspect(got))
@@ -140,6 +205,407 @@ do
   check("chat: <CR> on the focused button denies", got == false, tostring(got))
 end
 
+-- The chat's question, answered with each of its keys (issue #41: y did
+-- nothing and <CR> on Allow declined).
+local function feed(keys) vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false) end
+local function ask_chat(keys, before)
+  local CHAT = require("azure-cli.chat")
+  local got
+  CHAT.confirm("The agent wants to run `bash tests/run.sh` in wt.", function(yes) got = yes end)
+  local popup = vim.api.nvim_get_current_win()
+  if before then before(popup) end
+  vim.wait(500)
+  feed(keys)
+  vim.wait(100, function() return got ~= nil end, 10)
+  if got == nil and vim.api.nvim_win_is_valid(popup) then pcall(vim.api.nvim_win_close, popup, true) vim.wait(30) end
+  return got, popup
+end
+check("chat: y after the moment allows", ask_chat("y") == true)
+check("chat: <Tab> to Allow, <CR> allows", ask_chat("<Tab><CR>") == true)
+check("chat: n denies", ask_chat("n") == false)
+
+-- Issue #31: the agent's own questions in the real popup, one at a time
+-- with the yes/no ones - a confirm asked meanwhile waits for the answer.
+do
+  local CHAT = require("azure-cli.chat")
+  local main = vim.api.nvim_get_current_win()
+  local picks, yes = false, nil
+  CHAT.ask_questions({ label = "#21" }, { { question = "Which colour?", header = "Colour",
+    options = { { label = "Red", description = "warm" }, { label = "Blue", description = "cool" } } } },
+    function(p) picks = p end)
+  local popup = vim.api.nvim_get_current_win()
+  local cfg = vim.api.nvim_win_get_config(popup)
+  local title = type(cfg.title) == "table" and (cfg.title[1] and cfg.title[1][1]) or cfg.title
+  local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(popup), 0, -1, false), "\n")
+  check("ask_questions: the header (whose it is) as the title, the options with their descriptions",
+    tostring(title):find("[#21] Colour", 1, true) and text:find("1. Red - warm", 1, true)
+    and text:find("Other\u{2026}", 1, true), vim.inspect({ title, text }))
+  CHAT.confirm("The agent wants to run `ls`.", function(y) yes = y end)
+  check("ask_questions: a yes/no question waits for it", vim.api.nvim_get_current_win() == popup and yes == nil)
+  feed("2")
+  check("ask_questions: 2 straight away does nothing", picks == false)
+  vim.wait(500)
+  feed("2")
+  vim.wait(200, function() return picks ~= false end, 10)
+  check("ask_questions: 2 after the moment picks Blue", vim.deep_equal(picks, { { "Blue" } }), vim.inspect(picks))
+  vim.wait(300, function() return vim.api.nvim_get_current_win() ~= main end, 10)
+  vim.wait(500)
+  feed("n")
+  vim.wait(200, function() return yes ~= nil end, 10)
+  check("ask_questions: then the waiting yes/no question asks", yes == false, tostring(yes))
+  pcall(vim.api.nvim_set_current_win, main)
+  -- Esc declines.
+  picks = false
+  CHAT.ask_questions(nil, { { question = "Q?", options = { { label = "A" } } } }, function(p) picks = p end)
+  feed("<Esc>")
+  vim.wait(200, function() return picks ~= false end, 10)
+  check("ask_questions: <Esc> declines", picks == nil, vim.inspect(picks))
+  check("ask_questions: the focus comes back", vim.api.nvim_get_current_win() == main)
+end
+
+do
+  local lit
+  local got = ask_chat("<CR>", function(popup)
+    vim.wait(500)
+    -- The cursor put on Allow some other way than Tab (a mouse click does this).
+    local buf = vim.api.nvim_win_get_buf(popup)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+      local c = l:find("Allow", 1, true)
+      if c then vim.api.nvim_win_set_cursor(popup, { i, c }) vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf }) end
+    end
+    local line = vim.api.nvim_win_get_cursor(popup)[1]
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, { line - 1, 0 }, { line - 1, -1 }, { details = true })) do
+      if m[4].hl_group == "AzureCliButtonActive" then lit = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1]
+        :sub(m[3] + 1, m[4].end_col) end
+    end
+  end)
+  check("chat: the cursor on Allow lights it, and <CR> allows", got == true and lit and lit:find("Allow", 1, true),
+    vim.inspect({ got, lit }))
+end
+do
+  local main = vim.api.nvim_get_current_win()
+  local still, answered
+  local got = ask_chat("y", function(popup)
+    vim.api.nvim_set_current_win(main)  -- something takes the cursor before keys count
+    vim.wait(50)
+    still = vim.api.nvim_win_is_valid(popup) and vim.api.nvim_get_current_win() == popup
+  end)
+  check("chat: the focus taken before keys count comes back, and y allows", still and got == true,
+    vim.inspect({ still, got }))
+  answered = ask_chat("<Esc>", function() end)
+  check("chat: <Esc> still denies", answered == false)
+end
+
+-- The issue's sequence: show_fix opens the change tab, the agent's
+-- run_tests asks straight away, and the chat panel following into the tab
+-- (its BufWinEnter, on a scheduled callback) used to split from the popup -
+-- leaving it, which declined. Through the tool's own ask path.
+do
+  local CHAT = require("azure-cli.chat")
+  local TOOLS = require("azure-cli.chat.tools")
+  CHAT.show(false)
+  local rt = TOOLS.by_name.run_tests
+  local real = { run = rt.run, confirm = rt.confirm, preapproved = rt.preapproved, details = rt.details }
+  local ran, logged, answer = false, {}, nil
+  rt.run = function(_, _, done) ran = true done({ passed = true }) end
+  rt.confirm = function() return "run `bash tests/run.sh` in wt" end
+  rt.preapproved, rt.details = nil, nil
+  vim.cmd("tabnew")
+  vim.bo.filetype = "azurecli-changes"
+  local tab = vim.api.nvim_get_current_tabpage()
+  TOOLS.call("run_tests", { work_item_id = 41 }, { main_win = function() end,
+    log = function(l) logged[#logged + 1] = l end, confirm = CHAT.confirm }, function(t, e) answer = { t, e } end)
+  local popup = vim.api.nvim_get_current_win()
+  vim.wait(100)
+  check("issue: the popup keeps the focus while the chat panel would follow",
+    vim.api.nvim_win_is_valid(popup) and vim.api.nvim_get_current_win() == popup and answer == nil,
+    vim.inspect({ answer, logged }))
+  vim.wait(450)
+  feed("y")
+  vim.wait(200, function() return answer ~= nil end, 10)
+  check("issue: y runs the tests, nothing declined", ran and answer and answer[2] == false
+    and not table.concat(logged, "|"):find("declined", 1, true), vim.inspect({ answer, logged }))
+  vim.wait(100)
+  local panel = false
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+    if vim.b[vim.api.nvim_win_get_buf(w)].azure_cli_chat then panel = true end
+  end
+  check("issue: the chat panel follows into the tab once it's answered", panel)
+  for k, v in pairs(real) do rt[k] = v end
+  vim.cmd("tabclose!")
+  CHAT.hide()
+end
+
+-- Issue #30: a long command shown whole, o opens it to read or yank, and
+-- only y / n / Esc / Tab / CR answer - a stray key neither answers nor
+-- leaves, and typing can't carry over to the next question.
+do
+  local got = {}
+  local details = { "Command:", "  " .. long_cmd }
+  local win = UI.choose({ title = "Run?", lines = { "Run it?" }, buttons = { "Allow", "Deny" }, keys = { y = 1, n = 2 },
+    details = details }, function(i) got[#got + 1] = i end)
+  local dwin
+  for _, w in ipairs(float_wins()) do
+    if vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, 1, false)[1] == "Command:" then dwin = w end
+  end
+  local drawn = dwin and vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(dwin), 0, -1, false) or {}
+  local fit = true
+  for _, l in ipairs(drawn) do if vim.fn.strdisplaywidth(l) > vim.api.nvim_win_get_width(dwin) then fit = false end end
+  check("#30 details: as tall as the wrapped command, every row inside the window", dwin and #drawn > 3
+    and vim.api.nvim_win_get_height(dwin) == #drawn and fit, vim.inspect({ drawn, dwin and vim.api.nvim_win_get_height(dwin) }))
+  feed("o")
+  local fwin = vim.api.nvim_get_current_win()
+  local shown = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  check("#30 o: all of it as it is, in a window of its own", fwin ~= win and vim.deep_equal(shown, details),
+    vim.inspect(shown))
+  feed("jyy")
+  check("#30 o: yy there yanks the command whole", vim.fn.getreg('"') == "  " .. long_cmd .. "\n", vim.fn.getreg('"'))
+  feed("q")
+  vim.wait(50)
+  check("#30 o: q goes back to the popup, still asking", vim.api.nvim_get_current_win() == win and #got == 0
+    and not vim.api.nvim_win_is_valid(fwin))
+  feed("y")
+  vim.wait(100, function() return #got > 0 end, 10)
+  check("#30 o: then y allows", is(got, 1), vim.inspect(got))
+end
+do
+  local got, open = run("q", { arm_ms = 150 }, 250)
+  check("#30 arm_ms: q is a stray key there, not cancel", #got == 0 and open, vim.inspect(got))
+  for _, keys in ipairs({ ":", "q:", "<C-w>w", "<C-w>p", "Z", "ZZ", "@", "x", ":wq<CR>" }) do
+    got, open = run(keys, { arm_ms = 150 }, 250)
+    check("#30 stray " .. keys .. ": no answer, the popup stays", #got == 0 and open, vim.inspect(got))
+  end
+end
+do
+  local got = {}
+  UI.choose({ title = "T", lines = { "x" }, buttons = { "Yes", "No" }, keys = { y = 1, n = 2 }, arm_ms = 150 },
+    function(i) got[#got + 1] = i end)
+  vim.wait(250)
+  feed("xy")
+  vim.wait(50)
+  check("#30 arm_ms: a stray key, then y at once: nothing", #got == 0, vim.inspect(got))
+  vim.wait(250)
+  feed("y")
+  vim.wait(100, function() return #got > 0 end, 10)
+  check("#30 arm_ms: y after a pause answers", is(got, 1), vim.inspect(got))
+end
+do
+  -- The report: keys typed on after one question was denied went on to deny
+  -- the next one (run_tests).
+  local CHAT = require("azure-cli.chat")
+  local a, b
+  CHAT.confirm("First?", function(yes) a = yes end)
+  CHAT.confirm("Second?", function(yes) b = yes end)
+  vim.wait(500)
+  feed("n")
+  vim.wait(20)  -- the second one opens
+  local second = vim.api.nvim_get_current_win()
+  feed("yyy")
+  vim.wait(300)
+  feed("x")
+  vim.wait(150)
+  feed("y")  -- past the second one's first moment, but the typing went on
+  vim.wait(50)
+  check("#30 the first denied, typing on doesn't answer the next", a == false and b == nil
+    and vim.api.nvim_win_is_valid(second), vim.inspect({ a, b }))
+  vim.wait(500)
+  feed("y")
+  vim.wait(100, function() return b ~= nil end, 10)
+  check("#30 after a pause, y allows the next", b == true, tostring(b))
+end
+do
+  -- An agent's long shell command through decide_permission: o shows it
+  -- whole (it used to be cut, and its rows skipped).
+  local RUN = require("azure-cli.chat.run")
+  local long = "make build " .. long_cmd .. " && echo done"
+  local yes
+  RUN.decide_permission(nil, { tools = {}, text = "" }, { kind = "execute", title = "Bash", rawInput = { command = long } },
+    function(y) yes = y end)
+  vim.wait(500)
+  feed("o")
+  local shown = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  check("#30 a long Bash command: o shows it as it is", #shown == 1 and shown[1] == long, vim.inspect(shown))
+  feed("q")
+  vim.wait(50)
+  feed("<Esc>")
+  vim.wait(100, function() return yes ~= nil end, 10)
+  check("#30 a long Bash command: <Esc> denies", yes == false, tostring(yes))
+end
+do
+  -- #62: the #29 agent's command, the way Claude Code asks for it, again
+  -- and again: allowed without a popup every time, once LuaJIT has
+  -- compiled the look-only check too. One that writes still asks.
+  local RUN = require("azure-cli.chat.run")
+  local cmd = "R=origin/github-host; git grep -nE \"choosing|function M\\.(input|choose|text)\" $R -- "
+    .. "lua/azure-cli/ui.lua lua/azure-cli/prompt.lua | sed 's/^origin\\/github-host://'; "
+    .. "git show $R:lua/azure-cli/prompt.lua | sed -n 1,30p"
+  local entry, asked = { tools = {}, text = "" }, nil
+  for k = 1, 200 do
+    local yes
+    RUN.decide_permission(nil, entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) yes = y end)
+    if yes ~= true then asked = k; break end
+  end
+  if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+  check("#62 a look-only command with s/a\\/b// is allowed every time", asked == nil
+    and (entry.tools[#entry.tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+    asked and ("asked on call " .. asked) or entry.tools[#entry.tools])
+  local yes
+  RUN.decide_permission(nil, entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd .. " > out" } }),
+    function(y) yes = y end)
+  vim.wait(500)
+  local popup = yes == nil
+  feed("<Esc>")
+  vim.wait(100, function() return yes ~= nil end, 10)
+  check("#62 the same command writing to a file still asks", popup and yes == false, tostring(yes))
+end
+do
+  -- #76: the commands agents check CI with after pushing, the way
+  -- Claude Code asks for them, again and again; near misses still ask.
+  local RUN = require("azure-cli.chat.run")
+  -- { entry, yes }: yes set once it's answered.
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({ "echo $(git rev-parse HEAD)",
+    "sha=$(git rev-parse origin/github-host) && gh run list --commit $sha",
+    "gh run watch 1 --exit-status >/dev/null 2>&1; gh run list" }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#76 " .. cmd .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "echo $(git push)", "x=$(cat f) && gh run list --commit $x",
+    "gh run list >/dev/null 2>&1; rm x" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#76 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
+do
+  -- #104: awk that only prints, the way Claude Code asks for it, again
+  -- and again; awk that writes or runs something still asks.
+  local RUN = require("azure-cli.chat.run")
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({ "awk 'NR==21' f | grep -o x", "sed -n 1,9p f | awk '{print $2}'",
+    "awk -F: -v n=3 '$1 == n {print $2}' f", "awk 'length > 80' f", "awk '/a|b/ {print}' f" }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#104 " .. cmd .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "awk -i inplace '{print}' f", "awk -f s.awk f", "awk 'BEGIN{system(\"rm x\")}'",
+    "awk '{\"date\" | getline d}'", "awk '{print > \"out\"}' f", "awk '{print}' f > out" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#104 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
+do
+  -- #106: #99's gh api graphql queries, the way Claude Code asks for
+  -- them, again and again; a mutation, a file, --input or GET still ask.
+  local RUN = require("azure-cli.chat.run")
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({
+    [=[gh api graphql -f query='query { repository(owner:"HollowThorn", name:"Wtile") { pullRequest(number:9) { author { login } reviews(last: 20) { nodes { state author { login } submittedAt commit { oid } } } latestReviews(first: 50) { nodes { state author { login } } } } } }' --jq '.data.repository.pullRequest']=],
+    [=[for n in 42321 42349; do gh api graphql -f query="query { repository(owner:\"neovim\", name:\"neovim\") { pullRequest(number:$n) { author{login} reviews(last: 30) { nodes { state author { login } } } } } }" --jq ".data.repository.pullRequest | .author.login as \$a | .reviews.nodes[] | select(.author.login != \$a) | {pr:$n, who:.author.login}"; done]=],
+    [=[gh api graphql -f query='query { search(query:"is:pr reviewed-by:@me", type:ISSUE, first:30) { issueCount nodes { ... on PullRequest { number } } } }' --jq '.data.search.issueCount']=],
+  }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#106 " .. cmd:sub(1, 60) .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "gh api graphql -f query='mutation { addStar(input: {starrableId: \"x\"}) { clientMutationId } }'",
+    "gh api graphql -F query=@q.graphql", "gh api graphql --input q.json", "gh api graphql -X GET -f query='{ a }'" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#106 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
+do
+  -- #108: #99's loop, trimming its loop variable with ${r%/*} ${r#*/},
+  -- the way Claude Code asks for it, again and again; other ${...}
+  -- forms, an unset name and a trim that writes still ask.
+  local RUN = require("azure-cli.chat.run")
+  local function ask(cmd)
+    local r = { entry = { tools = {}, text = "" } }
+    RUN.decide_permission(nil, r.entry, RUN.claude_tool({ tool_name = "Bash", input = { command = cmd } }),
+      function(y) r.yes = y end)
+    return r
+  end
+  for _, cmd in ipairs({
+    [=[for r in cli/cli home-assistant/core; do o=${r%/*}; n=${r#*/}; echo "== $r"; gh api graphql -f query='query($o:String!,$n:String!) { repository(owner:$o, name:$n) { pullRequests(last: 60, states:[MERGED]) { nodes { number author { login } reviews(last: 50) { nodes { state author { login } commit { oid } submittedAt } } latestReviews(first: 50) { nodes { state author { login } commit { oid } submittedAt } } } } } }' -f o=$o -f n=$n --jq '
+.data.repository.pullRequests.nodes[] | . as $p
+| .reviews.nodes | group_by(.author.login)[] | select(.[0].author.login != $p.author.login)
+| select((map(.state) | (index("APPROVED") or index("CHANGES_REQUESTED"))) and .[-1].state=="COMMENTED")
+| . as $rs | ($p.latestReviews.nodes | map(select(.author.login==$rs[0].author.login))) as $lr
+| {n:$p.number, who:$rs[0].author.login, history:[$rs[]|"\(.state) \(.commit.oid[0:7])"], latest:[$lr[]|"\(.state) \(.commit.oid[0:7])"]}' | head -8; done]=],
+    "B=origin/x:lua/a.lua; git show ${B%%:*}:f",
+  }) do
+    local asked, r
+    for k = 1, 200 do
+      r = ask(cmd)
+      if r.yes ~= true then asked = k; break end
+    end
+    if asked then vim.wait(500); feed("<Esc>"); vim.wait(100) end
+    local tools = r.entry.tools
+    check("#108 " .. cmd:sub(1, 60) .. " is allowed every time", asked == nil
+      and (tools[#tools] or ""):find("(allowed: only looks)", 1, true) ~= nil,
+      asked and ("asked on call " .. asked) or tools[#tools])
+  end
+  for _, cmd in ipairs({ "x=a; ls ${x:=y}", "x=a; ls ${!x}", "x=a; ls ${x%$(rm f)}", "ls ${HOME%/*}",
+    "B=x--output=o; git log ${B#x}", "while read l; do git log ${l%x}; done < f",
+    "for r in a/b; do o=${r%/*}; rm $o; done" }) do
+    local r = ask(cmd)
+    vim.wait(500)
+    local popup = r.yes == nil
+    feed("<Esc>")
+    vim.wait(100, function() return r.yes ~= nil end, 10)
+    check("#108 " .. cmd .. " still asks", popup and r.yes == false, tostring(r.yes))
+  end
+end
+
 -- Approving a plan: three buttons, p lets it push.
 do
   local PLAN = require("azure-cli.chat.plan")
@@ -150,6 +616,8 @@ do
   local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false), "\n")
   check("approve: Approve, Approve and push, Cancel", text:find("Approve", 1, true)
     and text:find("let it push", 1, true) and text:find("Cancel", 1, true), text)
+  check("approve #57: it says an existing branch gets no PR", text:find("existing branch", 1, true)
+    and text:find("no PR", 1, true), text)
   vim.api.nvim_feedkeys("p", "x", false)
   vim.wait(100, function() return got ~= nil end, 10)
   check("approve: p approves and lets it push", got == true, tostring(got))
@@ -161,6 +629,201 @@ do
   PLAN.load = real_load
 end
 
+-- Issue #55: answered, a popup gives the focus back to the window it was
+-- opened from, in normal mode - not to the chat's input box, where the
+-- keys typed next went out as messages. From screens with the chat panel
+-- beside them, as the agents' popups come.
+local CHAT55 = require("azure-cli.chat")
+local RUN55 = require("azure-cli.chat.run")
+local real_send, sent55 = RUN55.send, {}
+RUN55.send = function(text) sent55[#sent55 + 1] = text or CHAT55._.input_text() end
+local function screen55(ft)
+  vim.cmd("tabnew")
+  vim.bo.buftype, vim.bo.filetype = "nofile", ft
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "row 1", "row 2" })
+  local w = vim.api.nvim_get_current_win()
+  CHAT55.show(false)
+  vim.wait(50)
+  vim.api.nvim_set_current_win(w)
+  return w
+end
+local function where55(w)
+  return { same = vim.api.nvim_get_current_win() == w, mode = vim.api.nvim_get_mode().mode,
+    buf = vim.api.nvim_buf_get_name(0), sent = #sent55 }
+end
+do
+  local screen = screen55("azurecli-agents")
+  local got
+  CHAT55.confirm("The agent wants to run `git status`.", function(yes) got = yes end)
+  vim.wait(500)
+  feed("y")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 Agents screen: y allows, back on the screen in normal mode", got == true and at.same and at.mode == "n",
+    vim.inspect(at))
+  vim.g.azure_cli_t55 = nil
+  feed(":let g:azure_cli_t55 = 1<CR>")
+  check("#55 Agents screen: a : command typed next runs, nothing is sent", vim.g.azure_cli_t55 == 1 and #sent55 == 0,
+    vim.inspect(sent55))
+  vim.cmd("tabclose!")
+end
+do
+  local screen = screen55("azurecli-workitems")
+  local got
+  CHAT55.confirm("The agent wants to push.", function(yes) got = yes end)
+  vim.wait(500)
+  feed("<Esc>")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 dashboard: <Esc> denies, back on the dashboard in normal mode", got == false and at.same
+    and at.mode == "n" and at.sent == 0, vim.inspect(at))
+  vim.cmd("tabclose!")
+end
+do
+  local PLAN = require("azure-cli.chat.plan")
+  local real_load = PLAN.load
+  PLAN.load = function(k) return { key = k, target = { work_item_id = 9 }, revisions = {}, threads = {} } end
+  local screen = screen55("azurecli-agents")
+  local got
+  PLAN.ask_approval({ "wi-9" }, function(allow) got = allow end)
+  feed("a")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 plan approval: a approves, back on the Agents screen in normal mode", got == false and at.same
+    and at.mode == "n", vim.inspect(at))
+  PLAN.load = real_load
+  vim.cmd("tabclose!")
+end
+do
+  -- The window it was opened from closed while it asked: the screen beside
+  -- the chat, never the chat.
+  local screen = screen55("azurecli-agents")
+  local fw = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), true,
+    { relative = "editor", row = 2, col = 2, width = 30, height = 3 })
+  local got
+  UI.choose({ lines = { "q?" }, buttons = { "Yes", "No" }, keys = { y = 1 } }, function(i) got = i end)
+  pcall(vim.api.nvim_win_close, fw, true)
+  feed("y")
+  vim.wait(100, function() return got ~= nil end, 10)
+  local at = where55(screen)
+  check("#55 its window gone: back on the screen, not the chat", got == 1 and at.same and at.mode == "n"
+    and not vim.b.azure_cli_chat, vim.inspect(at))
+  vim.cmd("tabclose!")
+end
+do
+  -- A question over an agent's conversation popup: that popup stays, and
+  -- the focus comes back to it.
+  local screen = screen55("azurecli-agents")
+  CHAT55.conversation("wi-55", { label = "#55" })
+  local log = CHAT55.popup("wi-55")
+  local got
+  CHAT55.confirm("The agent wants to run `ls`.", function(yes) got = yes end)
+  vim.wait(500)
+  feed("y")
+  vim.wait(100, function() return got ~= nil end, 10)
+  vim.wait(50)
+  local pw = CHAT55.popup_wins()
+  check("#55 conversation popup: still open after the question, the focus back in it", got == true and pw
+    and vim.api.nvim_win_is_valid(log) and vim.api.nvim_get_current_win() == log
+    and vim.api.nvim_get_mode().mode == "n", vim.inspect({ got, pw and true, vim.api.nvim_get_current_win() == log }))
+  vim.api.nvim_set_current_win(screen)
+  vim.wait(50)
+  vim.cmd("tabclose!")
+end
+
+-- Issue #72: a popup asked for while another is open waits for it to be
+-- answered - opening on top took the focus, which answered the open one's
+-- cancel (an agent's question cancelled the plan's Approve). Each answer
+-- goes to who asked.
+do
+  local function shown(word)
+    for _, w in ipairs(float_wins()) do
+      local t = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false), "\n")
+      if t:find(word, 1, true) then return w end
+    end
+  end
+  local function asking(word)
+    return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):find(word, 1, true) ~= nil
+  end
+
+  -- The issue's sequence: Approve open, an agent asks from a timer.
+  local PLAN = require("azure-cli.chat.plan")
+  local real_load = PLAN.load
+  PLAN.load = function(k) return { key = k, target = { work_item_id = 9 }, revisions = {}, threads = {} } end
+  local screen = screen55("azurecli-agents")
+  local approved, allowed = {}, {}
+  PLAN.ask_approval({ "wi-9" }, function(allow) approved[#approved + 1] = allow end)
+  local approve_win = vim.api.nvim_get_current_win()
+  local asked = false
+  vim.defer_fn(function()
+    asked = true
+    CHAT55.confirm("The agent wants to run `git status`.", function(yes) allowed[#allowed + 1] = yes end)
+  end, 50)
+  vim.wait(500, function() return asked end, 10)
+  vim.wait(500)  -- past the agent's arm_ms: on top, its keys would count by now
+  check("#72 an agent asking over Approve: Approve still asks, the agent's question waits",
+    vim.api.nvim_win_is_valid(approve_win) and vim.api.nvim_get_current_win() == approve_win
+      and not shown("Deny") and #approved == 0 and #allowed == 0 and UI.choosing(),
+    vim.inspect({ approved, allowed, shown("Deny") }))
+  feed("p")
+  vim.wait(200, function() return #approved > 0 end, 10)
+  check("#72 p: approved and let push - not cancelled", #approved == 1 and approved[1] == true, vim.inspect(approved))
+  vim.wait(500, function() return asking("git status") end, 10)
+  check("#72 then the agent's question opens", asking("git status") and #allowed == 0)
+  vim.wait(450)
+  feed("y")
+  vim.wait(200, function() return #allowed > 0 end, 10)
+  vim.wait(50)
+  local at = where55(screen)
+  check("#72 y: the agent's answer to the agent, the plan's left alone; back on the screen in normal mode",
+    #allowed == 1 and allowed[1] == true and #approved == 1 and at.same and at.mode == "n" and not UI.choosing(),
+    vim.inspect({ approved, allowed, at }))
+  PLAN.load = real_load
+  vim.cmd("tabclose!")
+
+  -- Plain UI.choose, answered the other way round: each to its own cb, and
+  -- after_choose only once both are.
+  screen = screen55("azurecli-agents")
+  local a, b, after, gap = {}, {}, {}, nil
+  local yn = { buttons = { "Yes", "No" }, keys = { y = 1, n = 2 } }
+  local wa = UI.choose(vim.tbl_extend("force", yn, { lines = { "Question A?" } }),
+    function(i) a[#a + 1] = i gap = UI.choosing() end)
+  local wb = UI.choose(vim.tbl_extend("force", yn, { lines = { "Question B?" } }), function(i) b[#b + 1] = i end)
+  UI.after_choose(function() after[#after + 1] = { #a, #b } end)
+  check("#72 B waits: no window, A still asks", wb == nil and wa and vim.api.nvim_get_current_win() == wa
+    and not shown("Question B?") and #after == 0)
+  feed("n")
+  vim.wait(200, function() return asking("Question B?") end, 10)
+  check("#72 n answers A only; still choosing between the two; then B opens", vim.deep_equal(a, { 2 }) and #b == 0
+    and gap == true and asking("Question B?") and #after == 0, vim.inspect({ a, b, gap, after }))
+  feed("y")
+  vim.wait(200, function() return #after > 0 end, 10)
+  at = where55(screen)
+  check("#72 y answers B only; after_choose runs once both are", vim.deep_equal(a, { 2 }) and vim.deep_equal(b, { 1 })
+    and vim.deep_equal(after, { { 1, 1 } }), vim.inspect({ a, b, after }))
+  check("#72 #55: both answered, back where A was opened from, in normal mode", at.same and at.mode == "n",
+    vim.inspect(at))
+  vim.cmd("tabclose!")
+
+  -- One opened from an answered one's cb goes before the one waiting.
+  local order = {}
+  UI.choose(vim.tbl_extend("force", yn, { lines = { "First?" } }), function()
+    order[#order + 1] = "first"
+    UI.choose(vim.tbl_extend("force", yn, { lines = { "Its follow-up?" } }), function() order[#order + 1] = "follow-up" end)
+  end)
+  UI.choose(vim.tbl_extend("force", yn, { lines = { "Waiting?" } }), function() order[#order + 1] = "waiting" end)
+  feed("y")
+  vim.wait(100, function() return asking("Its follow-up?") end, 10)
+  vim.wait(50)
+  check("#72 a follow-up from the cb asks first", asking("Its follow-up?") and not shown("Waiting?"), vim.inspect(order))
+  feed("y")
+  vim.wait(200, function() return asking("Waiting?") end, 10)
+  feed("y")
+  vim.wait(200, function() return #order == 3 end, 10)
+  check("#72 then the one waiting", vim.deep_equal(order, { "first", "follow-up", "waiting" }) and not UI.choosing(),
+    vim.inspect(order))
+end
+
 -- Last, once this script has returned to the main loop - startinsert only
 -- takes effect there: from insert mode, out of it while the popup asks,
 -- back in after, in the same buffer.
@@ -168,20 +831,67 @@ local function finish()
   io.stdout:write((fails == 0 and "all confirm tests passed" or (fails .. " confirm test(s) failed")) .. "\n")
   vim.cmd(fails == 0 and "qa!" or "cq!")
 end
-vim.cmd("enew")
-local ebuf = vim.api.nvim_get_current_buf()
-vim.cmd("startinsert")
-vim.defer_fn(function()
-  local got, mode_in
-  UI.choose({ lines = { "q?" }, buttons = { "Yes", "No" }, keys = { y = 1 } }, function(i) got = i end)
+-- Each: `setup()` puts the cursor somewhere in insert mode (returning the
+-- window), a popup opens, `during()` runs while it asks, y answers,
+-- `after(win, got, mode_in)` checks.
+local function in_insert(setup, during, after, nxt)
+  local win = setup()
+  vim.cmd("startinsert")
   vim.defer_fn(function()
-    mode_in = vim.api.nvim_get_mode().mode
-    vim.api.nvim_input("y")
+    local got, mode_in
+    UI.choose({ lines = { "q?" }, buttons = { "Yes", "No" }, keys = { y = 1 } }, function(i) got = i end)
+    if during then during() end
     vim.defer_fn(function()
-      local mode_after = vim.api.nvim_get_mode().mode
-      check("insert mode: left while it asks, back after, in the same buffer", got == 1 and mode_in == "n"
-        and mode_after == "i" and vim.api.nvim_get_current_buf() == ebuf, vim.inspect({ got, mode_in, mode_after }))
-      finish()
+      mode_in = vim.api.nvim_get_mode().mode
+      vim.api.nvim_input("y")
+      vim.defer_fn(function()
+        after(win, got, mode_in)
+        vim.cmd("stopinsert")
+        vim.defer_fn(nxt, 50)
+      end, 100)
     end, 100)
   end, 100)
-end, 100)
+end
+local ebuf
+in_insert(function()
+  vim.cmd("enew")
+  ebuf = vim.api.nvim_get_current_buf()
+  return vim.api.nvim_get_current_win()
+end, nil, function(_, got, mode_in)
+  local mode_after = vim.api.nvim_get_mode().mode
+  check("insert mode: left while it asks, back after, in the same buffer", got == 1 and mode_in == "n"
+    and mode_after == "i" and vim.api.nvim_get_current_buf() == ebuf, vim.inspect({ got, mode_in, mode_after }))
+end, function()
+  -- #55: typing in the chat's input box when it asks - back there, but in
+  -- normal mode: what you type next isn't a message.
+  local screen
+  in_insert(function()
+    screen = screen55("azurecli-agents")
+    CHAT55.show(true)
+    vim.wait(50)
+    return vim.api.nvim_get_current_win()
+  end, nil, function(input, got)
+    local at = where55(input)
+    check("#55 from the chat's input box in insert mode: back there in normal mode", got == 1 and at.same
+      and at.mode == "n" and vim.b.azure_cli_chat == true and at.sent == 0, vim.inspect(at))
+  end, function()
+    vim.cmd("tabclose!")
+    -- #55: its window closed while it asked - insert mode doesn't carry
+    -- over to wherever the cursor lands.
+    local fw
+    in_insert(function()
+      screen = screen55("azurecli-agents")
+      fw = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), true,
+        { relative = "editor", row = 2, col = 2, width = 30, height = 3 })
+      return fw
+    end, function() pcall(vim.api.nvim_win_close, fw, true) end, function(_, got)
+      local at = where55(screen)
+      check("#55 from insert mode in a window closed while it asks: the screen, normal mode", got == 1
+        and at.same and at.mode == "n" and at.sent == 0, vim.inspect(at))
+    end, function()
+      vim.cmd("tabclose!")
+      RUN55.send = real_send
+      finish()
+    end)
+  end)
+end)

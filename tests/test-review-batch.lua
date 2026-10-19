@@ -9,6 +9,7 @@
 --
 -- Usage: luajit test-review-batch.lua <review/batch.lua path>
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-review-batch.lua <review/batch.lua path>")
 local M = dofile(path)
@@ -236,6 +237,47 @@ do
   check("submit (async): results in queue order", results and #results == 4 and results[2].item.text == "first"
     and results[4].item.text == "second")
   check("submit (async): submitting cleared", state.submitting == nil and #state.items == 0)
+end
+
+-- M.review_payload / M.submit_native: a native-review host (GitHub) gets the
+-- queue as one call that lands whole or not at all.
+do
+  local items = {
+    { kind = "thread", args = { "--post", "a.go", "R", "3", "line note" } },
+    { kind = "thread", args = { "--pr-comment", "overall" } },
+    { kind = "reply", thread_id = 77, text = "agreed" },
+    { kind = "reply", thread_id = 0, text = "to the conversation" },
+  }
+  local p = M.review_payload(items, { key = "-5" }, "rename it")
+  check("review_payload: verdict", p.event == "-5")
+  check("review_payload: reason, then PR comments and Conversation replies, as the body",
+    p.body == "rename it\n\noverall\n\nto the conversation")
+  check("review_payload: line comments and thread replies as items",
+    #p.items == 2 and p.items[1][1] == "--post" and p.items[2][1] == "--reply" and p.items[2][2] == "77")
+  check("review_payload: no vote is a comment review", M.review_payload(items, nil).event == "comment")
+
+  local function run(ok)
+    local state = { items = {} }
+    for _, it in ipairs(items) do state.items[#state.items + 1] = it end
+    local calls, before, after, results = {}, 0, {}, nil
+    M.submit_native(state, function(args, on_ok, on_fail)
+      calls[#calls + 1] = args
+      if ok then on_ok() else on_fail("nope") end
+    end, { "--submit-review", "{}" }, {
+      before = function() before = before + 1 end,
+      after = function(_, good) after[#after + 1] = good end,
+      done = function(r) results = r end,
+    })
+    return state, calls, before, after, results
+  end
+  local state, calls, before, after, results = run(true)
+  check("submit_native: one call", #calls == 1 and calls[1][1] == "--submit-review")
+  check("submit_native: every item before, then after", before == 4 and #after == 4 and after[1] == true)
+  check("submit_native: the queue empties", #state.items == 0 and state.submitting == nil)
+  check("submit_native: results", results and #results == 4 and results[3].ok)
+  state, _, _, after, results = run(false)
+  check("submit_native: a failure keeps the whole queue", #state.items == 4 and after[1] == false)
+  check("submit_native: every item failed with the error", results[1].err == "nope" and results[4].err == "nope")
 end
 
 print(fails == 0 and "test-review-batch: all cases pass" or ("test-review-batch: " .. fails .. " unexpected"))

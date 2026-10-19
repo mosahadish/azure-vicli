@@ -11,6 +11,7 @@
 --
 -- Usage: luajit test-editor.lua <editor.lua path>
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-editor.lua <editor.lua path>")
 local M = dofile(path)
@@ -106,6 +107,8 @@ check("format_title: reply names the author", M.format_title("reply", { author =
 check("format_title: reply falls back when author unknown", M.format_title("reply", {}) == "Reply \u{00B7} ?")
 check("format_title: edit", M.format_title("edit", {}) == "Edit comment")
 check("format_title: workitem", M.format_title("workitem", { id = 123 }) == "Comment \u{00B7} #123")
+check("format_title: description", M.format_title("description", { id = 39 }) == "Description \u{00B7} #39")
+check("format_title: a new item's description", M.format_title("description", {}) == "Description \u{00B7} new")
 check("format_title: unknown kind falls back to a generic title", M.format_title("nonsense", {}) == "Comment")
 
 -- --- compute_height -----------------------------------------------------------

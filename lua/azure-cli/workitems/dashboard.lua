@@ -17,6 +17,7 @@
 --   gp     set the item's priority
 --   ge     edit the item's title
 --   gi     move the item to another sprint of the quarter
+--   gU     move the item under another parent, or off its own (a picker)
 --   gl     link a pull request to the item under the cursor
 --   gR     open a linked pull request (in the reviewer, else the browser)
 --   [ ]    jump to the previous / next sprint in the quarter (also <S-Tab>/<Tab>)
@@ -27,17 +28,20 @@
 --   q      quit
 --   ?      show this help
 --
--- M.open() (re)builds this dashboard - called by lua/azure-cli/init.lua's
--- open_workitems() and home.lua, which keeps it in a tab of its own next
--- to the PR dashboard and the Agents screen (W / P / A switch).
+-- M.open(host) (re)builds this dashboard - called by lua/azure-cli/init.lua's
+-- open_workitems()/open_issues() and home.lua, which keeps it in a tab of
+-- its own next to the PR dashboard and the Agents screen (W / P / A switch,
+-- and I when a GitHub account has issues:). `host` picks the board
+-- (workitems/board.lua): "azure" (the default) is W, Azure DevOps work
+-- items; "github" is I, a GitHub account's issues in its Projects v2
+-- project - the same screen, with that board's caches, provider calls,
+-- words and keys.
 local CONFIG = require("azure-cli.config")
 local STATE = require("azure-cli.state")
-local RPC = require("azure-cli.rpc")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
-local STATE_DIALOG = require("azure-cli.workitems.state_dialog")
 local LINKED_PRS = require("azure-cli.workitems.linked_prs")
-local DETAIL = require("azure-cli.workitems.detail")
+local BOARD = require("azure-cli.workitems.board")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 -- Shared housekeeping helpers - see shell.lua; the PR dashboard, the
@@ -46,14 +50,17 @@ local SHELL = require("azure-cli.shell")
 
 local M = {}
 
-function M.open()
+function M.open(host)
 
-local env    = vim.env
--- Data-provider argv (python azure-cli.py) every work-item fetch/action in
--- this dashboard runs, replacing wi-list.sh/wi-detail.sh/wi-state.sh/
--- wi-edit.sh entirely. The builder lives in config.lua next to
--- provider_cmd() now; this file and workitems/view.lua had the same copy.
-local provider_argv = CONFIG.provider_argv
+-- The board this screen shows. Everything it caches or hooks lives in
+-- S (STATE itself on Azure), every provider call goes through B.run, and
+-- B.ref(item) is what those calls take for an item.
+local B = BOARD.get(host)
+local S = B.state
+local WORDS = B.words
+local STATE_DIALOG = require("azure-cli.workitems.state_dialog").for_board(B)
+local DETAIL = require("azure-cli.workitems.detail").for_board(B)
+local ref = B.ref
 -- There's no local ASSIGNEE any more: ga (assign_item below) sends an empty
 -- submission through as-is, and azure-cli.py resolves that to the real "me"
 -- (work_items: assignee: from config, or the signed-in user) itself - see
@@ -61,15 +68,15 @@ local provider_argv = CONFIG.provider_argv
 -- the PR list doesn't know (AZVICLI_WI_COLLECTION/AZVICLI_WI_PROJECT) is
 -- workitems/linked_prs.lua's M.link now.
 
--- Detail cache shared with workitems/view.lua (same nvim session): id -> {body, ts}.
+-- Detail cache shared with workitems/view.lua (same nvim session): ref -> {body, ts}.
 -- Prefetching the item under the cursor lets the detail tab open instantly.
-local WI_DETAIL_CACHE = STATE.WI_DETAIL_CACHE
+local WI_DETAIL_CACHE = S.WI_DETAIL_CACHE
 local CACHE_TTL = 30  -- seconds a prefetched detail is considered fresh
 
 -- Per-sprint work-item cache keyed by iteration path, plus the quarter's sprint
 -- list, both shared across dashboard swaps so re-entry and tab jumps are instant.
-local WI_SPRINT_ITEMS = STATE.WI_SPRINT_ITEMS   -- path -> { items, ts }
--- STATE.WI_SPRINTS_CACHE = { list, quarter, currentIndex, ts }
+local WI_SPRINT_ITEMS = S.WI_SPRINT_ITEMS   -- path -> { items, ts }
+-- S.WI_SPRINTS_CACHE = { list, quarter, currentIndex, ts }
 local LIST_TTL = 30
 local SPRINTS_TTL = 300
 
@@ -78,7 +85,7 @@ local SPRINTS_TTL = 300
 -- Sections follow work_items.types: (carried on the --wi-list sprints
 -- meta line, see wi_types below); this is only the fallback for a cache
 -- from before that field existed.
-local DEFAULT_TYPES = { "User Story", "Bug" }
+local DEFAULT_TYPES = B.host == "github" and { "Issue" } or { "User Story", "Bug" }
 local wi_types = nil
 local function plural(t)
   if t:match("[^aeiou]y$") then return t:sub(1, -2) .. "ies" end
@@ -131,10 +138,12 @@ local quarter = ""            -- quarter node label, e.g. "MyProject\\2026\\Q3"
 -- hard-coded tables until then / when the field is never sent.
 local wi_built = STATES.build(nil)
 -- Case-insensitive text filter over id/title/state/assignee (empty = show
--- all); in STATE so it survives a P/W dashboard swap.
-local wi_filter = STATE.wi_filter or ""
+-- all); in S so it survives a P/W dashboard swap.
+local wi_filter = S.wi_filter or ""
 local function item_matches(it, q)
-  if tostring(it.id or ""):find(q, 1, true) then return true end
+  -- "#34" is an id as well as "34".
+  local id_q = q:match("^#(%d+)$") or q
+  if tostring(it.id or ""):find(id_q, 1, true) then return true end
   for _, field in ipairs({ "title", "state", "assignedTo", "type" }) do
     local v = it[field]
     if type(v) == "string" and v:lower():find(q, 1, true) then return true end
@@ -145,17 +154,18 @@ end
 -- remembered across sessions in stdpath("data")/azure-cli-workitems.json.
 -- What's under the listed items (usually Tasks, often someone else's) is
 -- fetched after every list load either way, since the progress column
--- ("2/3 done") needs it too: STATE.WI_TREE_KIDS[sprint path] = { id ->
--- list record with parentId }. za/zR/zM fold parents (STATE.wi_tree_folded,
--- id -> true, for the session).
+-- ("2/3 done") needs it too: S.WI_TREE_KIDS[sprint path] = { id ->
+-- list record with parentId }. za/zR/zM fold parents (S.wi_tree_folded,
+-- id -> true, for the session). Each board remembers its own tree flag.
 local UI_STATE_FILE = vim.fn.stdpath("data") .. "/azure-cli-workitems.json"
-if STATE.wi_tree == nil then
-  STATE.wi_tree = SHELL.read_json(UI_STATE_FILE, {}).tree == true
+local TREE_KEY = B.host == "github" and "issues_tree" or "tree"
+if S.wi_tree == nil then
+  S.wi_tree = SHELL.read_json(UI_STATE_FILE, {})[TREE_KEY] == true
 end
-local wi_tree = STATE.wi_tree
-local tree_kids = STATE.WI_TREE_KIDS
-STATE.wi_tree_folded = STATE.wi_tree_folded or {}
-local folded = STATE.wi_tree_folded
+local wi_tree = S.wi_tree
+local tree_kids = S.WI_TREE_KIDS
+S.wi_tree_folded = S.wi_tree_folded or {}
+local folded = S.wi_tree_folded
 local focus_id                -- render() lands the cursor here once (za on a child)
 local load_children           -- forward decl: fetches what's under the listed items
 local prefetch_state_meta     -- forward decl: warms state/reason caches
@@ -279,13 +289,13 @@ end
 -- dashboard toggles a filter/mode the way the PR dashboard or reviewer do).
 local function set_wi_winbar()
   if not (win and vim.api.nvim_win_is_valid(win)) then return end
-  local parts = { "Work items" }
+  local parts = { WORDS.Items }
   local sp = sprints[active_index]
   if sp then
     local label = sp.label or ("Sprint " .. active_index)
     local range = short_range(sp)
     parts[#parts + 1] = range and (label .. " (" .. range .. ")") or label
-    parts[#parts + 1] = #items .. " items"
+    parts[#parts + 1] = #items .. " " .. (B.host == "github" and WORDS.items or "items")
   end
   local cache = sp and WI_SPRINT_ITEMS[sp.path]
   if cache and cache.ts then
@@ -405,13 +415,13 @@ local function render()
   -- each as wide as its widest entry, and absent when no listed item has one.
   local pr_w, prog_w = 0, 0
   for _, it in ipairs(items) do
-    pr_w = math.max(pr_w, #LINKED_PRS.marker(it.pullRequests))
+    pr_w = math.max(pr_w, #LINKED_PRS.marker(it.pullRequests, B.host))
     prog_w = math.max(prog_w, #progress_text(it))
   end
   local function pr_col(it)
     local s = ""
     if prog_w > 0 then s = string.format("%-" .. prog_w .. "s ", progress_text(it)) end
-    if pr_w > 0 then s = s .. string.format("%-" .. pr_w .. "s ", LINKED_PRS.marker(it.pullRequests)) end
+    if pr_w > 0 then s = s .. string.format("%-" .. pr_w .. "s ", LINKED_PRS.marker(it.pullRequests, B.host)) end
     return s
   end
   -- The tree's fold glyph in front of an item with children: ▸ folded, ▾ open.
@@ -433,7 +443,7 @@ local function render()
         right = (type(k.priority) == "number" and ("P" .. k.priority) or "  ") .. " " .. pr_col(k)
           .. (k.changedHuman or "")
       else
-        local pg, pm = progress_text(k), LINKED_PRS.marker(k.pullRequests)
+        local pg, pm = progress_text(k), LINKED_PRS.marker(k.pullRequests, B.host)
         right = (pg ~= "" and (pg .. "  ") or "") .. (pm ~= "" and (pm .. "  ") or "")
           .. ((k.assignedTo and k.assignedTo ~= "") and k.assignedTo or "unassigned")
       end
@@ -478,14 +488,16 @@ local function render()
   end
 
   if vim.tbl_isempty(row_item) then
+    local sp = sprints[active_index]
     if loading then
-      lines[#lines + 1] = "Loading work items…"
+      lines[#lines + 1] = "Loading " .. WORDS.items .. "…"
     elseif wi_filter ~= "" then
-      lines[#lines + 1] = 'No work items match "' .. wi_filter .. '"  (/ then <Esc> clears the filter).'
+      lines[#lines + 1] = "No " .. WORDS.items .. ' match "' .. wi_filter .. '"  (/ then <Esc> clears the filter).'
     else
-      lines[#lines + 1] = "No work items assigned to you in "
-        .. ((sprints[active_index] and sprints[active_index].label) or "this sprint") .. "."
-      lines[#lines + 1] = "  n creates one here \u{00B7} ] / [ other sprints \u{00B7} gO edits work_items.assignee/types"
+      lines[#lines + 1] = "No " .. WORDS.items .. (BOARD.everyones(B) and " in " or " assigned to you in ")
+        .. ((sp and sp.label) or ("this " .. B.sprint_word(sp))) .. "."
+      lines[#lines + 1] = "  n creates one here \u{00B7} ] / [ other " .. WORDS.sprints .. " \u{00B7} "
+        .. WORDS.config_hint
     end
   end
 
@@ -601,10 +613,10 @@ local function render()
           lnum, gs_ - 1, ge_)
       end
       local prs = rit and rit.pullRequests
-      local ps, pe = LINKED_PRS.marker_range(line, LINKED_PRS.marker(prs))
+      local ps, pe = LINKED_PRS.marker_range(line, LINKED_PRS.marker(prs, B.host))
       if ps then
-        vim.api.nvim_buf_add_highlight(buf, ns, LINKED_PRS.marker_group(LINKED_PRS.listed(prs[1].id)),
-          lnum, ps - 1, pe)
+        vim.api.nvim_buf_add_highlight(buf, ns,
+          LINKED_PRS.marker_group(LINKED_PRS.listed(prs[1].id, prs[1], B.host)), lnum, ps - 1, pe)
       end
     end
   end
@@ -650,7 +662,7 @@ local function prefetch(id)
   if prefetching[id] then return end
   prefetching[id] = true
   local out = {}
-  RPC.run(provider_argv("--wi-detail", id), {
+  B.run({ "--wi-detail", id }, {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
@@ -700,7 +712,7 @@ local function load(silent, force)
   end
 
   local out, err = {}, {}
-  RPC.run(provider_argv("--wi-list", "items", path), {
+  B.run({ "--wi-list", "items", path }, {
     stdout_buffered = true,
     stderr_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
@@ -711,7 +723,7 @@ local function load(silent, force)
       if code ~= 0 then
         local LOG = require("azure-cli.log")
         local raw = LOG.join_output(out, err)
-        LOG.record("work items", raw)
+        LOG.record(WORDS.items, raw)
         if silent and cache and cache.items then
           notify("Refresh failed: " .. LOG.summary(raw, 60) .. "  (r to retry, :AzureCli log)", vim.log.levels.WARN)
           return
@@ -719,7 +731,7 @@ local function load(silent, force)
         if still and vim.api.nvim_buf_is_valid(buf) then
           loading = false
           local lines = { build_tabbar(), "" }
-          vim.list_extend(lines, LOG.failure_lines("Failed to load work items (exit " .. code .. "):", raw))
+          vim.list_extend(lines, LOG.failure_lines("Failed to load " .. WORDS.items .. " (exit " .. code .. "):", raw))
           vim.bo[buf].modifiable = true
           vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
           vim.bo[buf].modifiable = false
@@ -727,6 +739,16 @@ local function load(silent, force)
         return
       end
       local fresh = parse_items(out)
+      -- GitHub's project listing lags behind a create: keep what n made
+      -- here a few minutes, until the listing has it too.
+      local made = S.WI_CREATED and S.WI_CREATED[path]
+      if made then
+        local have = {}
+        for _, it in ipairs(fresh) do have[ref(it)] = true end
+        for r, m in pairs(made) do
+          if have[r] or os.time() - m.ts > 300 then made[r] = nil else fresh[#fresh + 1] = m.item end
+        end
+      end
       WI_SPRINT_ITEMS[path] = { items = fresh, ts = os.time() }
       if still then
         items = fresh
@@ -764,7 +786,7 @@ local function load_sprints(cb, focus_current)
     if cb then cb() end
   end
 
-  local c = STATE.WI_SPRINTS_CACHE
+  local c = S.WI_SPRINTS_CACHE
   if c and c.list and (os.time() - c.ts) < SPRINTS_TTL then
     sprints = c.list
     quarter = c.quarter or ""
@@ -774,7 +796,7 @@ local function load_sprints(cb, focus_current)
     return
   end
   local out, err = {}, {}
-  RPC.run(provider_argv("--wi-list", "sprints"), {
+  B.run({ "--wi-list", "sprints" }, {
     stdout_buffered = true,
     stderr_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
@@ -787,7 +809,7 @@ local function load_sprints(cb, focus_current)
             local ok, d = pcall(vim.json.decode, line)
             if ok and type(d) == "table" and d._sprints then
               ci = apply_sprints(d)
-              STATE.WI_SPRINTS_CACHE = { list = sprints, quarter = quarter,
+              S.WI_SPRINTS_CACHE = { list = sprints, quarter = quarter,
                                       currentIndex = ci, states = d.states, types = d.types, ts = os.time() }
               break
             end
@@ -802,12 +824,13 @@ local function load_sprints(cb, focus_current)
         loading = false
         local LOG = require("azure-cli.log")
         local raw = LOG.join_output(out, err)
-        LOG.record("work items", raw)
-        -- "No account has a work_items: block" isn't a failure, it's the
-        -- feature being off - say so instead of "exit 1".
-        local title = raw:find("work_items:", 1, true)
-          and "Work items aren't configured yet:"
-          or ("Failed to load work items (exit " .. code .. "):")
+        LOG.record(WORDS.items, raw)
+        -- "No account has a work_items: block" (or, for issues, "issues:
+        -- block") isn't a failure, it's the feature being off - say so
+        -- instead of "exit 1".
+        local title = (raw:find("work_items:", 1, true) or raw:find("issues: block", 1, true))
+          and (WORDS.Items .. " aren't configured yet:")
+          or ("Failed to load " .. WORDS.items .. " (exit " .. code .. "):")
         vim.bo[buf].modifiable = true
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, LOG.failure_lines(title, raw))
         vim.bo[buf].modifiable = false
@@ -866,39 +889,84 @@ local function on_click()
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<LeftMouse>", true, false, true), "n", false)
 end
 
--- Open the work item under the cursor in the read-only detail view (new tab).
+-- Open the work item under the cursor in the read-only detail view: an
+-- inner tab of this screen (innertabs.lua), or the one it's open in.
 local function open_item()
   local it = current_item()
   if not it then return end
-  vim.env.AZVICLI_WI_ID = tostring(it.id)
-  vim.cmd("tabnew")
-  require("azure-cli.workitems.view").open()
+  local INNER = require("azure-cli.innertabs")
+  INNER.open(INNER.item_home(B.host), INNER.item_key(B.host, ref(it)),
+    "#" .. tostring(it.id) .. " " .. tostring(it.title or ""), function()
+      require("azure-cli.workitems.view").open(B, ref(it))
+    end)
+end
+
+-- `id` (a board ref: the id on Azure, owner~repo~n on GitHub) is `it`?
+local function is_item(it, id)
+  return ref(it) == id or tostring(it.id) == id
 end
 
 -- Merge `fields` into every cached record for `id` (the active list plus
 -- every sprint's cache), drop its stale detail cache entry, and re-render.
--- Exposed globally so a change committed from the detail view (wi-view.lua) -
+-- Exposed through S so a change committed from the detail view (wi-view.lua) -
 -- state, assignee, priority or title - updates the dashboard too.
-function STATE.WI_ITEM_CHANGED(id, fields)
+function S.WI_ITEM_CHANGED(id, fields)
   id = tostring(id)
   local function patch(list)
     if not list then return end
     for _, it in ipairs(list) do
-      if tostring(it.id) == id then
+      if is_item(it, id) then
         for k, v in pairs(fields) do it[k] = v end
       end
     end
   end
   patch(items)
   for _, c in pairs(WI_SPRINT_ITEMS or {}) do patch(c.items) end
-  for _, by_id in pairs(tree_kids) do patch({ by_id[id] }) end
+  for _, by_id in pairs(tree_kids) do
+    for _, rec in pairs(by_id) do
+      if is_item(rec, id) then patch({ rec }) end
+    end
+  end
   if WI_DETAIL_CACHE then WI_DETAIL_CACHE[id] = nil end
   if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
 
+-- gU (workitems/parent.lua) moved `ref` (id `id`) from parent `old` to
+-- `new` (nil: none): its parentId and the parents' childIds change in every
+-- cached list, the tree regroups, and what's under the listed items is
+-- fetched again.
+function S.WI_PARENT_CHANGED(ref_, id, old, new)
+  local key, n = tostring(ref_), tonumber(id) or id
+  local function patch(rec)
+    if is_item(rec, key) then rec.parentId = new end
+    local kids = rec.childIds
+    if type(kids) == "table" then
+      if old ~= nil and tostring(rec.id) == tostring(old) then
+        rec.childIds = vim.tbl_filter(function(c) return tostring(c) ~= tostring(id) end, kids)
+      end
+      if new ~= nil and tostring(rec.id) == tostring(new) then
+        rec.childIds = vim.tbl_filter(function(c) return tostring(c) ~= tostring(id) end, rec.childIds)
+        table.insert(rec.childIds, n)
+      end
+    end
+  end
+  for _, it in ipairs(items) do patch(it) end
+  for _, c in pairs(WI_SPRINT_ITEMS or {}) do
+    if c.items ~= items then for _, it in ipairs(c.items or {}) do patch(it) end end
+  end
+  for _, by_id in pairs(tree_kids) do
+    for _, rec in pairs(by_id) do patch(rec) end
+  end
+  focus_id = n
+  if vim.api.nvim_buf_is_valid(buf) then
+    pcall(render)
+    load_children(true)
+  end
+end
+
 -- Backward-compatible alias for the one field the dashboard's own 'gs' uses.
-function STATE.WI_STATE_CHANGED(id, new)
-  STATE.WI_ITEM_CHANGED(id, { state = new })
+function S.WI_STATE_CHANGED(id, new)
+  S.WI_ITEM_CHANGED(id, { state = new })
 end
 
 -- Reflect a work item moving to a different sprint (wi-view.lua's 'gi'):
@@ -906,12 +974,12 @@ end
 -- target sprint's cache so it refetches fresh (with correct ranking/state)
 -- next time that tab is visited. Exposed globally for the same reason as
 -- WI_ITEM_CHANGED above.
-function STATE.WI_ITEM_MOVED(id, from_path, to_path)
+function S.WI_ITEM_MOVED(id, from_path, to_path)
   id = tostring(id)
   local function drop(list)
     if not list then return end
     for i, it in ipairs(list) do
-      if tostring(it.id) == id then table.remove(list, i); return end
+      if is_item(it, id) then table.remove(list, i); return end
     end
   end
   drop(items)
@@ -958,9 +1026,9 @@ local function run_edit(it, cmd_args, describe, apply, on_success)
   local undo = apply and apply(it)
   if undo then render() end
   local out, err = {}, {}
-  local job_args = provider_argv("--wi-edit")
+  local job_args = { "--wi-edit" }
   vim.list_extend(job_args, cmd_args)
-  RPC.run(job_args, {
+  B.run(job_args, {
     detach = true,  -- finish the ADO write even if the user quits before it returns
     stdout_buffered = true,
     stderr_buffered = true,
@@ -978,7 +1046,7 @@ local function run_edit(it, cmd_args, describe, apply, on_success)
         -- Full stderr (often a python traceback) to the session log, one
         -- line here - the same treatment the reviewer's writes have always
         -- had, and what this used to flatten into a single toast instead.
-        local msg = SHELL.job_error("work item #" .. tostring(it.id), code, err)
+        local msg = SHELL.job_error(WORDS.item .. " #" .. tostring(it.id), code, err)
         notify(describe .. " #" .. it.id .. " failed: " .. msg
           .. (undo and " - change reverted." or ""), vim.log.levels.ERROR)
       end
@@ -986,12 +1054,12 @@ local function run_edit(it, cmd_args, describe, apply, on_success)
   })
 end
 
--- Poke any open detail tab for `id` to reload, and drop its stale cache entry,
--- after a field committed here from the dashboard.
+-- Poke any open detail tab for `id` (a ref) to reload, and drop its stale
+-- cache entry, after a field committed here from the dashboard.
 local function nudge_detail(id)
   id = tostring(id)
   if WI_DETAIL_CACHE then WI_DETAIL_CACHE[id] = nil end
-  local reload = STATE.WI_VIEW_RELOAD and STATE.WI_VIEW_RELOAD[id]
+  local reload = S.WI_VIEW_RELOAD and S.WI_VIEW_RELOAD[id]
   if reload then vim.schedule(reload) end
 end
 
@@ -1002,12 +1070,12 @@ end
 -- per session (--wi-list members) and kept in STATE; cb(list) with an
 -- empty list when the call fails, so the picker degrades to typing.
 local function fetch_members(cb)
-  if STATE.WI_MEMBERS then
-    cb(STATE.WI_MEMBERS)
+  if S.WI_MEMBERS then
+    cb(S.WI_MEMBERS)
     return
   end
   local out = {}
-  RPC.run(provider_argv("--wi-list", "members"), {
+  B.run({ "--wi-list", "members" }, {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)
@@ -1020,7 +1088,7 @@ local function fetch_members(cb)
           end
         end
         table.sort(members, function(a, b) return a.name:lower() < b.name:lower() end)
-        STATE.WI_MEMBERS = members
+        S.WI_MEMBERS = members
       end
       vim.schedule(function() cb(members) end)
     end,
@@ -1029,7 +1097,7 @@ end
 
 -- Runs the assignee picker for `current` (a display name or "") and
 -- calls cb(new_name) - "" meaning "me". Shared with the detail view
--- through STATE.WI_PICK_ASSIGNEE. Team members are listed when the call
+-- through S.WI_PICK_ASSIGNEE. Team members are listed when the call
 -- works; "(me)" and "(type a name…)" are always there.
 local function pick_assignee(current, cb)
   fetch_members(function(members)
@@ -1049,17 +1117,17 @@ local function pick_assignee(current, cb)
     end)
   end)
 end
-STATE.WI_PICK_ASSIGNEE = pick_assignee
+S.WI_PICK_ASSIGNEE = pick_assignee
 
 local function assign_item()
   local it = current_item()
   if not it then return end
   pick_assignee(it.assignedTo or "", function(new)
-    run_edit(it, { "set", tostring(it.id), "assignedTo", new }, "Assigning", function(rec)
+    run_edit(it, { "set", ref(it), "assignedTo", new }, "Assigning", function(rec)
       local prev = rec.assignedTo
       rec.assignedTo = new
       return function() rec.assignedTo = prev end
-    end, function() nudge_detail(it.id) end)
+    end, function() nudge_detail(ref(it)) end)
   end)
 end
 
@@ -1073,11 +1141,11 @@ local function set_priority()
     format = function(p) return "P" .. p end,
     current = function(p) return tostring(p) == tostring(it.priority) end }, function(new)
     if not new then return end
-    run_edit(it, { "set", tostring(it.id), "priority", tostring(new) }, "Setting priority on", function(rec)
+    run_edit(it, { "set", ref(it), "priority", tostring(new) }, "Setting priority on", function(rec)
       local prev = rec.priority
       rec.priority = new
       return function() rec.priority = prev end
-    end, function() nudge_detail(it.id) end)
+    end, function() nudge_detail(ref(it)) end)
   end)
 end
 
@@ -1091,11 +1159,11 @@ local function edit_title()
       notify("Title unchanged.")
       return
     end
-    run_edit(it, { "set", tostring(it.id), "title", new }, "Renaming", function(rec)
+    run_edit(it, { "set", ref(it), "title", new }, "Renaming", function(rec)
       local prev = rec.title
       rec.title = new
       return function() rec.title = prev end
-    end, function() nudge_detail(it.id) end)
+    end, function() nudge_detail(ref(it)) end)
   end)
 end
 
@@ -1107,8 +1175,9 @@ end
 local function move_sprint_item()
   local it = current_item()
   if not it then return end
+  local word = B.sprint_word(sprints[active_index])
   if #sprints == 0 then
-    notify("Sprint list not loaded yet.", vim.log.levels.WARN)
+    notify(word:gsub("^%l", string.upper) .. " list not loaded yet.", vim.log.levels.WARN)
     return
   end
   local from_path = sprints[active_index].path
@@ -1117,13 +1186,13 @@ local function move_sprint_item()
     if sp.path ~= from_path then targets[#targets + 1] = sp end
   end
   if #targets == 0 then
-    notify("No other sprint to move to.", vim.log.levels.WARN)
+    notify("No other " .. word .. " to move to.", vim.log.levels.WARN)
     return
   end
-  PROMPT.select({ prompt = "Move #" .. it.id .. " to sprint", items = targets,
+  PROMPT.select({ prompt = "Move #" .. it.id .. " to " .. word, items = targets,
     format = function(sp) return sp.label or sp.name or sp.path end }, function(target)
   if not target then return end
-  run_edit(it, { "set", tostring(it.id), "iteration", target.path }, "Moving", function(rec)
+  run_edit(it, { "set", ref(it), "iteration", target.path }, "Moving", function(rec)
     local at
     for i, x in ipairs(items) do
       if x == rec then at = i; break end
@@ -1144,7 +1213,7 @@ local function move_sprint_item()
         table.insert(cache.items, math.min(cache_at, #cache.items + 1), rec)
       end
     end
-  end, function() nudge_detail(it.id) end)
+  end, function() nudge_detail(ref(it)) end)
   end)
 end
 
@@ -1155,12 +1224,17 @@ end
 -- collection/project. Same flow as wi-view.lua's own gl.
 -- Offers the cached PR list (the dashboard's own, prefetched in the
 -- background) as a picker before falling back to typing an id, then
--- calls cb(pr_id_string). Shared with the detail view via STATE.
+-- calls cb(pr_id_string, record) (record nil for a typed id). Only this
+-- board's host's PRs: an issue links GitHub PRs. Shared with the detail
+-- view via the board's state.
 local function pick_pr(prompt, cb)
   local cache = STATE.PR_LIST_CACHE and STATE.PR_LIST_CACHE.prs or {}
   local items = {}
   for _, pr in ipairs(cache) do
-    items[#items + 1] = { label = "!" .. tostring(pr.id) .. "  " .. (pr.title or "") .. "  (" .. (pr.repo or "") .. ")", id = tostring(pr.id) }
+    if (pr.host == "github") == (B.host == "github") then
+      items[#items + 1] = { label = LINKED_PRS.label(pr, B.host) .. "  " .. (pr.title or "") .. "  (" .. (pr.repo or "") .. ")",
+        id = tostring(pr.id), rec = pr }
+    end
   end
   local function typed()
     PROMPT.input({ prompt = prompt .. " (PR id):" }, function(t)
@@ -1173,18 +1247,23 @@ local function pick_pr(prompt, cb)
   end
   items[#items + 1] = { label = "(type a PR id\u{2026})", typed = true }
   UI.pick_popup({ title = prompt, items = items, action = "link" }, function(choice)
-    if choice.typed then typed() else cb(choice.id) end
+    if choice.typed then typed() else cb(choice.id, choice.rec) end
   end)
 end
-STATE.WI_PICK_PR = pick_pr
+S.WI_PICK_PR = pick_pr
 
+-- gl/gL where the board can link PRs (B.caps.links) - on GitHub a "Closes
+-- #n" line in the PR's description (github_issues.py).
 local function link_pr_item()
   local it = current_item()
   if not it then return end
   local id = tostring(it.id)
   -- linked_prs.lua links it and updates every screen showing the link.
-  pick_pr("Link a pull request to #" .. id, function(pr_id)
-    if pr_id ~= nil then LINKED_PRS.link(id, pr_id, it) end
+  pick_pr("Link a pull request to #" .. id, function(pr_id, rec)
+    if pr_id ~= nil then
+      LINKED_PRS.link(ref(it), pr_id, it, rec and { org = rec.org, project = rec.project, repo = rec.repo } or nil,
+        B.host == "github" and B or nil)
+    end
   end)
 end
 
@@ -1194,15 +1273,16 @@ local function unlink_pr_item()
   local it = current_item()
   if not it then return end
   local id = tostring(it.id)
+  local key = ref(it)
   local function with_detail(cb)
-    local c = WI_DETAIL_CACHE[id]
+    local c = WI_DETAIL_CACHE[key]
     if c and c.body then
       local ok, data = pcall(vim.json.decode, c.body)
       if ok and type(data) == "table" then cb(data) return end
     end
     notify("Loading #" .. id .. " \u{2026}")
     local out = {}
-    RPC.run(provider_argv("--wi-detail", id), {
+    B.run({ "--wi-detail", key }, {
       stdout_buffered = true,
       on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
       on_exit = function(_, code)
@@ -1223,10 +1303,10 @@ local function unlink_pr_item()
     end
     local items = {}
     for _, p in ipairs(prs) do
-      items[#items + 1] = { label = "!" .. tostring(p.id) .. ((p.title and p.title ~= "") and ("  " .. p.title) or ""), pr = p }
+      items[#items + 1] = { label = LINKED_PRS.label(p, B.host) .. ((p.title and p.title ~= "") and ("  " .. p.title) or ""), pr = p }
     end
     UI.pick_popup({ title = "Unlink a PR from #" .. id, items = items, action = "unlink" }, function(choice)
-      LINKED_PRS.unlink(id, choice.pr.id, it)
+      LINKED_PRS.unlink(key, choice.pr.id, it, B.host == "github" and B or nil, choice.pr.repo)
     end)
   end)
 end
@@ -1235,11 +1315,11 @@ end
 local function set_wi_filter()
   local function apply(text)
     wi_filter = vim.trim(text or "")
-    STATE.wi_filter = wi_filter
+    S.wi_filter = wi_filter
     render()
   end
   UI.filter_prompt({
-    win = win, prompt = "Filter work items (id, title, state, assignee)", default = wi_filter,
+    win = win, prompt = "Filter " .. WORDS.items .. " (id, title, state, assignee)", default = wi_filter,
     on_change = apply, on_submit = apply,
     on_cancel = function() apply("") end,
   })
@@ -1251,18 +1331,69 @@ local function new_types() return wi_types or DEFAULT_TYPES end
 -- Create a new work item in the active sprint. Prompts for type, then title,
 -- then (only when the cursor is on an item) whether to parent it under that
 -- item. There is no id to insert optimistically until the server answers, so
--- this just notifies and reloads the active sprint's list on success.
+-- this notifies and, on success, reloads the active sprint's list - on
+-- GitHub, whose project listing lags, adds the new issue itself (add_created).
+-- A new issue into sprint `path`'s list, read straight from the issue
+-- (--wi-list ids), not from the project's listing, which shows it only
+-- some time after the create. Kept in S.WI_CREATED until it does (load).
+local function add_created(path, r)
+  local out = {}
+  B.run({ "--wi-list", "ids", r }, {
+    stdout_buffered = true,
+    on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+    on_exit = function(_, code)
+      local got = code == 0 and parse_items(out)[1] or nil
+      if not got then return load(false, true) end
+      S.WI_CREATED = S.WI_CREATED or {}
+      S.WI_CREATED[path] = S.WI_CREATED[path] or {}
+      S.WI_CREATED[path][ref(got)] = { item = got, ts = os.time() }
+      local cache = WI_SPRINT_ITEMS[path]
+      if cache and cache.items then
+        cache.items = vim.tbl_filter(function(it) return ref(it) ~= ref(got) end, cache.items)
+        cache.items[#cache.items + 1] = got
+      end
+      if sprints[active_index] and sprints[active_index].path == path and vim.api.nvim_buf_is_valid(buf) then
+        items = cache and cache.items or items
+        focus_id = got.id
+        render()
+        load_children(true)
+      end
+    end,
+  })
+end
+
 local function new_item()
   local under = current_item()
   local sp = sprints[active_index]
   if not sp then
-    notify("Sprint not loaded yet.", vim.log.levels.WARN)
+    notify(B.sprint_word(sp):gsub("^%l", string.upper) .. " not loaded yet.", vim.log.levels.WARN)
     return
   end
-  local function create(wtype, title, parent_id)
+  -- body: an issue's description, written once it exists (create takes
+  -- none - the chat's create_work_item does the same), before it's listed.
+  local function write_body(rec, body, done)
+    if (body or "") == "" then return done() end
+    local key = rec.key or tostring(rec.id)
+    local err = {}
+    B.run({ "--wi-edit", "set", key, "description", body }, {
+      detach = true,
+      stdout_buffered = true,
+      stderr_buffered = true,
+      on_stderr = function(_, d) if d then vim.list_extend(err, d) end end,
+      on_exit = function(_, code)
+        if code ~= 0 then
+          local msg = table.concat(vim.tbl_filter(function(s) return s ~= "" end, err), " ")
+          notify("Created #" .. tostring(rec.id) .. ", but its description wasn't saved: " .. msg,
+            vim.log.levels.WARN)
+        end
+        done()
+      end,
+    })
+  end
+  local function create(wtype, title, parent_id, body)
   notify("Creating " .. wtype .. " \u{2026}")
   local out, err = {}, {}
-  RPC.run(provider_argv("--wi-edit", "create", wtype, title, parent_id, sp.path), {
+  B.run({ "--wi-edit", "create", wtype, title, parent_id, sp.path }, {
     detach = true,
     stdout_buffered = true,
     stderr_buffered = true,
@@ -1273,7 +1404,14 @@ local function new_item()
         local line = table.concat(vim.tbl_filter(function(s) return s ~= "" end, out), "")
         local ok, rec = pcall(vim.json.decode, line)
         notify("Created #" .. tostring(ok and type(rec) == "table" and rec.id or "?") .. ".")
-        if sprints[active_index] and sprints[active_index].path == sp.path then
+        -- GitHub: the issue exists, but a later step (adding it to the
+        -- project, its iteration, its parent) didn't take - say which.
+        if ok and type(rec) == "table" and rec.warning then
+          notify(rec.warning, vim.log.levels.WARN)
+        end
+        if B.host == "github" and ok and type(rec) == "table" and rec.id then
+          write_body(rec, body, function() add_created(sp.path, rec.key or tostring(rec.id)) end)
+        elseif sprints[active_index] and sprints[active_index].path == sp.path then
           load(false, true)
         end
       else
@@ -1283,23 +1421,40 @@ local function new_item()
     end,
   })
   end
-  PROMPT.select({ prompt = "New work item type", items = new_types() }, function(wtype)
+  -- Where the board can (B.caps.description): the body in the comment
+  -- editor; an empty one, or q, creates the issue without a body.
+  local function with_body(wtype, title, parent_id)
+    if not B.caps.description then return create(wtype, title, parent_id) end
+    local EDITOR = require("azure-cli.editor")
+    EDITOR.open({
+      title = EDITOR.format_title("description", {}),
+      anchor = "center",
+      allow_empty = true,
+      on_submit = function(body) create(wtype, title, parent_id, body) end,
+      on_cancel = function() create(wtype, title, parent_id) end,
+    })
+  end
+  local function with_type(wtype)
     if not wtype then return end
     PROMPT.input({ prompt = "Title:" }, function(title)
       if not title then return end
       if not under then
-        create(wtype, title, "")
+        with_body(wtype, title, "")
         return
       end
       PROMPT.select({ prompt = "Parent", items = {
         { label = "none", id = "" },
-        { label = "child of #" .. under.id .. " " .. (under.title or ""), id = tostring(under.id) },
+        { label = "child of #" .. under.id .. " " .. (under.title or ""), id = ref(under) },
       } }, function(p)
         if not p then return end
-        create(wtype, title, p.id)
+        with_body(wtype, title, p.id)
       end)
     end)
-  end)
+  end
+  -- One type (a repository without issue types: just "Issue") - nothing to ask.
+  local types = new_types()
+  if B.host == "github" and #types == 1 then return with_type(types[1]) end
+  PROMPT.select({ prompt = "New " .. WORDS.item .. " type", items = types }, with_type)
 end
 
 -- Pre-warm the workflow caches in the background so 'gs' is instant: for
@@ -1327,7 +1482,7 @@ prefetch_neighbors = function()
       local c = WI_SPRINT_ITEMS[sp.path]
       if not (c and (os.time() - c.ts) < LIST_TTL) then
         local out = {}
-        RPC.run(provider_argv("--wi-list", "items", sp.path), {
+        B.run({ "--wi-list", "items", sp.path }, {
           stdout_buffered = true,
           on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
           on_exit = function(_, code)
@@ -1387,7 +1542,7 @@ load_children = function(all)
   local ids, direct, listed = {}, {}, {}
   for _, it in ipairs(items) do
     listed[tostring(it.id)] = true
-    ids[#ids + 1] = tostring(it.id)
+    ids[#ids + 1] = ref(it)
   end
   for _, it in ipairs(items) do
     for _, cid in ipairs(it.childIds or {}) do
@@ -1417,7 +1572,7 @@ load_children = function(all)
         end
         redraw()
       else
-        notify("Couldn't load what's under the work items: " .. tostring(err), vim.log.levels.WARN)
+        notify("Couldn't load what's under the " .. WORDS.items .. ": " .. tostring(err), vim.log.levels.WARN)
       end
       if kids_again ~= nil then
         local again = kids_again
@@ -1496,18 +1651,25 @@ local function fold_all(fold)
   render()
 end
 
+-- gU: move the item under the cursor under another parent, or off its
+-- own (workitems/parent.lua, shared with the item view).
+local function set_parent_item()
+  local it = current_item()
+  if it then require("azure-cli.workitems.parent").choose(B, it) end
+end
+
 -- gR: open a pull request linked to the item under the cursor.
 local function open_linked_pr()
   local it = current_item()
-  if it then LINKED_PRS.choose(it.pullRequests, it.id) end
+  if it then LINKED_PRS.choose(it.pullRequests, ref(it), B, tostring(it.id)) end
 end
 
 -- T: flip the tree view, and remember it for next time.
 local function toggle_tree()
   wi_tree = not wi_tree
-  STATE.wi_tree = wi_tree
+  S.wi_tree = wi_tree
   local saved = SHELL.read_json(UI_STATE_FILE, {})
-  saved.tree = wi_tree
+  saved[TREE_KEY] = wi_tree
   SHELL.write_json(UI_STATE_FILE, saved)
   render()
   load_children(false)
@@ -1516,94 +1678,139 @@ end
 -- Show this dashboard's keys in a float.
 -- Ordered { action, desc } pairs for the `?` popup - real key(s) resolved
 -- through KEYS every time (see keys.lua's M.line), never hard-coded.
+local SPRINT, QUARTER = WORDS.sprint, WORDS.quarter
 local WORKITEMS_HELP = {
   "Navigate",
-  { "open", "open the item: parent, children, description" },
+  { "open", "open the " .. WORDS.item .. ": parent, children, description" },
+  { "first_row", "the first " .. WORDS.item .. " (a count: that row)" },
+  { "last_row", "the last " .. WORDS.item .. " (a count: that row)" },
   { "filter", "filter by id, title, state or assignee (Esc clears)" },
-  { "tree", "tree view: everything under each item, indented (remembered)" },
-  { "toggle_fold", "tree: fold/unfold the item's children (on a child: fold its parent)" },
+  { "tree", "tree view: everything under each " .. WORDS.item .. ", indented (remembered)" },
+  { "toggle_fold", "tree: fold/unfold the " .. WORDS.item .. "'s children (on a child: fold its parent)" },
   { "expand_all", "tree: unfold everything" },
   { "collapse_all", "tree: fold everything" },
-  { "prev_sprint", "previous sprint" },
-  { "next_sprint", "next sprint" },
-  { "goto_sprint_n", "jump to sprint n (prefix with a count)" },
-  { "click", "click a tab in the tab bar to jump straight to that sprint" },
-  "This item",
-  { "state", "change the item's state (a popup; can set its children too; on a visual selection: all of them)" },
-  { "assign", "assign the item under the cursor" },
-  { "priority", "set the item's priority" },
-  { "edit_title", "edit the item's title" },
-  { "move_sprint", "move the item to another sprint of the quarter" },
-  { "link_pr", "link a pull request to the item under the cursor" },
+  { "prev_sprint", "previous " .. SPRINT },
+  { "next_sprint", "next " .. SPRINT },
+  { "goto_sprint_n", "jump to " .. SPRINT .. " n (prefix with a count)" },
+  { "click", "click a tab in the tab bar to jump straight to that " .. SPRINT },
+  "This " .. WORDS.item,
+  { "state", "change the " .. WORDS.item .. "'s state (a popup; can set its children too; on a visual selection: all of them)" },
+  { "assign", "assign the " .. WORDS.item .. " under the cursor" },
+  { "priority", "set the " .. WORDS.item .. "'s priority" },
+  { "edit_title", "edit the " .. WORDS.item .. "'s title" },
+  { "move_sprint", "move the " .. WORDS.item .. " to another " .. SPRINT .. " of the " .. QUARTER },
+  { "set_parent", "move the " .. WORDS.item .. " under another parent, or off its own (a picker)" },
+  { "link_pr", "link a pull request to the " .. WORDS.item .. " under the cursor" },
   { "open_pr", "open a linked pull request (reviewer, or browser if it isn't in your PR list)" },
-  { "unlink_pr", "unlink a pull request from the item under the cursor" },
-  { "copy_link", "copy the item's link" },
+  { "unlink_pr", "unlink a pull request from the " .. WORDS.item .. " under the cursor" },
+  { "copy_link", "copy the " .. WORDS.item .. "'s link" },
   { "browser", "open in the browser" },
   "Agents",
-  { "plan_agents", "an agent plans this work item (in visual mode: one agent per selected item)" },
+  { "plan_agents", "an agent plans this " .. WORDS.item .. " (in visual mode: one agent per selected item)" },
   { "agents", "every plan's agent: what each is doing (the Agents screen)" },
-  { "chat", "the chat, about the item under the cursor" },
+  { "chat_input", "type in the chat, about the " .. WORDS.item .. " under the cursor (opens the panel; a draft stays)" },
+  { "chat_selection", "in visual mode: ask the chat about the selected lines" },
   "Session",
-  { "new", "new work item: type, title, and parent (if the cursor is on one)" },
+  { "new", "new " .. WORDS.item .. ": type, title, and parent (if the cursor is on one)" },
   { "refresh", "refresh" },
   { "pr_list", "switch to the pull-request dashboard" },
+  { "workitems", "switch to the work-items dashboard" },
+  { "issues", "switch to the issues dashboard (GitHub)" },
   { "config", "open a config file" },
   { "quit", "quit" },
   { "help", "this help" },
+}
+-- What this board doesn't bind (B.caps) stays out of `?` too; so does the
+-- key for the screen you're on, and I until --boards says there are issues.
+local UNBOUND = {
+  link_pr = not B.caps.links, unlink_pr = not B.caps.links,
+  chat_input = not B.caps.chat, chat_selection = not B.caps.chat, plan_agents = not B.caps.plan_agents,
+  workitems = B.host == "azure", issues = B.host == "github" or not BOARD.has_issues(),
 }
 local function show_help()
   local now = {}
   if wi_filter ~= "" then now[#now + 1] = "[filter: " .. wi_filter .. "]" end
   if wi_tree then now[#now + 1] = "[tree]" end
-  UI.open_float(KEYS.help_lines("workitems", "Work-items dashboard keys", WORKITEMS_HELP,
-    { now = now, fixed = { "  j / k       move" } }))
+  UNBOUND.issues = B.host == "github" or not BOARD.has_issues()
+  local help = vim.tbl_filter(function(a) return type(a) == "string" or not UNBOUND[a[1]] end, WORKITEMS_HELP)
+  local title = B.host == "github" and "Issues dashboard keys" or "Work-items dashboard keys"
+  UI.open_float(KEYS.help_lines("workitems", title, help,
+    { now = now, fixed = { "  j / k       move" }, service = WORDS.service }))
 end
 
 buf = vim.api.nvim_create_buf(false, true)
 vim.bo[buf].buftype = "nofile"
-vim.bo[buf].filetype = "azurecli-workitems"
+vim.bo[buf].filetype = B.ft
+-- Neovim's own tab line (plugin mode) shows the buffer's name: "Work
+-- items" / "Issues", not "[Scratch]". (Taken when the screen is open twice.)
+pcall(vim.api.nvim_buf_set_name, buf, WORDS.Items)
+-- What this screen's ↑ keys change, for the key hints (keyhints.lua).
+vim.b[buf].azure_cli_service = WORDS.service
 vim.api.nvim_set_current_buf(buf)
 win = vim.api.nvim_get_current_win()
 UI.plain_window(win, { cursorline = true })
 set_wi_winbar()
 
-KEYS.bind(buf, "workitems", "open", open_item, { desc = "open the item: parent, children, description" })
-KEYS.bind(buf, "workitems", "state", set_state, { desc = "change the item's state" })
-KEYS.bind(buf, "workitems", "state", set_state_selection, { mode = "x", desc = "change the selected items' state" })
-KEYS.bind(buf, "workitems", "new", new_item, { desc = "new work item" })
-KEYS.bind(buf, "workitems", "assign", assign_item, { desc = "assign the item under the cursor" })
-KEYS.bind(buf, "workitems", "priority", set_priority, { desc = "set the item's priority" })
-KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the item's title" })
-KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the item to another sprint" })
-KEYS.bind(buf, "workitems", "link_pr", link_pr_item, { desc = "link a pull request to the item under the cursor" })
-KEYS.bind(buf, "workitems", "unlink_pr", unlink_pr_item, { desc = "unlink a pull request from the item under the cursor" })
+KEYS.bind(buf, "workitems", "open", open_item, { desc = "open the " .. WORDS.item .. ": parent, children, description" })
+KEYS.bind(buf, "workitems", "state", set_state, { desc = "change the " .. WORDS.item .. "'s state" })
+KEYS.bind(buf, "workitems", "state", set_state_selection, { mode = "x", desc = "change the selected " .. WORDS.items .. "' state" })
+KEYS.bind(buf, "workitems", "new", new_item, { desc = "new " .. WORDS.item })
+KEYS.bind(buf, "workitems", "assign", assign_item, { desc = "assign the " .. WORDS.item .. " under the cursor" })
+KEYS.bind(buf, "workitems", "priority", set_priority, { desc = "set the " .. WORDS.item .. "'s priority" })
+KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the " .. WORDS.item .. "'s title" })
+KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the " .. WORDS.item .. " to another " .. SPRINT })
+KEYS.bind(buf, "workitems", "set_parent", set_parent_item, { desc = "move the " .. WORDS.item .. " under another parent" })
+if B.caps.links then
+  KEYS.bind(buf, "workitems", "link_pr", link_pr_item, { desc = "link a pull request to the " .. WORDS.item .. " under the cursor" })
+  KEYS.bind(buf, "workitems", "unlink_pr", unlink_pr_item, { desc = "unlink a pull request from the " .. WORDS.item .. " under the cursor" })
+end
 KEYS.bind(buf, "workitems", "open_pr", open_linked_pr, { desc = "open a linked pull request" })
-KEYS.bind(buf, "workitems", "toggle_fold", toggle_fold, { desc = "fold/unfold the item's children" })
+KEYS.bind(buf, "workitems", "toggle_fold", toggle_fold, { desc = "fold/unfold the " .. WORDS.item .. "'s children" })
 KEYS.bind(buf, "workitems", "expand_all", function() fold_all(false) end, { desc = "unfold everything" })
 KEYS.bind(buf, "workitems", "collapse_all", function() fold_all(true) end, { desc = "fold everything" })
-KEYS.bind(buf, "workitems", "tree", toggle_tree, { desc = "tree view: each item's children under it" })
+KEYS.bind(buf, "workitems", "tree", toggle_tree, { desc = "tree view: each " .. WORDS.item .. "'s children under it" })
 KEYS.bind(buf, "workitems", "filter", set_wi_filter, { desc = "filter by id, title, state or assignee" })
 KEYS.bind(buf, "workitems", "browser", open_browser, { desc = "open in the browser" })
 KEYS.bind(buf, "workitems", "refresh", function() load(false, true) end, { desc = "refresh" })
--- next_sprint/prev_sprint default to a two-key list ("]"/"<Tab>" and
--- "["/"<S-Tab>") - KEYS.bind binds every key in that list to the same fn.
-KEYS.bind(buf, "workitems", "next_sprint", function() goto_sprint(1) end, { desc = "next sprint" })
-KEYS.bind(buf, "workitems", "prev_sprint", function() goto_sprint(-1) end, { desc = "previous sprint" })
-KEYS.bind(buf, "workitems", "goto_sprint_n", goto_sprint_count, { desc = "jump to sprint n" })
-KEYS.bind(buf, "workitems", "click", on_click, { desc = "click a tab in the tab bar to jump to that sprint" })
+-- next_sprint/prev_sprint: <Tab> / <S-Tab> (a bare ] / [ would make the
+-- inner-tab keys ]r / [r wait); a list of keys binds each to the same fn.
+KEYS.bind(buf, "workitems", "next_sprint", function() goto_sprint(1) end, { desc = "next " .. SPRINT })
+KEYS.bind(buf, "workitems", "prev_sprint", function() goto_sprint(-1) end, { desc = "previous " .. SPRINT })
+KEYS.bind(buf, "workitems", "goto_sprint_n", goto_sprint_count, { desc = "jump to " .. SPRINT .. " n" })
+KEYS.bind(buf, "workitems", "click", on_click, { desc = "click a tab in the tab bar to jump to that " .. SPRINT })
 KEYS.bind(buf, "workitems", "pr_list", open_pr_list, { desc = "switch to the pull-request dashboard" })
-KEYS.bind(buf, "workitems", "copy_link", yank_link, { desc = "copy the item's link" })
+-- W from the issues, I from the work items (once --boards says there are
+-- issues at all: an Azure-only setup never gets an I).
+if B.host == "github" then
+  KEYS.bind(buf, "workitems", "workitems", function() require("azure-cli.home").go("workitems") end,
+    { desc = "switch to the work-items dashboard" })
+else
+  BOARD.enabled(function()
+    if vim.api.nvim_buf_is_valid(buf) then
+      KEYS.bind(buf, "workitems", "issues", function() require("azure-cli.home").go("issues") end,
+        { desc = "switch to the issues dashboard" })
+    end
+  end)
+end
+KEYS.bind(buf, "workitems", "copy_link", yank_link, { desc = "copy the " .. WORDS.item .. "'s link" })
 KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
--- gq: the chat panel, told about the work item under the cursor.
-require("azure-cli.chat").bind_toggle(buf, "workitems")
 KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
+-- i and gP where the board has them (B.caps): on GitHub the chat's board
+-- tools take board = "github", which the snapshot and gP's agents name.
+if B.caps.chat then
+-- i: straight into the chat's input box (the panel opened if it's hidden),
+-- told about the work item under the cursor.
+require("azure-cli.chat").bind_toggle(buf, "workitems")
+end
+if B.caps.plan_agents then
 -- gP: an agent per work item - the one under the cursor, or every one in
 -- the selected rows - each writing its plan (chat/agents.lua).
 KEYS.bind(buf, "workitems", "plan_agents", function()
-  require("azure-cli.chat.agents").start_for_items({ row_item[vim.api.nvim_win_get_cursor(0)[1]] })
-end, { desc = "an agent plans this work item" })
+  require("azure-cli.chat.agents").start_for_items({ row_item[vim.api.nvim_win_get_cursor(0)[1]] }, nil,
+    B.host == "github" and "github" or nil)
+end, { desc = "an agent plans this " .. WORDS.item })
 KEYS.bind(buf, "workitems", "plan_agents", function()
   local a, b = vim.fn.getpos("v")[2], vim.api.nvim_win_get_cursor(0)[1]
   if a > b then a, b = b, a end
@@ -1616,23 +1823,31 @@ KEYS.bind(buf, "workitems", "plan_agents", function()
       items[#items + 1] = it
     end
   end
-  require("azure-cli.chat.agents").start_for_items(items)
-end, { desc = "an agent per selected work item, each planning its item", mode = "x" })
-require("azure-cli.chat.view").register("azurecli-workitems", function(w)
+  require("azure-cli.chat.agents").start_for_items(items, nil, B.host == "github" and "github" or nil)
+end, { desc = "an agent per selected " .. WORDS.item .. ", each planning its item", mode = "x" })
+end
+if B.caps.chat then
+require("azure-cli.chat.view").register(B.ft, function(w)
   local it = row_item[vim.api.nvim_win_get_cursor(w)[1]]
-  local snap = { screen = "work items dashboard" }
+  local snap = { screen = WORDS.screen }
+  if B.host == "github" then snap.board = "github" end
   if type(it) == "table" and it.id then
     snap.work_item = { id = it.id, type = it.type, title = it.title, state = it.state, assigned_to = it.assignedTo }
+    if B.host == "github" then
+      snap.work_item.board, snap.work_item.repo, snap.work_item.key = "github", it.repo, it.key
+    end
   else
-    snap.note = "The cursor isn't on a work item; list_work_items shows the sprint."
+    snap.note = "The cursor isn't on " .. (B.host == "github" and "an issue" or "a work item") .. "; list_work_items"
+      .. (B.host == "github" and " with board = \"github\"" or "") .. " shows the " .. WORDS.sprint .. "."
   end
   return snap
 end)
+end
 -- Same standalone-vs-plugin-tab distinction as the PR dashboard's own quit
 -- key (dashboard.lua) - this dashboard is reached from it by a same-tab
 -- swap ("W"), not a new tab, so quitting from here means the same thing.
 KEYS.bind(buf, "workitems", "quit", function()
-  if STATE.WI_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.WI_REFRESH_TIMER); STATE.WI_REFRESH_TIMER = nil end
+  if S.WI_REFRESH_TIMER then require("azure-cli.poll").stop(S.WI_REFRESH_TIMER); S.WI_REFRESH_TIMER = nil end
   if require("azure-cli").is_standalone() then
     vim.cmd("qa!")
     return
@@ -1645,6 +1860,9 @@ KEYS.bind(buf, "workitems", "quit", function()
   end
 end, { desc = "quit" })
 
+-- gg / G: the first / last item row, not the tab bar or the box's padding.
+require("azure-cli.keyhints").rows(buf, function() return row_item end, "workitems")
+
 -- Prefetch the item under the cursor once movement settles (debounced), so the
 -- detail tab opens from cache instantly.
 local prefetch_timer
@@ -1654,16 +1872,18 @@ vim.api.nvim_create_autocmd("CursorMoved", {
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
     prefetch_timer = vim.fn.timer_start(CONFIG.get().timing.hover_ms, function()
       local it = current_item()
-      if it then prefetch(it.id) end
+      if it then prefetch(ref(it)) end
     end)
   end,
 })
 
 -- Re-centre the table when the terminal is resized. Uses a named augroup
 -- (cleared each time this file is sourced) so W/P swaps don't stack duplicate
--- autocmds across re-luafile's of this script.
+-- autocmds across re-luafile's of this script - one per board, since W and
+-- I are both open.
 vim.api.nvim_create_autocmd("VimResized", {
-  group = vim.api.nvim_create_augroup("AzureCliWiResize", { clear = true }),
+  group = vim.api.nvim_create_augroup(B.host == "github" and "AzureCliIssuesResize" or "AzureCliWiResize",
+    { clear = true }),
   callback = function()
     if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
       render()
@@ -1673,7 +1893,7 @@ vim.api.nvim_create_autocmd("VimResized", {
 
 -- Let wi-view.lua trigger a change-aware refresh when a detail tab is closed;
 -- load(true) only redraws if the list actually changed (no flicker otherwise).
-STATE.WI_REFRESH = function()
+S.WI_REFRESH = function()
   if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
     load_sprints(function() load(true) end, false)
   end
@@ -1682,13 +1902,17 @@ end
 -- Periodic auto-refresh (silent + change-aware). Stop any timer from a previous
 -- swap into this dashboard so timers don't stack across W/P swaps - see
 -- config.lua's timing.poll_seconds for the interval (the same knob the PR
--- dashboard/reviewer polls use).
-if STATE.WI_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.WI_REFRESH_TIMER) end
-STATE.WI_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1000, function()
-  if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
-    load_sprints(function() load(true) end, false)
-  end
-end, { ["repeat"] = -1 })
+-- dashboard/reviewer polls use), and poll.lua for how it slows down while
+-- you're away.
+require("azure-cli.poll").stop(S.WI_REFRESH_TIMER)
+S.WI_REFRESH_TIMER = require("azure-cli.poll").every("wi-board:" .. B.host, {
+  base = function() return CONFIG.get().timing.poll_seconds end,
+  tick = function()
+    if vim.api.nvim_buf_is_valid(buf) and vim.fn.bufwinid(buf) ~= -1 then
+      load_sprints(function() load(true) end, false)
+    end
+  end,
+})
 
 -- Warm the PR list in the background at startup so the first swap to the PR
 -- dashboard (P) is instant. No-op when already cached.
@@ -1697,7 +1921,7 @@ local function prefetch_prs()
   local out = {}
   -- Same data PR_EXE --list would print, run through the provider argv
   -- directly so it's routed through the daemon like every other provider call.
-  RPC.run(provider_argv("--list"), {
+  require("azure-cli.rpc").run(CONFIG.provider_argv("--list"), {
     stdout_buffered = true,
     on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
     on_exit = function(_, code)

@@ -9,6 +9,7 @@
 -- pairing rule only cares about the del/add run shape, not real history),
 -- runs it through M.parse_diff then M.word_diff, and checks the marks.
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 vim = { list_extend = function(a, b) for _, v in ipairs(b) do a[#a + 1] = v end return a end }
 
 local M = dofile(arg[1])

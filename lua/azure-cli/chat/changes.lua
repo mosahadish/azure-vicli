@@ -10,14 +10,17 @@
 --
 --   M.open(title, dir, raw, keep)  shows `raw` (`git diff` output of
 --                             worktree `dir`), reusing the tab when it's
---                             still open; `keep` = { path, line, list } puts
---                             the cursor back where it was
---   M.refresh()               the same worktree again (r), staying on the
---                             file and line
+--                             still open; `keep` = { path, line, list, quiet }
+--                             puts the cursor back where it was
+--   M.refresh(dir, opts)      the same worktree again (r), staying on the
+--                             file and line; opts.quiet (show_fix, run_tests:
+--                             #126) redraws it where it is - no tab, window,
+--                             focus or mode change, and nothing opens when
+--                             it isn't open
 --   M.jump_to(path, line)        file `path` at line `line` of its new version
 --                             (the plan's gd)
 --
--- gq goes to the chat, as on every other screen, and the chat describes
+-- i goes to the chat, as on every other screen, and the chat describes
 -- the file and line under the cursor here (M.describe). ga on a line asks
 -- the agent about it ("why did you choose this here?"); the answer shows
 -- under the line (chat/threads.lua) - <Tab> unfolds it, K shows it whole,
@@ -30,6 +33,10 @@
 --                             follow (pure)
 --   M.files(raw)              the changed files in diff order: { path,
 --                             status = "A"|"D"|"R"|"M" } (pure)
+--   M.why_load(dir) / M.why_save(dir, threads) / M.row_of(map, th)
+--                             the questions' store and the diff row a
+--                             question sits under - shared with the plan
+--                             view's Changes section (chat/plan_changes.lua)
 local M = {}
 
 local DIFFBUF = require("azure-cli.diffbuf")
@@ -127,7 +134,7 @@ local LIST_HELP = {
   "The change",
   { "run_tests", "run the plan's tests on the change (asks), or see the last run" },
   { "refresh", "refresh (the agent may have changed more)" },
-  { "chat", "go to the chat" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   "Window",
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
@@ -147,7 +154,8 @@ local DIFF_HELP = {
   { "comment", "queue a change on this line (in visual mode: these lines) for the agent" },
   { "batch_submit", "send the queued changes to the agent, in one message" },
   { "delete_thread", "forget the question or queued change under this line" },
-  { "chat", "go to the chat (in visual mode: send the selected lines)" },
+  { "chat_input", "type in the chat (opens the panel; a draft stays)" },
+  { "chat_selection", "in visual mode: send the selected lines to the chat" },
   "The change",
   { "accept_hunk", "accept the change under the cursor - a \u{2713} beside it (again: take it back)" },
   { "reject_hunk", "take the change under the cursor out of the worktree (asks)" },
@@ -281,26 +289,31 @@ local function why_path(dir)
   return require("azure-cli.chat.store").root() .. "/why/" .. vim.fn.fnamemodify(dir, ":t"):gsub("[^%w%._%-]", "_") .. ".json"
 end
 
-local function why_load(dir)
+-- Also the plan view's Changes section's (chat/plan_changes.lua): one
+-- store, so a question asked there shows here too.
+function M.why_load(dir)
   local ok, lines = pcall(vim.fn.readfile, why_path(dir))
   local okd, list = pcall(vim.json.decode, ok and table.concat(lines, "\n") or "")
   return okd and type(list) == "table" and list or {}
 end
+local why_load = M.why_load
 
-local function why_save()
-  if not view then return end
-  local path = why_path(view.dir)
+function M.why_save(dir, threads)
+  local path = why_path(dir)
   vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-  pcall(vim.fn.writefile, { vim.json.encode(view.threads) }, path)
+  pcall(vim.fn.writefile, { vim.json.encode(threads) }, path)
 end
 
--- The diff row thread `th` sits under in file `idx`'s buffer, or nil.
-local function thread_row(idx, th)
-  local f = view.files[idx]
-  local cur = f and view.bufs[f.path] and view.maps[view.bufs[f.path]]
-  if not (cur and th.file == f.path) then return nil end
+local function why_save()
+  if view then M.why_save(view.dir, view.threads) end
+end
+
+-- The row of a diff buffer (cache.parse_diff's `map`) thread `th` sits
+-- under: its line on its side, the nearest new-side line for an outdated
+-- one, else nil. Pure.
+function M.row_of(map, th)
   local near, near_d
-  for row, m in ipairs(cur.map) do
+  for row, m in ipairs(map) do
     if m.lineno == th.line and m.side == (th.side or "R") then return row end
     if th.outdated and m.side == "R" and m.lineno then
       local d = math.abs(m.lineno - th.line)
@@ -308,6 +321,14 @@ local function thread_row(idx, th)
     end
   end
   return near
+end
+
+-- The diff row thread `th` sits under in file `idx`'s buffer, or nil.
+local function thread_row(idx, th)
+  local f = view.files[idx]
+  local cur = f and view.bufs[f.path] and view.maps[view.bufs[f.path]]
+  if not (cur and th.file == f.path) then return nil end
+  return M.row_of(cur.map, th)
 end
 
 -- "◂ plan:7" at the end of each line a step of the plan starts at
@@ -523,20 +544,28 @@ local function run_tests()
     end
     -- Your own command (chat.test_cmd) runs straight away; the agent's asks.
     local runner = source == "config" and TR.run or TR.ask_and_run
-    runner(dir, cmd, fp, function(r, err)
-      if not r then
-        if err ~= "declined" then notify("The tests didn't run: " .. tostring(err), vim.log.levels.WARN) end
-        return
+    -- The tests run on the worktree as it is now, which this tab may not
+    -- show yet (the agent edited since): the fingerprint comes from a fresh
+    -- diff, the one commit_and_push_fix compares with - this tab's when
+    -- that fails.
+    local TF = require("azure-cli.chat.tools_fix")
+    TF.load(dir, require("azure-cli.chat.tools").git, function(ok, diff)
+      local now_fp = ok and TR.fingerprint(diff or "") or fp
+      runner(dir, cmd, now_fp, function(r, err)
+        if not r then
+          if err ~= "declined" then notify("The tests didn't run: " .. tostring(err), vim.log.levels.WARN) end
+          return
+        end
+        require("azure-cli.chat").note("Tests on " .. title:gsub("^Proposed change %- ", "") .. " (" .. cmd .. "): "
+          .. (TR.label(r) or ""):gsub("^%[", ""):gsub("%]$", "") .. ".")
+        if use_dir(dir) then M.refresh(dir) end
+        if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
+      end, { by = "user" })
+      if use_dir(dir) and view.current then
+        local f = view.files[view.current]
+        set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
       end
-      require("azure-cli.chat").note("Tests on " .. title:gsub("^Proposed change %- ", "") .. " (" .. cmd .. "): "
-        .. (TR.label(r) or ""):gsub("^%[", ""):gsub("%]$", "") .. ".")
-      if use_dir(dir) then M.refresh(dir) end
-      if r.code ~= 0 then TR.show(r) else notify("Tests passed.") end
     end)
-    if use_dir(dir) and view.current then
-      local f = view.files[view.current]
-      set_diff_winbar(f.path, view.maps[view.bufs[f.path]].map)
-    end
   end
   if not last then return go() end
   require("azure-cli.prompt").select({ prompt = "Tests " .. (TR.label(last, fp) or ""),
@@ -629,10 +658,11 @@ end
 
 local jump  -- forward
 
--- gq / r on both panes.
+-- i / r on both panes.
 local function bind_common(buf, surface)
-  bind(buf, surface, "chat", function() require("azure-cli.chat").toggle() end, { desc = "go to the chat" })
-  bind(buf, surface, "chat", function() require("azure-cli.chat").capture_selection() end,
+  bind(buf, surface, "chat_input", function() require("azure-cli.chat").show(true) end,
+    { desc = "type in the chat (opens the panel; a draft stays)" })
+  bind(buf, surface, "chat_selection", function() require("azure-cli.chat").capture_selection() end,
     { desc = "send the selected lines to the chat", mode = "x" })
   bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
   bind(buf, surface, "run_tests", function() run_tests() end, { desc = "run the plan's tests on the change" })
@@ -838,7 +868,7 @@ function M.open(title, dir, raw, keep)
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf
     by_buf[view.list_buf] = view
-    vim.api.nvim_set_current_tabpage(view.tab)
+    if not (keep and keep.quiet) then vim.api.nvim_set_current_tabpage(view.tab) end
   else
     vim.cmd("tabnew")
     view.tab = vim.api.nvim_get_current_tabpage()
@@ -879,11 +909,10 @@ function M.open(title, dir, raw, keep)
     vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zv") end)
   elseif #view.files > 0 then
     show(1, false)
-    vim.api.nvim_set_current_win(view.diff_win)
     local first = DIFFBUF.edge_change(view.maps[vim.api.nvim_win_get_buf(view.diff_win)].map, 1)
     if first then
       vim.api.nvim_win_set_cursor(view.diff_win, { first, 0 })
-      vim.cmd("normal! zz")
+      vim.api.nvim_win_call(view.diff_win, function() vim.cmd("normal! zz") end)
     end
   end
   -- The diff pane gets the focus - again after the chat panel has followed
@@ -895,11 +924,17 @@ function M.open(title, dir, raw, keep)
     end
   end
   local function focus()
+    -- Not out of a question that opened meanwhile (an agent's run_tests
+    -- straight after show_fix): that would answer it.
+    if require("azure-cli.ui").choosing() then return end
     local w = (#view.files > 0 and not (keep and keep.list)) and view.diff_win or view.list_win
     if valid_win(w) then vim.api.nvim_set_current_win(w) end
   end
-  focus()
-  vim.schedule(function() vim.schedule(focus) end)
+  -- Quiet (#126): the user stays where they are.
+  if not (keep and keep.quiet) then
+    focus()
+    vim.schedule(function() vim.schedule(focus) end)
+  end
   return view.tab
 end
 
@@ -930,8 +965,10 @@ function M.jump_to(path, line)
 end
 
 -- `dir`: the worktree whose change to refresh (default: the one being
--- worked on - the key's own).
-function M.refresh(dir)
+-- worked on - the key's own). opts.quiet: redrawn in place, the focus
+-- staying where it is (#126).
+function M.refresh(dir, opts)
+  local quiet = opts and opts.quiet
   if dir and not use_dir(dir) then return end
   if not (view and view.tab and vim.api.nvim_tabpage_is_valid(view.tab)) then return end
   local cur = view.files[view.current or 0]
@@ -939,12 +976,14 @@ function M.refresh(dir)
     path = cur and cur.path,
     line = valid_win(view.diff_win) and vim.api.nvim_win_get_cursor(view.diff_win)[1] or 1,
     list = vim.api.nvim_get_current_win() == view.list_win,
+    quiet = quiet,
   }
   local title = view.title:gsub(" %(last commit%)$", "")
   dir = view.dir
   require("azure-cli.chat.tools_fix").load(dir, require("azure-cli.chat.tools").git, function(ok, diff, last)
     if not ok then return notify("Refreshing failed: " .. tostring(diff)) end
     M.open(title .. (last and " (last commit)" or ""), dir, vim.split(diff, "\n", { plain = true }), keep)
+    if quiet then return end
     notify("Refreshed: " .. #view.files .. " file" .. (#view.files == 1 and "" or "s") .. " changed.")
   end)
 end

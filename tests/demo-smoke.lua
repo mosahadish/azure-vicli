@@ -5,7 +5,14 @@
 -- wait for its file list, and print both buffers plus a DEMO-SMOKE-OK
 -- marker. Any timeout prints DEMO-SMOKE-FAIL with what was on screen.
 -- Run by `nvim --headless -u <ws>/init.lua -c "luafile tests/demo-smoke.lua"`.
+--
+-- Each check is a `section` printing its own <MARKER>-SMOKE-OK: a failure
+-- prints DEMO-SMOKE-FAIL[<MARKER>] once, resets the screen and goes on, so
+-- one broken check doesn't take every later one down with it; a check that
+-- needs what a failed one left behind prints SMOKE-SKIP[<MARKER>] instead.
+-- SMOKE-DONE at the end says the script ran to the end (not crashed/hung).
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")({ attach = true })
 local function text(buf)
   return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
 end
@@ -17,10 +24,52 @@ local function find_buf(ft)
   return nil
 end
 
+local FAILED = {}     -- what fail() raises, told apart from a Lua error
+local current        -- the running section: { markers, at, failed }
+local passed = {}    -- marker -> true once its OK line is out
+
+-- Reports the failure under the check being worked on and unwinds its
+-- section (the `return fail(...)` callers' return is never reached).
 local function fail(why, buf)
-  print("DEMO-SMOKE-FAIL: " .. why)
-  if buf then print(text(buf)) end
-  vim.cmd("qa!")
+  print("DEMO-SMOKE-FAIL[" .. (current and current.at or "?") .. "]: " .. why)
+  if buf and vim.api.nvim_buf_is_valid(buf) then print(text(buf)) end
+  if current then current.failed = true end
+  error(FAILED, 0)
+end
+
+-- #120: show_fix never opens the change viewer by itself - this checks it
+-- didn't, then opens it as the user does (gd: tools_fix.open_latest).
+local function open_change()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(b):find("azure-cli://changes/", 1, true) and #vim.fn.win_findbuf(b) > 0 then
+      fail("#120: show_fix opened the change viewer by itself")
+    end
+  end
+  local done, err = false, nil
+  require("azure-cli.chat.tools_fix").open_latest(require("azure-cli.chat.tools").git, function(e) done, err = true, e end)
+  vim.wait(10000, function() return done end, 20)
+  if err then fail("opening the change (gd) failed: " .. tostring(err)) end
+end
+
+-- Nor submit_plan the plan view: checks it didn't, then opens it (Enter on
+-- the Agents row: plan.open).
+local function open_plan(key)
+  local PLAN = require("azure-cli.chat.plan")
+  if PLAN.open_views()[key] then fail("#120: submit_plan opened the plan " .. key .. " by itself") end
+  PLAN.open(key)
+end
+
+-- <MARKER>-SMOKE-OK - unless this section already failed somewhere that
+-- swallowed the error (a pcall, a callback).
+local function smoke_ok(marker)
+  if current and current.failed then return end
+  passed[marker] = true
+  print(marker .. "-SMOKE-OK")
+  if current then
+    for _, m in ipairs(current.markers) do
+      if not passed[m] then current.at = m break end
+    end
+  end
 end
 
 -- Every open floating window's text, joined - the peek view is two floats
@@ -41,17 +90,136 @@ local function feed(keys)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
 end
 
-vim.cmd("AzureCli dashboard")
-local dash = find_buf("azurecli-dashboard")
-if not dash then return fail("no dashboard buffer") end
+-- What the sections share: the two dashboards, the reviewer's file list.
+local ok
+local dash, dash_tab, files, wis
+local real_select = vim.ui.select
+local was_reset = false  -- a reset closed things since the last section began
 
-local ok = vim.wait(15000, function()
-  local t = text(dash)
-  return t:find("#101", 1, true) ~= nil and t:find("#201", 1, true) ~= nil
-end, 100)
-if not ok then return fail("the dashboard never listed the fake PRs #101 and #201", dash) end
-print("== dashboard ==")
-print(text(dash))
+-- After a failure: no popup, no insert/visual mode, no stubbed picker, the
+-- reviewer closed the way its q closes it (its buffers wiped, so a later
+-- check can't find a stale file list), and only the dashboard's tab left.
+local function reset()
+  local STATE = require("azure-cli.state")
+  if STATE.review_cleanup then pcall(STATE.review_cleanup) end
+  pcall(vim.cmd, "stopinsert")
+  pcall(vim.api.nvim_feedkeys, vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  vim.ui.select = real_select
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  if dash_tab and vim.api.nvim_tabpage_is_valid(dash_tab) then
+    vim.api.nvim_set_current_tabpage(dash_tab)
+    pcall(vim.cmd, "tabonly!")
+  end
+  vim.wait(2000, function() return find_buf("azurecli-files") == nil end, 20)  -- the cleanup's deletes are scheduled
+  was_reset = true
+end
+
+-- Runs one check (or a few that build on each other, in order): `markers`
+-- are the OK lines it prints, `opts.needs` the markers of earlier checks
+-- whose leftovers it works on, `opts.reset` a narrower cleanup than reset()
+-- for a section nested in another. After a reset the PR dashboard is put
+-- back first (`opts.reopen`, ensure_dashboard by default) for the checks
+-- that take it as given; with every check passing nothing is reopened, so
+-- the checks see the screen just as they always did.
+local ensure_dashboard
+local function section(markers, opts, fn)
+  if type(markers) == "string" then markers = { markers } end
+  if fn == nil then fn, opts = opts, {} end
+  for _, need in ipairs(opts.needs or {}) do
+    if not passed[need] then
+      for _, m in ipairs(markers) do print("SMOKE-SKIP[" .. m .. "]: needs " .. need) end
+      return
+    end
+  end
+  local outer = current
+  current = { markers = markers, at = markers[1] }
+  local okr, err = xpcall(function()
+    if was_reset and not outer then
+      was_reset = false
+      local reopen = opts.reopen or ensure_dashboard
+      reopen()
+    end
+    fn()
+  end, function(e)
+    if e == FAILED then return e end
+    return debug.traceback(tostring(e), 2)
+  end)
+  local s = current
+  current = outer
+  if not okr and err ~= FAILED then
+    print("DEMO-SMOKE-FAIL[" .. s.at .. "]: Lua error: " .. tostring(err))
+    s.failed = true
+  end
+  local first
+  for _, m in ipairs(markers) do
+    if not passed[m] then
+      if not first then
+        first = m
+        if not s.failed then
+          print("DEMO-SMOKE-FAIL[" .. m .. "]: the check ended without passing")
+          s.failed = true
+        end
+      else
+        print("SMOKE-SKIP[" .. m .. "]: needs " .. first)
+      end
+    end
+  end
+  if s.failed then (opts.reset or reset)() end
+end
+
+-- Each section starts from what it needs, opening it again when a reset
+-- (or never getting that far) left it closed. When it's open already - every
+-- check passing - these only move the cursor, as the checks always did.
+local function goto_buf(b)
+  local w = b and vim.api.nvim_buf_is_valid(b) and vim.fn.win_findbuf(b)[1]
+  if w then vim.fn.win_gotoid(w) return true end
+end
+-- A buffer of filetype `ft` that's in a window - not one a reset left hidden.
+local function shown_buf(ft)
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.bo[b].filetype == ft then return b end
+  end
+end
+ensure_dashboard = function()
+  if goto_buf(dash) then return dash end
+  vim.cmd("AzureCli dashboard")
+  dash = shown_buf("azurecli-dashboard")
+  if not dash then return fail("no dashboard buffer") end
+  if not dash_tab then dash_tab = vim.api.nvim_get_current_tabpage() end
+  ok = vim.wait(15000, function()
+    local t = text(dash)
+    return t:find("#101", 1, true) ~= nil and t:find("#201", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the dashboard never listed the fake PRs #101 and #201", dash) end
+  return dash
+end
+local function ensure_review()
+  if goto_buf(files) then return files end
+  ensure_dashboard()
+  require("azure-cli").open_review(101)
+  ok = vim.wait(20000, function()
+    files = shown_buf("azurecli-files")
+    if not files then return false end
+    local t = text(files)
+    return t:find("auth.py", 1, true) ~= nil and t:find("throttle.py", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the reviewer never listed PR #101's files", files) end
+  return files
+end
+local function ensure_workitems()
+  if goto_buf(wis) then return wis end
+  ensure_dashboard()
+  require("azure-cli").open_workitems()
+  ok = vim.wait(15000, function()
+    wis = shown_buf("azurecli-workitems")
+    return wis ~= nil and text(wis):find("#3001", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the work-items dashboard never listed #3001", wis) end
+  return wis
+end
 
 -- Relative row numbers inside the box (5j/5k): the cursor row shows its
 -- own line number, the row below it "1", and they follow the cursor.
@@ -105,10 +273,36 @@ local function numbered_and_fits(b, what)
   end
   return true
 end
+
+-- <Space> folds like za: a PR dashboard section collapses and comes back.
+local function header_row(b, pat)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+    if l:find(pat, 1, true) then return i, l end
+  end
+end
+
+section("DEMO", function()
+ensure_dashboard()
+print("== dashboard ==")
+print(text(dash))
 if not numbered_and_fits(dash, "the PR dashboard") then return end
+
+vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
+vim.api.nvim_win_set_cursor(0, { header_row(dash, "\u{2500}\u{2500} Waiting for author"), 0 })
+feed("<Space>")
+local _, hl = header_row(dash, "\u{2500}\u{2500} Waiting for author")
+if not hl:find("(collapsed)", 1, true) then return fail("<Space> didn't collapse the Waiting section: " .. hl) end
+vim.api.nvim_win_set_cursor(0, { header_row(dash, "\u{2500}\u{2500} Waiting for author"), 0 })
+feed("<Space>")
+_, hl = header_row(dash, "\u{2500}\u{2500} Waiting for author")
+if hl:find("(collapsed)", 1, true) then return fail("<Space> again didn't expand the Waiting section: " .. hl) end
+smoke_ok("DEMO")
+end)
 
 -- PR #101's row gets its linked work item (#3001) once the background read
 -- lands, and gW on it opens #3001's detail view in a new tab.
+section("PRWI", function()
+ensure_dashboard()
 local prrow
 ok = vim.wait(15000, function()
   for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
@@ -118,7 +312,6 @@ end, 100)
 if not ok then return fail("PR #101's row never showed its linked work item #3001", dash) end
 vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
 vim.api.nvim_win_set_cursor(0, { prrow, 0 })
-local dash_tab = vim.api.nvim_get_current_tabpage()
 -- gW: a popup listing it with its state, type, title and assignee; <CR> on
 -- it opens the detail view in a new tab.
 feed("gW")
@@ -143,33 +336,11 @@ end, 100)
 if not ok then return fail("<CR> in gW's popup didn't open work item #3001") end
 vim.cmd("tabclose")
 vim.api.nvim_set_current_tabpage(dash_tab)
-print("PRWI-SMOKE-OK")
+smoke_ok("PRWI")
+end)
 
--- <Space> folds like za: a PR dashboard section collapses and comes back.
-local function header_row(b, pat)
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
-    if l:find(pat, 1, true) then return i, l end
-  end
-end
-vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
-vim.api.nvim_win_set_cursor(0, { header_row(dash, "\u{2500}\u{2500} Waiting for author"), 0 })
-feed("<Space>")
-local _, hl = header_row(dash, "\u{2500}\u{2500} Waiting for author")
-if not hl:find("(collapsed)", 1, true) then return fail("<Space> didn't collapse the Waiting section: " .. hl) end
-vim.api.nvim_win_set_cursor(0, { header_row(dash, "\u{2500}\u{2500} Waiting for author"), 0 })
-feed("<Space>")
-_, hl = header_row(dash, "\u{2500}\u{2500} Waiting for author")
-if hl:find("(collapsed)", 1, true) then return fail("<Space> again didn't expand the Waiting section: " .. hl) end
-
-require("azure-cli").open_review(101)
-local files
-ok = vim.wait(20000, function()
-  files = find_buf("azurecli-files")
-  if not files then return false end
-  local t = text(files)
-  return t:find("auth.py", 1, true) ~= nil and t:find("throttle.py", 1, true) ~= nil
-end, 100)
-if not ok then return fail("the reviewer never listed PR #101's files", files) end
+section("REVIEW-WI", function()
+ensure_review()
 print("== reviewer file list (PR #101) ==")
 print(text(files))
 
@@ -201,14 +372,20 @@ end, 100)
 if not ok then return fail("gW in the reviewer didn't open work item #3001") end
 vim.cmd("tabclose")
 vim.api.nvim_set_current_tabpage(review_tab)
-print("REVIEW-WI-SMOKE-OK")
+smoke_ok("REVIEW-WI")
+end)
 
 -- Code navigation (gd/gr/gf and the peek view) - the reviewer's least
 -- automated surface, and the one whose helpers other review/* modules
 -- reach through ctx. PR #101 adds src/throttle.py's is_locked() and calls
 -- it from src/auth.py, so `gd` on that call has a real definition to find
 -- in another file, through a real `git grep` over the fake clone.
-
+--
+-- Every step waits on what the diff window shows, not on buffer numbers:
+-- the reviewer may rebuild auth.py's diff meanwhile (new commits pulled in
+-- by its poll), which gives the same file a new buffer.
+section("NAV", function()
+ensure_review()
 
 -- Open auth.py's diff from the file list, the way <CR> does.
 local row
@@ -228,38 +405,111 @@ end, 100)
 if not ok then return fail("auth.py's diff never showed is_locked()", diff) end
 print("== reviewer diff (src/auth.py) ==")
 print(text(diff))
+local dwin = vim.api.nvim_get_current_win()
+
+-- Where the is_locked( call is in what the diff window shows now.
+local function call_at()
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(dwin), 0, -1, false)) do
+    local c = l:find("is_locked(", 1, true)
+    if c then return i, c - 1 end
+  end
+end
+-- Whether the file list's preview is queued to replace what the diff
+-- window shows.
+local function preview_pending()
+  local pending = require("azure-cli.state").review_preview_pending
+  return pending ~= nil and pending()
+end
+-- What was on screen, for a timeout below. Which window has focus and
+-- whether a preview is pending are there too: that preview is what took
+-- the gd jump away on Neovim 0.9 (#77).
+local function nav_state()
+  local cur, shown = vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_buf(dwin)
+  local win = vim.api.nvim_get_current_win()
+  local where = win == dwin and "diff" or win == vim.fn.bufwinid(files) and "file list" or tostring(win)
+  local msgs = vim.split(vim.fn.execute("messages"), "\n")
+  return ("focus in the %s window, current buffer %d %q; the diff window shows %d %q (%d lines), cursor %s, winbar %q; preview pending %s; last messages: %s"):format(
+    where, cur, vim.api.nvim_buf_get_name(cur), shown, vim.api.nvim_buf_get_name(shown),
+    vim.api.nvim_buf_line_count(shown), vim.inspect(vim.api.nvim_win_get_cursor(dwin)), vim.wo[dwin].winbar,
+    tostring(preview_pending()),
+    table.concat(vim.list_slice(msgs, math.max(1, #msgs - 3)), " | "))
+end
+-- auth.py's diff - this buffer or a rebuilt one - is in the diff window,
+-- the cursor on the is_locked( call.
+local function on_auth_diff()
+  local b = vim.api.nvim_win_get_buf(dwin)
+  return (require("azure-cli.review.pane").entry(b) or {}).map ~= nil
+    and vim.wo[dwin].winbar:find("src/auth.py", 1, true) ~= nil
+    and vim.api.nvim_win_get_cursor(dwin)[1] == call_at()
+end
 
 -- Put the cursor on the is_locked call and ask for its definition.
-local dline, dcol
-for i, l in ipairs(vim.api.nvim_buf_get_lines(diff, 0, -1, false)) do
-  local c = l:find("is_locked(", 1, true)
-  if c then dline, dcol = i, c - 1 break end
-end
+local dline, dcol = call_at()
 if not dline then return fail("no is_locked( call in auth.py's diff", diff) end
 vim.api.nvim_win_set_cursor(0, { dline, dcol })
 feed("gd")
 
 -- is_locked has exactly one definition-looking hit, so gd jumps straight
--- into throttle.py at the PR's revision rather than offering candidates.
+-- into throttle.py at the PR's revision rather than offering candidates:
+-- done once that's loaded in the diff window with the cursor on the def.
 local rev
 ok = vim.wait(20000, function()
-  rev = vim.api.nvim_get_current_buf()
-  return rev ~= diff and text(rev):find("def is_locked", 1, true) ~= nil
+  rev = vim.api.nvim_win_get_buf(dwin)
+  return vim.api.nvim_get_current_win() == dwin
+    and vim.api.nvim_buf_get_name(rev):find("src/throttle.py", 1, true) ~= nil
+    and vim.api.nvim_get_current_line():find("def is_locked", 1, true) ~= nil
 end, 100)
-if not ok then return fail("gd on is_locked() never opened its definition in throttle.py", rev) end
+if not ok then return fail("gd on is_locked() never opened its definition in throttle.py: " .. nav_state(), rev) end
 if vim.bo[rev].modifiable then return fail("the revision buffer should be read-only", rev) end
 print("== gd -> revision buffer (src/throttle.py) ==")
 print(text(rev))
 
--- <BS> walks back one jump, to the diff it came from.
+-- <BS> walks back one jump, to the diff it came from, on the same line.
 feed("<BS>")
 ok = vim.wait(10000, function()
-  return vim.api.nvim_get_current_buf() == diff
+  return vim.api.nvim_get_current_win() == dwin and on_auth_diff()
 end, 100)
-if not ok then return fail("<BS> didn't walk back to auth.py's diff") end
+if not ok then return fail("<BS> didn't walk back to auth.py's diff: " .. nav_state()) end
+
+-- A rebuild while in a jump (gw here; new commits pulled in by the poll do
+-- the same) leaves you in the revision, and <BS> still walks back - to the
+-- rebuilt diff, on the same line - rather than finding nothing to go to.
+vim.api.nvim_win_set_cursor(dwin, { call_at() })
+feed("gd")
+ok = vim.wait(20000, function()
+  return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(dwin)):find("src/throttle.py", 1, true) ~= nil
+    and vim.api.nvim_get_current_line():find("def is_locked", 1, true) ~= nil
+end, 100)
+if not ok then return fail("gd again didn't reopen throttle.py: " .. nav_state()) end
+local function toggle_ws()
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  feed("gw")
+  vim.api.nvim_set_current_win(dwin)
+end
+toggle_ws()
+if not vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(dwin)):find("src/throttle.py", 1, true) then
+  return fail("a rebuild (gw) pulled the diff window out of the gd jump: " .. nav_state())
+end
+-- Nor may going to the file list for gw: its cursor didn't move, so no
+-- preview may be on its way to put auth.py over the jump. On Neovim 0.9,
+-- entering the list fired one, and <BS> lost the race to it whenever more
+-- than its 80 ms passed before the keypress (#77).
+if preview_pending() then
+  return fail("going to the file list for gw queued a preview over the gd jump: " .. nav_state())
+end
+feed("<BS>")
+ok = vim.wait(10000, on_auth_diff, 100)
+if not ok then return fail("<BS> after a rebuild didn't walk back to auth.py's rebuilt diff: " .. nav_state()) end
+toggle_ws()
+ok = vim.wait(10000, function()
+  return (require("azure-cli.review.pane").entry(vim.api.nvim_win_get_buf(dwin)) or {}).map ~= nil
+    and call_at() ~= nil and not vim.wo[dwin].winbar:find("ignore-ws", 1, true)
+end, 100)
+if not ok then return fail("gw back didn't show auth.py's whole diff again: " .. nav_state()) end
 
 -- gr lists every reference instead: the import, the call, and the
 -- definition - more than one hit, so this one does open the peek.
+dline, dcol = call_at()
 vim.api.nvim_win_set_cursor(0, { dline, dcol })
 feed("gr")
 local hits
@@ -270,16 +520,18 @@ end, 100)
 if not ok then return fail("gr on is_locked() never listed its references\n" .. tostring(hits)) end
 print("== gr hits ==")
 print(hits)
-
-print("NAV-SMOKE-OK")
-
--- gu ("follow up on my comments") and gA inside it. PR #101 has exactly one
--- thread of mine and it is `fixed`, so the active-only filter has something
--- real to hide: the row is listed, gA hides it, gA again brings it back.
 feed("q")
 ok = vim.wait(10000, function() return float_text() == nil end, 100)
 if not ok then return fail("q didn't close the peek\n" .. tostring(float_text())) end
 
+smoke_ok("NAV")
+end)
+
+-- gu ("follow up on my comments") and gA inside it. PR #101 has exactly one
+-- thread of mine and it is `fixed`, so the active-only filter has something
+-- real to hide: the row is listed, gA hides it, gA again brings it back.
+section("FOLLOWUP", function()
+ensure_review()
 vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
 feed("gu")
 local picker
@@ -341,26 +593,191 @@ ok = vim.wait(10000, function()
 end, 100)
 if not ok then return fail("gA again didn't bring my thread back\n" .. tostring(picker)) end
 
-print("FOLLOWUP-SMOKE-OK")
+smoke_ok("FOLLOWUP")
+end)
 
--- gs on the work-items dashboard: the popup for story #3001 lists its three
--- tasks, mapped onto the Task workflow by category. Its first reachable
--- state (Implemented) is InProgress, so #3011 is already there, #3012 moves
--- To Do -> In Progress, and #3013 could move back from Done but stays
--- unchecked. Checking "also set children" and applying must move exactly
--- #3001 and #3012.
+-- Remembered folds (#131) and toggle_fold. PR #101 appends a section to
+-- README.md, so its first four unchanged lines fold away. <Space> opens
+-- that fold; it stays open when you go to another file and back, when the
+-- PR is closed and reopened, and after a "restart" (review/viewed.lua
+-- loaded afresh from its file). A push that changed README.md (its stored
+-- stamp no longer matching) folds it again and drops the record, another
+-- file's record staying; zR / zM are remembered the same way.
+section("FOLDS", function()
+local VIEWED_MOD = "azure-cli.review.viewed"
+local FOLDS_KEY = "\tfolds"
+local store = require(VIEWED_MOD).load()
+store[FOLDS_KEY] = nil
+ensure_review()
+
+local dwin
+-- Opens `name` from the file list the way <CR> does and waits for its diff.
+local function open_named(name)
+  local row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(files, 0, -1, false)) do
+    if l:find(name, 1, true) then row = i break end
+  end
+  if not row then return fail("no " .. name .. " row in the file list", files) end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  feed("<CR>")
+  ok = vim.wait(15000, function()
+    local w = vim.api.nvim_get_current_win()
+    local b = vim.api.nvim_win_get_buf(w)
+    return b ~= files and (require("azure-cli.review.pane").entry(b) or {}).map ~= nil
+      and vim.wo[w].winbar:find(name, 1, true) ~= nil
+  end, 100)
+  if not ok then return fail(name .. "'s diff never showed") end
+  dwin = vim.api.nvim_get_current_win()
+end
+-- README.md's first fold, in the diff window now.
+local function first_run()
+  local b = vim.api.nvim_win_get_buf(dwin)
+  local e = require("azure-cli.review.pane").entry(b)
+  return require("azure-cli.review.folds").runs(e.levels, e.map)[1]
+end
+local function is_open(r)
+  return vim.api.nvim_win_call(dwin, function() return vim.fn.foldclosed(r.first) == -1 end)
+end
+local function readme_record()
+  for k, v in pairs(require(VIEWED_MOD).load()[FOLDS_KEY] or {}) do
+    if k:find("\tREADME.md\t", 1, true) then return v, k end
+  end
+end
+local function away_and_back()
+  open_named("auth.py")
+  open_named("README.md")
+end
+
+open_named("README.md")
+local r = first_run()
+if not r then return fail("README.md's diff has no fold", vim.api.nvim_win_get_buf(dwin)) end
+if is_open(r) then return fail("README.md's unchanged lines aren't folded at first") end
+vim.api.nvim_win_set_cursor(dwin, { r.first, 0 })
+feed("<Space>")
+if not is_open(r) then return fail("<Space> (toggle_fold) didn't open the fold") end
+if not readme_record() then return fail("opening the fold wasn't remembered") end
+-- On a changed line toggle_fold does nothing - and raises nothing.
+local b = vim.api.nvim_win_get_buf(dwin)
+local changed
+for i, m in ipairs(require("azure-cli.review.pane").entry(b).map) do
+  if m.kind == "add" then changed = i break end
+end
+vim.api.nvim_win_set_cursor(dwin, { changed, 0 })
+local okk, err = pcall(feed, "za")
+if not okk then return fail("za on a changed line raised: " .. tostring(err)) end
+if not is_open(r) then return fail("za on a changed line closed the fold") end
+
+away_and_back()
+if not is_open(r) then return fail("the fold didn't stay open after going to another file and back") end
+
+-- Closing the PR (q in its file list) and opening it again.
+local function reopen_pr()
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  feed("q")
+  ok = vim.wait(5000, function() return find_buf("azurecli-files") == nil end, 20)
+  if not ok then return fail("q didn't close the reviewer") end
+  files = nil
+  ensure_review()
+  open_named("README.md")
+end
+reopen_pr()
+r = first_run()
+if not is_open(r) then return fail("the fold didn't stay open when the PR was reopened") end
+
+-- A restart: the module, and so its store, loaded again from disk.
+package.loaded[VIEWED_MOD] = nil
+reopen_pr()
+r = first_run()
+if not is_open(r) then return fail("the fold didn't stay open after reloading the store from disk") end
+
+-- za closes it again, and that's remembered too (nothing open: no record).
+vim.api.nvim_win_set_cursor(dwin, { r.first, 0 })
+feed("za")
+if is_open(r) then return fail("za (toggle_fold) didn't close the fold") end
+if readme_record() then return fail("closing the fold left a record behind") end
+
+-- zR opens every fold and is remembered; zM folds them and is too.
+feed("zR")
+away_and_back()
+r = first_run()
+if not is_open(r) then return fail("zR wasn't remembered") end
+feed("zM")
+away_and_back()
+r = first_run()
+if is_open(r) then return fail("zM wasn't remembered") end
+
+-- A push that changed README.md: its diff (and so its stamp) differs, so
+-- its folds go; another file's record stays. Aged while README.md is out
+-- of the window: leaving it records what it shows.
+feed("zR")
+open_named("auth.py")
+local rec, k = readme_record()
+if not rec then return fail("zR left no record to age") end
+rec.stamp = "before-the-push"
+local other = k:gsub("\tREADME%.md\t", "\tsrc/app.py\t")
+require(VIEWED_MOD).load()[FOLDS_KEY][other] = { stamp = "x", open = { { 1, 3 } } }
+open_named("README.md")
+r = first_run()
+if is_open(r) then return fail("a changed file kept its folds") end
+if readme_record() then return fail("a changed file's fold record wasn't dropped") end
+if not require(VIEWED_MOD).load()[FOLDS_KEY][other] then return fail("an unchanged file's record went too") end
+require(VIEWED_MOD).load()[FOLDS_KEY] = nil
+
+-- ? lists toggle_fold, and so does the g. palette.
+vim.api.nvim_set_current_win(dwin)
+feed("?")
+local help = float_text() or ""
+for _, w in ipairs(vim.api.nvim_list_wins()) do
+  if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+end
+if not help:find("fold / unfold the unchanged lines here", 1, true) then return fail("? doesn't list toggle_fold\n" .. help) end
+vim.api.nvim_set_current_win(dwin)
+local PROMPT = require("azure-cli.prompt")
+local real, items = PROMPT.select, nil
+PROMPT.select = function(o) items = o.items end
+pcall(require("azure-cli.keys").palette, vim.api.nvim_win_get_buf(dwin))
+PROMPT.select = real
+local listed = false
+for _, a in ipairs(items or {}) do if a.action == "toggle_fold" then listed = true end end
+if not listed then return fail("the g. palette doesn't list toggle_fold") end
+
+smoke_ok("FOLDS")
+end)
+
 -- Wide enough for the work-items box (~104 cells) plus the number gutter,
 -- so the fit check below is about the gutter, not the headless 80 columns.
 vim.o.columns = 140
+section("ROWNUM", function()
 require("azure-cli").open_workitems()
-local wis
 ok = vim.wait(15000, function()
   wis = find_buf("azurecli-workitems")
   return wis ~= nil and text(wis):find("#3001", 1, true) ~= nil
 end, 100)
 if not ok then return fail("the work-items dashboard never listed #3001", wis) end
 if not numbered_and_fits(wis, "the work-items dashboard") then return end
-print("ROWNUM-SMOKE-OK")
+smoke_ok("ROWNUM")
+end)
+
+-- The work-items rows by id, for the sections below.
+local function row_of(id)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+    if l:find("#" .. id .. " ", 1, true) then return i end
+  end
+end
+local function goto_row(id)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
+    if l:find("#" .. id .. " ", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) return true end
+  end
+end
+local function wi_state(id)
+  local out = vim.fn.system(require("azure-cli.config").provider_argv("--wi-detail", id))
+  local okj, data = pcall(vim.json.decode, out)
+  return okj and type(data) == "table" and data.item and data.item.state or out
+end
+
+section("TREE", function()
+ensure_workitems()
 
 -- The progress column counts #3001's tasks even with the tree off.
 ok = vim.wait(15000, function() return text(wis):find("1/3 done", 1, true) ~= nil end, 100)
@@ -391,11 +808,6 @@ if not table.concat(saved, ""):find('"tree":%s*true') then
 end
 
 -- za on #3001 folds its children away (▸) and back; zM/zR fold everything.
-local function goto_row(id)
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
-    if l:find("#" .. id .. " ", 1, true) then vim.api.nvim_win_set_cursor(0, { i, 0 }) return true end
-  end
-end
 goto_row(3001)
 feed("za")
 t = text(wis)
@@ -422,7 +834,17 @@ feed("<Space>")
 if text(wis):find("#3011", 1, true) then return fail("<Space> didn't fold #3001 like za", wis) end
 feed("<Space>")
 if not text(wis):find("#3011", 1, true) then return fail("<Space> again didn't unfold #3001", wis) end
-print("TREE-SMOKE-OK")
+smoke_ok("TREE")
+end)
+
+-- gs on the work-items dashboard: the popup for story #3001 lists its three
+-- tasks, mapped onto the Task workflow by category. Its first reachable
+-- state (Implemented) is InProgress, so #3011 is already there, #3012 moves
+-- To Do -> In Progress, and #3013 could move back from Done but stays
+-- unchecked. Checking "also set children" and applying must move exactly
+-- #3001 and #3012. (The tree T turned on shows the new state.)
+section("GS", { needs = { "TREE" } }, function()
+ensure_workitems()
 local wrow
 for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
   if l:find("#3001", 1, true) then wrow = i break end
@@ -454,11 +876,6 @@ if not float_text():find("[x] Also set children (2 of 4)", 1, true) then
   return fail("<Space> didn't check the children box\n" .. float_text())
 end
 feed("<CR>")
-local function wi_state(id)
-  local out = vim.fn.system(require("azure-cli.config").provider_argv("--wi-detail", id))
-  local okj, data = pcall(vim.json.decode, out)
-  return okj and type(data) == "table" and data.item and data.item.state or out
-end
 local got
 ok = vim.wait(15000, function()
   got = { wi_state("3001"), wi_state("3011"), wi_state("3012"), wi_state("3013"), wi_state("3014") }
@@ -472,15 +889,15 @@ ok = vim.wait(10000, function()
   return text(wis):find("#3012 +%[In Progress%]") ~= nil
 end, 100)
 if not ok then return fail("the tree still shows #3012's old state", wis) end
+smoke_ok("GS")
+end)
 
 -- gs on a visual selection (#3003, a Resolved story, down to #3002, a New
 -- bug): #3003 picks the state; #3002 can't reach Closed (the first state),
 -- so the box starts off; cycling to Active maps and checks #3002 too.
-local function row_of(id)
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
-    if l:find("#" .. id .. " ", 1, true) then return i end
-  end
-end
+section("SELECTION", function()
+ensure_workitems()
+local popup, pbuf
 vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
 local r1, r2 = row_of(3003), row_of(3002)
 vim.api.nvim_win_set_cursor(0, { r1, 0 })
@@ -509,10 +926,56 @@ print(popup)
 feed("<CR>")
 ok = vim.wait(15000, function() return wi_state("3003") == "Active" and wi_state("3002") == "Active" end, 200)
 if not ok then return fail("visual gs set " .. wi_state("3003") .. ", " .. wi_state("3002")) end
-print("SELECTION-SMOKE-OK")
+smoke_ok("SELECTION")
+end)
+
+-- W's last tab, after Sprint 43: my open items in the team's backlog
+-- iteration (#3021) or the project root (#3022), not the closed #3023 or
+-- alice's #3024. gi moves #3004 there from Sprint 43.
+section("NOSPRINT", function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+feed("<Tab>")
+ok = vim.wait(15000, function() return text(wis):find("#3004 ", 1, true) ~= nil end, 100)
+if not ok then return fail("<Tab> never showed Sprint 43's #3004", wis) end
+if text(wis):find("#3021 ", 1, true) then return fail("Sprint 43 lists the backlog's #3021", wis) end
+goto_row(3004)
+feed("gi")
+local picked
+ok = vim.wait(5000, function()
+  picked = (float_text() or ""):match("(%d+)  No sprint")
+  return picked ~= nil
+end, 50)
+if not ok then return fail("gi never offered No sprint\n" .. tostring(float_text())) end
+feed(picked)
+ok = vim.wait(15000, function()
+  local okj, d = pcall(vim.json.decode, vim.fn.system(require("azure-cli.config").provider_argv("--wi-detail", "3004")))
+  return okj and type(d) == "table" and d.item and d.item.iterationPath == "Demo\\Team"
+end, 200)
+if not ok then return fail("gi to No sprint didn't put #3004 in the backlog iteration") end
+feed("<Tab>")
+ok = vim.wait(15000, function()
+  local t = text(wis)
+  return t:find("No sprint", 1, true) ~= nil and t:find("#3021 ", 1, true) ~= nil
+    and t:find("#3022 ", 1, true) ~= nil and t:find("#3004 ", 1, true) ~= nil
+end, 100)
+if not ok then return fail("the No sprint tab never listed #3021, #3022 and #3004", wis) end
+print("== work items, No sprint ==")
+print(text(wis))
+for _, id in ipairs({ 3023, 3024, 3001 }) do
+  if text(wis):find("#" .. id .. " ", 1, true) then return fail("the No sprint tab lists #" .. id, wis) end
+end
+feed("<S-Tab>")
+feed("<S-Tab>")
+ok = vim.wait(15000, function() return text(wis):find("#3001 ", 1, true) ~= nil end, 100)
+if not ok then return fail("<S-Tab> never went back to Sprint 42", wis) end
+smoke_ok("NOSPRINT")
+end)
 
 -- Linked PRs: #3001's row carries !101, and its detail view lists the PR
 -- with its title, status and branches.
+section("PRS", function()
+ensure_workitems()
 local row3001
 for _, l in ipairs(vim.api.nvim_buf_get_lines(wis, 0, -1, false)) do
   if l:find("#3001 ", 1, true) then row3001 = l break end
@@ -537,6 +1000,10 @@ if not (vt:find("  !101    active     Throttle failed logins", 1, true)
 end
 print("== detail view, Pull Requests ==")
 print(vt:match("Pull Requests.-\n\n") or vt)
+-- gE isn't bound on an Azure item: its description is HTML (see board.lua's CAPS).
+for _, m in ipairs(vim.api.nvim_buf_get_keymap(view, "n")) do
+  if m.lhs == "gE" then return fail("gE shouldn't be bound on an Azure work item's detail view", view) end
+end
 -- gR from the detail view opens !101 in the reviewer (it's in the PR list).
 local before = vim.api.nvim_get_current_tabpage()
 feed("gR")
@@ -549,8 +1016,8 @@ ok = vim.wait(15000, function()
   return false
 end, 100)
 if not ok then return fail("gR didn't open !101 in the reviewer (current ft: " .. vim.bo.filetype .. ")") end
-print("PRS-SMOKE-OK")
-print("GS-SMOKE-OK")
+smoke_ok("PRS")
+end)
 
 -- Linking updates both dashboards at once, from either side. gl/gL open a
 -- popup picker: land on the line containing `want` and press <CR>.
@@ -591,6 +1058,9 @@ local function at_row(b, id)
   end
 end
 
+section("LINK", function()
+ensure_dashboard()
+ensure_workitems()
 -- gl on the work-items dashboard: PR !102 onto #3002 (which has !104).
 at_row(wis, 3002)
 feed("gl")
@@ -615,18 +1085,425 @@ if not choose_popup("#3001  [") then return end
 if not both("gl on PR #104 didn't show #3001 on both dashboards", function()
   return row_text(dash, 104):find("#3002 +1", 1, true) and row_text(wis, 3001):find("!101 +1", 1, true)
 end) then return end
-print("LINK-SMOKE-OK")
+smoke_ok("LINK")
+end)
+
+-- gU on the work-items dashboard (#80): #3014, a Task under the Task #3012,
+-- moves under the Bug #3002 through the picker (a level up: #3012 itself
+-- isn't offered), the tree shows it there and the fake has it; then back
+-- under #3012 by typing its id, so the sections after this one see the
+-- tree they always did. A section of its own, away from the reviewer's
+-- gd/<BS> steps and the home screens' keys.
+section("PARENT", { needs = { "TREE" } }, function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+if not require("azure-cli.state").wi_tree then feed("T") end
+local function parent_of(id)
+  local s = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, w in ipairs(s.workitems) do if w.id == id then return w.parentId end end
+end
+-- Whether the tree's row after `parent`'s is `id`'s, as a child of it.
+local function shown_under(parent, id)
+  local ls = vim.api.nvim_buf_get_lines(wis, 0, -1, false)
+  for i, l in ipairs(ls) do
+    if l:find("#" .. parent .. " ", 1, true) and ls[i + 1] then
+      return ls[i + 1]:find("\u{2514} #" .. id .. " ", 1, true) ~= nil
+    end
+  end
+  return false
+end
+ok = vim.wait(15000, function() return shown_under(3012, 3014) end, 100)
+if not ok then return fail("the tree doesn't show #3014 under #3012 to start with", wis) end
+goto_row(3014)
+feed("gU")
+ok = vim.wait(10000, function() return (float_text() or ""):find("#3002  Bug", 1, true) ~= nil end, 50)
+local offered = float_text() or ""
+if not (ok and offered:find("(no parent)", 1, true) and offered:find("(type an id", 1, true)
+    and not offered:find("#3012  Task", 1, true) and not offered:find("#3014  ", 1, true)) then
+  return fail("gU on #3014 should offer the items above a Task, type an id and no parent:\n" .. offered)
+end
+if not choose_popup("#3002  Bug") then return end
+ok = vim.wait(15000, function() return parent_of(3014) == 3002 and shown_under(3002, 3014) end, 100)
+if not ok then
+  return fail("gU didn't move #3014 under #3002 (the fake has it under #" .. tostring(parent_of(3014)) .. ")", wis)
+end
+print("== work items, #3014 moved under #3002 ==")
+print(text(wis))
+goto_row(3014)
+feed("gU")
+local real_input = vim.ui.input
+vim.ui.input = function(_, cb) cb("3012") end
+local chosen = choose_popup("(type an id")
+vim.ui.input = real_input
+if not chosen then return end
+ok = vim.wait(15000, function() return parent_of(3014) == 3012 and shown_under(3012, 3014) end, 100)
+if not ok then return fail("typing 3012 into gU didn't put #3014 back under #3012", wis) end
+smoke_ok("PARENT")
+end)
+
+-- I: the Issues tab - the same screens on the fake's GitHub project (the
+-- demo config's GitHub account has issues:), next to W. #3001 is an issue
+-- there too, on purpose: neither tab may ever show the other's.
+-- (After a reset: the W tab these start from, then back on the dashboard.)
+local function both_boards() ensure_workitems() goto_buf(dash) end
+section({ "ISSUES", "BOARDS" }, { reopen = both_boards }, function()
+  local BOARD = require("azure-cli.workitems.board")
+  local log_path = vim.env.AZVICLI_FAKE_WS .. "/calls.log"
+  local function log_lines()
+    local out = {}
+    for l in io.open(log_path):read("*a"):gmatch("[^\n]+") do out[#out + 1] = l end
+    return out
+  end
+  local before_i = #log_lines()
+  local tabs_before = {}
+  for _, tp in ipairs(vim.api.nvim_list_tabpages()) do tabs_before[tp] = true end
+  -- `argv` run to the end with `env` added, its stdout as one string. Not
+  -- vim.system: that's 0.10+, and CI runs apt's Neovim 0.9 (#51).
+  local function run_sync(argv, env)
+    local out = {}
+    local job = vim.fn.jobstart(argv, { env = env, stdout_buffered = true,
+      on_stdout = function(_, data) out = data end })
+    if job <= 0 then return "" end
+    vim.fn.jobwait({ job }, 10000)
+    return table.concat(out, "\n")
+  end
+  local function gh_detail(ref)
+    local out = run_sync(require("azure-cli.config").provider_argv("--wi-detail", ref), { AZVICLI_WI_HOST = "github" })
+    local okj, data = pcall(vim.json.decode, out)
+    return okj and type(data) == "table" and data.item or {}
+  end
+  local has
+  ok = vim.wait(10000, function() has = BOARD.has_issues() return has ~= nil end, 50)
+  if not has then return fail("--boards never reported the demo's GitHub project: " .. vim.inspect(require("azure-cli.state").BOARDS)) end
+
+  at_row(wis, 3001)
+  feed("I")
+  local iss
+  ok = vim.wait(15000, function()
+    iss = find_buf("azurecli-issues")
+    return iss ~= nil and text(iss):find("#3001 ", 1, true) ~= nil and text(iss):find("#12 ", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("I never listed the GitHub project's issues", iss) end
+  local issues_tab = vim.api.nvim_get_current_tabpage()
+  local it = text(iss)
+  if not (it:find("Iteration 1", 1, true) and it:find("Iteration 2", 1, true) and it:find("Iteration 3", 1, true)) then
+    return fail("the Issues tab doesn't show the project's iterations as tabs", iss)
+  end
+  if it:find("Throttle repeated login failures", 1, true) or not row_text(iss, 3001):find("Spin faster", 1, true) then
+    return fail("the Issues tab shows Azure's #3001", iss)
+  end
+  local ibar = vim.wo[vim.fn.bufwinid(iss)].winbar
+  if not (ibar:find("Issues", 1, true) and ibar:find("Iteration 2", 1, true)) then
+    return fail("the Issues winbar should say Issues and the iteration: " .. ibar)
+  end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iss))
+  feed("T")
+  ok = vim.wait(15000, function()
+    local t2 = text(iss)
+    return t2:find("\u{25BE}#12", 1, true) ~= nil and t2:find("\u{2514} #13 +%[Todo%]") ~= nil
+  end, 100)
+  if not ok then return fail("T on the Issues tab never put #13 under #12", iss) end
+  print("== issues, tree view ==")
+  print(text(iss))
+
+  -- The last tab, after Iteration 3: the open issues in no iteration (#15).
+  if text(iss):find("#15 ", 1, true) then return fail("#15 (no iteration) shows on Iteration 2's tab", iss) end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iss))
+  feed("<Tab>")
+  feed("<Tab>")
+  ok = vim.wait(15000, function()
+    local t2 = text(iss)
+    return t2:find("No iteration", 1, true) ~= nil and t2:find("#15 ", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("the Issues tab's No iteration tab never listed #15", iss) end
+  if text(iss):find("#12 ", 1, true) then return fail("the No iteration tab lists Iteration 2's #12", iss) end
+  feed("<S-Tab>")
+  feed("<S-Tab>")
+  ok = vim.wait(15000, function() return text(iss):find("#3001 ", 1, true) ~= nil end, 100)
+  if not ok then return fail("<S-Tab> never went back to Iteration 2", iss) end
+
+  -- <CR>: the issue's Markdown body, "Comments" and its repository.
+  at_row(iss, 3001)
+  feed("<CR>")
+  local iview
+  ok = vim.wait(15000, function()
+    iview = find_buf("azurecli-issue")
+    return iview ~= nil and text(iview):find("Comments (1)", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("<CR> on #3001 never opened the issue with its comments", iview) end
+  local ivt = text(iview)
+  if not (ivt:find("The gizmo should **spin faster** when asked.", 1, true) and ivt:find("Started on it in gizmos#7.", 1, true))
+      or ivt:find("Discussion", 1, true) or vim.bo[iview].syntax ~= "markdown" then
+    return fail("the issue view should show the Markdown body under Comments wording (syntax "
+      .. vim.bo[iview].syntax .. ")", iview)
+  end
+  if not ivt:find("Repository: demo-gh/gizmos", 1, true) or ivt:find("\nC[a-z]+ed: [^\n]*%dT%d%d:%d%d") then
+    return fail("the issue's Details: Repository needs its space and dates their local format", iview)
+  end
+  local function tail(b) return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":t") end
+  if tail(iss) ~= "Issues" or tail(iview) ~= "Issue #3001" then
+    return fail("Neovim's own tab line would say " .. tail(iss) .. " / " .. tail(iview) .. ", not Issues / Issue #3001")
+  end
+  print("== issue view ==")
+  print(ivt)
+
+  -- gc: a comment, posted to the issue.
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
+  feed("gc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Spins at 4000 rpm here." })
+  vim.cmd("stopinsert")
+  feed("ZZ")
+  ok = vim.wait(15000, function()
+    return run_sync(require("azure-cli.config").provider_argv("--wi-detail", "demo-gh~gizmos~3001"),
+      { AZVICLI_WI_HOST = "github" }):find("Spins at 4000 rpm here.", 1, true) ~= nil
+  end, 200)
+  if not ok then return fail("gc never commented on the issue", iview) end
+  -- Read back: the comment with its real author and a date, not "Me".
+  ok = vim.wait(10000, function()
+    return text(iview):find("demo%-user  %d+ %a%a%a %d%d%d%d %d%d:%d%d\n  Spins at 4000 rpm here%.") ~= nil
+  end, 100)
+  if not ok then return fail("the new comment didn't come back with its author and date", iview) end
+
+  -- gE: the description in the comment editor, prefilled. Every --wi-edit
+  -- set description the provider is asked for is recorded, so q and an
+  -- unchanged save can be seen to write nothing.
+  local RPC = require("azure-cli.rpc")
+  local real_run, desc_writes = RPC.run, {}
+  RPC.run = function(argv, o)
+    for i, a in ipairs(argv) do
+      if a == "set" and argv[i + 2] == "description" then desc_writes[#desc_writes + 1] = argv[i + 3] end
+    end
+    return real_run(argv, o)
+  end
+  local body0 = gh_detail("demo-gh~gizmos~3001").description or ""
+  local function gE(lines, how)
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
+    feed("gE")
+    local f = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_config(f).relative == "" then return nil end
+    local shown_body = text(vim.api.nvim_get_current_buf())
+    if lines then vim.api.nvim_buf_set_lines(0, 0, -1, false, lines) end
+    vim.cmd("stopinsert")
+    feed(how)
+    return shown_body
+  end
+  local function check_gE()
+    -- q: nothing written, the body stays.
+    if not body0:find("spin faster", 1, true) then return fail("#3001's body should start out as the fake's: " .. body0) end
+    local shown_body = gE({ "Not this." }, "q")
+    if shown_body ~= vim.trim(body0) then
+      return fail("gE didn't open the editor prefilled with the body: " .. tostring(shown_body), iview)
+    end
+    -- Saved unchanged: still nothing written.
+    gE(nil, "ZZ")
+    vim.wait(500, function() return #desc_writes > 0 end, 50)
+    if #desc_writes > 0 or gh_detail("demo-gh~gizmos~3001").description ~= body0 then
+      return fail("q / an unchanged save shouldn't write the description: " .. vim.inspect(desc_writes))
+    end
+    -- Edited: the new body, on the server and in the view.
+    gE({ "Spin at **5000** rpm.", "", "- quietly" }, "ZZ")
+    ok = vim.wait(15000, function()
+      return gh_detail("demo-gh~gizmos~3001").description == "Spin at **5000** rpm.\n\n- quietly"
+    end, 200)
+    if not ok then return fail("gE never saved the new body: " .. vim.inspect(desc_writes)) end
+    ok = vim.wait(10000, function()
+      local t = text(iview)
+      return t:find("Spin at **5000** rpm.", 1, true) ~= nil and t:find("**spin faster** when asked", 1, true) == nil
+    end, 100)
+    if not ok then return fail("the issue view didn't refresh to the new body", iview) end
+    -- Emptied: the body is cleared, not kept.
+    gE({ "" }, "ZZ")
+    ok = vim.wait(15000, function() return gh_detail("demo-gh~gizmos~3001").description == "" end, 200)
+    if not ok then return fail("an empty gE save didn't clear the body: " .. vim.inspect(desc_writes)) end
+    ok = vim.wait(10000, function() return not text(iview):find("Spin at **5000** rpm.", 1, true) end, 100)
+    if not ok then return fail("the issue view still shows the cleared body", iview) end
+    if #desc_writes ~= 2 then return fail("gE should have written twice: " .. vim.inspect(desc_writes)) end
+    return true
+  end
+  local gE_ok = check_gE()
+  RPC.run = real_run
+  if not gE_ok then return end
+  print("== issue view after gE ==")
+  print(text(iview))
+
+  -- ?: GitHub's words, and what the ↑ keys change.
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(iview))
+  feed("?")
+  local ihelp = float_text() or ""
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  if not (ihelp:find("change this issue's state", 1, true) and ihelp:find("changes GitHub", 1, true))
+      or ihelp:find("Azure DevOps", 1, true) then
+    return fail("the issue view's ? should speak of issues and GitHub:\n" .. ihelp)
+  end
+  if not ihelp:find("gE[^\n]*write or edit this issue's description") then
+    return fail("the issue view's ? should list gE:\n" .. ihelp)
+  end
+
+  -- gs -> Done: a Status, the issue stays open.
+  local function pick_state(row_id, state, reason)
+    at_row(iss, row_id)
+    feed("gs")
+    local p
+    if not vim.wait(15000, function() p = float_text() return p ~= nil and p:find("State:", 1, true) ~= nil end, 100) then
+      return fail("gs on #" .. row_id .. " never opened the state popup")
+    end
+    local function to(kind, want)
+      local pb = vim.api.nvim_get_current_buf()
+      for i, l in ipairs(vim.api.nvim_buf_get_lines(pb, 0, -1, false)) do
+        if l:find("^" .. kind .. ":") then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+      end
+      for _ = 1, 6 do
+        if vim.wait(2000, function() return (float_text() or ""):find(kind .. ":%s+\u{2039} " .. vim.pesc(want) .. " \u{203A}") ~= nil end, 50) then
+          return true
+        end
+        feed("l")
+      end
+      return fail("couldn't cycle " .. kind .. " to " .. want .. "\n" .. tostring(float_text()))
+    end
+    if not to("State", state) then return end
+    if reason and not to("Reason", reason) then return end
+    print("== issues gs popup ==")
+    print(float_text())
+    feed("<CR>")
+    return true
+  end
+  if not pick_state(3001, "Done") then return end
+  ok = vim.wait(15000, function() local d = gh_detail("demo-gh~gizmos~3001") return d.state == "Done" end, 200)
+  if not ok then return fail("gs didn't set #3001's Status to Done: " .. vim.inspect(gh_detail("demo-gh~gizmos~3001"))) end
+  -- gs -> Closed, not planned.
+  if not pick_state(13, "Closed", "not planned") then return end
+  ok = vim.wait(15000, function()
+    local d = gh_detail("13")
+    return d.state == "Closed" and d.reason == "not planned"
+  end, 200)
+  if not ok then return fail("gs didn't close #13 as not planned: " .. vim.inspect(gh_detail("13"))) end
+  ok = vim.wait(10000, function() return row_text(iss, 13):find("[Closed]", 1, true) ~= nil end, 100)
+  if not ok then return fail("the Issues tab still shows #13 open", iss) end
+
+  -- n on #12: a new issue in the open iteration, as #12's sub-issue.
+  local real_input = vim.ui.input
+  vim.ui.input = function(_, cb) cb("Wobble at 4000 rpm") end
+  at_row(iss, 12)
+  feed("n")
+  vim.ui.input = real_input
+  if not choose_popup("child of #12") then return end
+  -- Then its body, in the description editor: a markdown float (by its
+  -- buffer - Neovim before 0.10 opens it without a title).
+  ok = vim.wait(10000, function()
+    return vim.api.nvim_win_get_config(0).relative ~= "" and vim.bo.filetype == "markdown" and vim.bo.modifiable
+  end, 50)
+  if not ok then return fail("n never asked for the new issue's description") end
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Wobbles past 4000 rpm." })
+  vim.cmd("stopinsert")
+  feed("ZZ")
+  ok = vim.wait(15000, function()
+    return text(iss):find("\u{2514} #3002 +%[Todo%] +Wobble at 4000 rpm") ~= nil
+      or (row_text(iss, 3002):find("Wobble at 4000 rpm", 1, true) ~= nil)
+  end, 100)
+  -- In the iteration's own list, not only under #12 by the tree's sub-issue
+  -- fetch: the fake's listing has it only 2 minutes after the create.
+  ok = vim.wait(10000, function()
+    local c = require("azure-cli.state").ISSUES.WI_SPRINT_ITEMS["it2"]
+    for _, x in ipairs(c and c.items or {}) do if x.id == 3002 then return true end end
+    return false
+  end, 100)
+  if not ok then return fail("n never listed the new issue #3002 (the fake's listing lags, like GitHub's)", iss) end
+
+  -- /: "#13" filters by id like "13".
+  local UIM = require("azure-cli.ui")
+  local real_filter = UIM.filter_prompt
+  local function filter(q)
+    UIM.filter_prompt = function(o) o.on_submit(q) end
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(iss))
+    feed("/")
+    UIM.filter_prompt = real_filter
+  end
+  filter("#13")
+  local ft13 = text(iss)
+  filter("")
+  if not (ft13:find("#13 ", 1, true) and not ft13:find("#3001 ", 1, true)) then
+    return fail("/ #13 didn't filter to #13", iss)
+  end
+  local made = gh_detail("demo-gh~gizmos~3002")
+  if made.iterationPath ~= "Iteration 2" then return fail("the new issue isn't in Iteration 2: " .. vim.inspect(made)) end
+  if made.description ~= "Wobbles past 4000 rpm." then return fail("n didn't save the new issue's body: " .. vim.inspect(made)) end
+  if made.state ~= "Todo" then return fail("n's new issue isn't Todo: " .. vim.inspect(made)) end
+
+  -- gs on it: the header names the state it has, the State: line opens on
+  -- it, and Enter sets what that line shows - never another state.
+  if not vim.wait(10000, function() return row_text(iss, 3002) ~= "" end, 100) then
+    return fail("#3002 isn't on the Issues tab", iss)
+  end
+  at_row(iss, 3002)
+  feed("gs")
+  local gs3002
+  if not vim.wait(15000, function() gs3002 = float_text() return gs3002 ~= nil and gs3002:find("State:", 1, true) ~= nil end, 100) then
+    return fail("gs on #3002 never opened the state popup")
+  end
+  if not (gs3002:find("#3002  Issue \u{00B7} now Todo", 1, true) and gs3002:find("State:   \u{2039} Todo \u{203A}", 1, true)) then
+    return fail("gs on the new #3002 should say now Todo and open on Todo:\n" .. gs3002)
+  end
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+    if l:find("^State:") then vim.api.nvim_win_set_cursor(0, { i, 0 }) break end
+  end
+  feed("l")
+  if not vim.wait(5000, function() return (float_text() or ""):find("State:   \u{2039} In Progress \u{203A}", 1, true) ~= nil end, 50) then
+    return fail("l didn't move gs's State: to In Progress:\n" .. tostring(float_text()))
+  end
+  feed("<CR>")
+  ok = vim.wait(15000, function() return gh_detail("demo-gh~gizmos~3002").state == "In Progress" end, 200)
+  if not ok then return fail("gs + Enter didn't set #3002 to In Progress: " .. vim.inspect(gh_detail("demo-gh~gizmos~3002"))) end
+  smoke_ok("ISSUES")
+
+  -- Back on W: #3001 is still the Azure item, in the list and its cache.
+  at_row(wis, 3001)
+  feed("r")
+  ok = vim.wait(15000, function() return row_text(wis, 3001):find("Throttle repeated login failures", 1, true) ~= nil end, 100)
+  if not ok then return fail("W's #3001 isn't the Azure item after I", wis) end
+  local S = require("azure-cli.state")
+  local wcache, icache = S.WI_DETAIL_CACHE["3001"], S.ISSUES.WI_DETAIL_CACHE["demo-gh~gizmos~3001"]
+  if (wcache and wcache.body and not wcache.body:find("Throttle repeated login failures", 1, true))
+      or (icache and icache.body and not icache.body:find("Spin faster on demand", 1, true)) then
+    return fail("the two boards' #3001 caches got mixed up")
+  end
+
+  -- The host switch rode on the I tab's calls only: never before I opened,
+  -- only on --wi-* calls, and on every one that names a GitHub issue or
+  -- iteration.
+  local lines, switched = log_lines(), 0
+  for i, l in ipairs(lines) do
+    local on = l:find("AZVICLI_WI_HOST=github", 1, true) ~= nil
+    if on then switched = switched + 1 end
+    if on and (i <= before_i or not l:find('%["%-%-wi%-')) then
+      return fail("AZVICLI_WI_HOST leaked into a call: " .. l)
+    end
+    if not on and l:find('%["%-%-wi%-') and (l:find("demo-gh~", 1, true) or l:find('"it%d"')) then
+      return fail("an Issues call went without AZVICLI_WI_HOST: " .. l)
+    end
+  end
+  if switched < 5 then return fail("only " .. switched .. " calls carried AZVICLI_WI_HOST=github") end
+  -- Leave the tabs as the rest of the smoke expects them: only the Issues
+  -- tab I opened stays, not the ones at_row added.
+  for _, tp in ipairs(vim.api.nvim_list_tabpages()) do
+    if not tabs_before[tp] and tp ~= issues_tab and vim.api.nvim_tabpage_is_valid(tp) then
+      vim.cmd("tabclose! " .. vim.api.nvim_tabpage_get_number(tp))
+    end
+  end
+  smoke_ok("BOARDS")
+end)
 
 -- The chat panel (lua/azure-cli/chat/): tests/fake-chat-agent.py stands in
 -- for Claude Code and speaks real MCP to `azure-cli.py --mcp`, which relays
--- to the panel's bridge. From auth.py's diff, on bob's thread: gq opens the
+-- to the panel's bridge. From auth.py's diff, on bob's thread: i opens the
 -- panel; "triage" sees the view (PR, file, line, thread), reads the threads
 -- and drafts a reply into the batch queue (not posted); gm picks a model;
 -- "branch" creates a branch on the fake origin linked to #3001 (no
 -- question asked); "vote" asks first and the "Deny" goes back to the agent.
--- The panel follows into the dashboard's tab; gq there jumps into it, and
--- gq from inside it hides it.
-do
+-- The panel follows into the dashboard's tab; i there jumps into it, and
+-- q from inside it hides it; gq does nothing any more (issue #118).
+section("CHAT", function()
   local CHAT = require("azure-cli.chat")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
   local agent_cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}", "--model", "{model}" }
@@ -703,11 +1580,14 @@ do
     return e
   end
 
-  feed("gq")
   local st = require("azure-cli.state").chat
+  -- gq is gone (issue #118): nothing opens.
+  feed("gq<Esc>")  -- (Vim's own gq waits for a motion: <Esc> drops it)
+  if st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq in the diff still opened the chat") end
+  feed("i")
   local wins = st.wins[vim.api.nvim_get_current_tabpage()]
   if not (wins and vim.api.nvim_win_is_valid(wins.log) and vim.api.nvim_get_current_win() == wins.input) then
-    return fail("gq didn't open the chat panel with the input focused")
+    return fail("i didn't open the chat panel with the input focused")
   end
   -- > / < resize the panel.
   local w0 = vim.api.nvim_win_get_width(wins.log)
@@ -723,7 +1603,7 @@ do
   if vim.api.nvim_win_get_position(wins.log)[2] <= vim.api.nvim_win_get_position(diff_win)[2] then
     return fail("the chat panel isn't on the right")
   end
-  -- Straight from the input box gq focused, the way a user types: the
+  -- Straight from the input box i focused, the way a user types: the
   -- view must still be the diff's, not the panel's own windows.
   local e, why = ask("triage this PR's comments")
   if not e then return fail(why) end
@@ -768,36 +1648,144 @@ do
   e, why = ask("vote approve")
   if not e then return fail(why) end
   if not e.text:find("vote: The user declined", 1, true) then return fail("the vote wasn't asked/declined:\n" .. e.text) end
+
+  -- A tool line with newlines (a git error, issue #101) draws over two
+  -- lines, and the conversation goes on: the next message still goes out.
+  table.insert(e.tools, "\u{2717} commit_and_push_fix: commit failed: Not currently on any branch.\nnothing to commit, working tree clean\n")
+  local drew = pcall(require("azure-cli.chat").render_now)
+  log = text(vim.api.nvim_win_get_buf(wins.log))
+  if not drew or not log:find("Not currently on any branch.\n    nothing to commit, working tree clean", 1, true) then
+    return fail("a tool line with newlines didn't draw:\n" .. log)
+  end
+  vim.api.nvim_set_current_win(diff_win)
+  e, why = ask("vote approve")
+  if not e then return fail("after a tool line with newlines: " .. why) end
+  if not e.text:find("vote: The user declined", 1, true) then return fail("the message after it didn't reach the agent:\n" .. e.text) end
+  -- Even a redraw that fails outright doesn't stop a message going out.
+  local real_set_lines = vim.api.nvim_buf_set_lines
+  local log_buf = vim.api.nvim_win_get_buf(wins.log)
+  vim.api.nvim_buf_set_lines = function(buf, ...)
+    if buf == log_buf then error("draw failed (test)") end
+    return real_set_lines(buf, ...)
+  end
+  vim.api.nvim_set_current_win(diff_win)
+  e, why = ask("vote approve")
+  vim.api.nvim_buf_set_lines = real_set_lines
+  if not e then return fail("with the redraw failing: " .. why) end
+  if not e.text:find("vote: The user declined", 1, true) then return fail("with the redraw failing, the message didn't go out:\n" .. e.text) end
+  require("azure-cli.chat").render_now()
   print("== chat ==")
   print(text(vim.api.nvim_win_get_buf(wins.log)))
 
-  -- Follows into the PR dashboard's tab; gq there hides it.
+  -- Follows into the PR dashboard's tab.
   vim.cmd("tab sbuffer " .. dash)
   ok = vim.wait(3000, function()
     local w = st.wins[vim.api.nvim_get_current_tabpage()]
     return w and vim.api.nvim_win_is_valid(w.log)
   end, 50)
   if not ok then return fail("the chat panel didn't follow into the dashboard's tab") end
-  -- gq from the dashboard while the panel shows: into its input box; gq
-  -- again from there: hidden.
+  -- i from the dashboard while the panel shows: into its input box; q
+  -- from there (in normal mode): hidden.
   vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
-  feed("gq")
+  feed("i")
   vim.cmd("stopinsert")
   if vim.api.nvim_get_current_win() ~= st.wins[vim.api.nvim_get_current_tabpage()].input then
-    return fail("gq on a screen didn't jump into the showing chat's input box")
+    return fail("i on a screen didn't jump into the showing chat's input box")
   end
-  feed("gq")
-  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("gq inside the chat didn't hide it") end
+  feed("q")
+  if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("q inside the chat didn't hide it") end
   vim.ui.select = real_select
-  print("CHAT-SMOKE-OK")
-end
+  smoke_ok("CHAT")
+end)
+-- i on the PR dashboard, the work-items board (and Issues when there are
+-- some) and the Agents screen: into the chat's input box in insert mode,
+-- opening the panel when it's hidden and keeping a draft when it shows.
+section("CHATI", function()
+  local CHAT = require("azure-cli.chat")
+  -- The mode and buffer `i` leaves you in, read by a <Cmd> right after it
+  -- (feedkeys' "x" leaves insert mode once the keys run out; "x!" would
+  -- wait for more input forever in a headless nvim).
+  local function insert_i()
+    _G.__chati = nil
+    feed("i<Cmd>lua _G.__chati = { vim.api.nvim_get_mode().mode, vim.api.nvim_buf_get_name(0) }<CR>")
+    pcall(vim.cmd, "stopinsert")
+    local got = _G.__chati or { "?", "?" }
+    _G.__chati = nil
+    return got[1], got[2]
+  end
+  local function check(what, buf)
+    local w = buf and vim.fn.win_findbuf(buf)[1]
+    if not w then return fail(what .. " isn't showing") end
+    vim.fn.win_gotoid(w)
+    CHAT.hide()
+    vim.api.nvim_set_current_win(w)
+    local tab = vim.api.nvim_get_current_tabpage()
+    local mode, name = insert_i()
+    if vim.api.nvim_get_current_tabpage() ~= tab then return fail("i on " .. what .. " left its tab") end
+    if not vim.endswith(name, "azure-cli://chat-input") then return fail("i on " .. what .. " didn't go into the chat's input box: " .. name) end
+    if mode ~= "i" then return fail("i on " .. what .. " left the mode " .. mode .. ", not insert") end
+    local input = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(input, 0, -1, false, { "draft 79" })
+    vim.api.nvim_set_current_win(w)
+    mode, name = insert_i()
+    if not vim.endswith(name, "azure-cli://chat-input") then return fail("i on " .. what .. " with the panel showing didn't go into its input: " .. name) end
+    if mode ~= "i" then return fail("i on " .. what .. " with the panel showing left the mode " .. mode) end
+    local lines = vim.api.nvim_buf_get_lines(input, 0, -1, false)
+    if #lines ~= 1 or lines[1] ~= "draft 79" then return fail("i on " .. what .. " lost the draft: " .. vim.inspect(lines)) end
+    vim.api.nvim_buf_set_lines(input, 0, -1, false, {})
+    CHAT.hide()
+  end
+  check("the PR dashboard", ensure_dashboard())
+  check("the work-items board", ensure_workitems())
+  -- And where gq used to go to the chat (issue #118): the reviewer's file
+  -- list, when it's open (the diff, the change viewer, a plan and the
+  -- Issues board have their own checks further on).
+  local fl = find_buf("azurecli-files")
+  if fl and vim.fn.win_findbuf(fl)[1] then check("the reviewer's file list", fl) end
+  if require("azure-cli.workitems.board").has_issues() then
+    require("azure-cli.home").go("issues")
+    local ib = shown_buf("azurecli-issues")
+    if ib then check("the issues board", ib) end
+  end
+  local AV = require("azure-cli.chat.agents_view")
+  local had_agents = AV.current() ~= nil
+  require("azure-cli.home").go("agents")
+  local av = AV.current()
+  if not av then return fail("the Agents screen didn't open") end
+  check("the Agents screen", av.buf)
+  if not had_agents then
+    vim.api.nvim_set_current_tabpage(av.tab)
+    vim.cmd("tabclose")
+  end
+  goto_buf(dash)
+  smoke_ok("CHATI")
+end)
 -- The chat, part two: streamed answers (stream-json), a visual selection
 -- and !refs in the message, a saved prompt (/build) reading a build log,
 -- open_in_ui, annotate_code, the fix flow (worktree -> diff -> commit and
 -- push, asked first), board tools with an undo from the audit log (gH, u),
 -- gr drafting an answer as a reply, switching agents (gM) and going back to
 -- an earlier conversation (gh).
-do
+-- #86: planning and changing code are a plan agent's - the main chat's
+-- submit_plan / start_story / start_fix are refused. The flows below that
+-- do them run in that agent's own conversation, shown in this tab's panel
+-- (as a plan's tab shows its agent's); as_main() goes back, dropping it so
+-- the Agents screen's own checks start from none.
+local function as_agent(key, fields)
+  local CHAT = require("azure-cli.chat")
+  local c = CHAT.conversation(key, fields)
+  vim.t.azure_cli_plan_key = key
+  CHAT.sync_active()
+  return c
+end
+local function as_main(tab, key)
+  local CHAT = require("azure-cli.chat")
+  if tab and vim.api.nvim_tabpage_is_valid(tab) then pcall(vim.api.nvim_tabpage_del_var, tab, "azure_cli_plan_key") end
+  if key then CHAT.drop_conversation(key) end
+  CHAT.sync_active()
+end
+
+section("CHATPLUS", function()
   local CHAT = require("azure-cli.chat")
   local STATE = require("azure-cli.state")
   local fake_chat = require("azure-cli.config").plugin_root() .. "/tests/fake-chat-agent.py"
@@ -825,17 +1813,18 @@ do
   local function wins() return st.wins[vim.api.nvim_get_current_tabpage()] end
   local function ask(msg)
     local w = wins()
-    local n = #st.entries
+    local s = CHAT._.state()  -- the main chat, or the plan agent's (as_agent)
+    local n = #s.entries
     vim.api.nvim_set_current_win(w.input)
     vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(w.input), 0, -1, false, { msg })
     vim.cmd("stopinsert")
     feed("<CR>")
     local e
     local okw = vim.wait(40000, function()
-      e = st.entries[#st.entries]
-      return #st.entries >= n + 2 and e.role == "agent" and e.status ~= "running"
+      e = s.entries[#s.entries]
+      return #s.entries >= n + 2 and e.role == "agent" and e.status ~= "running"
     end, 100)
-    if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(st.entries[#st.entries]) end
+    if not okw then return nil, "no answer to \"" .. msg .. "\": " .. vim.inspect(s.entries[#s.entries]) end
     return e
   end
   local function need(e, why, ...)
@@ -865,11 +1854,11 @@ do
   end, 100)
   if not ok then return fail("the opener didn't land on auth.py's line 12") end
 
-  -- A selection of two lines + gq, then a message naming !102.
+  -- A selection of two lines + <CR>, then a message naming !102.
   CHAT.new_chat(true)
   feed("Vj")
-  feed("gq")
-  if not st.selection or st.selection.to - st.selection.from ~= 1 then return fail("gq in visual mode didn't capture the selection") end
+  feed("<CR>")
+  if not st.selection or st.selection.to - st.selection.from ~= 1 then return fail("<CR> in visual mode didn't capture the selection") end
   local e, why = ask("explain this, and compare with !102")
   if not need(e, why, "selection: 12-13", "refs: yes", "model: fast") then return end
   local streamed_tool = false
@@ -948,10 +1937,13 @@ do
   -- The fix flow: the push asks first ("Allow"), then lands on the branch.
   answer = "Allow"
   local fix_tab = vim.api.nvim_get_current_tabpage()
+  as_agent("pr-101", { target = { pr_id = 101 }, label = "PR !101" })
   e, why = ask("fix it please")
   if not need(e, why, "start_fix:", "show_fix:", "commit_and_push_fix: Pushed") then return end
-  -- show_fix opened the change in its own tab, like the reviewer: files on
-  -- the left, the diff on the right, ]c through it, q closes.
+  -- show_fix left it waiting (#120); gd opens the change in its own tab,
+  -- like the reviewer: files on the left, the diff on the right, ]c
+  -- through it, q closes.
+  open_change()
   local function diff_focused()
     vim.wait(500, function() return false end, 50)  -- the chat follows into the tab meanwhile
     local b = vim.api.nvim_get_current_buf()
@@ -995,10 +1987,10 @@ do
   if vim.api.nvim_get_current_win() ~= dwin or vim.api.nvim_win_get_cursor(dwin)[1] ~= before_line then
     return fail("r moved off the line: " .. before_line .. " -> " .. vim.api.nvim_win_get_cursor(dwin)[1])
   end
-  -- gq goes to the chat from here.
-  feed("gq")
+  -- i goes to the chat from here.
+  feed("i")
   local cw = require("azure-cli.state").chat.wins[ctab]
-  if not (cw and vim.api.nvim_get_current_win() == cw.input) then return fail("gq in the change viewer didn't go to the chat") end
+  if not (cw and vim.api.nvim_get_current_win() == cw.input) then return fail("i in the change viewer didn't go to the chat") end
   vim.cmd("stopinsert")
   vim.api.nvim_set_current_win(dwin)
   feed("q")
@@ -1027,7 +2019,10 @@ do
   end
 
   -- The story flow: a branch from main linked to #3001, a worktree of it,
-  -- the change pushed there (asks first - answer is still "Allow").
+  -- the change pushed there (asks first - answer is still "Allow"), by
+  -- #3001's own agent.
+  CHAT.drop_conversation("pr-101")
+  as_agent("wi-3001", { target = { work_item_id = 3001 }, label = "#3001" })
   e, why = ask("implement the story")
   if not need(e, why, "start_story: {", "Already started", "show_fix:", "commit_and_push_fix: Pushed", "create_pull_request",
     "delete_fix_file: Deleted SCRATCH.md", "delete_fix_file: Deleted README.md", "outside.txt isn't inside") then return end
@@ -1035,6 +2030,7 @@ do
   if tree:find("SCRATCH.md", 1, true) or tree:find("README.md", 1, true) then
     return fail("delete_fix_file's deletions aren't in the pushed story: " .. tree)
   end
+  open_change()
   cbuf = vim.fn.bufnr("azure-cli://changes")
   if cbuf < 0 or not table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n"):find("A  STORY.md", 1, true) then
     return fail("show_fix didn't list the story's new file")
@@ -1046,6 +2042,7 @@ do
   if not subject:find("Implement the login throttle story", 1, true) or not content:find("IMPLEMENTED-BY-AGENT", 1, true) then
     return fail("the story wasn't pushed: " .. subject)
   end
+  as_main(fix_tab, "wi-3001")
 
   -- The fix pushed to !101 (and the story's new PR) are watched for new
   -- comments, dashboard or not: Alice answering is said in the chat.
@@ -1091,7 +2088,18 @@ json.dump(s, open(p, "w", encoding="utf-8"))
 
   -- Board tools, then u in gH undoes the link.
   e, why = ask("plan the work")
-  if not need(e, why, "create_child_task: Created Task", "move_to_sprint: Moved #3002", "link_pr_to_work_item: Linked PR #102") then return end
+  if not need(e, why, "create_child_task: Created Task", "create_work_item: Created Bug #", "move_to_sprint: Moved #3002",
+    "link_pr_to_work_item: Linked PR #102") then return end
+  -- create_work_item: top-level (no parent), its body, in the sprint named.
+  do
+    local s = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+    local made
+    for _, w in ipairs(s.workitems) do if w.title == "Lockout emails go to spam" then made = w end end
+    if not (made and made.type == "Bug" and made.parentId == vim.NIL and made.description == "Reported by support.\nTwice."
+        and made.iterationPath:find("Sprint 43", 1, true)) then
+      return fail("create_work_item didn't make a top-level Bug with its body in Sprint 43: " .. vim.inspect(made))
+    end
+  end
   local items = require("azure-cli.chat.store").audit()
   if not (items[#items] and items[#items].tool == "link_pr_to_work_item" and items[#items].undo) then
     return fail("the link isn't in the audit log with an undo: " .. vim.inspect(items[#items]))
@@ -1124,6 +2132,180 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
   if not ok then return fail("gr's reply wasn't queued") end
 
+  -- The agent's board tools on the Issues board: i on #12 in the I tab,
+  -- so calls without board= go to GitHub; start_story makes feature/12-wobble in gizmos, linked to #12;
+  -- create_pull_request closes #12; linking gizmos#7 to #13 asks, adds
+  -- "Closes #13" to its description, and u in gH takes it out again. Then
+  -- gW on gizmos#7 opens its issue in the I view, and gP on #12 starts an
+  -- agent that reads the issue without being told the board.
+  local home_tab = vim.api.nvim_get_current_tabpage()
+  local chat_select = vim.ui.select  -- this smoke's own picker stub
+  local tabs_then = {}
+  for _, tp in ipairs(vim.api.nvim_list_tabpages()) do tabs_then[tp] = true end
+  -- On a failure only what this part opened goes: the chat goes on after it.
+  local function back_home()
+    pcall(vim.cmd, "stopinsert")
+    vim.ui.select = chat_select
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+    end
+    for _, tp in ipairs(vim.api.nvim_list_tabpages()) do
+      if not tabs_then[tp] then pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(tp)) end
+    end
+    if vim.api.nvim_tabpage_is_valid(home_tab) then vim.api.nvim_set_current_tabpage(home_tab) end
+    CHAT.sync_active()
+  end
+  section("ISSUE-TOOLS", { reset = back_home }, function()
+    local ws = vim.env.AZVICLI_FAKE_WS
+    local log_from = #vim.fn.readfile(ws .. "/calls.log")
+    local function fake_state() return vim.json.decode(table.concat(vim.fn.readfile(ws .. "/state.json"), "\n")) end
+    local function issue_in(s, n)
+      for _, i in ipairs(s.issues) do if i.number == n and i.repo == "gizmos" then return i end end
+    end
+    local function gizmos_pr(s, pred)
+      for _, p in ipairs(s.prs) do if p.host == "github" and p.repo == "gizmos" and pred(p) then return p end end
+    end
+    local iss = find_buf("azurecli-issues")
+    if not iss then return fail("the Issues tab is gone before the agent's board tools") end
+    at_row(iss, 12)
+    local issue_tab = vim.api.nvim_get_current_tabpage()
+    feed("i")
+    answer = "Allow"
+    -- #12's own agent: it makes the story branch (start_story).
+    as_agent("wi-12", { target = { work_item_id = 12 }, label = "#12" })
+    e, why = ask("work the issue")
+    as_main(issue_tab, "wi-12")
+    if not need(e, why, "view board: github, item 12", "list_work_items: [", "\"board\":\"github\"",
+        "\"iteration\":\"Iteration 2\"", "\"iteration_id\":\"it2\"", "\"iteration\":\"Demo\\\\Sprint 42\"",
+        "get_work_item: {", "set_work_item_state: Issue #12 is now In Progress", "comment_on_work_item: Commented on #12",
+        "create_child_task: Created issue #", "create_work_item: Created issue #", "\"title\":\"Orphaned issue\"",
+        "\"title\":\"Export the audit log\"", "start_story: {",
+        "create_pull_request: Opened PR !",
+        "link_pr_to_work_item: Linked PR #7 to issue #13 (\"Closes #13\" in its description).") then return end
+    local s = fake_state()
+    local i12 = issue_in(s, 12)
+    local last = i12.comments[#i12.comments] or {}
+    if i12.status ~= "In Progress" or last.text ~= "Picking this up." then
+      return fail("the agent's state/comment didn't reach GitHub #12: " .. vim.inspect({ i12.status, last }))
+    end
+    local kid
+    for _, i in ipairs(s.issues) do if i.parent == 12 and i.title == "Write the wobble test" then kid = i end end
+    if not (kid and kid.iteration == "it2") then return fail("no sub-issue of #12 in its iteration: " .. vim.inspect(kid)) end
+    local top
+    for _, i in ipairs(s.issues) do if i.title == "Wobble at high speed" then top = i end end
+    if not (top and top.parent == vim.NIL and top.body == "Seen on the test rig.") then
+      return fail("create_work_item didn't make a top-level issue with its body: " .. vim.inspect(top))
+    end
+    -- No iteration given: the current one; one named wins.
+    if top.iteration ~= "it2" then return fail("create_work_item's issue isn't in the current iteration: " .. vim.inspect(top)) end
+    local docs
+    for _, i in ipairs(s.issues) do if i.title == "Document the wobble" then docs = i end end
+    if not (docs and docs.iteration == "it3") then
+      return fail("create_work_item didn't put \"Document the wobble\" in Iteration 3: " .. vim.inspect(docs))
+    end
+    local linked_branch = false
+    for _, b in ipairs(i12.branches or {}) do if b.name == "feature/12-wobble" and b.repo == "gizmos" then linked_branch = true end end
+    local tip = vim.fn.system({ "git", "--git-dir", ws .. "/origin/gizmos.git", "rev-parse", "-q", "--verify",
+      "refs/heads/feature/12-wobble" })
+    if not linked_branch or vim.v.shell_error ~= 0 then return fail("start_story didn't make feature/12-wobble linked to #12: " .. tip) end
+    local opened = gizmos_pr(s, function(p) return p.source == "feature/12-wobble" end)
+    if not (opened and (opened.description or ""):find("Closes #12", 1, true) and vim.tbl_contains(i12.prs, opened.id)) then
+      return fail("create_pull_request didn't close #12: " .. vim.inspect(opened))
+    end
+    local p7 = gizmos_pr(s, function(p) return p.id == 7 end)
+    if not (p7.description or ""):find("Closes #13", 1, true) then return fail("gizmos#7 doesn't close #13: " .. p7.description) end
+    -- u in gH: the link goes, through the GitHub board.
+    local items = require("azure-cli.chat.store").audit()
+    local it = items[#items]
+    if not (it and it.tool == "link_pr_to_work_item" and it.undo and it.undo.board == "github") then
+      return fail("the GitHub link isn't in the audit log with its board: " .. vim.inspect(it))
+    end
+    vim.api.nvim_set_current_win(wins().log)
+    feed("gH")
+    local fw = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(fw, { 1, 0 })
+    feed("u")
+    ok = vim.wait(10000, function()
+      local p = gizmos_pr(fake_state(), function(x) return x.id == 7 end)
+      return not (p.description or ""):find("Closes #13", 1, true)
+    end, 100)
+    if not ok then return fail("u in the audit log didn't take \"Closes #13\" out of gizmos#7") end
+    pcall(vim.api.nvim_win_close, fw, true)
+    -- Every one of those board calls carried the host switch; no PR call did.
+    local calls = vim.list_slice(vim.fn.readfile(ws .. "/calls.log"), log_from + 1)
+    for _, want in ipairs({ '"--wi-list"]', '"--wi-detail", "12"', '"--wi-state", "set", "12", "In Progress"',
+        '"comment", "12", "Picking this up."', '"create", "Issue", "Write the wobble test", "12"',
+        '"create", "Issue", "Wobble at high speed", ""',
+        '"create-branch", "12"', '"link-pr", "13"', '"unlink-pr", "13", "7"' }) do
+      local seen = false
+      for _, l in ipairs(calls) do
+        if l:find(want, 1, true) then
+          seen = true
+          if not l:find("AZVICLI_WI_HOST=github", 1, true) then return fail("an Issues call went without the switch: " .. l) end
+        end
+      end
+      if not seen then return fail("no " .. want .. " call in the log") end
+    end
+    for _, l in ipairs(calls) do
+      if l:find("AZVICLI_WI_HOST=github", 1, true) and not l:find('%["%-%-wi%-') then
+        return fail("AZVICLI_WI_HOST leaked into a call: " .. l)
+      end
+    end
+    -- gW on gizmos#7: its issue (#3001) opens in the Issues view.
+    local rec
+    for _, p in ipairs((STATE.PR_LIST_CACHE or {}).prs or {}) do
+      if p.host == "github" and p.repo == "gizmos" and tostring(p.id) == "7" then rec = p end
+    end
+    if not rec then return fail("gizmos#7 isn't in the PR list") end
+    require("azure-cli.pr_workitems").choose(rec, require("azure-cli.chat.tools").pr_env(rec))
+    if not choose_popup("#3001  [") then return end
+    local iview
+    ok = vim.wait(15000, function()
+      iview = find_buf("azurecli-issue")
+      return iview ~= nil and text(iview):find("Spin faster on demand", 1, true) ~= nil
+    end, 100)
+    if not ok then return fail("gW's <CR> on gizmos#7's issue didn't open it in the Issues view", iview) end
+    pcall(vim.cmd, "tabclose")
+    -- gP on #12: an agent of its own, whose view names the GitHub board.
+    vim.api.nvim_set_current_tabpage(issue_tab)
+    vim.api.nvim_set_current_win(vim.fn.win_findbuf(iss)[1])
+    at_row(iss, 12)
+    local gp_tab = vim.api.nvim_get_current_tabpage()
+    feed("gP")
+    local AGENTS = require("azure-cli.chat.agents")
+    -- Keyed by the issue's key (#114), wi-github-<owner~repo~12>.
+    local function conv12()
+      for _, c in ipairs(CHAT.conversations()) do
+        if c.plan_key and c.plan_key:match("^wi%-github%-.+~12$") then return c end
+      end
+    end
+    ok = vim.wait(30000, function()
+      local c = conv12()
+      local en = c and c.entries[#c.entries]
+      return en and en.role == "agent" and en.status == "done" and AGENTS.working() == 0
+    end, 100)
+    local c12 = conv12()
+    local said = c12 and c12.entries[#c12.entries] and c12.entries[#c12.entries].text or ""
+    if not ok or not said:find("planned issue #12 on board github: Doohickey wobbles at speed", 1, true) then
+      return fail("gP on the Issues board's #12: " .. said)
+    end
+    -- The later smokes count the plans waiting for you: #12's isn't one.
+    local PLAN = require("azure-cli.chat.plan")
+    local p12 = PLAN.load(c12.plan_key)
+    if p12 then
+      p12.status = "done"
+      PLAN.save(p12)
+    end
+    for _, tp in ipairs({ gp_tab, issue_tab }) do
+      if vim.api.nvim_tabpage_is_valid(tp) and tp ~= home_tab then
+        pcall(vim.cmd, "tabclose! " .. vim.api.nvim_tabpage_get_number(tp))
+      end
+    end
+    vim.api.nvim_set_current_tabpage(home_tab)
+    CHAT.sync_active()
+    smoke_ok("ISSUE-TOOLS")
+  end)
+
   -- gM: the other agent, which gets the conversation replayed.
   answer = "Plain"
   vim.api.nvim_set_current_win(wins().log)
@@ -1148,14 +2330,14 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   print("== chat, part two ==")
   print(table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(wins().log), 0, 40, false), "\n"))
   CHAT.hide()
-  print("CHATPLUS-SMOKE-OK")
-end
+  smoke_ok("CHATPLUS")
+end)
 -- The plan: start_story is refused until there's an approved plan;
 -- submit_plan opens it like the reviewer (sections left, the plan right);
 -- ga on a line asks the agent about it and the answer lands under it; gf +
 -- :w makes your edit a revision; gA approves it and the agent goes ahead;
 -- ga in the change viewer asks about a line of the change the same way.
-do
+section("PLAN", function()
   local CHAT = require("azure-cli.chat")
   local STATE = require("azure-cli.state")
   local PLAN = require("azure-cli.chat.plan")
@@ -1182,15 +2364,37 @@ do
     return okw and e or nil
   end
   local n = #st.entries
+  -- #86: the main chat can't plan - submit_plan and start_story refuse it,
+  -- pointing at start_agents, and no plan is written.
   CHAT.send("make a plan for #3002")
   local e = answered(n)
+  if not e then return fail("no answer to the main chat's plan request: " .. vim.inspect(st.entries[#st.entries])) end
+  for _, s in ipairs({ "submit_plan isn't available in the main chat", "start_story isn't available in the main chat",
+    "Call start_agents with work_item_ids = { 3002 }" }) do
+    if not e.text:find(s, 1, true) then return fail("\"" .. s .. "\" missing from the main chat's answer:\n" .. e.text) end
+  end
+  if PLAN.load("wi-3002") then return fail("the main chat's refused submit_plan still wrote a plan for #3002") end
+  -- The plan's own agent plans it.
+  local plan_home = vim.api.nvim_get_current_tabpage()
+  st = as_agent("wi-3002", { target = { work_item_id = 3002 }, label = "#3002", title = "Lockout reason codes" })
+  n = #st.entries
+  CHAT.send("make a plan for #3002", { conv = st })
+  e = answered(n)
   if not e then return fail("no answer to the plan request: " .. vim.inspect(st.entries[#st.entries])) end
-  for _, s in ipairs({ "No plan for #3002 yet", "submit_plan: {", "isn't approved yet" }) do
+  -- #71: before approval start_story gives a read-only worktree to plan in,
+  -- both times, and makes no branch (the answer's JSON writes / as \/).
+  for _, s in ipairs({ "A read-only worktree for planning, detached at origin", "submit_plan: {",
+    "Nothing was created on the server" }) do
     if not e.text:find(s, 1, true) then return fail("\"" .. s .. "\" missing from the answer:\n" .. e.text) end
   end
+  local _, previews = e.text:gsub('"read_only":true', "")
+  if previews ~= 2 or e.text:find("3002-planned", 1, true) then
+    return fail("start_story before approval wasn't a read-only worktree both times:\n" .. e.text)
+  end
+  open_plan("wi-3002")
   local v = PLAN.current()
   if not (v and vim.api.nvim_tabpage_is_valid(v.tab) and vim.api.nvim_win_is_valid(v.plan_win)) then
-    return fail("submit_plan didn't open the plan")
+    return fail("the plan didn't open")
   end
   if not CHAT.strip():find("plan #3002 waits for you", 1, true)
       or not require("azure-cli.ui").tabline():find("plan #3002 waits for you", 1, true) then
@@ -1260,6 +2464,7 @@ do
   -- the agent's next revision comes back.
   vim.api.nvim_set_current_win(v.plan_win)
   vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
+  local nthreads = #PLAN.load("wi-3002").threads
   feed("gc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper" })
   feed("<C-s>")
@@ -1270,6 +2475,45 @@ do
   end
   if drawn(v.plan_buf, "\u{270E} Make it a thin wrapper") ~= 8 or not vim.wo[v.plan_win].winbar:find("1 queued", 1, true) then
     return fail("the queued change isn't drawn under line 8 / counted")
+  end
+  if not drawn(v.plan_buf, "dd drops, cc edits") then return fail("the queued change doesn't say how to drop / edit it") end
+  -- A second one on line 9, queued by mistake: dd asks first - Cancel
+  -- keeps it, Yes drops it - and the winbar's count follows.
+  vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
+  feed("gc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Typo'd change" })
+  feed("<C-s>")
+  if not vim.wo[v.plan_win].winbar:find("\u{270E}2 queued", 1, true) then return fail("two queued changes aren't counted") end
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
+  pick = "Cancel"
+  feed("dd")
+  rec = PLAN.load("wi-3002")
+  if #rec.threads ~= nthreads + 2 or not vim.wo[v.plan_win].winbar:find("\u{270E}2 queued", 1, true) then
+    return fail("dd + Cancel dropped the change anyway: " .. vim.inspect(rec.threads))
+  end
+  if vim.api.nvim_get_current_win() ~= v.plan_win then return fail("Cancel didn't leave the focus on the plan") end
+  pick = "Yes"
+  feed("dd")
+  pick = "Allow"
+  rec = PLAN.load("wi-3002")
+  if #rec.threads ~= nthreads + 1 or rec.threads[#rec.threads].question ~= "Make it a thin wrapper" then
+    return fail("dd + Yes didn't drop just the line-9 change: " .. vim.inspect(rec.threads))
+  end
+  if not vim.wo[v.plan_win].winbar:find("\u{270E}1 queued", 1, true) or drawn(v.plan_buf, "Typo'd change") then
+    return fail("the dropped change still shows / is still counted: " .. vim.wo[v.plan_win].winbar)
+  end
+  if vim.api.nvim_get_current_win() ~= v.plan_win then return fail("Yes didn't leave the focus on the plan") end
+  -- cc edits the one left, in place.
+  local id8 = rec.threads[#rec.threads].id
+  vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
+  feed("cc")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper, please" })
+  feed("<C-s>")
+  rec = PLAN.load("wi-3002")
+  req = rec.threads[#rec.threads]
+  if not (req.id == id8 and req.line == 8 and req.status == "queued" and req.question == "Make it a thin wrapper, please") then
+    return fail("cc didn't edit the queued change in place: " .. vim.inspect(req))
   end
   n = #st.entries
   feed("gR")
@@ -1284,24 +2528,32 @@ do
       or not drawn(v.plan_buf, "sent with your change request") then
     return fail("the plan pane doesn't show the new revision with the sent change")
   end
-  -- What revision 3 changed against yours: line 8 marked, your Open
-  -- questions shown as taken out; gi turns the marks off.
-  local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]
-  local bar8, removed = false, false
-  local qline
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(v.plan_buf, 0, -1, false)) do
-    if l == "- Should admins be exempt?" then qline = i end
+  -- A sent change is history: dd and cc leave it alone.
+  local sent_line = rec.threads[#rec.threads].line
+  vim.api.nvim_set_current_win(v.plan_win)
+  vim.api.nvim_win_set_cursor(v.plan_win, { sent_line, 0 })
+  pick = "Yes"
+  feed("dd")
+  feed("cc")
+  pick = "Allow"
+  if vim.api.nvim_get_current_win() ~= v.plan_win then return fail("cc on a sent change opened an editor") end
+  rec = PLAN.load("wi-3002")
+  if #rec.threads ~= nthreads + 1 or rec.threads[#rec.threads].status ~= "sent"
+      or rec.threads[#rec.threads].question ~= "Make it a thin wrapper, please" then
+    return fail("dd / cc touched a sent change: " .. vim.inspect(rec.threads[#rec.threads]))
   end
+  if vim.wo[v.plan_win].winbar:find("queued", 1, true) then return fail("the winbar still counts a queued change") end
+  -- What revision 3 changed against yours: line 8 marked, with a bar
+  -- only - the text it took out isn't shown struck through (#90); gi
+  -- turns the marks off.
+  local sns = vim.api.nvim_get_namespaces()["azure_cli_plan_since"]
+  local bar8, struck = false, false
   for _, m in ipairs(vim.api.nvim_buf_get_extmarks(v.plan_buf, sns, 0, -1, { details = true })) do
     if m[2] == 7 and m[4].sign_text then bar8 = true end
-    -- Your hand-written question: taken out, or rewritten as the agent's.
-    if qline and m[2] == qline - 1 and m[4].sign_text then removed = true end
-    for _, vl in ipairs(m[4].virt_lines or {}) do
-      if vl[1][1]:find("Should admins be exempt?", 1, true) then removed = true end
-    end
+    if m[4].virt_lines then struck = true end
   end
-  if not (bar8 and removed and vim.wo[v.plan_win].winbar:find("since rev 2", 1, true)) then
-    return fail("revision 3's changes aren't marked: " .. vim.inspect({ bar8, removed, vim.wo[v.plan_win].winbar }))
+  if not (bar8 and not struck and vim.wo[v.plan_win].winbar:find("since rev 2", 1, true)) then
+    return fail("revision 3's changes aren't marked as a bar only: " .. vim.inspect({ bar8, struck, vim.wo[v.plan_win].winbar }))
   end
   if not table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"):match("Approach[^\n]*\u{00B1}") then
     return fail("the section list doesn't mark Approach as changed")
@@ -1348,9 +2600,10 @@ do
     return fail("the approval didn't carry your answer: " .. e.text)
   end
   -- ga in the change viewer, on the agent's new line.
+  open_change()
   local cbuf = vim.fn.bufnr("azure-cli://changes")
   local cwin = cbuf > 0 and vim.fn.win_findbuf(cbuf)[1]
-  if not cwin then return fail("show_fix didn't open the change viewer") end
+  if not cwin then return fail("gd didn't open the change viewer") end
   local clist = table.concat(vim.api.nvim_buf_get_lines(cbuf, 0, -1, false), "\n")
   for _, s in ipairs({ "In the diff:", " ga  ask about a line", " gy  accept a hunk", " gb  run the plan's tests", " ?   all keys" }) do
     if not clist:find(s, 1, true) then return fail("the change list's keys lack " .. s .. ":\n" .. clist) end
@@ -1464,9 +2717,9 @@ do
   -- The tests ran on the change as it was: the list says so now.
   local stale = vim.wait(5000, function()
     cwin = v_list_win()
-    return cwin and diff_winbar():find("tests passed, before the last change", 1, true) ~= nil
+    return cwin and diff_winbar():find("tests stale - last run passed", 1, true) ~= nil
   end, 50)
-  if not stale then return fail("the tests' result isn't marked as before the last change: " .. diff_winbar()) end
+  if not stale then return fail("the tests' result isn't marked stale: " .. diff_winbar()) end
   vim.ui.select = real_select
   -- create_pull_request without a description gets the plan's; with one
   -- and from_plan, both; the question shows it.
@@ -1532,13 +2785,14 @@ do
   print(table.concat(vim.api.nvim_buf_get_lines(v.list_buf, 0, -1, false), "\n"))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(dwin)))
   pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(v.tab))
-  print("PLAN-SMOKE-OK")
-end
+  as_main(plan_home, "wi-3002")
+  smoke_ok("PLAN")
+end)
 -- Several agents at once: gP on two work items of the board starts one
 -- agent each (chat.max_agents = 1 here, so the second waits for the
 -- first); each plans in a conversation of its own, in the background - no
 -- tab opens - and the main conversation is left alone.
-do
+section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function()
   local CHAT = require("azure-cli.chat")
   local STATE = require("azure-cli.state")
   local PLAN = require("azure-cli.chat.plan")
@@ -1547,7 +2801,8 @@ do
   require("azure-cli").setup({ ui = { confirm = "select" }, chat = { max_agents = 1, agent = { label = "Fake Claude", timeout_seconds = 60,
     cmd = { "python3", fake_chat, "--mcp-config", "{mcp_config}" } } } })
   local main_turns = #STATE.chat.entries
-  local before3002 = #((PLAN.load("wi-3002") or { revisions = {} }).revisions)
+  -- Its revision number: only 3 revisions are kept (#90), so not their count.
+  local before3002 = PLAN.rev_count(PLAN.load("wi-3002") or { revisions = {} })
   local bw = vim.fn.win_findbuf(wis)[1]
   if not bw then return fail("the work-items board isn't showing") end
   vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(bw))
@@ -1571,7 +2826,7 @@ do
   if not vim.wo[av.win].winbar:find("1 working", 1, true) then return fail("the Agents winbar: " .. vim.wo[av.win].winbar) end
   local both = vim.wait(60000, function()
     local a, b = PLAN.load("wi-3001"), PLAN.load("wi-3002")
-    return a and a.status == "draft" and b and #b.revisions > before3002 and b.status == "draft"
+    return a and a.status == "draft" and b and PLAN.rev_count(b) > before3002 and b.status == "draft"
       and AGENTS.working() == 0 and #AGENTS.queued() == 0
   end, 100)
   if not both then return fail("the two board agents didn't both plan: " .. vim.inspect({ AGENTS.working(), #AGENTS.queued() })) end
@@ -1600,16 +2855,78 @@ do
   if not screen():find("gA approve (2 waiting)", 1, true) then
     return fail("the Agents screen's keys don't offer approving both:\n" .. screen())
   end
-  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
-    if l:find("#3001", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  -- #129: the hint line's short labels.
+  for _, s in ipairs({ "<CR> chat", "gd changes", "gH logs", "i main chat", "? all keys" }) do
+    if not screen():find(s, 1, true) then return fail("the Agents screen's hint line lacks '" .. s .. "':\n" .. screen()) end
   end
-  feed("<CR>")
-  if not (PLAN.current() and PLAN.current().key == "wi-3001" and vim.api.nvim_get_current_tabpage() == PLAN.current().tab) then
-    return fail("<CR> on #3001's row didn't open its plan")
+  local function to_row(label)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+      if l:find(label, 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) return true end
+    end
   end
-  vim.cmd("tabclose")
-  vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(av.win))
+  -- <CR> on #3001's row: its plan's tab, with that agent's conversation in
+  -- the chat, the focus on the plan; back on the Agents screen, the main
+  -- chat is as it was (issue #87). gq is no longer the same. (That it
+  -- stays in normal mode needs the main loop: test-agents-enter-mode.lua.)
+  for _, key in ipairs({ "<CR>" }) do
+    to_row("#3001")
+    feed(key)
+    if not (PLAN.current() and PLAN.current().key == "wi-3001" and vim.api.nvim_get_current_tabpage() == PLAN.current().tab) then
+      return fail(key .. " on #3001's row didn't open its plan")
+    end
+    vim.wait(1000, function() return STATE.chat.wins[vim.api.nvim_get_current_tabpage()] ~= nil end, 20)
+    vim.wait(100)
+    if PLAN.current() and vim.api.nvim_get_current_win() ~= PLAN.current().plan_win then
+      return fail(key .. " on #3001's row didn't leave the focus on the plan")
+    end
+    -- i there (the plan, as on every screen): the chat's input, typing.
+    _G.__agents_mode = nil
+    feed("i<Cmd>lua _G.__agents_mode = { vim.api.nvim_get_mode().mode, vim.api.nvim_buf_get_name(0) }<CR>")
+    pcall(vim.cmd, "stopinsert")
+    local got = _G.__agents_mode or { "?", "?" }
+    _G.__agents_mode = nil
+    if got[1] ~= "i" or not got[2]:find("azure-cli://chat", 1, true) or not got[2]:find("input", 1, true) then
+      return fail("i on the plan didn't go into the chat's input in insert mode: " .. vim.inspect(got))
+    end
+    vim.api.nvim_set_current_win(PLAN.current().plan_win)
+    CHAT.sync_active()
+    if STATE.chat.active ~= "wi-3001" or not STATE.chat.wins[vim.api.nvim_get_current_tabpage()] then
+      return fail(key .. " on #3001's row didn't show that agent's conversation in the chat: " .. tostring(STATE.chat.active))
+    end
+    vim.cmd("tabclose")
+    vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(av.win))
+    vim.api.nvim_set_current_win(av.win)
+    CHAT.sync_active()
+    if STATE.chat.active ~= nil or #STATE.chat.entries ~= main_turns then
+      return fail("back from #3001's plan, the main chat changed: " .. tostring(STATE.chat.active))
+    end
+  end
+  CHAT.hide()  -- the panel <CR> opened
   vim.api.nvim_set_current_win(av.win)
+  -- <CR> on an agent that hasn't planned yet: its conversation in the
+  -- popup, the main chat left alone; closing it comes back here.
+  local early = CHAT.conversation("wi-9087", { label = "#9087", title = "Not planned yet", target = { work_item_id = 9087 } })
+  early.entries = { { role = "agent", text = "STILL-PLANNING-9087", status = "done" } }
+  feed("r")
+  if not to_row("#9087") then return fail("the unplanned agent's row isn't on the Agents screen:\n" .. screen()) end
+  feed("<CR>")
+  local pw = CHAT.popup_wins()
+  if not (pw and pw.key == "wi-9087") then return fail("<CR> on an agent without a plan didn't show its conversation") end
+  if not table.concat(vim.api.nvim_buf_get_lines(pw.log_buf, 0, -1, false), "\n"):find("STILL-PLANNING-9087", 1, true) then
+    return fail("the popup doesn't show that agent's conversation")
+  end
+  if STATE.chat.active ~= nil or #STATE.chat.entries ~= main_turns then return fail("the popup changed the main chat") end
+  if vim.api.nvim_get_current_win() ~= pw.log then
+    return fail("<CR> on an agent without a plan didn't put the focus on its conversation")
+  end
+  vim.api.nvim_set_current_win(pw.log)
+  CHAT.hide()
+  vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+  if CHAT.popup_wins() or vim.api.nvim_get_current_win() ~= av.win then
+    return fail("closing the popup didn't come back to the Agents screen")
+  end
+  STATE.chat.convs["wi-9087"] = nil
+  feed("r")
   if not CHAT.strip():find("2 plans wait for you", 1, true) then return fail("the strip doesn't count both plans: " .. CHAT.strip()) end
   -- gA on both rows (visual): one question, each plan approved and its own
   -- agent sets off implementing it - both at once.
@@ -1778,6 +3095,71 @@ do
   if CHAT.popup_wins() or vim.api.nvim_win_is_valid(pw.log) or STATE.chat.popup_key then
     return fail("q didn't close the agent popup")
   end
+  -- Issue #78: with the chat panel open beside the dashboard, ga's popup
+  -- leaves it alone - its conversation, winbar and what's typed in it -
+  -- and <CR> in the popup goes to the agent only.
+  do
+    CHAT.show(false)
+    local tab = vim.api.nvim_get_current_tabpage()
+    local pwins = STATE.chat.wins[tab]
+    if not (pwins and vim.api.nvim_win_is_valid(pwins.log)) then return fail("#78: the chat panel didn't open") end
+    local plog, pin = vim.api.nvim_win_get_buf(pwins.log), vim.api.nvim_win_get_buf(pwins.input)
+    vim.api.nvim_buf_set_lines(pin, 0, -1, false, { "draft for main" })
+    local function panel()
+      return { log = table.concat(vim.api.nvim_buf_get_lines(plog, 0, -1, false), "\n"),
+        bar = vim.wo[pwins.log].winbar, input = table.concat(vim.api.nvim_buf_get_lines(pin, 0, -1, false), "\n") }
+    end
+    local before = panel()
+    local main_n = #STATE.chat.entries
+    vim.api.nvim_set_current_win(dw)
+    vim.api.nvim_win_set_cursor(dw, { (dash_row(101)), 0 })
+    feed("ga")
+    local pw78 = CHAT.popup_wins()
+    if not (pw78 and vim.api.nvim_get_current_win() == pw78.log) then return fail("#78: ga didn't open the popup") end
+    if pw78.log_buf == plog or pw78.input_buf == pin then return fail("#78: the popup shows the panel's own buffers") end
+    local ptext78 = table.concat(vim.api.nvim_buf_get_lines(pw78.log_buf, 0, -1, false), "\n")
+    if not ptext78:find("planned PR !101", 1, true) then return fail("#78: the popup doesn't show !101's agent:\n" .. ptext78) end
+    local open = panel()
+    if not vim.deep_equal(open, before) or open.bar:find("PR !101", 1, true) or STATE.chat.active then
+      return fail("#78: the panel changed when ga opened the popup: " .. vim.inspect({ before = before, now = open }))
+    end
+    -- i types in the popup's own input box; <CR> there sends to !101's agent.
+    feed("i")
+    if vim.api.nvim_get_current_win() ~= pw78.input then return fail("#78: i in the popup didn't go to its input box") end
+    feed("<Esc>")
+    vim.api.nvim_buf_set_lines(pw78.input_buf, 0, -1, false, { "hello 78" })
+    local p1_n = #p1.entries
+    feed("<CR>")
+    local sent = vim.wait(30000, function()
+      return #p1.entries > p1_n and not p1.running and AGENTS.working() == 0
+    end, 100)
+    local mine = false
+    for i = p1_n + 1, #p1.entries do
+      if p1.entries[i].role == "you" and p1.entries[i].text == "hello 78" then mine = true end
+    end
+    if not (sent and mine) then return fail("#78: <CR> in the popup didn't reach !101's agent: " .. answer(p1)) end
+    if #STATE.chat.entries ~= main_n then return fail("#78: the popup's message went to the main conversation too") end
+    local after_send = panel()
+    if after_send.log ~= before.log or after_send.input ~= before.input then
+      return fail("#78: sending from the popup changed the panel: " .. vim.inspect(after_send))
+    end
+    -- q: the popup and its buffers are gone, the panel is as it was.
+    vim.api.nvim_set_current_win(pw78.log)
+    feed("q")
+    vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+    if CHAT.popup_wins() or STATE.chat.popup_key or vim.api.nvim_buf_is_valid(pw78.log_buf)
+        or vim.api.nvim_buf_is_valid(pw78.input_buf) then
+      return fail("#78: q didn't close the popup and wipe its buffers")
+    end
+    local closed = panel()
+    if closed.log ~= before.log or closed.input ~= before.input or closed.bar ~= before.bar then
+      return fail("#78: the panel isn't as it was after q: " .. vim.inspect({ before = before, now = closed }))
+    end
+    vim.api.nvim_buf_set_lines(pin, 0, -1, false, { "" })
+    vim.api.nvim_set_current_win(pwins.log)
+    CHAT.hide()
+    vim.api.nvim_set_current_win(dw)
+  end
   vim.o.columns = cols
   -- gP in the reviewer, on a commented line: just that thread.
   require("azure-cli").open_review(101)
@@ -1800,13 +3182,13 @@ do
   for _, c in ipairs(CHAT.conversations()) do
     if c ~= STATE.chat and c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
   end
-  print("AGENTS-SMOKE-OK")
-end
+  smoke_ok("AGENTS")
+end)
 -- Batch review: gQ shows the place of the queued comment under the cursor
 -- in the diff pane as it moves (focus stays in the list), <Tab> goes there;
 -- gS sends the queue - everything at once - and leaving mid-send doesn't
 -- count it as still queued.
-do
+section("BATCHQ", function()
   local STATE = require("azure-cli.state")
   local PANE = require("azure-cli.review.pane")
   local real_select = vim.ui.select
@@ -1844,22 +3226,51 @@ do
     if t.comments[1].content:find("distinct error", 1, true) then tid = t.id end
   end
   if not tid then return fail("no auth.py:12 thread on PR #101 for the queued-reply check") end
+  -- Bob's thread's count as drawn ("N comments — Bob Brown"). Counted from
+  -- the screen, not the fake's state: an earlier block writes Alice's reply
+  -- into the state, and whether a given refresh has read it yet varies.
+  local function bob_count()
+    local n
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(b) then
+        for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, -1, 0, -1, { details = true })) do
+          for _, chunk in ipairs(m[4].virt_text or {}) do
+            local c = (chunk[1] or ""):match("(%d+) comments \u{2014} Bob Brown")
+            if c then n = math.max(n or 0, tonumber(c)) end
+          end
+        end
+      end
+    end
+    return n
+  end
+  local function refresh()
+    local refreshed = false
+    -- A poll already in flight skips this one, so ask until one runs.
+    return vim.wait(15000, function()
+      if not refreshed then STATE.review_refresh_threads({ on_done = function() refreshed = true end }) end
+      return refreshed
+    end, 200)
+  end
+  if not refresh() then return fail("the thread refresh never finished") end
+  local before = bob_count()
+  if not before then return fail("Bob's thread on auth.py:12 isn't drawn for the queued-reply check") end
   if not STATE.batch_live["101"]({ kind = "reply", thread_id = tid, text = "batch smoke reply", label = "Reply",
       args = { "--reply", tostring(tid), "batch smoke reply" } }) then
     return fail("couldn't queue a reply on PR #101")
   end
-  local refreshed = false
-  -- A poll already in flight skips this one, so ask until one runs.
-  if not vim.wait(15000, function()
-    if not refreshed then STATE.review_refresh_threads({ on_done = function() refreshed = true end }) end
-    return refreshed
-  end, 200) then return fail("the thread refresh never finished") end
-  if not drawn_anywhere("3 comments") then return fail("the queued reply doesn't show in the PR after a refresh") end
+  if not refresh() then return fail("the thread refresh never finished") end
+  local with_reply = bob_count() or 0
+  if with_reply < before + 1 then
+    return fail("the queued reply doesn't show in the PR after a refresh (" .. before .. " -> " .. with_reply .. " comments)")
+  end
   STATE.batch_drop["101"](s.items[#s.items])
-  vim.wait(200)
+  vim.wait(5000, function()
+    return #s.items == 0 and (bob_count() or 0) == with_reply - 1 and not drawn_anywhere("batch smoke reply")
+  end, 50)
   if #s.items ~= 0 then return fail("dropping the queued reply left it queued: " .. vim.inspect(s.items)) end
-  if drawn_anywhere("3 comments") or drawn_anywhere("batch smoke reply") then
-    return fail("a queued reply dropped after a thread refresh still shows in the PR")
+  if (bob_count() or 0) ~= with_reply - 1 or drawn_anywhere("batch smoke reply") then
+    return fail("a queued reply dropped after a thread refresh still shows in the PR (" .. with_reply .. " -> "
+      .. tostring(bob_count()) .. " comments)")
   end
   local function queue(path, line, text)
     STATE.batch_live["101"]({ kind = "thread", text = text, bucket = "line", where = path .. "\tR\t" .. line,
@@ -1949,7 +3360,1313 @@ do
   feed("r")
   ok = vim.wait(15000, function() return unread101() end, 100)
   if not ok then return fail("someone else's reply didn't mark #101 unread", dash) end
-  print("BATCHQ-SMOKE-OK")
-end
-print("DEMO-SMOKE-OK")
+  smoke_ok("BATCHQ")
+end)
+
+-- Inner tabs (innertabs.lua): two PRs opened from the dashboard stay
+-- inside its tab - the tab line lists Pull requests once, the strip in the
+-- winbar lists both; ]r / [r and g1..g9 switch, each review keeping its
+-- cursor; opening one again goes to it; q closes one and goes to the one
+-- before it, then to the list.
+section("INNERTABS", function()
+  local INNER = require("azure-cli.innertabs")
+  local UI = require("azure-cli.ui")
+  local function cur() return vim.api.nvim_get_current_tabpage() end
+  -- The keys are bound once the buffer's entered (scheduled): wait for them.
+  local function keys_here()
+    local b = vim.api.nvim_get_current_buf()
+    if not vim.wait(5000, function() return vim.b[b].azure_cli_tabs == true end, 20) then
+      return fail("no inner-tab keys on " .. vim.bo[b].filetype)
+    end
+  end
+  -- A tab's reviewer file list.
+  local function list_in(tab)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local b = vim.api.nvim_win_get_buf(w)
+      if vim.bo[b].filetype == "azurecli-files" then return b, w end
+    end
+  end
+  ensure_review()
+  local t101 = cur()
+  local _, w101 = list_in(t101)
+  vim.api.nvim_set_current_win(w101)
+  vim.api.nvim_win_set_cursor(w101, { 3, 0 })
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  require("azure-cli").open_review(102)
+  local t102
+  ok = vim.wait(20000, function()
+    t102 = cur()
+    local b = t102 ~= t101 and t102 ~= dash_tab and list_in(t102)
+    return b and vim.api.nvim_buf_line_count(b) > 1
+  end, 100)
+  if not ok then return fail("PR #102 never opened next to #101") end
+  local tabs = #vim.api.nvim_list_tabpages()
+  if INNER.home_of(t101) ~= dash_tab or INNER.home_of(t102) ~= dash_tab or #INNER.members(dash_tab) ~= 2 then
+    return fail("the two reviews aren't inner tabs of Pull requests: " .. vim.inspect(INNER.members(dash_tab)))
+  end
+  -- Neither review has an entry in the tab line (each entry starts with its
+  -- tab's %<n>T click target); the dashboard's tab does. Earlier checks may
+  -- have left tabs of their own, so only these three are looked at.
+  local line = UI.tabline()
+  local function listed(tab) return line:find("%" .. vim.api.nvim_tabpage_get_number(tab) .. "T", 1, true) ~= nil end
+  if listed(t101) or listed(t102) or not listed(dash_tab) or line:find("PR !", 1, true) then
+    return fail("the tab line lists the reviews: " .. line)
+  end
+  -- The strip, in the widest window of #102's tab - wide enough for both
+  -- reviews next to the review's own winbar (which comes first, #107).
+  local strip
+  local cols = vim.o.columns
+  vim.o.columns = 200
+  vim.cmd("redraw")
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(t102)) do
+    local bar = vim.wo[w].winbar
+    if bar ~= "" then
+      local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
+      if s:find("Pull requests", 1, true) then strip = s end
+    end
+  end
+  vim.o.columns = cols
+  if not (strip and strip:find("!101", 1, true) and strip:find("[!102", 1, true)) then
+    return fail("no strip with both reviews, #102 current: " .. tostring(strip))
+  end
+  keys_here()
+  feed("[r")
+  if cur() ~= t101 then return fail("[r didn't go back to #101") end
+  if vim.api.nvim_win_get_cursor(w101)[1] ~= 3 then
+    return fail("#101's file list lost its cursor: " .. vim.inspect(vim.api.nvim_win_get_cursor(w101)))
+  end
+  keys_here()
+  feed("]r")
+  if cur() ~= t102 then return fail("]r didn't go to #102") end
+  feed("g2")
+  if cur() ~= t101 then return fail("g2 didn't go to #101") end
+  feed("g1")
+  if cur() ~= dash_tab then return fail("g1 didn't go to the list") end
+  keys_here()
+  feed("g3")
+  if cur() ~= t102 then return fail("g3 on the list didn't go to #102") end
+  -- Opening #101 again goes to it, no second copy.
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  require("azure-cli").open_review(101)
+  if cur() ~= t101 or #vim.api.nvim_list_tabpages() ~= tabs then return fail("reopening #101 opened a twin") end
+  -- q on #102 goes to #101 (the one before it), q there to the list.
+  vim.api.nvim_set_current_tabpage(t102)
+  vim.api.nvim_set_current_win(select(2, list_in(t102)))
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t102) and cur() == t101 end, 20)
+  if not ok then
+    return fail("q on #102 didn't go back to #101: " .. vim.inspect({ closed = not vim.api.nvim_tabpage_is_valid(t102),
+      at = cur() == t101 and "101" or cur() == dash_tab and "list" or cur() == t102 and "102" or tostring(cur()),
+      float = float_text(), ft = vim.bo.filetype }))
+  end
+  vim.api.nvim_set_current_win(w101)
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t101) and cur() == dash_tab end, 20)
+  if not ok then return fail("q on #101 didn't go back to the list") end
+  if #INNER.members(dash_tab) ~= 0 then return fail("closed reviews are still listed") end
+  smoke_ok("INNERTABS")
+end)
+
+-- Inner tabs, stage 2: work items open inside Work items (W), issues inside
+-- Issues (I) - the same strip, ]r / [r / g1..g9, no twins, q goes back -
+-- each view describing its own item to the chat; <CR> on a child line
+-- retitles its inner tab; gW from a review lands in W and q goes back to
+-- the review. Opens W and I itself, so it needs no other section.
+section("INNERTABS-WI", function()
+  local INNER = require("azure-cli.innertabs")
+  local HOME = require("azure-cli.home")
+  local UI = require("azure-cli.ui")
+  local function cur() return vim.api.nvim_get_current_tabpage() end
+  local function keys_here()
+    local b = vim.api.nvim_get_current_buf()
+    if not vim.wait(5000, function() return vim.b[b].azure_cli_tabs == true end, 20) then
+      return fail("no inner-tab keys on " .. vim.bo[b].filetype)
+    end
+  end
+  -- `tab`'s buffer of filetype `ft`, and its window.
+  local function buf_in(tab, ft)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local b = vim.api.nvim_win_get_buf(w)
+      if vim.bo[b].filetype == ft then return b, w end
+    end
+  end
+  -- <CR> on row #id of the list `ft` in home `home`: the item's inner tab,
+  -- once its view shows it.
+  local function open_row(home, ft, item_ft, id)
+    vim.api.nvim_set_current_tabpage(home)
+    local lb, lw = buf_in(home, ft)
+    if not lb then return fail("no " .. ft .. " list in its tab") end
+    vim.api.nvim_set_current_win(lw)
+    local row
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(lb, 0, -1, false)) do
+      if l:find("#" .. id .. " ", 1, true) then row = i break end
+    end
+    if not row then return fail("no #" .. id .. " row", lb) end
+    vim.api.nvim_win_set_cursor(lw, { row, 0 })
+    feed("<CR>")
+    local t, vb
+    ok = vim.wait(15000, function()
+      t = cur()
+      vb = t ~= home and buf_in(t, item_ft)
+      return vb and vim.api.nvim_buf_line_count(vb) > 3 and text(vb):find("Loading", 1, true) == nil
+    end, 100)
+    if not ok then return fail("#" .. id .. " never opened from " .. ft, vb) end
+    return t, vb
+  end
+  local function strip_of(tab)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local bar = vim.wo[w].winbar
+      if bar ~= "" then
+        local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
+        if s:find("\u{2503}", 1, true) then return s end  -- the strip's end, at every width
+      end
+    end
+  end
+  local function listed(tab)
+    return UI.tabline():find("%" .. vim.api.nvim_tabpage_get_number(tab) .. "T", 1, true) ~= nil
+  end
+
+  -- Both boards, from their home tabs.
+  ensure_workitems()
+  HOME.go("workitems")
+  local wtab = cur()
+  local has
+  vim.wait(10000, function() has = require("azure-cli.workitems.board").has_issues() return has ~= nil end, 50)
+  if not has then return fail("--boards never reported the demo's GitHub project") end
+  HOME.go("issues")
+  local itab = cur()
+  ok = vim.wait(15000, function()
+    local ib = buf_in(itab, "azurecli-issues")
+    return ib and text(ib):find("#12 ", 1, true) ~= nil and text(ib):find("#13 ", 1, true) ~= nil
+  end, 100)
+  if not ok or itab == wtab then return fail("I never listed issues #12 and #13") end
+
+  -- W: #3001 and #3002.
+  local t1, v1 = open_row(wtab, "azurecli-workitems", "azurecli-workitem", 3001)
+  local _, w1 = buf_in(t1, "azurecli-workitem")
+  vim.api.nvim_win_set_cursor(w1, { 3, 0 })
+  local t2 = open_row(wtab, "azurecli-workitems", "azurecli-workitem", 3002)
+  if INNER.home_of(t1) ~= wtab or INNER.home_of(t2) ~= wtab or #INNER.members(wtab) ~= 2 then
+    return fail("#3001 and #3002 aren't inner tabs of Work items: " .. vim.inspect(INNER.members(wtab)))
+  end
+  if listed(t1) or listed(t2) or not listed(wtab) then return fail("the tab line lists the items: " .. UI.tabline()) end
+  local strip = strip_of(t2)
+  if not (strip and strip:find("Work items", 1, true) and strip:find("#3001", 1, true) and strip:find("[#3002", 1, true)) then
+    return fail("no strip with both items, #3002 current: " .. tostring(strip))
+  end
+  keys_here()
+  feed("[r")
+  if cur() ~= t1 then return fail("[r didn't go back to #3001") end
+  if vim.api.nvim_win_get_cursor(w1)[1] ~= 3 then return fail("#3001's view lost its cursor") end
+  keys_here()
+  feed("]r")
+  if cur() ~= t2 then return fail("]r didn't go to #3002") end
+  feed("g2")
+  if cur() ~= t1 then return fail("g2 didn't go to #3001") end
+  feed("g1")
+  if cur() ~= wtab then return fail("g1 didn't go to the Work items list") end
+  keys_here()
+  feed("g3")
+  if cur() ~= t2 then return fail("g3 on the list didn't go to #3002") end
+  -- Opening #3001 again, from the list or from elsewhere: no twin.
+  local tabs = #vim.api.nvim_list_tabpages()
+  open_row(wtab, "azurecli-workitems", "azurecli-workitem", 3001)
+  if cur() ~= t1 or #vim.api.nvim_list_tabpages() ~= tabs then return fail("reopening #3001 opened a twin") end
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  require("azure-cli.pr_workitems").open_item(3001)
+  if cur() ~= t1 or #vim.api.nvim_list_tabpages() ~= tabs then return fail("gW on #3001 opened a twin") end
+  -- q on #3002 goes to #3001, the one before it.
+  vim.api.nvim_set_current_tabpage(t2)
+  vim.api.nvim_set_current_win(select(2, buf_in(t2, "azurecli-workitem")))
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t2) and cur() == t1 end, 20)
+  if not ok then return fail("q on #3002 didn't go back to #3001") end
+
+  -- <CR> on #3001's child #3011: shown in the same inner tab, retitled.
+  vim.api.nvim_set_current_win(w1)
+  local crow
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v1, 0, -1, false)) do
+    if l:find("3011", 1, true) then crow = i break end
+  end
+  if not crow then return fail("#3001's view lists no child #3011", v1) end
+  vim.api.nvim_win_set_cursor(w1, { crow, 0 })
+  feed("<CR>")
+  ok = vim.wait(15000, function()
+    local m = INNER.members(wtab)[1]
+    return cur() == t1 and m and m.key == INNER.item_key("azure", 3011) and m.title:find("#3011 Count failed", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("<CR> on #3011 didn't retitle the inner tab: " .. vim.inspect(INNER.members(wtab))) end
+  if not INNER.goto_key(INNER.item_key("azure", 3011)) or INNER.goto_key(INNER.item_key("azure", 3001)) then
+    return fail("the inner tab's key didn't follow to #3011")
+  end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t1) and cur() == wtab end, 20)
+  if not ok then return fail("q on the last item didn't go back to the Work items list") end
+
+  -- I: issues #12 and #13, in Issues - not in Work items.
+  local i12 = open_row(itab, "azurecli-issues", "azurecli-issue", 12)
+  local i13 = open_row(itab, "azurecli-issues", "azurecli-issue", 13)
+  if INNER.home_of(i12) ~= itab or INNER.home_of(i13) ~= itab or #INNER.members(itab) ~= 2
+      or #INNER.members(wtab) ~= 0 then
+    return fail("#12 and #13 aren't inner tabs of Issues: " .. vim.inspect(INNER.members(itab)))
+  end
+  strip = strip_of(i13)
+  if not (strip and strip:find("Issues", 1, true) and strip:find("#12", 1, true) and strip:find("[#13", 1, true)) then
+    return fail("no Issues strip with #12 and #13: " .. tostring(strip))
+  end
+  -- Each view tells the chat its own issue.
+  local VIEW = require("azure-cli.chat.view")
+  local s12 = VIEW.snapshot(select(2, buf_in(i12, "azurecli-issue")))
+  local s13 = VIEW.snapshot(select(2, buf_in(i13, "azurecli-issue")))
+  if not (s12.work_item and s12.work_item.id == 12 and s13.work_item and s13.work_item.id == 13) then
+    return fail("the chat sees the wrong issue: " .. vim.inspect({ s12.work_item, s13.work_item }))
+  end
+  keys_here()
+  feed("[r")
+  if cur() ~= i12 then return fail("[r in I didn't go to #12") end
+  keys_here()
+  feed("g3")
+  if cur() ~= i13 then return fail("g3 in I didn't go to #13") end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(i13) and cur() == i12 end, 20)
+  if not ok then return fail("q on #13 didn't go back to #12") end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(i12) and cur() == itab end, 20)
+  if not ok then return fail("q on #12 didn't go back to the Issues list") end
+
+  -- gW from a review: #3002 lands in Work items, q goes back to the review.
+  ensure_review()
+  local rtab = cur()
+  require("azure-cli.pr_workitems").open_item(3002)
+  local tg
+  ok = vim.wait(15000, function()
+    tg = cur()
+    local vb = tg ~= rtab and buf_in(tg, "azurecli-workitem")
+    return vb and text(vb):find("Loading", 1, true) == nil and vim.api.nvim_buf_line_count(vb) > 3
+  end, 100)
+  if not ok then return fail("gW never opened #3002") end
+  if INNER.home_of(tg) ~= HOME.tab("workitems") then return fail("gW's #3002 isn't an inner tab of Work items") end
+  if not (INNER.members(HOME.tab("workitems"))[1] or {}).title:find("#3002 ", 1, true) then
+    return fail("the strip didn't get #3002's title: " .. vim.inspect(INNER.members(HOME.tab("workitems"))))
+  end
+  vim.api.nvim_set_current_win(select(2, buf_in(tg, "azurecli-workitem")))
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(tg) and cur() == rtab end, 20)
+  if not ok then return fail("q on gW's #3002 didn't go back to the review") end
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  smoke_ok("INNERTABS-WI")
+end)
+
+-- Inner tabs, stage 3: plans open inside Agents (A) - the strip, ]r / [r /
+-- g1..g3, <CR> on an open plan's row goes back to it as it was (its older
+-- revision, a Changes file), a new revision reloads it, q goes to the one
+-- before it then the list (or back to where it was opened from), dd on a
+-- row whose plan is open closes its tab. Its own plans (#3101, #3102) and
+-- agents, so it needs no other section.
+section("INNERTABS-PLAN", function()
+  local INNER = require("azure-cli.innertabs")
+  local HOME = require("azure-cli.home")
+  local UI = require("azure-cli.ui")
+  local CHAT = require("azure-cli.chat")
+  local PLAN = require("azure-cli.chat.plan")
+  local PC = require("azure-cli.chat.plan_changes")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local STATE = require("azure-cli.state")
+  local function cur() return vim.api.nvim_get_current_tabpage() end
+  local function keys_here()
+    local b = vim.api.nvim_get_current_buf()
+    if not vim.wait(5000, function() return vim.b[b].azure_cli_tabs == true end, 20) then
+      return fail("no inner-tab keys on " .. vim.bo[b].filetype)
+    end
+  end
+  local function strip_of(tab)
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local bar = vim.wo[w].winbar
+      if bar ~= "" then
+        local s = vim.api.nvim_eval_statusline(bar, { winid = w, use_winbar = true }).str
+        if s:find("\u{2503}", 1, true) then return s end  -- the strip's end, at every width
+      end
+    end
+  end
+  local function listed(tab)
+    return UI.tabline():find("%" .. vim.api.nvim_tabpage_get_number(tab) .. "T", 1, true) ~= nil
+  end
+  -- Two plans with three revisions each, and their agents' conversations
+  -- (the Agents screen's rows); #3101 with a story worktree that changed
+  -- a file (its Changes section).
+  local function md(id, n) return "# Plan " .. id .. " rev " .. n .. "\n\n## Goal\ngoal " .. n .. "\n\n## Files\n- `a.lua` - x" end
+  for _, id in ipairs({ 3101, 3102 }) do
+    local rec = { key = "wi-" .. id, target = { work_item_id = id }, title = "Tabbed " .. id, status = "draft",
+      threads = {}, revisions = {} }
+    for n = 1, 3 do PLAN.add_revision(rec, md(id, n), "agent") end
+    PLAN.save(rec)
+    local c = CHAT.conversation("wi-" .. id, { label = "#" .. id, title = "Tabbed " .. id, target = { work_item_id = id } })
+    c.entries = { { role = "agent", text = "planned #" .. id, status = "done" } }
+  end
+  local wt = FIX.root() .. "/widgets-wi3101"
+  vim.fn.delete(wt, "rf")
+  vim.fn.mkdir(wt, "p")
+  vim.fn.writefile({ "feature/3101-x", "main" }, wt .. ".branch")
+  local function sh(args) return vim.fn.system(vim.list_extend({ "git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t" }, args)) end
+  sh({ "init", "-q" })
+  vim.fn.writefile({ "local a = 1" }, wt .. "/a.lua")
+  sh({ "add", "-A" })
+  sh({ "commit", "-q", "-m", "base" })
+  vim.fn.writefile({ "local a = 2" }, wt .. "/a.lua")
+  local function cleanup()
+    for _, id in ipairs({ 3101, 3102 }) do
+      STATE.chat.convs["wi-" .. id] = nil
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".json")
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".md")
+    end
+    vim.fn.delete(wt, "rf")
+    vim.fn.delete(wt .. ".branch")
+  end
+
+  ensure_dashboard()
+  HOME.go("agents")
+  local av = require("azure-cli.chat.agents_view").current()
+  local atab = HOME.tab("agents")
+  if not (av and atab and cur() == atab) then cleanup() return fail("A didn't open the Agents screen") end
+  vim.api.nvim_set_current_win(av.win)
+  feed("r")
+  -- <CR> on row `label`: its plan, an inner tab of Agents.
+  local function open_row(label)
+    vim.api.nvim_set_current_tabpage(atab)
+    vim.api.nvim_set_current_win(av.win)
+    local row
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+      if l:find(label .. " ", 1, true) then row = i break end
+    end
+    if not row then cleanup() return fail("no " .. label .. " row on the Agents screen", av.buf) end
+    vim.api.nvim_win_set_cursor(av.win, { row, 0 })
+    feed("<CR>")
+    -- The panel <CR> opens (scheduled): closed again, the focus back in the plan.
+    local tab = cur()
+    vim.wait(1000, function() return STATE.chat.wins[tab] ~= nil end, 20)
+    CHAT.hide()
+    vim.cmd("stopinsert")
+    local v = PLAN.open_views()["wi-" .. label:sub(2)]
+    if v and v.tab == tab and vim.api.nvim_win_is_valid(v.plan_win) then vim.api.nvim_set_current_win(v.plan_win) end
+    return tab, v
+  end
+  local t1, v1 = open_row("#3101")
+  local t2, v2 = open_row("#3102")
+  if not (v1 and v2 and t1 == v1.tab and t2 == v2.tab and t1 ~= t2) then cleanup() return fail("<CR> didn't open both plans") end
+  if INNER.home_of(t1) ~= atab or INNER.home_of(t2) ~= atab or #INNER.members(atab) ~= 2 then
+    cleanup()
+    return fail("the plans aren't inner tabs of Agents: " .. vim.inspect(INNER.members(atab)))
+  end
+  if listed(t1) or listed(t2) or not listed(atab) then cleanup() return fail("the tab line lists the plans: " .. UI.tabline()) end
+  -- Wide enough for both plans next to the plan's own status (which comes
+  -- first, #107).
+  local cols = vim.o.columns
+  vim.o.columns = 200
+  vim.cmd("redraw")
+  local strip = strip_of(t2)
+  vim.o.columns = cols
+  if not (strip and strip:find("Agents", 1, true) and strip:find("#3101", 1, true) and strip:find("[#3102", 1, true)) then
+    cleanup()
+    return fail("no strip with both plans, #3102 current: " .. tostring(strip))
+  end
+  -- Each keeps its cursor; ]r / [r / g1..g3 switch.
+  vim.api.nvim_win_set_cursor(v1.plan_win, { 3, 0 })
+  vim.api.nvim_set_current_win(v2.plan_win)
+  keys_here()
+  feed("[r")
+  if cur() ~= t1 then cleanup() return fail("[r didn't go back to #3101") end
+  if vim.api.nvim_win_get_cursor(v1.plan_win)[1] ~= 3 then cleanup() return fail("#3101's plan lost its cursor") end
+  keys_here()
+  feed("]r")
+  if cur() ~= t2 then cleanup() return fail("]r didn't go to #3102") end
+  feed("g2")
+  if cur() ~= t1 then cleanup() return fail("g2 didn't go to #3101") end
+  feed("g1")
+  if cur() ~= atab then cleanup() return fail("g1 didn't go to the Agents list") end
+  keys_here()
+  feed("g3")
+  if cur() ~= t2 then cleanup() return fail("g3 on the list didn't go to #3102") end
+
+  -- #3101: an older revision (gh) and its Changes file, kept through a
+  -- switch away and <CR> on its row again - no twin.
+  local PROMPT = require("azure-cli.prompt")
+  local select = PROMPT.select
+  PROMPT.select = function(o, cb) cb(o.items[2]) end
+  vim.api.nvim_set_current_tabpage(t1)
+  vim.api.nvim_set_current_win(v1.plan_win)
+  feed("gh")
+  PROMPT.select = select
+  if v1.old ~= 2 then cleanup() return fail("gh didn't open #3101's revision 2: " .. tostring(v1.old)) end
+  vim.api.nvim_win_set_cursor(v1.plan_win, { 2, 0 })
+  keys_here()
+  feed("g1")
+  local tabs = #vim.api.nvim_list_tabpages()
+  local again = open_row("#3101")
+  if again ~= t1 or #vim.api.nvim_list_tabpages() ~= tabs or #INNER.members(atab) ~= 2 then
+    cleanup()
+    return fail("<CR> on the open #3101 opened a twin")
+  end
+  if v1.old ~= 2 or vim.api.nvim_win_get_cursor(v1.plan_win)[1] ~= 2 then
+    cleanup()
+    return fail("back in #3101, its older revision or cursor is gone: " .. vim.inspect({ v1.old, vim.api.nvim_win_get_cursor(v1.plan_win) }))
+  end
+  -- Its Changes section: a.lua's diff in the plan pane (gh first, back to the current revision).
+  feed("gh")
+  ok = vim.wait(5000, function()
+    local st = PC.state("wi-3101")
+    return st and st.files[1] and st.files[1].path == "a.lua"
+  end, 20)
+  if not ok then cleanup() return fail("#3101 has no Changes section") end
+  local ra
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(v1.list_buf, 0, -1, false)) do
+    if l:find(" a.lua", 1, true) then ra = i end
+  end
+  vim.api.nvim_set_current_win(v1.list_win)
+  vim.api.nvim_win_set_cursor(v1.list_win, { ra or 1, 0 })
+  feed("<CR>")
+  if PC.showing(v1) ~= "a.lua" then cleanup() return fail("<CR> on a.lua didn't show its diff in #3101's tab") end
+  if not (strip_of(t1) or ""):find("[#3101", 1, true) then cleanup() return fail("no strip over the diff: " .. tostring(strip_of(t1))) end
+  keys_here()
+  feed("g3")
+  if cur() ~= t2 then cleanup() return fail("g3 from the diff didn't go to #3102") end
+  open_row("#3101")
+  if cur() ~= t1 or PC.showing(v1) ~= "a.lua" then cleanup() return fail("back in #3101, its diff is gone") end
+
+  -- A new revision of #3101 (submit_plan): the tab reloads to it, retitled.
+  local rec = PLAN.load("wi-3101")
+  rec.title = "Tabbed again"
+  PLAN.add_revision(rec, md(3101, 4), "agent")
+  PLAN.save(rec)
+  PLAN.open("wi-3101")
+  local m1 = INNER.members(atab)[1]
+  if cur() ~= t1 or v1.old ~= nil or #INNER.members(atab) ~= 2 or not (m1 and m1.title:find("Tabbed again", 1, true)) then
+    cleanup()
+    return fail("a new revision didn't reload #3101's tab: " .. vim.inspect({ v1.old, INNER.members(atab) }))
+  end
+
+  -- Opened from outside Agents (the PR list): q goes back there.
+  vim.api.nvim_set_current_tabpage(t2)
+  vim.api.nvim_set_current_win(v2.plan_win)
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t2) and cur() == t1 end, 20)
+  if not ok then cleanup() return fail("q on #3102 didn't go back to #3101") end
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  PLAN.open("wi-3102")
+  local t3 = cur()
+  if INNER.home_of(t3) ~= atab then cleanup() return fail("#3102 opened from the PR list isn't an inner tab of Agents") end
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t3) and cur() == dash_tab end, 20)
+  if not ok then cleanup() return fail("q on #3102 opened from the PR list didn't go back there") end
+
+  -- dd on #3101's row while its tab is open: the tab closes, the list stays.
+  vim.api.nvim_set_current_tabpage(atab)
+  vim.api.nvim_set_current_win(av.win)
+  -- (dd's question is Discard / Discard all / Cancel since #122: Discard)
+  local choose = UI.choose
+  UI.choose = function(_, cb) cb(1) end
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+    if l:find("#3101 ", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  end
+  feed("dd")
+  ok = vim.wait(10000, function() return not vim.api.nvim_tabpage_is_valid(t1) and PLAN.load("wi-3101") == nil end, 50)
+  UI.choose = choose
+  if not ok or cur() ~= atab or #INNER.members(atab) ~= 0 then
+    cleanup()
+    return fail("dd on #3101 didn't close its tab and stay on the list: " .. vim.inspect({ ok, cur() == atab, INNER.members(atab) }))
+  end
+
+  -- <CR> on an agent that hasn't planned yet: still #87's popup, no inner tab.
+  local early = CHAT.conversation("wi-9188", { label = "#9188", title = "Not planned yet", target = { work_item_id = 9188 } })
+  early.entries = { { role = "agent", text = "STILL-PLANNING-9188", status = "done" } }
+  feed("r")
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
+    if l:find("#9188", 1, true) then vim.api.nvim_win_set_cursor(av.win, { i, 0 }) end
+  end
+  feed("<CR>")
+  local pw = CHAT.popup_wins()
+  local popped = pw and pw.key == "wi-9188" and cur() == atab and #INNER.members(atab) == 0
+  if pw then
+    vim.api.nvim_set_current_win(pw.log)
+    CHAT.hide()
+    vim.wait(500, function() return CHAT.popup_wins() == nil end, 20)
+  end
+  STATE.chat.convs["wi-9188"] = nil
+  if not popped then cleanup() return fail("<CR> on an agent without a plan didn't stay #87's popup") end
+
+  -- q in the last plan goes to the Agents list.
+  open_row("#3102")
+  local t4 = cur()
+  feed("q")
+  ok = vim.wait(5000, function() return not vim.api.nvim_tabpage_is_valid(t4) and cur() == atab end, 20)
+  if not ok then cleanup() return fail("q on the only plan didn't go back to the Agents list") end
+  cleanup()
+  vim.api.nvim_set_current_tabpage(dash_tab)
+  smoke_ok("INNERTABS-PLAN")
+end)
+
+-- The strip gives way to the plan's own status (#107): with 1, 3 and 4
+-- plans open, at 80 and 120 columns, the plan pane's winbar shows its
+-- [draft] [2 to answer] in full, and the current plan stays identifiable -
+-- marked [#id] in the strip, or, when the status leaves the strip no room,
+-- named by the status itself. Its own plans (#3111-#3114).
+section("INNERTABS-FIT", function()
+  local INNER = require("azure-cli.innertabs")
+  local HOME = require("azure-cli.home")
+  local UI = require("azure-cli.ui")
+  local PLAN = require("azure-cli.chat.plan")
+  local PV = require("azure-cli.chat.plan_view")
+  local ids = { 3111, 3112, 3113, 3114 }
+  local function md(id)
+    return "# Plan " .. id .. "\n\n## Goal\ngoal\n\n## Open questions\n- First question?\n- Second question?"
+  end
+  for _, id in ipairs(ids) do
+    local rec = { key = "wi-" .. id, target = { work_item_id = id }, title = "Fit " .. id, status = "draft",
+      threads = {}, revisions = {} }
+    PLAN.add_revision(rec, md(id), "agent")
+    PLAN.save(rec)
+  end
+  local cols = vim.o.columns
+  local function cleanup()
+    vim.o.columns = cols
+    for _, id in ipairs(ids) do
+      local v = PLAN.open_views()["wi-" .. id]
+      if v and vim.api.nvim_tabpage_is_valid(v.tab) then
+        pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(v.tab))
+      end
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".json")
+      pcall(vim.fn.delete, PLAN.root() .. "/wi-" .. id .. ".md")
+    end
+    if vim.api.nvim_tabpage_is_valid(dash_tab) then vim.api.nvim_set_current_tabpage(dash_tab) end
+  end
+  -- The plan pane's winbar as drawn (the strip evaluated in it), and its
+  -- own status alone.
+  local function drawn(v)
+    return vim.api.nvim_eval_statusline(vim.wo[v.plan_win].winbar, { winid = v.plan_win, use_winbar = true }).str
+  end
+  local function own(v) return UI.strip_hl(UI.own_winbar(v.plan_win)) end
+
+  ensure_dashboard()
+  HOME.go("agents")
+  local atab = HOME.tab("agents")
+  if not atab then cleanup() return fail("A didn't open the Agents screen") end
+  local views = {}
+  for n, id in ipairs(ids) do
+    PV.open("wi-" .. id)
+    views[n] = PLAN.open_views()["wi-" .. id]
+    if not (views[n] and INNER.home_of(views[n].tab) == atab) then
+      cleanup()
+      return fail("plan #" .. id .. " didn't open as an inner tab of Agents")
+    end
+    if n ~= 2 then
+      for _, w in ipairs({ 80, 120 }) do
+        vim.o.columns = w
+        vim.cmd("redraw")
+        local v = views[n]
+        local bar, status = drawn(v), own(v)
+        local pane = vim.api.nvim_win_get_width(v.plan_win)
+        local what = n .. " plan(s) at " .. w .. " columns: "
+        if not (status:find("[draft]", 1, true) and status:find("[2 to answer]", 1, true)) then
+          cleanup()
+          return fail(what .. "the plan's status has no [draft] [2 to answer]: " .. status)
+        end
+        if vim.api.nvim_strwidth(status) + 1 > pane then
+          cleanup()
+          return fail(what .. "the status alone is wider than its pane (" .. pane .. "): " .. status)
+        end
+        if not bar:find(status, 1, true) then
+          cleanup()
+          return fail(what .. "the plan's status isn't shown in full: " .. bar)
+        end
+        local marked = bar:find("[#" .. id, 1, true) ~= nil
+        local stripless = not bar:find("\u{2503}", 1, true) and bar:find("Plan #" .. id, 1, true) ~= nil
+        if not (marked or stripless) or (w == 120 and not marked) then
+          cleanup()
+          return fail(what .. "the current plan isn't identifiable: " .. bar)
+        end
+      end
+    end
+  end
+  -- Switching moves the mark (120 columns, 4 plans open).
+  INNER.pick(2)
+  vim.cmd("redraw")
+  if vim.api.nvim_get_current_tabpage() ~= views[1].tab or not drawn(views[1]):find("[#3111", 1, true) then
+    cleanup()
+    return fail("g2 didn't go to #3111 with it marked: " .. drawn(views[1]))
+  end
+  INNER.cycle(1)
+  vim.cmd("redraw")
+  if vim.api.nvim_get_current_tabpage() ~= views[2].tab or not drawn(views[2]):find("[#3112", 1, true) then
+    cleanup()
+    return fail("]r didn't go to #3112 with it marked: " .. drawn(views[2]))
+  end
+  cleanup()
+  smoke_ok("INNERTABS-FIT")
+end)
+
+-- #111: gr on a GitHub row re-runs that PR's failed checks: its --requeue
+-- carries the row's GitHub account, owner and repo, so it never reaches
+-- Azure's requeue (which goes by the number alone). doohickeys#7's build
+-- failed, gizmos#7's passed; neither, nor any Azure PR, is re-queued in
+-- the other's place. Then the agent's requeue_build does the same.
+section("GH_REQUEUE", function()
+  local STATE = require("azure-cli.state")
+  local UI = require("azure-cli.ui")
+  ensure_dashboard()
+  feed("r")
+  local function rec(repo)
+    for _, p in ipairs((STATE.PR_LIST_CACHE or {}).prs or {}) do
+      if p.host == "github" and p.repo == repo and tostring(p.id) == "7" then return p end
+    end
+  end
+  ok = vim.wait(15000, function() return rec("gizmos") ~= nil and rec("doohickeys") ~= nil end, 100)
+  if not ok then return fail("the dashboard never listed the two GitHub PR #7s", dash) end
+  local function requeues()
+    local out = {}
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find('["--requeue", "7"]', 1, true) then out[#out + 1] = l end
+    end
+    return out
+  end
+  local function idle()
+    local st = STATE.rpc
+    return not st or next(st.pending or {}) == nil
+  end
+  local before = #requeues()
+  vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+  -- doohickeys#7 is signed off (I approved it), a section that starts collapsed.
+  local hrow, hl = header_row(dash, "\u{2500}\u{2500} Signed off")
+  if hrow and hl:find("(collapsed)", 1, true) then
+    vim.api.nvim_win_set_cursor(0, { hrow, 0 })
+    feed("<Space>")
+  end
+  local row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+    if l:find("Doohickey: stop the wobble", 1, true) then row = i end
+  end
+  if not row then return fail("doohickeys#7 has no row on the dashboard", dash) end
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  local confirm, asked = UI.confirm, nil
+  UI.confirm = function(o, cb) asked = o cb(true) end
+  feed("gr")
+  UI.confirm = confirm
+  if not asked then return fail("gr on a GitHub row didn't ask first") end
+  ok = vim.wait(10000, function() return #requeues() > before and idle() end, 100)
+  if not ok then return fail("gr on doohickeys#7 never sent --requeue") end
+  local sent = requeues()[before + 1]
+  for _, want in ipairs({ "AZVICLI_ORG=https://api.github.com", "AZVICLI_PROJECT=demo-gh", "AZVICLI_REPO=doohickeys ",
+      "AZVICLI_PR=7" }) do
+    if not sent:find(want, 1, true) then return fail("gr's --requeue doesn't carry " .. want .. ": " .. sent) end
+  end
+  local state = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, p in ipairs(state.prs) do
+    -- The two #7s only: the Issues smoke's create_pull_request added gizmos#8.
+    local gh7 = p.host == "github" and tostring(p.id) == "7"
+    local was = (gh7 and p.repo == "doohickeys") and "running" or (gh7 and p.repo == "gizmos") and "succeeded" or nil
+    if was and p.buildStatus ~= was then
+      return fail("after gr on doohickeys#7, " .. p.repo .. "#7's build is " .. tostring(p.buildStatus))
+    end
+    if not p.host and p.buildStatus == "running" and tostring(p.id) == "7" then
+      return fail("gr on a GitHub row re-queued Azure PR #7")
+    end
+  end
+
+  -- The agent's requeue_build on gizmos#7 (repo given: two #7s): its own
+  -- env, and the provider's own answer - nothing failed there to re-run.
+  local said
+  local env = { main_win = function() end, log = function() end, confirm = function(_, cb) cb(true) end }
+  before = #requeues()
+  require("azure-cli.chat.tools").call("requeue_build", { pr_id = 7, repo = "demo-gh/gizmos" }, env,
+    function(t, e) said = { t, e } end)
+  ok = vim.wait(10000, function() return said ~= nil and idle() end, 100)
+  if not ok then return fail("the agent's requeue_build never answered") end
+  sent = requeues()[before + 1] or ""
+  if not (sent:find("AZVICLI_ORG=https://api.github.com", 1, true) and sent:find("AZVICLI_REPO=gizmos ", 1, true)) then
+    return fail("requeue_build on gizmos#7 didn't send gizmos' GitHub env: " .. sent)
+  end
+  if not (said[1] and tostring(said[1]):find("No failed workflow run to re-queue for PR 7.", 1, true)) then
+    return fail("requeue_build didn't pass on the provider's answer: " .. vim.inspect(said))
+  end
+  for _, l in ipairs(requeues()) do
+    if not l:find("AZVICLI_ORG=https://api.github.com", 1, true) then
+      return fail("a GitHub #7 sent Azure's --requeue: " .. l)
+    end
+  end
+  smoke_ok("GH_REQUEUE")
+end)
+
+-- A GitHub account (github_host.py): the fake lists PR #7 from two
+-- repositories. Each opens in its own reviewer, with its own threads -
+-- per-PR state is keyed owner~repo~number, not by the number.
+section("GITHUB", function()
+  local HOSTS = require("azure-cli.hosts")
+  local CACHE = require("azure-cli.cache")
+  ensure_dashboard()
+  -- The whole width for the titles below. A headless nvim lays out only the
+  -- current tab when 'columns' changes, and the dashboard's tab was laid
+  -- out at the default 80 (the agents check widens it on its way, as a side
+  -- effect), so lay it out again from here.
+  local cols = vim.o.columns
+  vim.o.columns = cols + 1
+  vim.o.columns = cols
+  feed("r")
+  ok = vim.wait(15000, function()
+    local t = text(dash)
+    if not t:find("Gizmo: spin faster", 1, true) then return false end
+    for _, p in ipairs(require("azure-cli.state").PR_LIST_CACHE.prs) do
+      if p.title == "Doohickey: stop the wobble" then return true end
+    end
+    return false
+  end, 100)
+  if not ok then return fail("the dashboard never listed the two GitHub PR #7s", dash) end
+  local recs = {}
+  for _, p in ipairs(require("azure-cli.state").PR_LIST_CACHE.prs) do
+    -- The two #7s (the Issues smoke's create_pull_request adds gizmos#8).
+    if p.host == "github" and tostring(p.id) == "7" then recs[p.repo] = p end
+  end
+  if not (recs.gizmos and recs.doohickeys) then return fail("the GitHub records aren't in the list cache") end
+  -- #109: agents are keyed by PR key, so each GitHub #7's row shows its
+  -- own agent (gizmos#7 has one from the chat smoke) and never the other's.
+  do
+    local PL = require("azure-cli.chat.plan")
+    local CH = require("azure-cli.chat")
+    for title, p in pairs({ ["Gizmo: spin faster"] = recs.gizmos, ["Doohickey: stop the wobble"] = recs.doohickeys }) do
+      local own = CH.find_conversation(PL.key(PL.pr_target(p))) ~= nil
+      for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+        if l:find(title, 1, true) and (l:find("plan waits", 1, true) ~= nil) ~= own then
+          return fail("#109: " .. p.repo .. "#7's row " .. (own and "doesn't show its agent" or "shows another PR's agent")
+            .. ": " .. l)
+        end
+      end
+    end
+  end
+  if #HOSTS.caps(recs.gizmos).votes ~= 3 or HOSTS.ref(recs.gizmos) ~= "gizmos#7" then
+    return fail("a GitHub PR doesn't get GitHub's votes/ref: " .. HOSTS.ref(recs.gizmos))
+  end
+  local function open_and_wait(key, file)
+    require("azure-cli").open_review(key)
+    local b
+    local opened = vim.wait(20000, function()
+      for _, x in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_loaded(x) and vim.bo[x].filetype == "azurecli-files"
+            and vim.b[x].azure_cli_pr_key == key and text(x):find(file, 1, true) then
+          b = x
+          return true
+        end
+      end
+      return false
+    end, 100)
+    return opened and b or nil
+  end
+  local g = open_and_wait("demo-gh~gizmos~7", "gizmo.py")
+  if not g then return fail("gizmos#7 never opened in the reviewer") end
+  local gtab = vim.api.nvim_get_current_tabpage()
+  if vim.b[g].azure_cli_pr_ref ~= "gizmos#7" then return fail("the reviewer names it " .. tostring(vim.b[g].azure_cli_pr_ref)) end
+  ok = vim.wait(15000, function()
+    local th = CACHE.threads("demo-gh~gizmos~7")
+    return th ~= nil and th.json:find("Gizmo thread", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("gizmos#7's threads never loaded under its key") end
+  -- gv offers GitHub's three verdicts; "Request changes" asks what needs
+  -- changing and sends it with the vote, to gizmos' PR.
+  require("azure-cli").setup({ ui = { confirm = "select" } })
+  local real_select, real_input = vim.ui.select, vim.ui.input
+  local offered
+  vim.ui.select = function(items, _, cb)
+    offered = {}
+    for _, it in ipairs(items) do offered[#offered + 1] = it.label end
+    for i, it in ipairs(items) do
+      if it.label == "Request changes" then return cb(it, i) end
+    end
+    cb(nil)
+  end
+  vim.ui.input = function(_, cb) cb("rename spin()") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
+  feed("gv")
+  -- Done, not just sent: nothing left in flight with the daemon (a request
+  -- still out when the smoke quits can keep Neovim from exiting).
+  local function provider_idle()
+    local st = require("azure-cli.state").rpc
+    return not st or next(st.pending or {}) == nil
+  end
+  ok = vim.wait(10000, function()
+    local l = io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a")
+    return l:find('["--vote", "-5", "rename spin()"]', 1, true) ~= nil and provider_idle()
+  end, 100)
+  vim.ui.select, vim.ui.input = real_select, real_input
+  if table.concat(offered or {}, "|") ~= "Approve|Request changes|Dismiss my review" then
+    return fail("gv on a GitHub PR offered " .. vim.inspect(offered))
+  end
+  if not ok then return fail("Request changes never reached the provider with its reason") end
+  -- gS on GitHub: the queue goes out as one review, the Conversation reply
+  -- as its body, nothing comment by comment.
+  local STATE = require("azure-cli.state")
+  local gkey = "demo-gh~gizmos~7"
+  local live = STATE.batch_live and STATE.batch_live[gkey]
+  if not (live and live({ kind = "thread", text = "native line", bucket = "line", where = "gizmo.py\tR\t2",
+      path = "gizmo.py", side = "R", lineno = 2, args = { "--post", "gizmo.py", "R", "2", "native line" } })
+      and live({ kind = "reply", thread_id = 0, text = "native conversation" })) then
+    return fail("couldn't queue on gizmos#7")
+  end
+  vim.ui.select = function(items, _, cb)
+    for i, it in ipairs(items) do if it.label == "Approve" then return cb(it, i) end end
+    cb(nil)
+  end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
+  feed("gS")
+  local review_line
+  ok = vim.wait(10000, function()
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find('"--submit-review"', 1, true) then review_line = l end
+    end
+    return review_line ~= nil and #STATE.batch[gkey].items == 0
+  end, 100)
+  vim.ui.select = real_select
+  if not ok then return fail("gS on gizmos#7 didn't submit one review: " .. vim.inspect(STATE.batch[gkey].items)) end
+  if not (review_line:find("native line", 1, true) and review_line:find("native conversation", 1, true)
+      and review_line:find('\\"event\\":\\"10\\"', 1, true)) then
+    return fail("the review didn't carry the queue and the verdict: " .. review_line)
+  end
+  for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+    if l:find('["--post"', 1, true) and l:find("native line", 1, true) then
+      return fail("a queued comment went out on its own besides the review")
+    end
+  end
+  vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+  local d = open_and_wait("demo-gh~doohickeys~7", "gizmo.py")
+  if not d then return fail("doohickeys#7 never opened in the reviewer") end
+  local dtab = vim.api.nvim_get_current_tabpage()
+  if dtab == gtab then return fail("doohickeys#7 reused gizmos#7's tab") end
+  ok = vim.wait(15000, function()
+    local th = CACHE.threads("demo-gh~doohickeys~7")
+    return th ~= nil and th.json:find("Doohickey thread", 1, true) ~= nil
+  end, 100)
+  if not ok then return fail("doohickeys#7's threads never loaded under its key") end
+  if CACHE.threads("demo-gh~gizmos~7").json:find("Doohickey", 1, true) then
+    return fail("doohickeys#7's threads landed in gizmos#7's cache")
+  end
+  local log = io.open(vim.env.AZVICLI_FAKE_WS .. "/calls.log"):read("*a")
+  if not log:find("AZVICLI_REPO=doohickeys", 1, true) then
+    return fail("no provider call named the doohickeys repository")
+  end
+  -- Back in gizmos#7's tab, a vote is gizmos' - though opening doohickeys
+  -- rewrote the global AZVICLI_* environment since (the reviewer pins its
+  -- own PR on every call).
+  vim.api.nvim_set_current_tabpage(gtab)
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(g))
+  vim.ui.select = function(items, _, cb) cb(items[1], 1) end
+  feed("gv")
+  local vote_line
+  ok = vim.wait(10000, function()
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find('["--vote", "10"]', 1, true) then vote_line = l end
+    end
+    return vote_line ~= nil and provider_idle()
+  end, 100)
+  vim.ui.select = real_select
+  if not ok then return fail("Approve from gizmos#7's tab never reached the provider") end
+  if not vote_line:find("AZVICLI_REPO=gizmos ", 1, true) then
+    return fail("a vote from gizmos#7's tab went to another PR: " .. vote_line)
+  end
+  vim.wait(10000, provider_idle, 100)
+  vim.api.nvim_set_current_tabpage(dtab)
+  vim.cmd("tabclose")
+  vim.api.nvim_set_current_tabpage(gtab)
+  vim.cmd("tabclose")
+
+  -- gm on GitHub: the dialog reads the PR's mergeability fresh (--get-pr),
+  -- speaks GitHub's words and offers only the repo's methods. doohickeys#7
+  -- is blocked by a required check: <CR> says so and merges nothing, while
+  -- auto-merge, which waits it out, can be set and cancelled.
+  local function calls(pat, repo)
+    local n = 0
+    for l in io.lines(vim.env.AZVICLI_FAKE_WS .. "/calls.log") do
+      if l:find(pat, 1, true) and (not repo or l:find("AZVICLI_REPO=" .. repo .. " ", 1, true)) then n = n + 1 end
+    end
+    return n
+  end
+  local function gm_on(title)
+    vim.fn.win_gotoid(vim.fn.win_findbuf(dash)[1])
+    -- doohickeys#7 is signed off (I approved it), a section that starts
+    -- collapsed: <Space> on its header opens it.
+    local hrow, hl = header_row(dash, "\u{2500}\u{2500} Signed off")
+    if hrow and hl:find("(collapsed)", 1, true) then
+      vim.api.nvim_win_set_cursor(0, { hrow, 0 })
+      feed("<Space>")
+    end
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find(title, 1, true) then
+        vim.api.nvim_win_set_cursor(0, { i, 0 })
+        feed("gm")
+        local up = vim.wait(10000, function()
+          local f = float_text()
+          return f ~= nil and f:find("Merge PR ", 1, true) ~= nil
+        end, 50)
+        return up and float_text() or nil
+      end
+    end
+  end
+  local dlg = gm_on("Doohickey: stop the wobble")
+  if not dlg then return fail("gm on doohickeys#7 never opened the merge dialog", dash) end
+  if not (dlg:find("Merge PR doohickeys#7", 1, true) and dlg:find("\u{2717} ci / test  (required)", 1, true)
+      and dlg:find("\u{26D4} Can't merge: required check `ci / test` failed", 1, true)
+      and dlg:find("Auto-merge when requirements pass", 1, true)) then
+    return fail("the GitHub merge dialog doesn't show the blocked check:\n" .. dlg)
+  end
+  if dlg:find("work items", 1, true) then return fail("the GitHub merge dialog offers to complete work items:\n" .. dlg) end
+  feed("m")
+  if not float_text():find("Merge type: Create a merge commit", 1, true) then return fail("m didn't cycle to merge") end
+  feed("m")
+  if not float_text():find("Merge type: Squash and merge", 1, true) then
+    return fail("m offered a method the repo doesn't allow:\n" .. float_text())
+  end
+  feed("<CR>")
+  vim.wait(300)
+  if not (float_text() or ""):find("Merge PR doohickeys#7", 1, true) then
+    return fail("<CR> on a blocked PR closed the dialog")
+  end
+  if calls('"--complete"', "doohickeys") > 0 then return fail("<CR> on a blocked PR sent --complete") end
+  -- The auto-merge row (6: no work-items row on GitHub), then <CR>.
+  vim.api.nvim_win_set_cursor(0, { 6, 0 })
+  feed("<Space>")
+  if not float_text():find("[-] Delete source branch: the repo's setting decides (off)", 1, true) then
+    return fail("auto-merge doesn't say the repo's setting deletes the branch:\n" .. float_text())
+  end
+  feed("<CR>")
+  ok = vim.wait(10000, function()
+    return calls('["--auto-complete", "on", "squash"', "doohickeys") == 1 and provider_idle()
+  end, 100)
+  if not ok then return fail("auto-merge on doohickeys#7 never reached the provider") end
+  dlg = gm_on("Doohickey: stop the wobble")
+  if not (dlg and dlg:find("(on", 1, true) and dlg:find("x: cancel auto-merge", 1, true)) then
+    return fail("gm doesn't show auto-merge as on:\n" .. tostring(dlg))
+  end
+  feed("x")
+  ok = vim.wait(10000, function() return calls('["--auto-complete", "off"]', "doohickeys") == 1 and provider_idle() end, 100)
+  if not ok then return fail("x never cancelled auto-merge on doohickeys#7") end
+
+  -- gizmos#7 is mergeable: <CR> merges it with the branch deleted, and its
+  -- row leaves the dashboard.
+  ok = vim.wait(10000, function()
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("Gizmo: spin faster", 1, true) then return true end
+    end
+  end, 100)
+  dlg = ok and gm_on("Gizmo: spin faster")
+  if not (dlg and dlg:find("Merge PR gizmos#7", 1, true) and not dlg:find("Can't merge", 1, true)
+      and not dlg:find("Auto-merge", 1, true)) then
+    return fail("gm on gizmos#7 (clean, no auto-merge allowed) shows:\n" .. tostring(dlg))
+  end
+  feed("<CR>")
+  ok = vim.wait(10000, function()
+    if not (calls('["--complete", "squash", "true"', "gizmos") == 1 and provider_idle()
+        and not text(dash):find("Gizmo: spin faster", 1, true)) then
+      return false
+    end
+    for _, p in ipairs(STATE.PR_LIST_CACHE.prs) do
+      if p.host == "github" and p.repo == "gizmos" and tostring(p.id) == "7" then return false end
+    end
+    return true
+  end, 100)
+  if not ok then return fail("gm on gizmos#7 didn't merge it and drop its row", dash) end
+
+  -- The agent's complete_pull_request: doohickeys#7 (now the only #7) is
+  -- refused with GitHub's reason, and a method its repo lacks is refused
+  -- before any call.
+  local TOOLS = require("azure-cli.chat.tools")
+  local said
+  local env = { main_win = function() end, log = function() end, confirm = function(_, cb) cb(true) end }
+  TOOLS.call("complete_pull_request", { pr_id = 7, strategy = "rebase" }, env, function(t, e) said = { t, e } end)
+  ok = vim.wait(5000, function() return said ~= nil end, 50)
+  if not (ok and said[2] and said[1]:find("rebase isn't a merge strategy doohickeys#7 allows: squash, merge", 1, true)) then
+    return fail("complete_pull_request took a method the repo lacks: " .. vim.inspect(said))
+  end
+  said = nil
+  TOOLS.call("complete_pull_request", { pr_id = 7 }, env, function(t, e) said = { t, e } end)
+  ok = vim.wait(10000, function() return said ~= nil and provider_idle() end, 100)
+  if not (ok and said[2] and said[1]:find("Can't merge PR #7: required check `ci / test` failed", 1, true)) then
+    return fail("complete_pull_request on a blocked GitHub PR answered " .. vim.inspect(said))
+  end
+  smoke_ok("GITHUB")
+end)
+
+-- #121: a push that deletes a file the first iteration modified. On Azure
+-- DevOps/TFS a PR's updatedIso is its creation date, so a push doesn't
+-- change the cache key - the fake's state.json is left alone here to match.
+-- The push goes through a worktree of the reviewer's own clone (what the
+-- chat agent's commit_and_push_fix does), so origin/<source> has moved
+-- locally before the reviewer looks and nothing needs fetching. Then a
+-- second push lands while the reviewer is open. Each time, every row's
+-- status, +/- counts and diff must come from the new commits: README.md is
+-- D with only deletions, its diff the whole old file removed, auth.py shows
+-- the new line, and each row's counts are what its diff holds. Last, so
+-- the pushes can't disturb the checks above that read PR #101's files.
+section("PUSHDIFF", function()
+  reset()
+  ensure_dashboard()
+  local STATE = require("azure-cli.state")
+  local FILELIST = require("azure-cli.review.filelist")
+  local PANE = require("azure-cli.review.pane")
+  local ws = vim.env.AZVICLI_FAKE_WS
+  local clone = ws .. "/clones/widgets"
+  local branch = "feature/login-throttle"
+  local function git(...)
+    local out = vim.fn.system(vim.list_extend({ "git", "-C" }, { ... }))
+    if vim.v.shell_error ~= 0 then return fail("git " .. table.concat({ ... }, " ") .. " failed: " .. out) end
+    return vim.trim(out)
+  end
+  -- One push of `edit(dir)`'s changes to the PR's branch, from a worktree
+  -- of the clone (removed again afterwards).
+  local function push(msg, edit)
+    local wt = vim.fn.tempname()
+    git(clone, "worktree", "add", "-q", "--detach", wt, "origin/" .. branch)
+    edit(wt)
+    git(wt, "-c", "user.email=agent@example.com", "-c", "user.name=agent", "commit", "-q", "-a", "-m", msg)
+    git(wt, "push", "-q", "origin", "HEAD:refs/heads/" .. branch)
+    git(clone, "worktree", "remove", "--force", wt)
+  end
+  local function append(path, line)
+    local l = vim.fn.readfile(path)
+    l[#l + 1] = line
+    vim.fn.writefile(l, path)
+  end
+
+  -- The list row for `name`: its status letter and counts, nil while "(?)".
+  local list
+  local function row(name)
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(list, 0, -1, false)) do
+      local st, a, d = l:match("(%u)  .-" .. vim.pesc(name) .. " %(%+(%d+) \u{2212}(%d+)%)")
+      if st then return { status = st, adds = tonumber(a), dels = tonumber(d), text = l } end
+    end
+  end
+  local function open_pr()
+    require("azure-cli").open_review(101)
+    ok = vim.wait(20000, function()
+      list = shown_buf("azurecli-files")
+      return list ~= nil and row("auth.py") ~= nil
+    end, 100)
+    if not ok then return fail("the reviewer never listed PR #101's files with their counts", list) end
+  end
+  -- Opens `name`'s diff from the list the way <CR> does; its lines and map
+  -- once the diff window shows it (built from `want`, when given).
+  local function diff_of(name, path, want)
+    local r
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(list, 0, -1, false)) do
+      if l:find(name, 1, true) then r = i break end
+    end
+    if not r then return fail("no " .. name .. " row in the file list", list) end
+    vim.api.nvim_set_current_win(vim.fn.bufwinid(list))
+    vim.api.nvim_win_set_cursor(0, { r, 0 })
+    feed("<CR>")
+    local b, lines, map
+    ok = vim.wait(15000, function()
+      local w = vim.api.nvim_get_current_win()
+      b = vim.api.nvim_win_get_buf(w)
+      map = (PANE.entry(b) or {}).map
+      lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      return b ~= list and map ~= nil and #map > 0 and vim.wo[w].winbar:find(path, 1, true) ~= nil
+        and (want == nil or table.concat(lines, "\n"):find(want, 1, true) ~= nil)
+    end, 100)
+    if not ok then
+      return fail(name .. "'s diff never showed" .. (want and (" " .. want) or "") .. "; winbar "
+        .. vim.wo[vim.api.nvim_get_current_win()].winbar, b)
+    end
+    return lines, map
+  end
+  -- The row's counts are what its diff holds (the row is redrawn once the
+  -- warmed diffs land, so give it that long).
+  local function counts_match(name, path, want)
+    local _, map = diff_of(name, path, want)
+    local s, r = FILELIST.diff_stats(map), nil
+    vim.wait(10000, function()
+      r = row(name)
+      return r ~= nil and r.adds == s.adds and r.dels == s.dels
+    end, 100)
+    if not r or r.adds ~= s.adds or r.dels ~= s.dels then
+      return fail(name .. "'s row says " .. vim.inspect(r) .. " but its diff holds +" .. s.adds .. " -" .. s.dels, list)
+    end
+    return map
+  end
+  -- README.md, deleted: D, nothing added, its whole old content removed.
+  local function readme_deleted(old_n)
+    ok = vim.wait(15000, function()
+      local r = row("README.md")
+      return r ~= nil and r.status == "D" and r.adds == 0 and r.dels == old_n
+    end, 100)
+    if not ok then
+      return fail("README.md's row should say D (+0 \u{2212}" .. old_n .. ") after the push: "
+        .. vim.inspect(row("README.md")), list)
+    end
+    local lines, map = diff_of("README.md", "README.md")
+    for i, m in ipairs(map) do
+      if m.kind ~= "del" then return fail("deleted README.md's diff line " .. i .. " isn't a deletion: " .. tostring(lines[i])) end
+    end
+    if #map ~= old_n then return fail("deleted README.md's diff has " .. #map .. " lines, the old file " .. old_n) end
+  end
+
+  -- Iteration 1, warm in the cache: README.md modified.
+  open_pr()
+  local before
+  vim.wait(10000, function()
+    before = row("README.md")
+    return before ~= nil and before.status == "M"
+  end, 100)
+  if not (before and before.status == "M" and before.adds > 0) then
+    return fail("README.md should start out modified: " .. vim.inspect(before), list)
+  end
+  counts_match("README.md", "README.md")
+  -- What a deletion removes in the PR's (three-dot) diff: the file as it
+  -- is at the merge-base.
+  local base = git(clone, "merge-base", "origin/main", "origin/" .. branch)
+  local old_n = #vim.split(git(clone, "show", base .. ":README.md"), "\n")
+  reset()
+
+  -- Iteration 2, pushed from the clone while the reviewer is closed.
+  push("Drop the README, note the throttle", function(wt)
+    git(wt, "rm", "-q", "README.md")
+    append(wt .. "/src/auth.py", "# throttled since iteration 2")
+  end)
+  open_pr()
+  readme_deleted(old_n)
+  counts_match("auth.py", "src/auth.py", "# throttled since iteration 2")
+
+  -- Iteration 3, pushed while the reviewer is open; the poll's refs check
+  -- (run now rather than in poll_seconds) reloads it.
+  push("Another note", function(wt)
+    append(wt .. "/src/auth.py", "# and again in iteration 3")
+  end)
+  STATE.review_check_refs()
+  counts_match("auth.py", "src/auth.py", "# and again in iteration 3")
+  readme_deleted(old_n)
+  print("== reviewer file list after the pushes (PR #101) ==")
+  print(text(list))
+  smoke_ok("PUSHDIFF")
+end)
+
+-- #124: the dashboard re-warms (fetches) a PR after a push. Azure's
+-- updatedIso is its creation date, so the warm is keyed on the record's
+-- sourceCommit - the fake sends the origin's tip, like
+-- lastMergeSourceCommit / GitHub's headRefOid, and keeps updatedIso put.
+-- GitHub PRs are marked warm under their key, not their number (two #7s
+-- here). #125: a dashboard callback queued while the reviewer's own fetch
+-- holds warming[KEY] runs once, when that fetch ends.
+section({ "REWARM", "REWARM-GH", "REWARM-REVIEW" }, function()
+  reset()
+  ensure_dashboard()
+  local STATE = require("azure-cli.state")
+  local ws = vim.env.AZVICLI_FAKE_WS
+  local origin = ws .. "/origin/widgets.git"
+  local clone = ws .. "/clones/widgets"
+  local branch = "feature/login-throttle"
+  local function sh(args)
+    local out = vim.fn.system(args)
+    if vim.v.shell_error ~= 0 then return fail(table.concat(args, " ") .. " failed: " .. out) end
+    return vim.trim(out)
+  end
+  -- A push from a clone of its own, so the dashboard's clone has to fetch
+  -- to see it. Returns the new tip.
+  local function push(name)
+    local tmp = vim.fn.tempname()
+    sh({ "git", "clone", "-q", "-b", branch, origin, tmp })
+    vim.fn.writefile({ name }, tmp .. "/" .. name .. ".txt")
+    sh({ "git", "-C", tmp, "add", name .. ".txt" })
+    sh({ "git", "-C", tmp, "-c", "user.email=agent@example.com", "-c", "user.name=agent", "commit", "-q", "-m", name })
+    sh({ "git", "-C", tmp, "push", "-q", "origin", "HEAD:refs/heads/" .. branch })
+    local tip = sh({ "git", "-C", tmp, "rev-parse", "HEAD" })
+    vim.fn.delete(tmp, "rf")
+    return tip
+  end
+  -- r on the dashboard until `cond` holds (a warm pass still running
+  -- skips the next one, so ask again).
+  local function reload_until(cond)
+    return vim.wait(30000, function()
+      if cond() then return true end
+      if not STATE.warm.running then
+        goto_buf(dash)
+        feed("r")
+      end
+      return cond()
+    end, 1500)
+  end
+
+  local tip = push("rewarm-a")
+  ok = reload_until(function()
+    return STATE.warm.warmed["101"] == tip
+  end)
+  if not ok then
+    return fail("a push to !101 never re-warmed it: warmed " .. tostring(STATE.warm.warmed["101"]) .. ", tip " .. tip)
+  end
+  local fetched = sh({ "git", "-C", clone, "rev-parse", "origin/" .. branch })
+  if fetched ~= tip then return fail("the re-warm didn't fetch the push: origin/" .. branch .. " is " .. fetched) end
+  smoke_ok("REWARM")
+
+  -- GitHub: its PRs warm under their own keys at their head commits (the
+  -- GITHUB smoke may have completed one of the #7s by now).
+  local gh = {}
+  for _, p in ipairs((STATE.PR_LIST_CACHE or {}).prs or {}) do
+    if p.host == "github" then gh[#gh + 1] = p end
+  end
+  if #gh == 0 then return fail("no GitHub PR in the list") end
+  for _, p in ipairs(gh) do
+    local dir = p.clonesDir .. "/" .. p.repo
+    if vim.fn.isdirectory(dir .. "/.git") == 0 then sh({ "git", "clone", "-q", p.cloneUrl, dir }) end
+    p.tip = vim.split(sh({ "git", "ls-remote", p.cloneUrl, "refs/heads/" .. p.source }), "%s")[1]
+  end
+  ok = reload_until(function()
+    for _, p in ipairs(gh) do
+      if STATE.warm.warmed[p.key] ~= p.tip then return false end
+    end
+    return true
+  end)
+  if not ok then
+    return fail("the GitHub PRs aren't warm under their keys: " .. vim.inspect(STATE.warm.warmed))
+  end
+  for _, p in ipairs(gh) do
+    if STATE.warm.warmed[tostring(p.id)] ~= nil then
+      return fail("GitHub " .. p.key .. " was marked warm under its number, " .. p.id)
+    end
+  end
+  smoke_ok("REWARM-GH")
+
+  -- #125: the reviewer opens on an iteration its clone hasn't got, so it
+  -- fetches itself; a dashboard callback queued meanwhile runs once.
+  vim.wait(15000, function() return not STATE.warm.warming["101"] and not STATE.warm.running end, 100)
+  tip = push("rewarm-b")
+  sh({ "python3", "-c", table.concat({
+    "import json, sys",
+    "p, sha = sys.argv[1:]",
+    "s = json.load(open(p))",
+    "its = s['iterations']['101']",
+    "its.append(dict(its[-1], id=len(its) + 1, sourceRefCommit={'commitId': sha}))",
+    "json.dump(s, open(p, 'w'))",
+  }, "\n"), ws .. "/state.json", tip })
+  local RPC = require("azure-cli.rpc")
+  local real_run = RPC.run
+  local calls, queued = {}, false
+  RPC.run = function(argv, opts)
+    local e = (opts or {}).env or {}
+    if not queued and e.AZVICLI_PREFETCH == "1" and tostring(e.AZVICLI_PR) == "101"
+        and debug.traceback():find("review/init.lua", 1, true) then
+      queued = true
+      local cbs = STATE.warm.warm_cbs
+      cbs["101"] = cbs["101"] or {}
+      table.insert(cbs["101"], function(fetched) calls[#calls + 1] = fetched end)
+    end
+    return real_run(argv, opts)
+  end
+  require("azure-cli").open_review(101)
+  ok = vim.wait(30000, function() return #calls > 0 end, 100)
+  RPC.run = real_run
+  if not queued then return fail("the reviewer never fetched the iteration its clone lacked") end
+  if not ok then return fail("the reviewer's fetch never ran the dashboard's queued warm callback") end
+  if calls[1] ~= true then return fail("the queued callback got " .. tostring(calls[1]) .. ", not the fetch's success") end
+  -- A later dashboard warm of the PR doesn't run it again.
+  reset()
+  ensure_dashboard()
+  ok = reload_until(function() return STATE.warm.warmed["101"] == tip end)
+  if not ok then return fail("the dashboard never re-warmed !101 after the second push") end
+  vim.wait(500, function() return false end, 50)
+  if #calls ~= 1 then return fail("the queued callback ran " .. #calls .. " times") end
+  smoke_ok("REWARM-REVIEW")
+end)
+print("SMOKE-DONE")
 vim.cmd("qa!")

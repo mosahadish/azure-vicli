@@ -9,7 +9,14 @@
 -- toggle_viewed key; next/prev_unviewed jump between the rest. Pure
 -- except for the load/save pair, so tests/test-review-viewed.lua drives
 -- it with an in-memory store.
+--
+-- The same file keeps the diff folds you opened (review/folds.lua), under
+-- the one key FOLDS below: a viewed mark's key always starts with a
+-- non-empty PR key, so the two can't collide, and a file written before
+-- folds were remembered simply has no such key.
 local M = {}
+
+local FOLDS = "\tfolds"
 
 local FILE = nil
 local store = nil
@@ -86,6 +93,51 @@ function M.next_unviewed(pr_id, ordered, stamp, from, dir)
     if not M.is_viewed(pr_id, ordered[i], stamp) then return i end
   end
   return nil
+end
+
+-- Remembered folds: { stamp, open = { {s, e}, ... } } per PR key, file and
+-- diff variant ("" for the plain diff, else gw's / since-mode's - they
+-- fold differently). `stamp` identifies the diff the folds were made on
+-- (review/folds.lua's M.stamp); `open` the new-side line ranges of the
+-- folds that were open.
+local function fold_key(pr_id, file, variant)
+  return M.key(pr_id, file) .. "\t" .. tostring(variant or "")
+end
+
+function M.folds_get(pr_id, file, variant)
+  local t = M.load()[FOLDS]
+  return type(t) == "table" and t[fold_key(pr_id, file, variant)] or nil
+end
+
+function M.folds_drop(pr_id, file, variant)
+  local s = M.load()
+  local t = s[FOLDS]
+  local k = fold_key(pr_id, file, variant)
+  if type(t) ~= "table" or t[k] == nil then return end
+  t[k] = nil
+  if next(t) == nil then s[FOLDS] = nil end
+  save()
+end
+
+local function same_ranges(a, b)
+  if #a ~= #b then return false end
+  for i = 1, #a do
+    if a[i][1] ~= b[i][1] or a[i][2] ~= b[i][2] then return false end
+  end
+  return true
+end
+
+-- Nothing open is the default (everything folded), so it's stored as no
+-- record at all.
+function M.folds_set(pr_id, file, variant, stamp, open)
+  if not open or #open == 0 then return M.folds_drop(pr_id, file, variant) end
+  local s = M.load()
+  if type(s[FOLDS]) ~= "table" then s[FOLDS] = {} end
+  local k = fold_key(pr_id, file, variant)
+  local old = s[FOLDS][k]
+  if old and old.stamp == (stamp or "") and type(old.open) == "table" and same_ranges(old.open, open) then return end
+  s[FOLDS][k] = { stamp = stamp or "", open = open }
+  save()
 end
 
 return M

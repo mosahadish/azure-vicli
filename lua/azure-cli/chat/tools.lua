@@ -29,14 +29,28 @@ local function CONFIG() return require("azure-cli.config") end
 -- record (the provider's --get-pr, the same shape as a dashboard row).
 M.fetched = {}
 
-function M.pr_record(id)
+-- The PR whose id or key (hosts.lua's) is `id`; in `repo` (owner/repo or
+-- repo) when given - GitHub numbers repeat across repos (#109).
+function M.pr_record(id, repo)
+  local want = tostring(id)
+  local function matches(p)
+    if type(p) ~= "table" then return false end
+    if tostring(p.id) ~= want and tostring(p.key or "") ~= want then return false end
+    if not repo or repo == "" then return true end
+    local owner_repo = tostring(p.key or ""):match("^(.-~.-)~%d+$")
+    return repo == p.repo or (owner_repo ~= nil and repo:gsub("/", "~") == owner_repo)
+  end
   local cache = STATE().PR_LIST_CACHE
   for _, p in ipairs((cache and cache.prs) or {}) do
-    if tostring(p.id) == tostring(id) then return p end
+    if matches(p) then return p end
   end
   local cur = STATE().PR_CURRENT
-  if cur and tostring(cur.id) == tostring(id) then return cur end
-  return M.fetched[tostring(id)]
+  if matches(cur) then return cur end
+  if matches(M.fetched[want]) then return M.fetched[want] end
+  for _, p in pairs(M.fetched) do
+    if matches(p) then return p end
+  end
+  return nil
 end
 
 -- Looks PR `id` up on the server when it isn't on the dashboard, trying
@@ -86,16 +100,105 @@ end
 
 -- Repository `repo`'s org, project and local clone: from a PR in that
 -- repository when there is one, else the work-item account's org/project
--- and <clones_dir>/<repo> from any PR (one clones_dir per account).
-function M.repo_location(repo)
-  local org, project, clone, dir = "", "", "", nil
+-- and <clones_dir>/<repo> - clones_dir from any PR (one per account), or,
+-- before the PR list has loaded, from the config as --boards gave it
+-- (#64). On board B GitHub's (`repo` may then be owner/name), the org is
+-- the issues account's API root and the project its owner, as on a GitHub
+-- PR record. Fourth: where it looked, as "path (where clones_dir came
+-- from)" - for the error when the clone isn't there.
+function M.repo_location(repo, B)
+  local owner, name = tostring(repo or ""):match("^([^/]+)/(.+)$")
+  name = name or repo
+  local github = B and B.host == "github"
+  local org, project, clone, dir, from = "", "", "", nil, nil
   for _, p in ipairs((STATE().PR_LIST_CACHE or {}).prs or {}) do
-    if p.repo == repo then return p.org or "", p.project or "", M.clone_path(p) end
-    dir = dir or (p.clonesDir ~= "" and p.clonesDir or nil)
+    if p.repo == name and (not owner or p.project == owner) and (not github or p.host == "github") then
+      local path = M.clone_path(p)
+      return p.org or "", p.project or "", path, (path ~= "" and { path .. " (from its PR !" .. tostring(p.id) .. ")" } or {})
+    end
+    if not dir and (not github or p.host == "github") and (p.clonesDir or "") ~= "" then
+      dir, from = p.clonesDir, "clones_dir from the PR list"
+    end
   end
-  org, project = vim.env.AZVICLI_WI_COLLECTION or "", vim.env.AZVICLI_WI_PROJECT or ""
-  if dir then clone = M.clone_path({ clonesDir = dir, repo = repo }) end
-  return org, project, clone
+  local boards = STATE().BOARDS or {}
+  if github then
+    local acct = M.issues_account()
+    org, project = acct.apiUrl or "", owner or acct.owner or ""
+    if not dir and (acct.clonesDir or "") ~= "" then dir, from = acct.clonesDir, "clones_dir from azure-cli.yml" end
+  else
+    org, project = vim.env.AZVICLI_WI_COLLECTION or "", vim.env.AZVICLI_WI_PROJECT or ""
+    if not dir and (boards.azureClonesDir or "") ~= "" then dir, from = boards.azureClonesDir, "clones_dir from azure-cli.yml" end
+  end
+  if dir then clone = M.clone_path({ clonesDir = dir, repo = name }) end
+  return org, project, clone, (clone ~= "" and { clone .. " (" .. from .. ")" } or {})
+end
+
+-- ---------------------------------------------------------------------------
+-- Which work-item board a tool works on.
+
+function M.issues_account() return require("azure-cli.workitems.board").issues_account() end
+
+-- The board (workitems/board.lua) for a call: `board` when the agent gives
+-- it; else the board of the screen the message was sent from (the Issues
+-- tab and an issue's view say github); else the only board the config has;
+-- else Azure's - so an Azure-only setup never reaches GitHub.
+function M.board_for(args, env)
+  local BOARD = require("azure-cli.workitems.board")
+  local want = type(args) == "table" and args.board or nil
+  if want ~= "azure" and want ~= "github" then
+    want = nil
+    local snap = env and env.view and env.view()
+    if type(snap) == "table" then
+      want = snap.board or (type(snap.work_item) == "table" and snap.work_item.board) or nil
+    end
+    local b = STATE().BOARDS
+    if not want and b and not b.workItems and BOARD.has_issues() then want = "github" end
+  end
+  return BOARD.get(want == "github" and "github" or "azure")
+end
+
+-- What a provider call on board B takes for item `id`: owner/repo#n when
+-- `repo` names its repository on GitHub (a bare name is under the issues
+-- account's owner), else the number.
+function M.wi_ref(B, id, repo)
+  if B.host ~= "github" or type(repo) ~= "string" or repo == "" then return tostring(id) end
+  if not repo:find("/", 1, true) then
+    local owner = M.issues_account().owner
+    if not owner or owner == "" then return tostring(id) end
+    repo = owner .. "/" .. repo
+  end
+  return repo .. "#" .. tostring(id)
+end
+
+-- "work item #7" / "issue #7": how a message names item `id` on board B.
+function M.wi_name(B, id)
+  return B.words.item .. " #" .. tostring(id)
+end
+
+-- The board arguments every board tool takes.
+M.board_props = {
+  board = { type = "string", enum = { "azure", "github" }, description = "which board: Azure DevOps work items "
+    .. "or the GitHub project's issues. Leave it out to use the board the user is looking at." },
+  repo_of_item = { type = "string", description = "GitHub only: the issue's repository (owner/repo), when the "
+    .. "project spans several and the number alone is ambiguous" },
+}
+
+-- Schema `props` plus board/repo (or `repo_key` for the issue's
+-- repository when the tool already has a repo argument).
+function M.with_board(props, repo_key)
+  local out = vim.deepcopy(props or {})
+  out.board = M.board_props.board
+  out[repo_key or "repo"] = M.board_props.repo_of_item
+  return out
+end
+
+-- Reloads whichever of board B's open views shows item `id` (keyed by the
+-- id on Azure, owner~repo~n on GitHub).
+function M.refresh_item(B, id)
+  local reloads = B.state.WI_VIEW_RELOAD or {}
+  for k, f in pairs(reloads) do
+    if k == tostring(id) or k:match("~(%d+)$") == tostring(id) then pcall(f) end
+  end
 end
 
 function M.pr_env(pr)
@@ -251,10 +354,13 @@ end
 -- ---------------------------------------------------------------------------
 -- The tools.
 
-local VOTES = {
-  approve = { "10", "Approve" }, approve_with_suggestions = { "5", "Approve with suggestions" },
-  wait = { "-5", "Wait for author" }, reject = { "-10", "Reject" }, reset = { "0", "Reset vote" },
-}
+-- The vote option named `name` ("approve", "wait", ...) on `pr`'s host.
+local function vote_named(pr, name)
+  for _, o in ipairs(require("azure-cli.hosts").caps(pr).votes) do
+    if o.name == name then return o end
+  end
+  return nil
+end
 
 M.list = {
   {
@@ -335,43 +441,60 @@ M.list = {
   },
   {
     name = "list_work_items",
-    description = "The work items in the user's current sprint view: id, type, title, state, assignee, linked PRs.",
-    schema = { type = "object", properties = vim.empty_dict() },
+    description = "The work items in the user's current sprint view: id, type, title, state, assignee, iteration "
+      .. "(its path), linked PRs. board = \"github\" lists the GitHub project's issues in its current iteration "
+      .. "instead (each with its repo, its iteration's name, and iteration_id - what move_to_sprint takes); the "
+      .. "board the user is looking at by default. sprint (optional): another sprint's name or path instead of the "
+      .. "current one; \"none\" lists the open ones in no sprint (on Azure, the team's backlog iteration or the project "
+      .. "root; on GitHub, no iteration).",
+    schema = { type = "object", properties = { board = M.board_props.board, sprint = { type = "string" } } },
     risk = "read",
-    run = function(_, _, done)
+    run = function(args, env, done)
+      local B = M.board_for(args, env)
       local function shape(items)
         local out = {}
         for _, it in ipairs(items or {}) do
           if type(it) == "table" and it.id then
             local prs = {}
             for _, p in ipairs(type(it.pullRequests) == "table" and it.pullRequests or {}) do prs[#prs + 1] = p.id or p end
+            local gh = B.host == "github"
             out[#out + 1] = { id = it.id, type = it.type, title = it.title, state = it.state,
-              assigned_to = it.assignedTo, parent = it.parentId, pull_requests = prs }
+              assigned_to = it.assignedTo, parent = it.parentId, pull_requests = prs,
+              iteration = it.iterationPath, iteration_id = gh and it.iteration ~= "" and it.iteration or nil,
+              board = gh and "github" or nil, repo = it.repo }
           end
         end
         return out
       end
-      local cache = STATE().WI_LIST_CACHE
+      local function list(argv)
+        provider(argv, B.env, function(ok, out, err)
+          if not ok then return done(nil, "could not list " .. B.words.items .. ": " .. err) end
+          local items = {}
+          for _, l in ipairs(vim.split(out, "\n", { plain = true })) do
+            local okd, rec = pcall(vim.json.decode, l)
+            if okd and type(rec) == "table" and not rec._meta then items[#items + 1] = rec end
+          end
+          done(shape(items))
+        end)
+      end
+      if args.sprint and args.sprint ~= "" then
+        return M.sprints(B, function(sprints) list({ "--wi-list", "items", (M.find_sprint(sprints, args.sprint)) }) end)
+      end
+      local cache = B.state.WI_LIST_CACHE
       if cache and cache.items then return done(shape(cache.items)) end
-      provider({ "--wi-list" }, nil, function(ok, out, err)
-        if not ok then return done(nil, "could not list work items: " .. err) end
-        local items = {}
-        for _, l in ipairs(vim.split(out, "\n", { plain = true })) do
-          local okd, rec = pcall(vim.json.decode, l)
-          if okd and type(rec) == "table" and not rec._meta then items[#items + 1] = rec end
-        end
-        done(shape(items))
-      end)
+      list({ "--wi-list" })
     end,
   },
   {
     name = "get_work_item",
-    description = "One work item in full: fields, description, parent, children, comments, linked pull requests.",
-    schema = { type = "object", properties = { id = { type = "integer" } }, required = { "id" } },
+    description = "One work item in full: fields, description, parent, children, comments, linked pull requests. "
+      .. "With board = \"github\", a GitHub issue (its body, comments, sub-issues, linked PRs and branches).",
+    schema = { type = "object", properties = M.with_board({ id = { type = "integer" } }), required = { "id" } },
     risk = "read",
-    run = function(args, _, done)
-      provider({ "--wi-detail", tostring(args.id) }, nil, function(ok, out, err)
-        if not ok then return done(nil, "could not read #" .. tostring(args.id) .. ": " .. err) end
+    run = function(args, env, done)
+      local B = M.board_for(args, env)
+      provider({ "--wi-detail", M.wi_ref(B, args.id, args.repo) }, B.env, function(ok, out, err)
+        if not ok then return done(nil, "could not read " .. M.wi_name(B, args.id) .. ": " .. err) end
         local okd, decoded = pcall(vim.json.decode, out)
         done(okd and decoded or out)
       end)
@@ -379,20 +502,39 @@ M.list = {
   },
   {
     name = "link_pr_to_work_item",
-    description = "Links a pull request to a work item (shows on both). Runs without asking.",
-    schema = { type = "object", properties = { pr_id = { type = "integer" }, work_item_id = { type = "integer" } },
-      required = { "pr_id", "work_item_id" } },
+    description = "Links a pull request to a work item (shows on both). Runs without asking. On GitHub "
+      .. "(board = \"github\") it adds a \"Closes #n\" line to the PR's description - GitHub's only way to link "
+      .. "one, which also closes the issue when the PR merges into the default branch - so it asks first there.",
+    schema = { type = "object", properties = M.with_board({ pr_id = { type = "integer" },
+      work_item_id = { type = "integer" } }), required = { "pr_id", "work_item_id" } },
     risk = "write",
-    run = function(args, _, done)
+    run = function(args, env, done)
       local pr = need_pr(args, done)
       if not pr then return end
-      provider({ "--wi-edit", "link-pr", tostring(args.work_item_id), pr.org or "", pr.project or "", pr.repo or "",
-        tostring(pr.id) }, nil, function(ok, _, err)
-        if not ok then return done(nil, "linking failed: " .. err) end
-        pcall(require("azure-cli.workitems.linked_prs").link_changed, tostring(args.work_item_id), tostring(pr.id), true)
-        done("Linked PR #" .. pr.id .. " to work item #" .. args.work_item_id .. ".", nil,
-          { op = "unlink", work_item_id = args.work_item_id, pr_id = pr.id })
-      end)
+      local B = M.board_for(args, env)
+      local ref = M.wi_ref(B, args.work_item_id, args.repo)
+      local function link()
+        provider({ "--wi-edit", "link-pr", ref, pr.org or "", pr.project or "", pr.repo or "", tostring(pr.id) }, B.env,
+          function(ok, out, err)
+            if not ok then return done(nil, "linking failed: " .. err) end
+            local okd, res = pcall(vim.json.decode, out)
+            res = okd and type(res) == "table" and res or {}
+            pcall(require("azure-cli.workitems.linked_prs").link_changed, tostring(args.work_item_id), tostring(pr.id),
+              true, nil, B, pr.repo)
+            local msg = "Linked PR #" .. pr.id .. " to " .. M.wi_name(B, args.work_item_id)
+              .. (res.line and (" (\"" .. res.line .. "\" in its description)") or "") .. "."
+              .. (res.note and (" Note: " .. res.note .. ".") or "")
+            done(msg, nil, { op = "unlink", work_item_id = args.work_item_id, pr_id = pr.id, board = B.host,
+              ref = ref, pr_repo = B.host == "github" and ((pr.project or "") .. "/" .. (pr.repo or "")) or nil })
+          end)
+      end
+      if B.host ~= "github" then return link() end
+      env.confirm("The agent wants to add \"Closes #" .. tostring(args.work_item_id) .. "\" to PR !" .. tostring(pr.id)
+        .. "'s description, linking it to issue #" .. tostring(args.work_item_id)
+        .. " (merging the PR into the default branch closes the issue).", function(yes)
+          if yes then return link() end
+          done(nil, "The user declined linking PR !" .. tostring(pr.id) .. " to issue #" .. tostring(args.work_item_id))
+        end)
     end,
   },
   {
@@ -400,24 +542,30 @@ M.list = {
     description = "Creates a branch on the server from another branch's tip (e.g. from \"develop\"), links it to a "
       .. "work item when work_item_id is given (it then shows in the work item's Development section), and with "
       .. "checkout=true also checks it out in the user's local clone. Runs without asking. Suggest a name like "
-      .. "feature/<work item id>-<short-title>; ask the user which repository when it isn't clear.",
+      .. "feature/<work item id>-<short-title>; ask the user which repository when it isn't clear. With "
+      .. "board = \"github\" the branch is linked to the GitHub issue (its Development section).",
     schema = { type = "object", properties = {
-      repo = { type = "string", description = "repository name" },
+      repo = { type = "string", description = "repository name (owner/repo on GitHub also works)" },
       from = { type = "string", description = "branch to start from, e.g. develop" },
       name = { type = "string", description = "the new branch's name, without refs/heads/" },
       work_item_id = { type = "integer" },
       checkout = { type = "boolean" },
+      board = M.board_props.board,
+      item_repo = M.board_props.repo_of_item,
     }, required = { "repo", "from", "name" } },
     risk = "write",
     run = function(args, env, done)
-      local org, project, clone = M.repo_location(args.repo)
-      provider({ "--wi-edit", "create-branch", tostring(args.work_item_id or 0), org, project, args.repo, args.from,
-        args.name }, nil, function(ok, out, err)
+      local B = M.board_for(args, env)
+      local org, project, clone = M.repo_location(args.repo, B)
+      local repo = tostring(args.repo):match("/(.+)$") or args.repo
+      local ref = args.work_item_id and M.wi_ref(B, args.work_item_id, args.item_repo) or "0"
+      provider({ "--wi-edit", "create-branch", ref, org, project, repo, args.from, args.name }, B.env,
+        function(ok, out, err)
         if not ok then return done(nil, "creating the branch failed: " .. err) end
         local okd, res = pcall(vim.json.decode, out)
         res = okd and res or {}
-        local undo = { op = "delete_branch", org = org, project = project, repo = args.repo, name = args.name,
-          sha = res.objectId }
+        local undo = { op = "delete_branch", org = org, project = project, repo = repo, name = args.name,
+          sha = res.objectId, board = B.host }
         local msg = "Created branch " .. args.name .. " from " .. args.from .. " in " .. args.repo
           .. (res.linked and (" and linked it to #" .. tostring(res.linked)) or "")
           .. (res.linkError and (" (linking to the work item failed: " .. res.linkError .. ")") or "") .. "."
@@ -492,57 +640,70 @@ M.list = {
       required = { "pr_id", "vote" } },
     risk = "ask",
     confirm = function(args)
-      return "vote \"" .. ((VOTES[args.vote] or {})[2] or tostring(args.vote)) .. "\" on PR #" .. tostring(args.pr_id)
+      local o = vote_named(pr_record(args.pr_id), args.vote)
+      return "vote \"" .. (o and o.label or tostring(args.vote)) .. "\" on PR #" .. tostring(args.pr_id)
     end,
     run = function(args, _, done)
       local pr = need_pr(args, done)
       if not pr then return end
-      local v = VOTES[args.vote]
+      local v = vote_named(pr, args.vote)
       if not v then return done(nil, "unknown vote " .. tostring(args.vote)) end
-      local before = 0
+      local before = "0"
       for _, r in ipairs(type(pr.reviewers) == "table" and pr.reviewers or {}) do
-        if r.name == pr.myName or (pr.myId and r.id == pr.myId) then before = tonumber(r.vote) or 0 end
+        if r.name == pr.myName or (pr.myId and r.id == pr.myId) then before = tostring(r.vote or "0") end
       end
-      provider({ "--vote", v[1] }, pr_env(pr), function(ok, _, err)
+      provider({ "--vote", v.key }, pr_env(pr), function(ok, _, err)
         if not ok then return done(nil, "voting failed: " .. err) end
         if STATE().PR_DASHBOARD_RENDER then pcall(STATE().PR_DASHBOARD_RENDER) end
-        done("Voted " .. v[2] .. " on PR #" .. pr.id .. ".", nil, { op = "vote", pr_id = pr.id, vote = tostring(before) })
+        done("Voted " .. v.label .. " on PR #" .. pr.id .. ".", nil, { op = "vote", pr_id = pr.id, vote = before })
       end)
     end,
   },
   {
     name = "set_work_item_state",
     description = "Changes a work item's state (e.g. Active, Resolved, Closed - whatever its workflow allows). "
-      .. "Asks the user to confirm first.",
-    schema = { type = "object", properties = { id = { type = "integer" }, state = { type = "string" },
-      reason = { type = "string" } }, required = { "id", "state" } },
+      .. "On GitHub (board = \"github\"): one of the project's Status options, or Closed with reason "
+      .. "\"completed\" or \"not planned\". Asks the user to confirm first.",
+    schema = { type = "object", properties = M.with_board({ id = { type = "integer" }, state = { type = "string" },
+      reason = { type = "string" } }), required = { "id", "state" } },
     risk = "ask",
+    -- The question names the board when it isn't the user's only one.
     confirm = function(args)
-      return "set work item #" .. tostring(args.id) .. " to \"" .. tostring(args.state) .. "\""
+      local B = M.board_for(args, nil)
+      return "set " .. (args.board == "github" and "issue" or B.words.item) .. " #" .. tostring(args.id)
+        .. " to \"" .. tostring(args.state) .. "\""
     end,
-    run = function(args, _, done)
-      local argv = { "--wi-state", "set", tostring(args.id), args.state }
+    run = function(args, env, done)
+      local B = M.board_for(args, env)
+      local ref = M.wi_ref(B, args.id, args.repo)
+      local argv = { "--wi-state", "set", ref, args.state }
       if args.reason and args.reason ~= "" then argv[#argv + 1] = args.reason end
       M.work_item_field(args.id, "state", function(before)
-        provider(argv, nil, function(ok, _, err)
+        provider(argv, B.env, function(ok, _, err)
           if not ok then return done(nil, "changing the state failed: " .. err) end
           pcall(require("azure-cli.pr_workitems").patch_state, args.id, args.state)
-          done("Work item #" .. args.id .. " is now " .. args.state .. ".", nil,
-            before and { op = "set_state", id = args.id, state = before } or nil)
+          M.refresh_item(B, args.id)
+          done((B.host == "github" and "Issue #" or "Work item #") .. args.id .. " is now " .. args.state .. ".", nil,
+            before and { op = "set_state", id = args.id, state = before, board = B.host, ref = ref } or nil)
         end)
-      end)
+      end, B, args.repo)
     end,
   },
 }
 
 -- A work item's current `field` ("state", "assignedTo", "iterationPath",
 -- "title") - from the work-items list when it's loaded, else read with
--- --wi-detail - cb(value or nil). What an undo goes back to.
-function M.work_item_field(id, field, cb)
-  for _, it in ipairs((STATE().WI_LIST_CACHE or {}).items or {}) do
-    if type(it) == "table" and tostring(it.id) == tostring(id) and it[field] ~= nil then return cb(it[field]) end
+-- --wi-detail - cb(value or nil). What an undo goes back to. On board B
+-- (default Azure's), `repo` as for wi_ref.
+function M.work_item_field(id, field, cb, B, repo)
+  B = B or require("azure-cli.workitems.board").get("azure")
+  for _, it in ipairs((B.state.WI_LIST_CACHE or {}).items or {}) do
+    if type(it) == "table" and tostring(it.id) == tostring(id) and it[field] ~= nil and (not repo or repo == ""
+        or it.repo == repo or it.repo == repo:match("/(.+)$")) then
+      return cb(it[field])
+    end
   end
-  provider({ "--wi-detail", tostring(id) }, nil, function(ok, out)
+  provider({ "--wi-detail", M.wi_ref(B, id, repo) }, B.env, function(ok, out)
     if not ok then return cb(nil) end
     local okd, d = pcall(vim.json.decode, out)
     local item = okd and type(d) == "table" and (d.item or d) or {}
@@ -611,6 +772,12 @@ function M.call(name, args, env, cb)
   args = type(args) == "table" and args or {}
   local perm = M.permission(tool, perms())
   if perm == "deny" then return cb("The user doesn't allow " .. name .. ".", true) end
+  -- What the PR's host can't do ends here, before anyone is asked.
+  local nope = tool.unsupported and tool.unsupported(args)
+  if nope then
+    env.log("\u{2717} " .. name .. ": " .. nope)
+    return cb(nope, true)
+  end
   local function finish(result, err, undo)
     if err then
       env.log("\u{2717} " .. name .. ": " .. tostring(err))
@@ -682,15 +849,22 @@ function M.audit_args(args)
 end
 
 -- Undoing what a tool did: op -> function(undo, cb(ok, message)).
+-- An undo made on GitHub's board carries board = "github" (and the item's
+-- ref): it goes back through that board.
+local function undo_board(u) return require("azure-cli.workitems.board").get(u.board) end
+
 M.undoers = {
   unlink = function(u, cb)
-    provider({ "--wi-edit", "unlink-pr", tostring(u.work_item_id), tostring(u.pr_id) }, nil, function(ok, _, err)
-      if ok then pcall(require("azure-cli.workitems.linked_prs").link_changed, tostring(u.work_item_id), tostring(u.pr_id), false) end
+    local B = undo_board(u)
+    local argv = { "--wi-edit", "unlink-pr", u.ref or tostring(u.work_item_id), tostring(u.pr_id) }
+    if u.pr_repo then argv[#argv + 1] = u.pr_repo end
+    provider(argv, B.env, function(ok, _, err)
+      if ok then pcall(require("azure-cli.workitems.linked_prs").link_changed, tostring(u.work_item_id), tostring(u.pr_id), false, nil, B) end
       cb(ok, ok and ("Unlinked PR !" .. u.pr_id .. " from #" .. u.work_item_id .. ".") or err)
     end)
   end,
   delete_branch = function(u, cb)
-    provider({ "--wi-edit", "delete-branch", u.org or "", u.project or "", u.repo, u.name, u.sha or "" }, nil,
+    provider({ "--wi-edit", "delete-branch", u.org or "", u.project or "", u.repo, u.name, u.sha or "" }, undo_board(u).env,
       function(ok, _, err) cb(ok, ok and ("Deleted branch " .. u.name .. ".") or err) end)
   end,
   drop_draft = function(u, cb)
@@ -703,14 +877,26 @@ M.undoers = {
     provider({ "--vote", u.vote }, pr_env(pr), function(ok, _, err) cb(ok, ok and "Vote put back." or err) end)
   end,
   set_state = function(u, cb)
-    provider({ "--wi-state", "set", tostring(u.id), u.state }, nil, function(ok, _, err)
+    provider({ "--wi-state", "set", u.ref or tostring(u.id), u.state }, undo_board(u).env, function(ok, _, err)
       if ok then pcall(require("azure-cli.pr_workitems").patch_state, u.id, u.state) end
       cb(ok, ok and ("#" .. u.id .. " is " .. u.state .. " again.") or err)
     end)
   end,
   set_field = function(u, cb)
-    provider({ "--wi-edit", "set", tostring(u.id), u.field, u.value or "" }, nil, function(ok, _, err)
+    provider({ "--wi-edit", "set", u.ref or tostring(u.id), u.field, u.value or "" }, undo_board(u).env, function(ok, _, err)
       cb(ok, ok and ("#" .. u.id .. "'s " .. u.field .. " is back to " .. tostring(u.value) .. ".") or err)
+    end)
+  end,
+  set_parent = function(u, cb)
+    local B = undo_board(u)
+    M.provider({ "--wi-edit", "set-parent", u.ref or tostring(u.id), u.parent or "none" }, B.env, function(ok, out, err)
+      if ok then
+        local okd, d = pcall(vim.json.decode, out, { luanil = { object = true, array = true } })
+        d = okd and type(d) == "table" and d or {}
+        pcall(require("azure-cli.workitems.parent").changed, B, u.ref or tostring(u.id), u.id, d.previous, d.parent)
+      end
+      cb(ok, ok and ("#" .. u.id .. (u.parent == "none" and " has no parent again." or (" is under #" .. u.parent
+        .. " again."))) or err)
     end)
   end,
   thread_status = function(u, cb)
@@ -723,8 +909,11 @@ M.undoers = {
   description = function(u, cb)
     local pr = M.pr_record(u.pr_id)
     if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
-    provider({ "--set-description", u.text or "" }, pr_env(pr), function(ok, _, err)
-      cb(ok, ok and "Description put back." or err)
+    -- A retitle's record carries the old title too (update_pr_description).
+    local argv = { "--set-description", u.text or "" }
+    if u.title and u.title ~= "" then argv[3] = u.title end
+    provider(argv, pr_env(pr), function(ok, _, err)
+      cb(ok, ok and (argv[3] and "Title and description put back." or "Description put back.") or err)
     end)
   end,
 }

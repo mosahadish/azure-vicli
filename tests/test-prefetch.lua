@@ -12,6 +12,7 @@
 -- count change, the failure path (bad range) still completes without
 -- caching anything, and eviction once over MAX_PRS keys.
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local queue = {}
 vim = {
   env = {},  -- cache.lua's run() routes non-git cmds through rpc.lua,
@@ -129,6 +130,65 @@ assert(since_iws_bucket and since_iws_bucket["ws.txt"]
   and since_iws_bucket["ws.txt"].lines[1] == "(no textual diff for this file)",
   "since-variant + ignore_ws composes to its own \"<variant>:iws\" bucket")
 
+-- #121: each key remembers the commits its buckets were built from, and a
+-- prefetch after the source moved (a push under an unchanged updatedIso -
+-- Azure's is the creation date) empties them and builds them again. Here
+-- the push deletes f.txt, which the first iteration modified: its diff must
+-- become all deletions, with the commits list following and threads kept.
+local function sh(cmd)
+  local p = io.popen("cd '" .. repo .. "' && " .. cmd .. " 2>/dev/null")
+  local s = p:read("*a")
+  p:close()
+  return (s:gsub("%s+$", ""))
+end
+local old_src = sh("git rev-parse refs/remotes/origin/src")
+local old_tgt = sh("git rev-parse refs/remotes/origin/tgt")
+assert(M.refs(key) == old_src .. " " .. old_tgt, "prefetch recorded the refs: " .. tostring(M.refs(key)))
+assert(not M.refs(M.key(7, "x")), "no refs recorded when they don't resolve")
+local plain_f = M.diffs(key)  -- the table a reviewer would hold as content_cache
+local f_before = plain_f["f.txt"]
+assert(f_before, "f.txt cached before the push")
+-- Unchanged refs: nothing dropped.
+M.prefetch(spec); drain()
+assert(M.diffs(key)["f.txt"] == f_before, "same refs keep the cached diff")
+sh("git checkout -q src && git rm -q f.txt && git commit -q -m push2 && git update-ref refs/remotes/origin/src HEAD")
+local new_src = sh("git rev-parse refs/remotes/origin/src")
+assert(new_src ~= old_src and new_src ~= "", "scratch push moved origin/src")
+local threads_before = M.threads(42)
+local pushed = false
+M.prefetch(spec, function() pushed = true end); drain()
+assert(pushed, "prefetch after the push completed")
+assert(M.refs(key) == new_src .. " " .. old_tgt, "new refs recorded")
+assert(M.diffs(key) == plain_f, "the bucket is emptied in place, not replaced")
+local f_after = plain_f["f.txt"]
+assert(f_after and f_after ~= f_before, "f.txt rebuilt after the push")
+for i, m in ipairs(f_after.map) do
+  assert(m.kind == "del", "deleted f.txt line " .. i .. " is " .. tostring(m.kind) .. ", not a deletion")
+end
+assert(#f_after.map == 2 and f_after.lines[1] == "a" and f_after.lines[2] == "b",
+  "deleted f.txt shows its whole old content as removed: " .. table.concat(f_after.lines, "|"))
+local saw_push2 = false
+for _, l in ipairs(M.commits(key) or {}) do if l:find("push2", 1, true) then saw_push2 = true end end
+assert(saw_push2, "commits list rebuilt after the push")
+assert(M.threads(42) == threads_before, "threads are per PR and survive the push")
+assert(not M.files(key, "since:test") and not next(M.diffs(key, "since:test")),
+  "the since-variant buckets were emptied with the rest")
+assert(not next(M.diffs(key, true)), "the ignore-whitespace bucket was emptied too")
+-- spec.key names the bucket outright (the reviewer's re-keyed one).
+M.prefetch({ key = "pr42:custom", id = 42, updatedIso = "t1", source = "src", target = "tgt", repo = repo }); drain()
+assert(M.files("pr42:custom") and M.diffs("pr42:custom")["n.txt"], "spec.key bucket filled")
+assert(M.refs("pr42:custom") == new_src .. " " .. old_tgt, "spec.key bucket's refs recorded")
+-- Content nobody recorded the commits of (a reviewer's own builds) is
+-- treated as stale: dropped and rebuilt, then recorded.
+local unrec = M.key(43, "t1")
+M.diffs(unrec)["f.txt"] = { lines = { "stale" }, map = { { kind = "add" } } }
+M.prefetch({ id = 43, updatedIso = "t1", source = "src", target = "tgt", repo = repo }); drain()
+assert(M.diffs(unrec)["f.txt"].lines[1] == "a", "unrecorded stale content was rebuilt")
+assert(M.refs(unrec) == new_src .. " " .. old_tgt, "and its refs recorded")
+-- Put the scratch repo back the way the later tests expect it.
+sh("git reset -q --hard " .. old_src .. " && git update-ref refs/remotes/origin/src " .. old_src)
+assert(sh("git rev-parse refs/remotes/origin/src") == old_src, "scratch repo restored")
+
 -- Eviction keeps at most MAX_PRS keys, and cleans up a key's extra
 -- string-variant buckets (files + diffs, every suffix registered above)
 -- alongside its plain/iws ones once that PR version ages out.
@@ -138,5 +198,6 @@ assert(not STATE.PR_DIFF_CACHE[key .. ":since:test"] and not STATE.PR_DIFF_CACHE
   "evicted the since-variant diffs buckets too")
 assert(not STATE.PR_FILES_CACHE[key .. ":since:test"], "evicted the since-variant files bucket too")
 assert(not STATE.PR_DIFF_CACHE_EXTRA[key], "evicted key's extra-variant registry too")
+assert(not STATE.PR_CACHE_REFS[key], "evicted key's recorded refs too")
 
 print("prefetch pipeline ok: " .. #files .. " files")

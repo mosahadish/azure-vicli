@@ -29,15 +29,17 @@ on the Lua side needs to change to consume it.
 import argparse
 import base64
 import hashlib
+import http.client
 import io
 import json
 import os
 import re
+import select
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -94,9 +96,18 @@ def _parse_scalar(raw):
     inline flow list ("[a, b, c]") - the one sequence shape this subset
     parser understands, added for an account's work_items: types: (see
     AccountConfig.work_items below), which also accepts a plain
-    comma-separated scalar instead.
+    comma-separated scalar instead. Also an inline flow mapping
+    ("{ project: 3, repo: r }"), one level deep, for a GitHub account's
+    issues: block (see github_issues.py) - the block form parses too.
     """
     s = raw.strip()
+    if len(s) >= 2 and s[0] == "{" and s[-1] == "}":
+        out = {}
+        for item in s[1:-1].split(","):
+            kv = _split_kv(item) if item.strip() else None
+            if kv:
+                out[kv[0]] = kv[1]
+        return out
     if len(s) >= 2 and s[0] == "[" and s[-1] == "]":
         inner = s[1:-1].strip()
         if inner == "":
@@ -246,7 +257,15 @@ class AccountConfig:
     """
 
     def __init__(self, project=None, org_url=None, pat=None, hide_ancient=None, clones_dir=None,
-                 work_items=None, pat_file=None):
+                 work_items=None, pat_file=None, host=None, owner=None, api_url=None, issues=None):
+        # host: "azure" (the default) or "github" - see github_host.py. A
+        # GitHub account has no org_url/project_name; owner: (optional)
+        # limits it to one user's or organization's repositories, api_url:
+        # (optional) points it at a GitHub Enterprise Server.
+        self.host = (host or "azure").strip().lower() if isinstance(host, str) else "azure"
+        self.owner = owner.strip() if isinstance(owner, str) and owner.strip() else None
+        self.api_url = (api_url.strip().rstrip("/") if isinstance(api_url, str) and api_url.strip()
+                        else "https://api.github.com")
         self.project = project
         self.org_url = org_url
         self.pat = pat
@@ -256,8 +275,22 @@ class AccountConfig:
         self.pat_file = pat_file if isinstance(pat_file, str) and pat_file.strip() else None
         self._token = None
         self.hide_ancient = bool(hide_ancient) if hide_ancient is not None else None
-        self.clones_dir = clones_dir
+        # `~` expands, as in pat_file: - the Lua side runs git in it as given.
+        self.clones_dir = os.path.expanduser(clones_dir) if isinstance(clones_dir, str) and clones_dir else clones_dir
         self.work_items = work_items if isinstance(work_items, dict) else None
+        # issues: { project, repo, scope } on a GitHub account: its Projects
+        # v2 project as the Issues tab's board (github_issues.py). None
+        # when absent; problems() refuses it on an Azure account.
+        self.issues = issues if isinstance(issues, dict) else None
+
+    def is_github(self):
+        return self.host == "github"
+
+    def label(self):
+        """How messages name the account."""
+        if self.is_github():
+            return "GitHub" + (" ({0})".format(self.owner) if self.owner else "")
+        return self.project or self.org_url or "?"
 
     def has_pat_source(self):
         """True when pat: is set or pat_file: names a file - i.e. the
@@ -348,6 +381,56 @@ class AccountConfig:
 # the standalone launcher. AccountConfig.pat_file_location_problem()'s
 # "inside the plugin folder" check compares against it.
 PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+class _Core(object):
+    """This module's globals as attributes, for github_host.py (which reuses
+    to_record, count_threads and the rest). A view rather than the module
+    object, since tests load this file under other names."""
+
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name)
+
+
+_github_mod = []
+_github_lock = threading.Lock()
+
+
+def github():
+    """github_host.py (GitHub as the second code host), loaded from beside
+    this file on first use."""
+    with _github_lock:
+        if not _github_mod:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("azvicli_github_host",
+                                                          os.path.join(PLUGIN_ROOT, "github_host.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.bind(_Core())
+            _github_mod.append(mod)
+        return _github_mod[0]
+
+
+_issues_mod = []
+
+
+def github_issues():
+    """github_issues.py (GitHub Issues + Projects v2 as the work-items
+    backend), loaded from beside this file on first use."""
+    gh = github()
+    with _github_lock:
+        if not _issues_mod:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("azvicli_github_issues",
+                                                          os.path.join(PLUGIN_ROOT, "github_issues.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.bind(_Core(), gh)
+            _issues_mod.append(mod)
+        return _issues_mod[0]
 
 
 class Config:
@@ -447,7 +530,30 @@ class Config:
             out.append("no accounts: entries - add one with project_name, org_url and pat")
             return out
         for i, a in enumerate(self.accounts, 1):
+            if a.host not in ("azure", "github"):
+                out.append("account {0}: host must be azure or github (got '{1}')".format(i, a.host))
+                continue
+            if a.is_github():
+                label = "account {0} ({1})".format(i, a.label())
+                pat_problem = a.pat_file_problem()
+                if pat_problem:
+                    out.append("{0}: {1}".format(label, pat_problem))
+                if not re.match(r"^https?://", a.api_url, re.I):
+                    out.append("{0}: api_url must start with https:// (got '{1}')".format(label, a.api_url))
+                if a.work_items:
+                    out.append("{0}: work_items: isn't supported on a GitHub account yet - "
+                               "keep it on an Azure DevOps account".format(label))
+                if a.issues is not None:
+                    if not str(a.issues.get("project") if a.issues.get("project") is not None else "").strip():
+                        out.append("{0}: issues: needs project: (a Projects v2 number or title)".format(label))
+                    scope = str(a.issues.get("scope") or "mine").strip().lower()
+                    if scope not in ("mine", "all"):
+                        out.append("{0}: issues: scope: must be mine or all (got '{1}')".format(label, scope))
+                continue
             label = "account {0}{1}".format(i, " ({0})".format(a.project) if a.project else "")
+            if a.issues is not None:
+                out.append("{0}: issues: is for a GitHub account (host: github) - an Azure DevOps account "
+                           "uses work_items:".format(label))
             missing = [name for name, value in (("project_name", a.project), ("org_url", a.org_url),
                                                 ("pat", "set" if a.has_pat_source() else None))
                        if not isinstance(value, str) or not value.strip()]
@@ -524,9 +630,28 @@ class Config:
                     hide_ancient=raw.get("hide_ancient"),
                     clones_dir=raw.get("clones_dir"),
                     work_items=raw.get("work_items"),
+                    host=raw.get("host"),
+                    owner=raw.get("owner"),
+                    api_url=raw.get("api_url"),
+                    issues=raw.get("issues"),
                 )
             )
         return cfg
+
+    def github_accounts(self):
+        return [a for a in self.accounts if a.is_github()]
+
+    def github_account_for(self, api_url, owner=None):
+        """The GitHub account a PR action's AZVICLI_ORG (its api_url) and
+        AZVICLI_PROJECT (the repo's owner) belong to: one limited to that
+        owner if there is one, else the first on that server. None when
+        AZVICLI_ORG isn't a GitHub account's at all - an Azure PR."""
+        want = (api_url or "").rstrip("/").lower()
+        on_server = [a for a in self.github_accounts() if a.api_url.lower() == want]
+        for a in on_server:
+            if owner and a.owner and a.owner.lower() == owner.lower():
+                return a
+        return on_server[0] if on_server else None
 
     def accounts_by_org(self):
         """Groups accounts by organization URL (case-insensitive, trailing
@@ -538,6 +663,8 @@ class Config:
         order = []
         groups = {}
         for a in self.accounts:
+            if a.is_github():
+                continue
             raw = a.org_url or ""
             key = raw.rstrip("/").lower()
             if key not in groups:
@@ -595,6 +722,8 @@ def get_cached_config():
             return Config.from_config_file()
         if _config_cache["config"] is None:
             _config_cache["config"] = Config.from_config_file()
+            # A (newly) loaded config: no identity fetched before it stays.
+            _conn_data_cache.clear()
         return _config_cache["config"]
 
 
@@ -1036,6 +1165,10 @@ def to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
         "author": ((pr.get("createdBy") or {}).get("displayName")) or "",
         "updatedIso": iso_format(updated),
         "updatedHuman": humanize(updated),
+        # The source commit the PR's latest merge was computed from: unlike
+        # updatedIso it moves on every push, and the list call already
+        # returns it - the dashboard keys its branch warm on it (#124).
+        "sourceCommit": ((pr.get("lastMergeSourceCommit") or {}).get("commitId")) or "",
         "isDraft": bool(pr.get("isDraft") or False),
         "state": state,
         "autoComplete": pr.get("autoCompleteSetBy") is not None,
@@ -1101,6 +1234,222 @@ class AdoTransportError(Exception):
     org_url, since that's nearly always the field to look at."""
 
 
+# ---------------------------------------------------------------------------
+# Keep-alive connection pool
+# ---------------------------------------------------------------------------
+#
+# urlopen's stock handlers send "Connection: close", so every request paid
+# for its own TCP+TLS handshake. main() installs an opener (install_http_pool)
+# whose HTTP/HTTPS handlers take an idle connection to the same host from a
+# shared pool instead, and put it back once the response has been read to
+# the end. Everything else stays urllib's own: ProxyHandler (HTTPS_PROXY,
+# NO_PROXY, system proxies, user:pass@ proxy auth, a CONNECT tunnel for
+# https), redirects, HTTPError for 4xx/5xx. So http_request and
+# github_host.http still just call urllib.request.urlopen, and tests that
+# mock urlopen never reach the pool.
+#
+# One locked pool rather than a connection per thread: --list fans out on
+# short-lived executor threads, whose own connections would die unreused. A
+# connection is out of the pool, owned by one thread, from its request until
+# its response ends.
+#
+# A pooled connection the server has dropped since is caught before use
+# (idle past POOL_IDLE_MAX, or readable - EOF). One that still fails before
+# its status line is retried once on a fresh connection, for a read only:
+# GET/HEAD, or a request marked azvicli_read_only (github_host's GraphQL
+# queries). A write never is - it may already have applied.
+#
+# AZVICLI_NO_POOL=1 keeps urllib's stock opener.
+
+POOL_IDLE_MAX = 60.0
+POOL_MAX_IDLE_PER_HOST = 8
+
+_pool_lock = threading.Lock()
+_pool_idle = {}
+_http_local = threading.local()
+_STALE_ERRORS = (http.client.RemoteDisconnected, http.client.BadStatusLine, ConnectionResetError,
+                 ConnectionAbortedError, BrokenPipeError)
+
+
+def _last_conn():
+    """"new" or "reused": how this thread's last request through the pool
+    got its connection, for perf_record - "new" when it didn't go through
+    the pool (AZVICLI_NO_POOL, a mocked urlopen)."""
+    return vars(_http_local).pop("conn", "new")
+
+
+def _conn_alive(conn):
+    """False when the idle socket is gone or readable: between responses a
+    readable keep-alive socket means the server closed it (or sent
+    something we'd misread as the next response)."""
+    sock = conn.sock
+    if sock is None:
+        return False
+    try:
+        readable, _w, _x = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return False
+    return not readable
+
+
+def _pool_get(key):
+    now = time.monotonic()
+    while True:
+        with _pool_lock:
+            idle = _pool_idle.get(key)
+            if not idle:
+                return None
+            conn, since = idle.pop()
+        if now - since <= POOL_IDLE_MAX and _conn_alive(conn):
+            return conn
+        conn.close()
+
+
+def _pool_put(key, conn):
+    with _pool_lock:
+        idle = _pool_idle.setdefault(key, [])
+        if len(idle) < POOL_MAX_IDLE_PER_HOST:
+            idle.append((conn, time.monotonic()))
+            return
+    conn.close()
+
+
+def _pool_close_all():
+    with _pool_lock:
+        idle = [conn for conns in _pool_idle.values() for conn, _since in conns]
+        _pool_idle.clear()
+    for conn in idle:
+        conn.close()
+
+
+class _PooledResponse(http.client.HTTPResponse):
+    """An HTTPResponse that hands its connection back (azvicli_release(True))
+    once its body has been read to the end, and has it closed instead
+    (azvicli_release(False)) when it's closed before then or a read fails."""
+
+    azvicli_release = None
+
+    def read(self, amt=None):
+        try:
+            data = http.client.HTTPResponse.read(self, amt)
+        except BaseException:
+            self._azvicli_end(False)
+            raise
+        if self.fp is None:
+            self._azvicli_end(True)
+        return data
+
+    def readinto(self, b):
+        try:
+            n = http.client.HTTPResponse.readinto(self, b)
+        except BaseException:
+            self._azvicli_end(False)
+            raise
+        if self.fp is None:
+            self._azvicli_end(True)
+        return n
+
+    def close(self):
+        at_eof = self.fp is None
+        http.client.HTTPResponse.close(self)
+        self._azvicli_end(at_eof)
+
+    def _azvicli_end(self, clean):
+        release, self.azvicli_release = self.azvicli_release, None
+        if release is not None:
+            release(clean)
+
+
+class _KeepAliveMixin(object):
+    def _keepalive_open(self, http_class, req, **conn_args):
+        """urllib's AbstractHTTPHandler.do_open, minus its "Connection:
+        close", with the connection taken from and given back to the pool."""
+        host = req.host
+        if not host:
+            raise urllib.error.URLError("no host given")
+        headers = dict(req.unredirected_hdrs)
+        headers.update({k: v for k, v in req.headers.items() if k not in headers})
+        headers = {name.title(): val for name, val in headers.items()}
+        tunnel_headers = {}
+        if req._tunnel_host and "Proxy-Authorization" in headers:
+            tunnel_headers["Proxy-Authorization"] = headers.pop("Proxy-Authorization")
+        # The proxy's credentials are part of the key: a connection is only
+        # reused for the same route, never a proxied one for a direct request.
+        key = (http_class.__name__, host, req._tunnel_host,
+               tunnel_headers.get("Proxy-Authorization") or headers.get("Proxy-Authorization"))
+        method = req.get_method()
+        read_only = method in ("GET", "HEAD") or getattr(req, "azvicli_read_only", False)
+
+        conn = _pool_get(key)
+        reused = conn is not None
+        while True:
+            if conn is None:
+                conn = http_class(host, timeout=req.timeout, **conn_args)
+                conn.set_debuglevel(self._debuglevel)
+                conn.response_class = _PooledResponse
+                if req._tunnel_host:
+                    conn.set_tunnel(req._tunnel_host, headers=tunnel_headers)
+            else:
+                conn.timeout = req.timeout
+                conn.sock.settimeout(req.timeout)
+            _http_local.conn = "reused" if reused else "new"
+            try:
+                try:
+                    conn.request(method, req.selector, req.data, headers,
+                                 encode_chunked=req.has_header("Transfer-encoding"))
+                except _STALE_ERRORS:
+                    raise
+                except OSError as err:
+                    # Connect failed, a send timed out - as urllib's own do_open.
+                    raise urllib.error.URLError(err)
+                resp = conn.getresponse()
+            except _STALE_ERRORS as err:
+                conn.close()
+                if reused and read_only:
+                    conn, reused = None, False
+                    continue
+                raise urllib.error.URLError(err)
+            except BaseException:
+                conn.close()
+                raise
+            break
+
+        resp.url = req.get_full_url()
+        resp.msg = resp.reason
+        if conn.sock is not None:
+            # Not will_close: the connection outlives this response.
+            resp.azvicli_release = lambda clean: _pool_put(key, conn) if clean else conn.close()
+        return resp
+
+
+class KeepAliveHTTPHandler(_KeepAliveMixin, urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self._keepalive_open(http.client.HTTPConnection, req)
+
+
+class KeepAliveHTTPSHandler(_KeepAliveMixin, urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        # No context of our own: like urllib's HTTPSHandler, http.client's
+        # default one - verification on, system CAs plus SSL_CERT_FILE/DIR.
+        return self._keepalive_open(http.client.HTTPSConnection, req, context=self._context)
+
+
+def pooled_opener():
+    """urllib's default opener (ProxyHandler and all, proxies read from the
+    environment now) with the keep-alive handlers in place of its HTTP ones."""
+    return urllib.request.build_opener(KeepAliveHTTPHandler(), KeepAliveHTTPSHandler())
+
+
+def install_http_pool(env=None):
+    """Makes urlopen use the pool for this process, unless AZVICLI_NO_POOL
+    is set (to anything but ""/"0"). True when it did."""
+    env = os.environ if env is None else env
+    if (env.get("AZVICLI_NO_POOL") or "0") != "0":
+        return False
+    urllib.request.install_opener(pooled_opener())
+    return True
+
+
 def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _retried=False, raw=False,
                   content_type="application/json"):
     """Performs one REST call against Azure DevOps, appending api-version
@@ -1141,6 +1490,9 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
         body = json.dumps(data).encode("utf-8")
         headers["Content-Type"] = content_type
 
+    # The perf log (AZVICLI_DEBUG): one line per request, see perf_record.
+    perf = _perf_current() is not None
+    t0 = time.monotonic() if perf else 0.0
     try:
         req = urllib.request.Request(full_url, data=body, method=method, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1148,22 +1500,34 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
             status = getattr(resp, "status", None) or resp.getcode()
             ctype = (resp.headers.get("Content-Type") or "") if getattr(resp, "headers", None) else ""
     except urllib.error.HTTPError as e:
+        err_body = e.read()
+        if perf:
+            perf_record(method, full_url, e.code, len(err_body or b""), t0, conn=_last_conn())
         if e.code == 400 and not _retried and api_version not in (None, "6.0"):
             return http_request(url, method=method, data=data, pat=pat, api_version="6.0", _retried=True, raw=raw,
                                  content_type=content_type)
-        raise AdoHttpError(e.code, full_url, e.read()) from e
+        if e.code in CONN_DATA_AUTH_STATUSES:
+            conn_data_invalidate(full_url, pat)
+        raise AdoHttpError(e.code, full_url, err_body) from e
     except urllib.error.URLError as e:
+        if perf:
+            perf_record(method, full_url, 0, 0, t0, conn=_last_conn())
         host = urllib.parse.urlsplit(full_url).netloc or full_url
         raise AdoTransportError("could not reach {0}: {1} - check org_url in azure-cli.yml and your network/proxy"
                                 .format(host, getattr(e, "reason", e))) from e
     except ValueError as e:
+        if perf:
+            perf_record(method, full_url, 0, 0, t0, conn=_last_conn())
         # "unknown url type" - an org_url with no scheme.
         raise AdoTransportError("{0} - org_url must be a full URL starting with https://".format(e)) from e
+    if perf:
+        perf_record(method, full_url, status, len(raw_bytes or b""), t0, conn=_last_conn())
 
     # dev.azure.com answers a rejected PAT with "203 Non-Authoritative
     # Information" and an HTML sign-in page, not a 401; without this it
     # surfaced as "Expecting value: line 1 column 1" from json.loads.
     if status == 203 or (raw_bytes[:1] not in (b"{", b"[", b"") and "html" in ctype.lower()):
+        conn_data_invalidate(full_url, pat)
         raise AdoHttpError(203 if status == 203 else (status or 200), full_url, raw_bytes)
 
     if raw:
@@ -1175,6 +1539,165 @@ def http_request(url, method="GET", data=None, pat=None, api_version="7.1", _ret
     except ValueError as e:
         raise AdoTransportError("expected JSON from {0} but got {1} ({2}) - is org_url pointing at Azure DevOps?"
                                 .format(full_url, ctype or "an unknown content type", e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Images in PR descriptions and comments (#134)
+# ---------------------------------------------------------------------------
+#
+# --fetch-image <url> <stem> downloads one image with the account's PAT or
+# token, for review/images.lua to open or show inline. Only Lua's URL and a
+# file stem are on argv; the credential is resolved here, as for every other
+# PR action. The rules:
+#   - the URL must be on the PR's own server (image_url_on: scheme, host and
+#     port compared exactly; on dev.azure.com the org's path too). Anything
+#     else exits FETCH_IMAGE_FOREIGN without a request, and Lua opens it in
+#     the browser without credentials instead;
+#   - Authorization is an unredirected header, so urllib never copies it
+#     onto a redirect - GitHub's 302 to a signed private-user-images URL,
+#     ADO's to blob storage, or anywhere else;
+#   - only raster image types are kept (no SVG: it can carry script once a
+#     browser opens it from disk; no ADO 203 sign-in page), up to
+#     IMAGE_MAX_BYTES;
+#   - the file is <stem>.<ext>, the extension from the Content-Type and
+#     nothing from the URL, created O_EXCL|O_NOFOLLOW with mode 0600. The
+#     stem is Lua's vim.fn.tempname(), in Neovim's own 0700 temp directory;
+#   - the perf log gets perf_record's host/path/parameter names, and error
+#     messages the host and the status, never the request.
+
+IMAGE_MAX_BYTES = 25 * 1024 * 1024
+IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp",
+               "image/bmp": "bmp"}
+FETCH_IMAGE_FOREIGN = 3
+
+
+class ImageFetchError(Exception):
+    pass
+
+
+def url_origin(url):
+    """(scheme, host, port) of an http(s) URL, lowercased and with the
+    default port filled in; None for anything else, or a URL with
+    user:password@ in it."""
+    try:
+        parts = urllib.parse.urlsplit(url or "")
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
+        return None
+    return (scheme, parts.hostname.lower(), port or (443 if scheme == "https" else 80))
+
+
+def url_host(url):
+    """The host to name in a message: never the path or query (a signed
+    URL's query is a credential of its own)."""
+    origin = url_origin(url)
+    return origin[1] if origin else "?"
+
+
+def image_url_on(url, own_urls):
+    """True when url is on one of own_urls' origins. An own URL on
+    dev.azure.com also needs url's path to start with its org
+    (dev.azure.com/<org>/), so the PAT never reaches another org there. A
+    path with "." or ".." segments is refused: the server would resolve it
+    somewhere this check never saw."""
+    origin = url_origin(url)
+    if origin is None:
+        return False
+    path = urllib.parse.urlsplit(url).path
+    segs = [urllib.parse.unquote(s) for s in path.split("/")]
+    if any(s in (".", "..") for s in segs):
+        return False
+    for own in own_urls:
+        if url_origin(own) != origin:
+            continue
+        if origin[1] == "dev.azure.com":
+            org = urllib.parse.urlsplit(own).path.strip("/").split("/")[0].lower()
+            if not org or len(segs) < 3 or segs[1].lower() != org:
+                continue
+        return True
+    return False
+
+
+def fetch_image_to(url, stem, auth=None, max_bytes=IMAGE_MAX_BYTES):
+    """Downloads url to <stem>.<ext> and returns (path, content_type, bytes).
+    auth is the Authorization header's value, sent unredirected. Raises
+    ImageFetchError, with no file left behind."""
+    if not stem or not os.path.isabs(stem) or os.path.basename(stem) in ("", ".", ".."):
+        raise ImageFetchError("the destination must be an absolute file path")
+    parent = os.path.dirname(stem)
+    if not os.path.isdir(parent) or os.path.islink(parent):
+        raise ImageFetchError("the destination's directory doesn't exist")
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", "image/png, image/jpeg, image/gif, image/webp, image/bmp, */*;q=0.1")
+    req.add_header("User-Agent", "azure-vicli")
+    if auth:
+        req.add_unredirected_header("Authorization", auth)
+    host = url_host(url)
+    perf = _perf_current() is not None
+    t0 = time.monotonic() if perf else 0.0
+    status, size = 0, 0
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            ext = IMAGE_TYPES.get(ctype)
+            if status == 203 or ext is None:
+                raise ImageFetchError("{0} answered {1}, not an image{2}".format(
+                    host, ctype or "no content type",
+                    " (SVG isn't opened)" if ctype == "image/svg+xml" else ""))
+            path = stem + "." + ext
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            try:
+                fd = os.open(path, flags, 0o600)
+            except OSError as e:
+                raise ImageFetchError("could not create the file: {0}".format(e.strerror or e))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise ImageFetchError("the image is larger than {0} MB".format(max_bytes // (1024 * 1024)))
+                        f.write(chunk)
+            except BaseException:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                raise
+    except urllib.error.HTTPError as e:
+        status = e.code
+        e.close()
+        raise ImageFetchError("{0} answered HTTP {1}".format(host, e.code))
+    except urllib.error.URLError as e:
+        raise ImageFetchError("could not reach {0}: {1}".format(host, getattr(e, "reason", e)))
+    except ValueError as e:
+        raise ImageFetchError("not a URL that can be fetched: {0}".format(e))
+    finally:
+        if perf:
+            perf_record("GET", url, status, size, t0, conn=_last_conn())
+    return path, ctype, size
+
+
+def fetch_image_action(url, stem, allowed, auth):
+    """--fetch-image's body for both hosts: FETCH_IMAGE_FOREIGN with no
+    request when the URL isn't on the PR's own server, 1 when the download
+    failed, else 0 and {"path", "contentType", "bytes"} on stdout."""
+    if not allowed:
+        print("not this PR's host: {0}".format(url_host(url)), file=sys.stderr)
+        return FETCH_IMAGE_FOREIGN
+    try:
+        path, ctype, size = fetch_image_to(url, stem, auth)
+    except ImageFetchError as e:
+        print("Image download failed: {0}".format(e), file=sys.stderr)
+        return 1
+    print(json.dumps({"path": path, "contentType": ctype, "bytes": size}))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1215,6 +1738,111 @@ def authenticated_user(resp):
     uid = user.get("id")
     name = user.get("customDisplayName") or user.get("providerDisplayName") or ""
     return (str(uid) if uid else ""), name
+
+
+# ConnectionData cache (#94). The PR list asked for it once per org on
+# every poll tick, and --wi-list once per run for its assignee, though
+# the answer only changes when the PAT does. Under --serve it's kept per
+# (org/collection URL, PAT digest) for CONN_DATA_TTL; one-shot runs, which
+# never ask twice, keep fetching it (`serving` False - see
+# get_cached_config's header comment).
+#
+# An entry goes when:
+#   - CONN_DATA_TTL has passed since it was fetched (an account or display
+#     name change shows within that);
+#   - any request to that org with that PAT answers 401/403/203
+#     (http_request calls conn_data_invalidate before raising);
+#   - the PAT changes - a different PAT is a different key, never a hit;
+#   - the daemon loads its config (get_cached_config) or starts (serve()),
+#     and with the daemon itself - nothing is ever written to disk.
+# A response without an authenticated user is never kept, nor is a failed
+# fetch. A request that used a cached identity and then fails with
+# 401/403/203 drops it, looks it up afresh and retries once (--list's
+# listings, --wi-list's WIQL). The key holds a digest of the PAT, never
+# the PAT, and the perf log only ever gets the host and hit/miss.
+
+CONN_DATA_TTL = 600.0
+CONN_DATA_AUTH_STATUSES = (401, 403, 203)
+
+
+class ConnectionDataCache:
+    """ConnectionData responses per (base URL, PAT digest), with a per-key
+    lock (as RepoBranchCache) so concurrent workers wait for one fetch
+    instead of each making their own."""
+
+    def __init__(self, ttl=CONN_DATA_TTL, clock=time.monotonic):
+        self.ttl = ttl
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._entries = {}
+
+    @staticmethod
+    def key(base, pat):
+        digest = hashlib.sha256((pat or "").encode("utf-8")).hexdigest()[:16]
+        return (base or "").rstrip("/").lower(), digest
+
+    def get(self, base, pat, loader):
+        """(response, hit): the kept response while it's fresh, else
+        loader()'s, kept when it names an authenticated user."""
+        key = self.key(base, pat)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = {"lock": threading.Lock(), "value": None, "at": None}
+                self._entries[key] = entry
+        with entry["lock"]:
+            if entry["at"] is not None and self.clock() - entry["at"] < self.ttl:
+                return entry["value"], True
+            entry["at"] = None
+            value = loader()
+            if authenticated_user(value)[0]:
+                entry["value"], entry["at"] = value, self.clock()
+            return value, False
+
+    def invalidate(self, url, pat=None):
+        """Drops the entries whose base URL `url` is (or is under), for
+        `pat` only when given. Returns how many went."""
+        target = (url or "").lower()
+        digest = self.key("", pat)[1] if pat is not None else None
+        with self._lock:
+            gone = [k for k in self._entries
+                    if (digest is None or k[1] == digest)
+                    and target.startswith(k[0]) and target[len(k[0]):len(k[0]) + 1] in ("", "/", "?")]
+            for k in gone:
+                del self._entries[k]
+        return len(gone)
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
+
+_conn_data_cache = ConnectionDataCache()
+_conn_data_local = threading.local()
+
+
+def _conn_data_take_hit():
+    """Whether this thread's last connection_data() came from the cache
+    (False when there was none since the last call) - for the retry-once."""
+    return vars(_conn_data_local).pop("hit", False)
+
+
+def connection_data(base, pat, loader, fresh=False):
+    """The ConnectionData response for `base`/`pat`: loader()'s own,
+    through the daemon's cache under --serve unless `fresh` (--doctor and
+    --whoami ask for a live sign-in)."""
+    if fresh or not _config_cache["serving"]:
+        _conn_data_local.hit = False
+        return loader()
+    resp, hit = _conn_data_cache.get(base, pat, loader)
+    _conn_data_local.hit = hit
+    perf_cache_record("connectionData", base, "hit" if hit else "miss")
+    return resp
+
+
+def conn_data_invalidate(url, pat=None):
+    if _conn_data_cache.invalidate(url, pat):
+        perf_cache_record("connectionData", url, "invalidate")
 
 
 class RepoBranchCache:
@@ -1317,11 +1945,12 @@ class AzureDevOpsPullRequestSource:
 
     # -- identity -----------------------------------------------------------
 
-    def _whoami_for_org(self, org, pat):
-        uid, name = authenticated_user(self.fetch_bare(connection_data_url(org), pat))
+    def _whoami_for_org(self, org, pat, fresh=False):
+        resp = connection_data(org, pat, lambda: self.fetch_bare(connection_data_url(org), pat), fresh=fresh)
+        uid, name = authenticated_user(resp)
         return (uid or None), name
 
-    def whoami(self, organization_url, project):
+    def whoami(self, organization_url, project, fresh=False):
         """Mirrors AzureDevOpsPullRequestSource.WhoAmIAsync: matches an
         account group by org (and, if given, project - matched against any
         account in that org's group), connects, and returns (id, name), or
@@ -1339,7 +1968,7 @@ class AzureDevOpsPullRequestSource:
                     "The configured organization ({0}) has no configured PAT; a PAT is required "
                     "(no Azure AD fallback in this build).".format(org)
                 )
-            return self._whoami_for_org(org, pat)
+            return self._whoami_for_org(org, pat, fresh=fresh)
         return None
 
     # -- listing --------------------------------------------------------------
@@ -1555,49 +2184,132 @@ class AzureDevOpsPullRequestSource:
         element = self._build_element(org, pat, account, pr, "Created", load_threads, user_id, user_name)
         return ("Created", element)
 
-    def fetch_grouped_pull_requests(self):
-        """Mirrors AzureDevOpsPullRequestSource.FetchGroupedPullRequests:
-        one connection per organization, assigned + created listings
-        requested together, each PR's follow-up work (threads, build
-        status) run concurrently bounded by a shared pool of 8 - matching
-        the C# build's single, run-lifetime SemaphoreSlim(8) - and drained
-        in listing order (assigned first, then created) so the output never
-        reshuffles between refreshes.
-        """
-        records = []
-        executor = ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT_PULL_REQUESTS)
+    def _org_identity(self, org, pat):
+        """(user_id, user_name, from_cache) for one org, run on a pool
+        worker: the connectionData hit flag is per thread, so it's read on
+        the thread that made the call."""
+        _conn_data_take_hit()
+        user_id, user_name = self._whoami_for_org(org, pat)
+        return [user_id, user_name, _conn_data_take_hit()]
+
+    def _list_account(self, org, pat, account, user_id):
+        """One account's two listings, assigned then created - in sequence,
+        so a retry after a stale identity redoes exactly both."""
+        assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
+        created = self._list_prs(org, pat, account.project, creator_id=user_id)
+        return assigned, created
+
+    def _account_listings(self, org_state, account, future):
+        """`future`'s listings, retried once with a fresh identity when they
+        failed on one from the daemon's cache (see ConnectionDataCache).
+        Runs on the calling (draining) thread, so an org is invalidated and
+        looked up afresh at most once however many of its accounts failed."""
         try:
+            return future.result()
+        except AdoHttpError as e:
+            if e.status not in CONN_DATA_AUTH_STATUSES:
+                raise
+            org, pat, identity = org_state["org"], org_state["pat"], org_state["identity"]
+            if identity[2]:
+                identity[2] = False
+                conn_data_invalidate(org, pat)
+                identity[0], identity[1] = self._whoami_for_org(org, pat)
+                org_state["refreshed"] = True
+            elif not org_state.get("refreshed"):
+                raise
+            return self._list_account(org, pat, account, identity[0])
+
+    def fetch_grouped_pull_requests(self):
+        """fetch_grouped_pull_requests_partial's records, raising the first
+        account's error (in config order) if any account failed."""
+        records, errors = self.fetch_grouped_pull_requests_partial()
+        if errors:
+            raise errors[0][1]
+        return records
+
+    def fetch_grouped_pull_requests_partial(self, executor=None):
+        """Mirrors AzureDevOpsPullRequestSource.FetchGroupedPullRequests,
+        concurrently: one connectionData per organization, every account's
+        assigned + created listings and each PR's follow-up work (threads,
+        build status) all on one pool of 8 - `executor`, else its own,
+        matching the C# build's single, run-lifetime SemaphoreSlim(8). No
+        task waits on another (only this thread waits), so sharing the
+        bounded pool can't deadlock. Drained in config order, listing order
+        within an account (assigned first, then created), so the output
+        never reshuffles between refreshes.
+
+        Returns (records, errors): errors is [(account, exception)] in
+        config order, and a failed account only loses its own records - a
+        missing PAT or a failed connectionData fails each account of that
+        org.
+        """
+        records, failed, orgs = [], {}, []
+        own = executor is None
+        if own:
+            executor = ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT_PULL_REQUESTS)
+        try:
+            # _perf_bind: the perf log's run (AZVICLI_DEBUG) follows the
+            # work onto the pool; with it off, the methods themselves.
             for org, accounts in self.config.accounts_by_org():
                 pat = self._pick_pat(accounts)
-                if not pat:
-                    raise RuntimeError(
+                orgs.append({"org": org, "accounts": accounts, "pat": pat, "listings": [], "error": None,
+                             "identity": executor.submit(_perf_bind(self._org_identity), org, pat) if pat else None})
+            for st in orgs:
+                if st["identity"] is None:
+                    st["error"] = RuntimeError(
                         "The configured organization ({0}) has no configured PAT; a PAT is required "
-                        "(no Azure AD fallback in this build).".format(org)
+                        "(no Azure AD fallback in this build).".format(st["org"])
                     )
-                user_id, user_name = self._whoami_for_org(org, pat)
+                    continue
+                try:
+                    st["identity"] = st["identity"].result()
+                except Exception as e:  # noqa: BLE001 - reported for this org's accounts
+                    st["error"] = e
+                    continue
+                st["listings"] = [executor.submit(_perf_bind(self._list_account), st["org"], st["pat"], account,
+                                                  st["identity"][0]) for account in st["accounts"]]
+
+            pending = []
+            for st in orgs:
+                org, pat = st["org"], st["pat"]
+                if st["error"] is not None:
+                    for account in st["accounts"]:
+                        failed[id(account)] = st["error"]
+                    continue
                 repo_cache = RepoBranchCache()
-
-                for account in accounts:
-                    assigned = self._list_prs(org, pat, account.project, reviewer_id=user_id)
-                    created = self._list_prs(org, pat, account.project, creator_id=user_id)
-
+                for account, listing in zip(st["accounts"], st["listings"]):
+                    try:
+                        assigned, created = self._account_listings(st, account, listing)
+                    except Exception as e:  # noqa: BLE001 - reported for this account
+                        failed[id(account)] = e
+                        continue
+                    user_id, user_name = st["identity"][0], st["identity"][1]
                     futures = []
                     for pr in assigned:
                         futures.append(
-                            executor.submit(self._process_assigned, org, pat, account, pr, user_id, user_name, repo_cache)
+                            executor.submit(_perf_bind(self._process_assigned), org, pat, account, pr, user_id,
+                                            user_name, repo_cache)
                         )
                     for pr in created:
                         futures.append(
-                            executor.submit(self._process_created, org, pat, account, pr, user_id, user_name)
+                            executor.submit(_perf_bind(self._process_created), org, pat, account, pr, user_id,
+                                            user_name)
                         )
+                    pending.append((account, futures))
 
-                    for fut in futures:
-                        _state, element = fut.result()
-                        if element is not None:
-                            records.append(element)
+            for account, futures in pending:
+                try:
+                    elements = [fut.result()[1] for fut in futures]
+                except Exception as e:  # noqa: BLE001 - reported for this account
+                    failed[id(account)] = e
+                    continue
+                records.extend(element for element in elements if element is not None)
         finally:
-            executor.shutdown(wait=True)
-        return records
+            if own:
+                executor.shutdown(wait=True)
+        errors = [(account, failed[id(account)]) for st in orgs for account in st["accounts"]
+                  if id(account) in failed]
+        return records, errors
 
     def requeue_build_validation(self, pull_request_id):
         """Mirrors AzureDevOpsPullRequestSource.RequeueBuildValidationAsync."""
@@ -1673,6 +2385,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
+    "--submit-review", "--fetch-image",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -1719,8 +2432,8 @@ def default_prefetch_dir():
     on Windows, $XDG_CACHE_HOME/azure-cli (default ~/.cache/azure-cli)
     elsewhere - rather than a .prefetch/ directory next to this script, so a
     packaged or read-only install (this repo cloned somewhere the running
-    user can't write to) still has somewhere to write prefetch markers and
-    the .userid cache. lua/azure-cli/config.lua's provider_cmd() sets
+    user can't write to) still has somewhere to write prefetch markers.
+    lua/azure-cli/config.lua's provider_cmd() sets
     AZVICLI_PREFETCH_DIR to Neovim's own stdpath("cache") .. "/azure-cli"
     for every provider call it builds, which is this same idea from the Lua
     side rather than a literal shared constant - the two independently land
@@ -1732,6 +2445,11 @@ def default_prefetch_dir():
         return os.path.join(base, "azure-cli", "cache")
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "azure-cli")
+
+
+# Whether PrActions has already removed the old .userid cache files (see
+# its current_user_id section) in this process.
+_legacy_userid_files_removed = False
 
 
 def resolve_account_pat(config, org, project):
@@ -1800,67 +2518,79 @@ class PrActions:
         return base + path if path else base
 
     # -- current_user_id -------------------------------------------------
+    #
+    # The id used to be file-cached under PREFETCH_DIR (.userid, later
+    # .userid-<sha256(org)[:12]>) and never expired. The key had no PAT in
+    # it, so after switching the PAT to another account a vote or
+    # auto-complete still went out with the previous user's id (#100). It
+    # now goes through connection_data() (#94): kept per (org, PAT digest)
+    # under --serve with a TTL, fetched every time in a one-shot run, and
+    # never written to disk. The old files are removed on first use.
 
-    def _userid_cache_path(self):
-        """Where this org's authenticated-user id is cached.
-
-        The id is per organization/collection, but this used to be a single
-        PREFETCH_DIR/.userid with nothing in the name to say which org it
-        came from - while self.org is per request (AZVICLI_ORG, set by the
-        dashboard from each PR's own record). With two configured accounts
-        the first org's id was therefore reused to vote and set
-        auto-complete on the second org's PRs, where it identifies nobody.
-        The org's digest is part of the filename now, so each gets its own;
-        a .userid left over from before is simply never read again.
-        """
-        key = (self.org or "").rstrip("/").lower().encode("utf-8")
-        return os.path.join(self.prefetch_dir, ".userid-{0}".format(hashlib.sha256(key).hexdigest()[:12]))
-
-    def current_user_id(self):
-        """Resolves (and file-caches per org under PREFETCH_DIR, since it
-        never changes) the authenticated user's id via the bare (no
-        api-version - some on-prem TFS 400s on it) ConnectionData endpoint.
-        Needed to cast a vote or set auto-complete, both keyed by reviewer
-        id. Returns None on any failure - mirrors current_user_id's `|| return 1`.
-        """
-        cache_path = self._userid_cache_path()
+    def _remove_legacy_userid_files(self):
+        """Best-effort, once per process: deletes the old .userid,
+        .userid-<org digest> and leftover .userid.<tmp> files."""
+        global _legacy_userid_files_removed
+        if _legacy_userid_files_removed:
+            return
+        _legacy_userid_files_removed = True
         try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                cached = f.read().strip()
-            if cached:
-                return cached
+            names = os.listdir(self.prefetch_dir)
         except OSError:
-            pass
-        if not self.pat:
-            return None
-        try:
-            resp = self.fetch(connection_data_url(self.org), pat=self.pat, api_version=None)
-        except Exception:
-            return None
-        uid = authenticated_user(resp)[0]
-        if not uid:
-            return None
-        try:
-            os.makedirs(self.prefetch_dir, exist_ok=True)
-            # Write-to-temp-then-rename: under --serve, several requests can
-            # resolve current_user_id() concurrently (a vote and an
-            # auto-complete landing at the same time, say) before any of
-            # them has written the cache yet - os.replace is atomic, so a
-            # concurrent reader above either sees the old (missing) file or
-            # a complete uid, never a torn/partial write.
-            fd, tmp_path = tempfile.mkstemp(prefix=".userid.", dir=self.prefetch_dir)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(uid)
-                os.replace(tmp_path, cache_path)
-            except OSError:
+            return
+        for name in names:
+            if name == ".userid" or name.startswith(".userid-") or name.startswith(".userid."):
                 try:
-                    os.unlink(tmp_path)
+                    os.unlink(os.path.join(self.prefetch_dir, name))
                 except OSError:
                     pass
-        except OSError:
-            pass
-        return uid
+
+    def current_user_id(self):
+        """The authenticated user's id via the bare (no api-version - some
+        on-prem TFS 400s on it) ConnectionData endpoint, through #94's
+        cache. Needed to cast a vote or set auto-complete,
+        both keyed by reviewer id. Returns None on any failure - mirrors
+        current_user_id's `|| return 1`. Sets self._uid_from_cache for
+        _with_user_id's retry-once.
+        """
+        self._remove_legacy_userid_files()
+        self._uid_from_cache = False
+        if not self.pat:
+            return None
+        _conn_data_take_hit()
+        try:
+            resp = connection_data(self.org, self.pat,
+                                   lambda: self.fetch(connection_data_url(self.org), pat=self.pat, api_version=None))
+        except Exception:
+            _conn_data_take_hit()
+            return None
+        self._uid_from_cache = _conn_data_take_hit()
+        return authenticated_user(resp)[0] or None
+
+    def _with_user_id(self, send):
+        """send(uid) with the current user's id. When it is rejected with
+        401/403/203 and the id came from the cache, the entry goes, the id
+        is looked up afresh and send runs once more - only the vote PUT and
+        the auto-complete PATCH use this: an auth rejection means ADO
+        applied nothing, and both set a value, so a second send is safe.
+        A second failure is raised to the caller, which reports it. Returns
+        False when no id could be resolved.
+        """
+        uid = self.current_user_id()
+        if not uid:
+            return False
+        try:
+            send(uid)
+        except AdoHttpError as e:
+            if not (self._uid_from_cache and e.status in CONN_DATA_AUTH_STATUSES):
+                raise
+            # With the entry gone this is a miss: fetched afresh, and kept.
+            conn_data_invalidate(self.org, self.pat)
+            uid = self.current_user_id()
+            if not uid:
+                raise
+            send(uid)
+        return True
 
     # -- threads / iterations (raw passthrough for the nvim UI) ---------
 
@@ -2113,13 +2843,13 @@ class PrActions:
         if vote not in _VOTES:
             print("Invalid vote: '{0}'".format(vote))
             return 1
-        uid = self.current_user_id()
-        if not uid:
-            print("Could not resolve your user id (connectionData); cannot vote.")
-            return 1
-        try:
+        def send(uid):
             self.fetch(self._pr_url("/reviewers/{0}".format(uid)),
                        method="PUT", data={"vote": int(vote)}, pat=self.pat, api_version="6.0")
+        try:
+            if not self._with_user_id(send):
+                print("Could not resolve your user id (connectionData); cannot vote.")
+                return 1
         except AdoHttpError as e:
             print("REST vote failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
@@ -2255,10 +2985,14 @@ class PrActions:
         print(json.dumps({"added": person.get("providerDisplayName"), "id": person.get("id")}, ensure_ascii=False))
         return 0
 
-    def set_description(self, text):
-        """Replaces the PR's description (PATCH .../pullRequests/{id})."""
+    def set_description(self, text, title=""):
+        """Replaces the PR's description (PATCH .../pullRequests/{id}), and
+        its title when `title` isn't blank."""
+        data = {"description": text or ""}
+        if not _is_blank(title or ""):
+            data["title"] = title.strip()
         try:
-            self.fetch(self._pr_url(), method="PATCH", data={"description": text or ""}, pat=self.pat, api_version="6.0")
+            self.fetch(self._pr_url(), method="PATCH", data=data, pat=self.pat, api_version="6.0")
         except AdoHttpError as e:
             print("REST description update failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
@@ -2286,6 +3020,15 @@ class PrActions:
         print(json.dumps({"id": pid, "url": build_pr_url(self.org, self.project, self.repo, pid) if pid else ""},
                          ensure_ascii=False))
         return 0
+
+    def fetch_image(self, url, stem):
+        """--fetch-image (#134): an image in the PR's description or a
+        comment, with the PAT - only from the org's own server."""
+        allowed = image_url_on(url, [self.org])
+        auth = None
+        if allowed:
+            auth = "Basic " + base64.b64encode(":{0}".format(self.pat).encode("utf-8")).decode("ascii")
+        return fetch_image_action(url, stem, allowed, auth)
 
     def get_pr(self):
         """Any PR in the project by id (GET {org}/{project}/_apis/git/
@@ -2370,20 +3113,20 @@ class PrActions:
         if strategy not in _MERGE_STRATEGIES:
             print("Invalid merge strategy: '{0}'".format(strategy))
             return 1
-        uid = self.current_user_id()
-        if not uid:
-            print("Could not resolve your user id (connectionData); cannot set auto-complete.")
-            return 1
-        data = {
-            "autoCompleteSetBy": {"id": uid},
-            "completionOptions": {
-                "mergeStrategy": strategy,
-                "deleteSourceBranch": _to_bool(del_branch),
-                "transitionWorkItems": _to_bool(transition),
-            },
-        }
-        try:
+        def send(uid):
+            data = {
+                "autoCompleteSetBy": {"id": uid},
+                "completionOptions": {
+                    "mergeStrategy": strategy,
+                    "deleteSourceBranch": _to_bool(del_branch),
+                    "transitionWorkItems": _to_bool(transition),
+                },
+            }
             self.fetch(self._pr_url(), method="PATCH", data=data, pat=self.pat, api_version="6.0")
+        try:
+            if not self._with_user_id(send):
+                print("Could not resolve your user id (connectionData); cannot set auto-complete.")
+                return 1
         except AdoHttpError as e:
             print("REST auto-complete failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
@@ -2419,6 +3162,9 @@ def cmd_pr_action(flag, rest, env=None):
     config = get_cached_config()
     if config_problems(config):
         return 1
+    gh_account = config.github_account_for(env.get("AZVICLI_ORG"), env.get("AZVICLI_PROJECT"))
+    if gh_account is not None:
+        return _github_pr_action(flag, rest, gh_account, env)
     actions = PrActions(config, env)
     if not actions.ensure_pat():
         return 1
@@ -2459,11 +3205,19 @@ def cmd_pr_action(flag, rest, env=None):
     if flag == "--add-reviewer":
         return actions.add_reviewer(arg(0), arg(1, "false"))
     if flag == "--set-description":
-        return actions.set_description(arg(0))
+        return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":
         return actions.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false"))
     if flag == "--get-pr":
         return actions.get_pr()
+    if flag == "--fetch-image":
+        return actions.fetch_image(arg(0), arg(1))
+    if flag == "--submit-review":
+        # GitHub's (github_host.py): an Azure batch goes out comment by
+        # comment from review/batch.lua itself.
+        print("--submit-review is for GitHub pull requests; Azure DevOps has no review to submit.",
+              file=sys.stderr)
+        return 1
 
     print("Unknown PR action: {0}".format(flag), file=sys.stderr)  # unreachable via PR_ACTION_FLAGS
     return 1
@@ -2499,6 +3253,12 @@ def cmd_pr_action(flag, rest, env=None):
 # of this that's still a plain constant, since it isn't personal.
 WI_TYPES_DEFAULT = "User Story,Bug"
 
+# The W tab's last tab's path, after the team's sprints: the open work items
+# in the team's backlog iteration or the project root, which no sprint's tab
+# lists. `--wi-edit set <id> iteration -` and `create ... -` file into the
+# backlog iteration.
+WI_NO_SPRINT = "-"
+
 WI_ACTION_FLAGS = ("--wi-list", "--wi-detail", "--wi-state", "--wi-edit")
 
 
@@ -2509,18 +3269,30 @@ def _wi_select_account(config, env):
     AZVICLI_WI_ACCOUNT names another account by its project_name (matched
     whether or not that account has a work_items: block of its own, so
     AZVICLI_WI_TEAM etc. can still supply the rest as pure env overrides).
-    Returns None when nothing matches either way.
+    Returns None when nothing matches either way. GitHub accounts are never
+    picked here: their issues go through _wi_select_github_account.
     """
     want = env.get("AZVICLI_WI_ACCOUNT")
+    azure = [a for a in config.accounts if not a.is_github()]
     if want:
-        for a in config.accounts:
+        for a in azure:
             if (a.project or "") == want:
                 return a
         return None
-    for a in config.accounts:
+    for a in azure:
         if a.work_items:
             return a
     return None
+
+
+def _wi_select_github_account(config, env):
+    """With AZVICLI_WI_HOST=github: the first GitHub account with an
+    issues: block, or the one whose owner: AZVICLI_WI_ACCOUNT names."""
+    with_issues = [a for a in config.github_accounts() if a.issues]
+    want = (env.get("AZVICLI_WI_ACCOUNT") or "").lower()
+    if want:
+        return next((a for a in with_issues if (a.owner or "").lower() == want), None)
+    return with_issues[0] if with_issues else None
 
 
 def _wi_types_to_str(v):
@@ -2636,6 +3408,21 @@ def _wi_human(iso):
     return "{0}d ago".format(d) if d < 30 else "{0}mo ago".format(d // 30)
 
 
+def _wi_backlog_path(project, backlog):
+    """teamsettings' backlogIteration as a WIQL [System.IterationPath]: no
+    path is the project root; a classification-node path
+    ("\\Project\\Iteration\\X") loses its leading "\\" and "Iteration"
+    segment; one without the project gets it."""
+    parts = [p for p in ((backlog or {}).get("path") or "").split("\\") if p]
+    if not parts:
+        return project
+    if parts[0].lower() != project.lower():
+        return "\\".join([project] + parts)
+    if len(parts) > 1 and parts[1] == "Iteration":
+        del parts[1]
+    return "\\".join([project] + parts[1:])
+
+
 def _wi_sprint_name(it):
     if not it:
         return ""
@@ -2694,6 +3481,7 @@ def _wi_list_record(wi, collection, project):
         "assignedTo": _wi_assigned_str(f.get("System.AssignedTo", "")),
         "priority": f.get("Microsoft.VSTS.Common.Priority"),
         "tags": str(f.get("System.Tags", "") or ""),
+        "iterationPath": str(f.get("System.IterationPath", "")),
         "parentId": parent if isinstance(parent, int) else None,
         "pullRequests": _wi_pr_ids_from_relations(wi.get("relations")),
         # The dashboard's tree view (T) fetches these with --wi-list ids.
@@ -2797,6 +3585,7 @@ class WorkItemActions:
         # self.pat - not known until ensure_pat() runs after __init__.
         self._assignee_override = env.get("AZVICLI_WI_ASSIGNEE") or wi.get("assignee") or None
         self._assignee_cache = None
+        self._assignee_from_cache = False
         self.types = _wi_types_to_str(env.get("AZVICLI_WI_TYPES") or wi.get("types") or WI_TYPES_DEFAULT)
         # work_items.states: an ordered list (rank = position, first = most
         # actionable) the dashboard sorts/colours by - see states.lua and
@@ -2885,9 +3674,13 @@ class WorkItemActions:
         if not self.pat:
             return ""
         try:
-            resp = self.fetch_bare(connection_data_url(self.collection), self.pat)
+            _conn_data_take_hit()
+            resp = connection_data(self.collection, self.pat,
+                                   lambda: self.fetch_bare(connection_data_url(self.collection), self.pat))
         except Exception:
             return ""
+        finally:
+            self._assignee_from_cache = _conn_data_take_hit()
         return authenticated_user(resp)[1]
 
     # -- shared REST helpers ------------------------------------------------
@@ -2955,10 +3748,32 @@ class WorkItemActions:
         url = "{0}/{1}/{2}/_apis/work/teamsettings/teamfieldvalues".format(self.collection, self.project, team_q)
         return self._get(url)
 
+    def _wi_backlog_iteration(self):
+        """The team's backlog iteration's path, from teamsettings'
+        backlogIteration; the project root when the server doesn't say."""
+        team_q = urllib.parse.quote(self.team, safe="")
+        url = "{0}/{1}/{2}/_apis/work/teamsettings".format(self.collection, self.project, team_q)
+        return _wi_backlog_path(self.project, (self._get(url) or {}).get("backlogIteration"))
+
+    def _wi_closed_states(self):
+        """The configured types' states in the Completed or Removed category
+        (_wi_type_states) - what gs and the "2/3 done" column count as done.
+        Empty when the server doesn't report categories."""
+        out = []
+        for t in [t.strip() for t in self.types.split(",") if t.strip()]:
+            try:
+                states = self._wi_type_states(t)
+            except AdoHttpError:
+                continue
+            for name, cat in states:
+                if cat in ("Completed", "Removed") and name not in out:
+                    out.append(name)
+        return out
+
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree, got '{0}'".format(select),
-                  file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+                  .format(select), file=sys.stderr)
             return 1
         if select == "items" and not item_path:
             print("ERROR: 'items' needs an iteration path", file=sys.stderr)
@@ -2967,6 +3782,8 @@ class WorkItemActions:
             return self._wi_list_ids(item_path)
         if select == "tree":
             return self._wi_list_tree(item_path)
+        if select == "parents":
+            return self._wi_list_parents(item_path)
 
         if select == "sprints":
             return self._wi_list_sprints()
@@ -3030,20 +3847,47 @@ class WorkItemActions:
             type_clause = " AND [System.WorkItemType] IN (" + ",".join(
                 "'{0}'".format(_wi_sql_esc(t)) for t in type_list) + ")"
 
-        wiql = (
-            "SELECT [System.Id] FROM WorkItems\n"
-            "WHERE [System.TeamProject] = '{0}'\n"
-            "  AND [System.IterationPath] = '{1}'\n"
-            "  AND ( {2} )\n"
-            "  {3}\n"
-            "  AND [System.AssignedTo] = '{4}'\n"
-            "ORDER BY [System.Id]"
-        ).format(_wi_sql_esc(self.project), _wi_sql_esc(sprint_path), area_clause, type_clause,
-                 _wi_sql_esc(self.assignee))
+        iteration_clause = "[System.IterationPath] = '{0}'".format(_wi_sql_esc(sprint_path))
+        if sprint_path == WI_NO_SPRINT:
+            # The backlog iteration and the root, open items only: closed
+            # ones never moved into a sprint would pile up here.
+            try:
+                backlog = self._wi_backlog_iteration()
+            except AdoHttpError as e:
+                return self._list_style_error(e, "GET")
+            paths = [backlog] + ([self.project] if backlog.lower() != self.project.lower() else [])
+            iteration_clause = "[System.IterationPath] IN (" + ",".join(
+                "'{0}'".format(_wi_sql_esc(p)) for p in paths) + ")"
+            closed = self._wi_closed_states()
+            if closed:
+                type_clause += " AND [System.State] NOT IN (" + ",".join(
+                    "'{0}'".format(_wi_sql_esc(s)) for s in closed) + ")"
+
+        def wiql():
+            return (
+                "SELECT [System.Id] FROM WorkItems\n"
+                "WHERE [System.TeamProject] = '{0}'\n"
+                "  AND {1}\n"
+                "  AND ( {2} )\n"
+                "  {3}\n"
+                "  AND [System.AssignedTo] = '{4}'\n"
+                "ORDER BY [System.Id]"
+            ).format(_wi_sql_esc(self.project), iteration_clause, area_clause, type_clause,
+                     _wi_sql_esc(self.assignee))
 
         wiql_url = "{0}/{1}/_apis/wit/wiql".format(self.collection, self.project)
         try:
-            resp = self._post(wiql_url, {"query": wiql})
+            try:
+                resp = self._post(wiql_url, {"query": wiql()})
+            except AdoHttpError as e:
+                if not (self._assignee_from_cache and e.status in CONN_DATA_AUTH_STATUSES):
+                    raise
+                # The assignee came from the daemon's ConnectionData cache:
+                # look it up afresh and retry once (see ConnectionDataCache).
+                conn_data_invalidate(self.collection, self.pat)
+                self._assignee_cache = None
+                self._assignee_from_cache = False
+                resp = self._post(wiql_url, {"query": wiql()})
         except AdoHttpError as e:
             return self._list_style_error(e, "POST")
         ids = [w["id"] for w in ((resp or {}).get("workItems") or [])]
@@ -3098,6 +3942,89 @@ class WorkItemActions:
         if not ids:
             return 0
         return self._wi_print_records(ids)
+
+    def _wi_levels(self):
+        """{type name: backlog level} from the team's process configuration:
+        tasks 0, requirements 1, the portfolio backlogs 2 and up by rank -
+        bugs where the team's bugsBehavior puts them (asTasks: with the
+        tasks, else with the requirements). None when the server doesn't
+        answer it (an old TFS)."""
+        team_q = urllib.parse.quote(self.team, safe="")
+        try:
+            pc = self._get("{0}/{1}/{2}/_apis/work/processconfiguration".format(self.collection, self.project, team_q))
+        except AdoHttpError:
+            return None
+        levels = {}
+
+        def put(backlog, level):
+            for t in ((backlog or {}).get("workItemTypes") or []):
+                if t.get("name") and t["name"] not in levels:
+                    levels[t["name"]] = level
+        put(pc.get("taskBacklog"), 0)
+        put(pc.get("requirementBacklog"), 1)
+        for i, b in enumerate(sorted(pc.get("portfolioBacklogs") or [], key=lambda b: b.get("rank") or 0)):
+            put(b, 2 + i)
+        if not levels:
+            return None
+        if (pc.get("bugWorkItems") or {}).get("workItemTypes"):
+            try:
+                url = "{0}/{1}/{2}/_apis/work/teamsettings".format(self.collection, self.project, team_q)
+                behavior = (self._get(url) or {}).get("bugsBehavior") or ""
+            except AdoHttpError:
+                behavior = ""
+            put(pc.get("bugWorkItems"), 0 if behavior == "asTasks" else 1)
+        return levels
+
+    def _wi_list_parents(self, wid):
+        """--wi-list parents <id>: who could be `wid`'s parent - the
+        project's open items on a higher backlog level than its type (the
+        200 changed last), as list records after a {"_parents"} line saying
+        whether the levels were known. Without them (no process
+        configuration): open items of any other type."""
+        wid = str(wid or "").lstrip("#")
+        if not wid.isdigit():
+            print("ERROR: 'parents' needs a work item id", file=sys.stderr)
+            return 1
+        try:
+            me = self._get("{0}/_apis/wit/workitems/{1}".format(self.collection, wid))
+        except AdoHttpError as e:
+            return self._list_style_error(e, "GET")
+        wtype = str((me.get("fields") or {}).get("System.WorkItemType", ""))
+        levels = self._wi_levels()
+        known = levels is not None and wtype in levels
+        if known:
+            types = sorted(t for t, lvl in levels.items() if lvl > levels[wtype])
+            print(json.dumps({"_parents": True, "type": wtype, "levels": True}, ensure_ascii=False))
+            if not types:
+                return 0  # the top level: nothing above it
+            type_clause = " AND [System.WorkItemType] IN (" + ",".join(
+                "'{0}'".format(_wi_sql_esc(t)) for t in types) + ")"
+        else:
+            types = []
+            print(json.dumps({"_parents": True, "type": wtype, "levels": False}, ensure_ascii=False))
+            type_clause = " AND [System.WorkItemType] <> '{0}'".format(_wi_sql_esc(wtype))
+        closed = []
+        for t in types:
+            try:
+                closed += [n for n, cat in self._wi_type_states(t) if cat in ("Completed", "Removed") and n not in closed]
+            except AdoHttpError:
+                continue
+        if not known:
+            closed = self._wi_closed_states()
+        if closed:
+            type_clause += " AND [System.State] NOT IN (" + ",".join(
+                "'{0}'".format(_wi_sql_esc(s)) for s in closed) + ")"
+        wiql = {"query": (
+            "SELECT [System.Id] FROM WorkItems "
+            "WHERE [System.TeamProject] = '{0}' AND [System.Id] <> {1}{2} "
+            "ORDER BY [System.ChangedDate] DESC"
+        ).format(_wi_sql_esc(self.project), wid, type_clause)}
+        try:
+            resp = self._post("{0}/{1}/_apis/wit/wiql?$top=200".format(self.collection, self.project), wiql)
+        except AdoHttpError as e:
+            return self._list_style_error(e, "POST")
+        ids = [w["id"] for w in ((resp or {}).get("workItems") or [])]
+        return self._wi_print_records(ids) if ids else 0
 
     def _wi_print_records(self, ids):
         batch_url = "{0}/_apis/wit/workitemsbatch".format(self.collection)
@@ -3155,6 +4082,8 @@ class WorkItemActions:
                 "timeframe": a.get("timeFrame", "") or "",
                 "current": is_cur,
             })
+        out_sprints.append({"name": "No sprint", "label": "No sprint", "path": WI_NO_SPRINT, "start": "",
+                            "finish": "", "timeframe": "", "current": False})
         out = {"_sprints": True, "quarter": quarter, "currentIndex": current_index, "sprints": out_sprints}
         if self.states:
             out["states"] = self.states
@@ -3345,6 +4274,14 @@ class WorkItemActions:
                 print(to)
         return 0
 
+    def _wi_type_states(self, wtype):
+        """[(name, category)] for `wtype`'s states, in workflow order; the
+        category is "" from a server too old to report it."""
+        url = "{0}/{1}/_apis/wit/workitemtypes/{2}".format(self.collection, self.project, urllib.parse.quote(wtype))
+        d = self._get(url)
+        return [(st["name"], st.get("category") or "") for st in (d.get("states") or [])
+                if isinstance(st, dict) and st.get("name")]
+
     def _wi_states(self, wtype):
         """One "name<TAB>category" line per state of `wtype`, in workflow
         order. The category (Proposed/InProgress/Resolved/Completed/Removed)
@@ -3354,16 +4291,11 @@ class WorkItemActions:
         if not wtype:
             print("ERROR: states needs <type>", file=sys.stderr)
             return 1
-        url = "{0}/{1}/_apis/wit/workitemtypes/{2}".format(self.collection, self.project, urllib.parse.quote(wtype))
         try:
-            d = self._get(url)
+            states = self._wi_type_states(wtype)
         except AdoHttpError as e:
             return self._state_style_error(e, "GET")
-        for st in (d.get("states") or []):
-            name = st.get("name") if isinstance(st, dict) else None
-            if not name:
-                continue
-            cat = st.get("category") or ""
+        for name, cat in states:
             print(name + ("\t" + cat if cat else ""))
         return 0
 
@@ -3447,6 +4379,8 @@ class WorkItemActions:
             return self._wi_link_pr(a2, a3, a4, a5, a6)
         if cmd == "unlink-pr":
             return self._wi_unlink_pr(a2, a3)
+        if cmd == "set-parent":
+            return self._wi_set_parent(a2, a3)
         if cmd == "create-branch":
             return self._wi_create_branch(a2, a3, a4, a5, a6, a7)
         if cmd == "delete-branch":
@@ -3454,7 +4388,7 @@ class WorkItemActions:
         print("usage: --wi-edit create <type> <title> [parentId] [iterationPath] | "
               "set <id> <field> <value> | comment <id> <text> | "
               "link-pr <wiId> <orgUrl> <project> <repoName> <prId> | "
-              "unlink-pr <wiId> <prId> | "
+              "unlink-pr <wiId> <prId> | set-parent <id> <parentId|none> | "
               "create-branch <wiId|0> <orgUrl> <project> <repoName> <fromBranch> <newBranch> | "
               "delete-branch <orgUrl> <project> <repoName> <branch> [sha]", file=sys.stderr)
         return 1
@@ -3593,6 +4527,11 @@ class WorkItemActions:
         if area_path:
             patch.append({"op": "add", "path": "/fields/System.AreaPath", "value": area_path})
 
+        if iteration_path == WI_NO_SPRINT:
+            try:
+                iteration_path = self._wi_backlog_iteration()
+            except AdoHttpError as e:
+                return self._edit_style_error(e, "GET")
         if iteration_path:
             patch.append({"op": "add", "path": "/fields/System.IterationPath", "value": iteration_path})
 
@@ -3628,6 +4567,11 @@ class WorkItemActions:
             # key's own prompt: "empty = me") - resolved the same way the
             # default `assignee` is: config, else the authenticated user.
             value = self.assignee
+        if field == "iteration" and value == WI_NO_SPRINT:
+            try:
+                value = self._wi_backlog_iteration()
+            except AdoHttpError as e:
+                return self._edit_style_error(e, "GET")
         mapping = self._FIELD_MAP.get(field)
         if not mapping:
             print("ERROR: unknown field '" + field + "', expected one of: "
@@ -3735,6 +4679,68 @@ class WorkItemActions:
         print(json.dumps({"unlinked": int(pr_id) if pr_id.isdigit() else pr_id}, ensure_ascii=False))
         return 0
 
+    def _wi_set_parent(self, wid, parent):
+        """Moves `wid` under `parent`, or ("none") off its parent, in ONE
+        JSON patch: test /rev (so the index below still points at the parent
+        link), remove the Hierarchy-Reverse relation by its index, add the
+        new one. A patch is applied whole or not at all, so the item never
+        has two parents, or none by accident. Prints {"id", "parent",
+        "previous"} (+ "unchanged" when there was nothing to do)."""
+        wid, parent = str(wid or "").lstrip("#"), str(parent or "").strip()
+        if not wid.isdigit() or not parent:
+            print("ERROR: set-parent needs <id> <parentId|none>", file=sys.stderr)
+            return 1
+        new = None
+        if parent.lower() != "none":
+            if not parent.lstrip("#").isdigit():
+                print("ERROR: '{0}' isn't a work item id - #{1}'s parent wasn't changed".format(parent, wid),
+                      file=sys.stderr)
+                return 1
+            new = int(parent.lstrip("#"))
+            if new == int(wid):
+                print("ERROR: #{0} can't be its own parent".format(wid), file=sys.stderr)
+                return 1
+        url = "{0}/_apis/wit/workitems/{1}".format(self.collection, wid)
+        try:
+            d = self._get(url + "?$expand=relations")
+        except AdoHttpError as e:
+            return self._edit_style_error(e, "GET")
+        idx, old = None, None
+        for i, rel in enumerate(d.get("relations") or []):
+            m = re.search(r"/workItems/(\d+)$", rel.get("url", ""), re.I)
+            if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse" and m:
+                idx, old = i, int(m.group(1))
+                break
+        if old == new:
+            print(json.dumps({"id": int(wid), "parent": new, "previous": old, "unchanged": True}))
+            return 0
+        patch = []
+        if d.get("rev") is not None:
+            patch.append({"op": "test", "path": "/rev", "value": d.get("rev")})
+        if idx is not None:
+            patch.append({"op": "remove", "path": "/relations/{0}".format(idx)})
+        if new is not None:
+            patch.append({"op": "add", "path": "/relations/-", "value": {
+                "rel": "System.LinkTypes.Hierarchy-Reverse",
+                "url": "{0}/_apis/wit/workItems/{1}".format(self.collection, new)}})
+        try:
+            d2 = self._patch(url, patch, content_type="application/json-patch+json")
+        except AdoHttpError as e:
+            msg = self._json_message(e, 400)
+            still = "it is still under #{0}".format(old) if old else "it still has no parent"
+            if e.status in (409, 412) or "test operation" in msg.lower() or "TF401289" in msg:
+                print("ERROR: #{0} changed meanwhile - its parent wasn't changed ({1}); try again".format(wid, still),
+                      file=sys.stderr)
+            else:
+                print("ERROR: #{0}'s parent wasn't changed ({1}): HTTP {2}: {3}".format(wid, still, e.status, msg),
+                      file=sys.stderr)
+            return 2
+        if not isinstance(d2.get("fields"), dict):
+            print("ERROR: unexpected response: " + json.dumps(d2)[:400], file=sys.stderr)
+            return 2
+        print(json.dumps({"id": int(wid), "parent": new, "previous": old}))
+        return 0
+
 
 def _debug_enabled(env=None):
     """True when AZVICLI_DEBUG is set to anything but ""/"0" - gates whether
@@ -3765,6 +4771,187 @@ def _fail_action(flag, ex, env=None):
         print(traceback.format_exc(), file=sys.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Perf log - per-request timing with AZVICLI_DEBUG on (#91)
+# ---------------------------------------------------------------------------
+#
+# With AZVICLI_DEBUG on, dispatch() starts a _PerfRun for its command and
+# every provider HTTP request made while it runs (http_request here,
+# github_host.http) appends one JSON line to <AZVICLI_PREFETCH_DIR>/perf.log:
+#   {"ts", "kind": "req", "cmd", "method", "host", "path", "status", "bytes",
+#    "ms", "conn"}
+# and the run itself one "total" line when it ends:
+#   {"ts", "kind": "total", "cmd", "board", "requests", "req_ms", "wall_ms"}
+# :AzureCli perf (lua/azure-cli/perf.lua) summarises the file.
+#
+# perf_record is only ever given the method, the URL and numbers - never a
+# Request or its headers - and keeps the URL's host and path plus the query's
+# parameter NAMES, so no Authorization header, PAT or token can reach the
+# file. Off (no run on this thread), the HTTP functions do one getattr on a
+# thread-local and nothing else. The run lives in a threading.local because
+# the daemon runs 8 commands at once; a pool a command fans out on (--list's)
+# carries it over with _perf_bind.
+
+_perf_local = threading.local()
+_perf_write_lock = threading.Lock()
+PERF_LOG_MAX_BYTES = 1024 * 1024
+
+
+class _PerfRun(object):
+    def __init__(self, cmd, board, path):
+        self.cmd = cmd
+        self.board = board
+        self.path = path
+        self.requests = 0
+        self.req_ms = 0.0
+        self.started = time.monotonic()
+        self._lock = threading.Lock()
+
+    def add(self, ms):
+        with self._lock:
+            self.requests += 1
+            self.req_ms += ms
+
+
+def perf_log_path(env=None):
+    env = env if env is not None else os.environ
+    return os.path.join(env.get("AZVICLI_PREFETCH_DIR") or default_prefetch_dir(), "perf.log")
+
+
+def _perf_current():
+    return getattr(_perf_local, "run", None)
+
+
+def _perf_start(cmd, env):
+    """The run dispatch() hands this thread's requests to, or None with
+    AZVICLI_DEBUG off."""
+    if not _debug_enabled(env):
+        return None
+    run = _PerfRun(cmd, "github" if env.get("AZVICLI_WI_HOST") == "github" else "", perf_log_path(env))
+    _perf_local.run = run
+    return run
+
+
+def _perf_finish(run):
+    if run is None:
+        return
+    if getattr(_perf_local, "run", None) is run:
+        del _perf_local.run
+    _perf_write(run.path, {"ts": round(time.time(), 3), "kind": "total", "cmd": run.cmd, "board": run.board,
+                           "requests": run.requests, "req_ms": round(run.req_ms, 1),
+                           "wall_ms": round((time.monotonic() - run.started) * 1000.0, 1)})
+
+
+def _perf_bind(fn):
+    """fn, run on another thread with this thread's run (if any) - for a
+    pool a command fans out on. With no run, fn itself."""
+    run = _perf_current()
+    if run is None:
+        return fn
+
+    def bound(*args, **kwargs):
+        prev = getattr(_perf_local, "run", None)
+        _perf_local.run = run
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if prev is None:
+                del _perf_local.run
+            else:
+                _perf_local.run = prev
+    return bound
+
+
+def _perf_safe_url(url):
+    """(host, path) with the query reduced to its parameter names - the
+    values (api-version aside, anything a caller put there) never logged."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "", ""
+    path = parts.path or "/"
+    if parts.query:
+        names = [kv.split("=", 1)[0] for kv in parts.query.split("&") if kv]
+        path += "?" + "&".join(names)
+    return parts.hostname or "", path
+
+
+def perf_record(method, url, status, nbytes, t0, conn="new"):
+    """One request's line, when this thread has a run. t0 is the
+    time.monotonic() taken before the request went out."""
+    run = _perf_current()
+    if run is None:
+        return
+    ms = (time.monotonic() - t0) * 1000.0
+    run.add(ms)
+    host, path = _perf_safe_url(url)
+    _perf_write(run.path, {"ts": round(time.time(), 3), "kind": "req", "cmd": run.cmd, "method": method,
+                           "host": host, "path": path, "status": status, "bytes": nbytes,
+                           "ms": round(ms, 1), "conn": conn})
+
+
+def perf_cache_record(what, url, result):
+    """One provider-cache lookup's line ("hit", "miss" or "invalidate"),
+    when this thread has a run: the URL's host only. perf.lua reads just
+    "req"/"total" lines and skips these."""
+    run = _perf_current()
+    if run is None:
+        return
+    host, _path = _perf_safe_url(url)
+    _perf_write(run.path, {"ts": round(time.time(), 3), "kind": "cache", "cmd": run.cmd, "what": what,
+                           "host": host, "result": result})
+
+
+def _perf_write(path, entry):
+    """Appends one line; past PERF_LOG_MAX_BYTES the file moves to
+    perf.log.1 first. Never raises - logging must not fail a request."""
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    try:
+        with _perf_write_lock:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            try:
+                if os.path.getsize(path) > PERF_LOG_MAX_BYTES:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError:
+        pass
+
+
+def boards(config):
+    """--boards' answer for `config`: which work-item boards it has - the
+    Azure one (an account with work_items:) and each GitHub account's
+    issues: project. From the config alone, no network: the Lua side asks
+    once at start-up whether to offer I (workitems/board.lua)."""
+    issues = []
+    for a in config.github_accounts():
+        if a.issues:
+            p = a.issues.get("project")
+            issues.append({"owner": a.owner or "", "project": "" if p is None else str(p),
+                           "scope": str(a.issues.get("scope") or "mine").strip().lower(),
+                           # What a GitHub PR's AZVICLI_ORG is (create_pull_request's).
+                           "apiUrl": a.api_url,
+                           # Where its repos are cloned: start_story finds a
+                           # clone before the PR list has loaded (#64).
+                           "clonesDir": a.clones_dir or ""})
+    azure = [a for a in config.accounts if not a.is_github() and a.clones_dir]
+    azure.sort(key=lambda a: not a.work_items)  # the work-items account's first
+    return {"workItems": any(a.work_items for a in config.accounts if not a.is_github()), "issues": issues,
+            "azureClonesDir": azure[0].clones_dir if azure else ""}
+
+
+def cmd_boards():
+    """--boards: boards() as one JSON line. No config yet (a first run) is
+    no boards rather than an error."""
+    if not Config.is_configured():
+        print(json.dumps({"workItems": False, "issues": []}))
+        return 0
+    print(json.dumps(boards(get_cached_config()), ensure_ascii=False))
+    return 0
+
+
 def cmd_wi_action(flag, rest, env=None):
     """Dispatches one of WI_ACTION_FLAGS: loads the config, confirms the
     work-item screens are actually configured, and resolves the PAT
@@ -3783,6 +4970,18 @@ def cmd_wi_action(flag, rest, env=None):
     config = get_cached_config()
     if config_problems(config):
         return 1
+    if env.get("AZVICLI_WI_HOST") == "github":
+        # The Issues tab: a GitHub account's project (github_issues.py).
+        account = _wi_select_github_account(config, env)
+        if account is None:
+            print("No GitHub account has an issues: block in azure-cli.yml; add issues: { project: <number "
+                  "or title> } under one to enable Issues", file=sys.stderr)
+            return 1
+        try:
+            return github_issues().IssueActions(account, env).run(flag, rest)
+        except Exception as ex:  # noqa: BLE001 - never leak a raw traceback for a UI-triggered action
+            _fail_action(flag, ex, env)
+            return 1
     actions = WorkItemActions(config, env)
     if not actions.ensure_configured():
         return 1
@@ -3881,8 +5080,11 @@ def cmd_prefetch(env=None):
 
     if not source or not target:
         return 0
+    # A GitHub fork PR's source is "pull/<n>/head" (github_host.py's
+    # FORK_SOURCE): its head lives in the base repository under refs/pull/.
+    fork = re.match(r"^pull/\d+/head$", source)
     rc = _git_fetch(repo_path, [
-        "+refs/heads/{0}:refs/remotes/origin/{0}".format(source),
+        ("+refs/{0}:refs/remotes/origin/{0}" if fork else "+refs/heads/{0}:refs/remotes/origin/{0}").format(source),
         "+refs/heads/{0}:refs/remotes/origin/{0}".format(target),
     ])
     if rc == 0:
@@ -3896,12 +5098,101 @@ def cmd_prefetch(env=None):
 # ---------------------------------------------------------------------------
 
 
-def cmd_list(config, env=None):
+# The PR actions a GitHub PR answers, with how each maps onto
+# github_host.Actions.
+_GITHUB_ACTIONS = {
+    "--threads": lambda a, arg: a.threads(),
+    "--iterations": lambda a, arg: a.iterations(),
+    "--get-pr": lambda a, arg: a.get_pr(),
+    "--post": lambda a, arg: a.post_inline(arg(0), arg(1), arg(2), arg(3), arg(4)),
+    "--file-comment": lambda a, arg: a.post_file_comment(arg(0), arg(1)),
+    "--pr-comment": lambda a, arg: a.post_pr_comment(arg(0)),
+    "--reply": lambda a, arg: a.post_reply(arg(0), arg(1)),
+    "--status": lambda a, arg: a.set_thread_status(arg(0), arg(1)),
+    "--edit-comment": lambda a, arg: a.edit_comment(arg(0), arg(1), arg(2)),
+    "--delete-comment": lambda a, arg: a.delete_comment(arg(0), arg(1)),
+    "--vote": lambda a, arg: a.set_vote(arg(0), arg(1)),
+    "--submit-review": lambda a, arg: a.submit_review(arg(0)),
+    # From phase 4, for the Issues board's links (phase 6 stage 3).
+    "--work-items": lambda a, arg: a.work_items(),
+    "--create-pr": lambda a, arg: a.create_pr(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5, "false")),
+    # Phase 4: merging. GitHub has no work items to complete, so --complete's
+    # third argument is ignored.
+    "--complete": lambda a, arg: a.complete(arg(0), arg(1, "true")),
+    "--auto-complete": lambda a, arg: a.auto_merge(arg(0), arg(1)),
+    # #110: through GraphQL (requestReviews, updatePullRequest).
+    "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
+    "--set-description": lambda a, arg: a.set_description(arg(0), arg(1)),
+    # #111: CI, through the head's GitHub Actions runs. --requeue comes from
+    # cmd_requeue, not PR_ACTION_FLAGS.
+    "--requeue": lambda a, arg: a.requeue(),
+    "--build-log": lambda a, arg: a.build_log(arg(0)),
+    "--test-results": lambda a, arg: a.test_results(arg(0)),
+    # #134: an image in the description or a comment, with the token.
+    "--fetch-image": lambda a, arg: a.fetch_image(arg(0), arg(1)),
+}
+
+
+def _github_pr_action(flag, rest, account, env):
+    gh = github()
+    run = _GITHUB_ACTIONS.get(flag)
+    if run is None:
+        print("{0} isn't available for GitHub pull requests yet.".format(flag), file=sys.stderr)
+        return 1
+    if not _is_uint(env.get("AZVICLI_PR") or ""):
+        print("AZVICLI_PR must be a PR number", file=sys.stderr)
+        return 1
+    actions = gh.Actions(account, env)
+    if not actions.ensure_client():
+        return 1
+
+    def arg(i, default=""):
+        return rest[i] if i < len(rest) else default
     try:
+        return run(actions, arg)
+    except Exception as ex:  # noqa: BLE001 - one line on stderr, like the Azure actions
+        print("GitHub {0} failed: {1}".format(flag.lstrip("-"), ex), file=sys.stderr)
+        return 1
+
+
+LIST_PARTIAL_PREFIX = "azure-cli --list failed for "
+
+
+def cmd_list(config, env=None):
+    """Azure's records, then each GitHub account's, all listed at once on
+    one pool of 8 (#95) and printed in config order. An account that fails
+    only loses its own records: with others listed, exit 0 and one
+    "azure-cli --list failed for <account>: <message>" line each on stderr
+    (dashboard.lua warns with them); when every account failed, exit 1
+    with the first one's "azure-cli --list failed: <message>", as before.
+    """
+    try:
+        gh_accounts = config.github_accounts()
         source = AzureDevOpsPullRequestSource(config, env)
-        for record in source.fetch_grouped_pull_requests():
+        executor = ThreadPoolExecutor(max_workers=source.MAX_CONCURRENT_PULL_REQUESTS)
+        try:
+            gh = github() if gh_accounts else None
+            gh_futures = [executor.submit(_perf_bind(gh.list_records), account, env) for account in gh_accounts]
+            records, errors = source.fetch_grouped_pull_requests_partial(executor)
+            for account, fut in zip(gh_accounts, gh_futures):
+                try:
+                    records.extend(fut.result())
+                except Exception as ex:  # noqa: BLE001 - reported for this account
+                    errors.append((account, ex))
+        finally:
+            executor.shutdown(wait=True)
+        total = len(gh_accounts) + sum(len(accounts) for _org, accounts in config.accounts_by_org())
+        if errors and len(errors) == total:
+            raise errors[0][1]
+        for record in records:
             sys.stdout.write(json.dumps(record) + "\n")
         sys.stdout.flush()
+        for account, ex in errors:
+            label = getattr(account, "label", None)
+            print("{0}{1}: {2}".format(LIST_PARTIAL_PREFIX, label() if callable(label) else account, ex),
+                  file=sys.stderr)
+            if _debug_enabled(env):
+                print("".join(traceback.format_exception(type(ex), ex, ex.__traceback__)), file=sys.stderr)
         return 0
     except Exception as ex:  # noqa: BLE001 - mirrors the exe's catch-all
         _fail_action("--list", ex, env)
@@ -3909,6 +5200,20 @@ def cmd_list(config, env=None):
 
 
 def cmd_requeue(config, pull_request_id, env=None):
+    """--requeue <id>. A PR's env naming a GitHub account (the dashboard's
+    gr and the chat's requeue_build send the row's) re-runs that PR's failed
+    jobs and never falls back to Azure, whose requeue looks the number up in
+    every organization - an Azure PR with the same number would be
+    re-queued. Without one (an Azure row, or by hand) it's Azure's."""
+    env = os.environ if env is None else env
+    gh_account = config.github_account_for(env.get("AZVICLI_ORG"), env.get("AZVICLI_PROJECT")) \
+        if env.get("AZVICLI_ORG") else None
+    if gh_account is not None:
+        if (env.get("AZVICLI_PR") or "") != str(pull_request_id):
+            print("--requeue {0} doesn't match AZVICLI_PR {1}; nothing re-queued.".format(
+                pull_request_id, env.get("AZVICLI_PR") or "(unset)"), file=sys.stderr)
+            return 1
+        return _github_pr_action("--requeue", [], gh_account, env)
     try:
         source = AzureDevOpsPullRequestSource(config)
         print(source.requeue_build_validation(pull_request_id))
@@ -4061,7 +5366,7 @@ def _doctor_config_checks(config):
     for a in config.accounts:
         if not a.pat_file or (isinstance(a.pat, str) and a.pat.strip()):
             continue
-        name = "pat_file for {0}".format(a.project or a.org_url or "?")
+        name = "pat_file for {0}".format(a.label())
         loose = a.pat_file_permission_problem()
         if loose:
             checks.append({"check": name, "ok": False, "detail": loose})
@@ -4071,12 +5376,37 @@ def _doctor_config_checks(config):
         # inside the plugin clone or a dotfiles repo is still a commit away
         # from leaking.
         misplaced = a.pat_file_location_problem()
-        name = "pat_file location for {0}".format(a.project or a.org_url or "?")
+        name = "pat_file location for {0}".format(a.label())
         if misplaced:
             checks.append({"check": name, "ok": False, "detail": misplaced})
         elif os.path.isfile(a.pat_file_path()):
             checks.append({"check": name, "ok": True,
                            "detail": "outside the plugin folder and any git working tree"})
+
+    for a in config.github_accounts():
+        name = "sign in to {0} ({1})".format(a.api_url, a.label())
+        try:
+            gh = github()
+            token = gh.account_token(a)
+            if not token:
+                checks.append({"check": name, "ok": False,
+                               "detail": "no token - set pat_file, or run `gh auth login`"
+                                         + ("" if a.api_url == gh.DEFAULT_API else " --hostname " + gh.web_host(a.api_url))})
+                continue
+            client = gh.Client(a.api_url, token)
+            login, display = gh.whoami(client)
+            checks.append({"check": name, "ok": bool(login),
+                           "detail": "signed in as {0}".format(display or login) if login else "no user came back"})
+        except Exception as ex:  # noqa: BLE001
+            checks.append({"check": name, "ok": False, "detail": "{0}".format(ex)})
+            continue
+        if a.issues:
+            name = "GitHub issues ({0})".format(a.label())
+            try:
+                ok, detail = github_issues().check_project(a, client)
+                checks.append({"check": name, "ok": ok, "detail": detail})
+            except Exception as ex:  # noqa: BLE001
+                checks.append({"check": name, "ok": False, "detail": github_issues()._scope_hint(ex)})
 
     source = AzureDevOpsPullRequestSource(config)
     for org, accounts in config.accounts_by_org():
@@ -4084,7 +5414,7 @@ def _doctor_config_checks(config):
         name = "sign in to {0} ({1})".format(org, projects)
         pat = source._pick_pat(accounts)
         try:
-            user_id, user_name = source._whoami_for_org(org, pat)
+            user_id, user_name = source._whoami_for_org(org, pat, fresh=True)
             if not user_id:
                 checks.append({"check": name, "ok": False,
                                "detail": "connected, but no authenticated user came back - " + (_auth_hint(401) or "")})
@@ -4093,16 +5423,24 @@ def _doctor_config_checks(config):
         except Exception as ex:  # noqa: BLE001
             checks.append({"check": name, "ok": False, "detail": "{0}".format(ex)})
 
-    wi = next((a for a in config.accounts if a.work_items), None)
-    if wi is None:
+    # The account the W tab uses (WorkItemActions): AZVICLI_WI_ACCOUNT
+    # picks it by project_name, AZVICLI_WI_TEAM can stand in for team:.
+    want = os.environ.get("AZVICLI_WI_ACCOUNT")
+    wi = _wi_select_account(config, os.environ)
+    team = (os.environ.get("AZVICLI_WI_TEAM") or ((wi.work_items or {}).get("team") if wi else "") or "").strip()
+    via = " (AZVICLI_WI_ACCOUNT)" if want else ""
+    if want and wi is None:
+        checks.append({"check": "work items", "ok": False,
+                       "detail": "AZVICLI_WI_ACCOUNT='{0}' matches no Azure account's project_name".format(want)})
+    elif wi is None or (not wi.work_items and not team):
         checks.append({"check": "work items", "ok": True,
                        "detail": "not configured (optional - add a work_items: block with team: to enable W)"})
-    elif not (wi.work_items.get("team") or "").strip():
+    elif not team:
         checks.append({"check": "work items", "ok": False,
                        "detail": "work_items: block on {0} has no team: - it's required".format(wi.project)})
     else:
         checks.append({"check": "work items", "ok": True,
-                       "detail": "team '{0}' on {1}".format(wi.work_items.get("team"), wi.project)})
+                       "detail": "team '{0}' on {1}{2}".format(team, wi.project, via)})
     return checks
 
 
@@ -4150,8 +5488,18 @@ def cmd_whoami(config, org, project):
         print("azure-cli --whoami requires --org <organization-url>.", file=sys.stderr)
         return 1
     try:
+        gh_account = config.github_account_for(org, project)
+        if gh_account is not None:
+            gh = github()
+            token = gh.account_token(gh_account)
+            if not token:
+                print("azure-cli --whoami: no GitHub token (pat_file, or `gh auth login`)", file=sys.stderr)
+                return 1
+            login, name = gh.whoami(gh.Client(gh_account.api_url, token))
+            print(json.dumps({"id": login, "displayName": name}))
+            return 0
         source = AzureDevOpsPullRequestSource(config)
-        result = source.whoami(org, project)
+        result = source.whoami(org, project, fresh=True)
         if result is None:
             suffix = "." if not project else " and project '{0}'.".format(project)
             print("azure-cli --whoami: no account matches org '{0}'{1}".format(org, suffix), file=sys.stderr)
@@ -4299,6 +5647,11 @@ def dispatch(argv, env):
     (see its own comment) for every headless flag.
     """
     out, err = io.StringIO(), io.StringIO()
+    # The perf log's run for this command (None with AZVICLI_DEBUG off, and
+    # for --ping, which never touches the network).
+    run = None
+    if argv[:1] != ["--ping"]:
+        run = _perf_start(argv[0] if argv else ("--prefetch" if env.get("AZVICLI_PREFETCH") else "<no flag>"), env)
     with _captured_output(out, err):
         try:
             code = _run_dispatch(argv, env)
@@ -4310,6 +5663,8 @@ def dispatch(argv, env):
             # exception and called _fail_action before this ever runs.
             _fail_action(argv[0] if argv else "<no flag>", ex, env)
             code = 1
+        finally:
+            _perf_finish(run)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -4328,6 +5683,8 @@ def _run_dispatch(argv, env):
         return cmd_wi_action(argv[0], argv[1:], env=env)
     if not argv and env.get("AZVICLI_PREFETCH"):
         return cmd_prefetch(env=env)
+    if argv[:1] == ["--boards"]:
+        return cmd_boards()
 
     args = parse_args(argv)
     if args.doctor:
@@ -4379,6 +5736,7 @@ def serve():
     # path - never a reason for the daemon not to start.
     with _config_cache_lock:
         _config_cache["serving"] = True
+    _conn_data_cache.clear()
     if Config.is_configured():
         try:
             get_cached_config()
@@ -4749,6 +6107,452 @@ def mcp_http_serve(stdin=None, stdout=None, bridge=_bridge_call, env=None):
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Web dashboard - a read-only page of the Agents screen, for a phone (#97)
+# ---------------------------------------------------------------------------
+#
+# `--web-dashboard --bind <addr> --port <n>`: lua/azure-cli/web.lua starts it
+# for :AzureCli web start, writes the Agents screen's rows to its stdin (one
+# JSON snapshot per line, only when they change) and closes stdin to stop
+# it. It runs in its own process, not inside Neovim: whatever on the LAN
+# reaches the port only ever talks to Python's http.server here, so a slow
+# or malformed client can't stall the editor.
+#
+# Security, as #97 asks:
+#  - a bind that listens everywhere (0.0.0.0, ::) is refused, not warned;
+#  - the token is printed only on stdout, one {"port", "token"} line per
+#    token (to Lua); compared with hmac.compare_digest; missing or wrong =
+#    401;
+#  - / with the right ?token= serves the page itself (200, no redirect,
+#    #130): a link tapped in another app is a cross-site navigation, and
+#    Safari dropped the old SameSite=Strict cookie on the redirected
+#    request. The page reads the token from its URL into memory, takes it
+#    out of the address bar with history.replaceState, and sends it with
+#    each /rows.json in an X-Azvicli-Token header (never in a URL). The
+#    same response sets an HttpOnly, SameSite=Lax cookie, only so a reload
+#    works. A request with the header is judged by it alone (a wrong one is
+#    401 even with a good cookie), else by the cookie; ?token= counts on /
+#    only;
+#  - GET only (405 otherwise), no CORS headers, a CSP that allows only the
+#    page's own inline script and style (by hash), and the page builds every
+#    row with textContent - the row text comes from issues and agents;
+#  - no request logging (the token is in the first URL), and the token is
+#    never written to stderr, which Neovim keeps in :AzureCli log; no
+#    Referer either: Referrer-Policy: no-referrer on every response, the
+#    same in a <meta>, and the page loads and links nothing else.
+# web_page_json keeps only the fields the Agents screen shows, whatever
+# arrives on stdin.
+#
+# The token across restarts (#105): with --token-file <path> (Lua passes
+# stdpath("state")/azure-cli/web-token) the token is read from that file,
+# or made and written there, so the phone link survives a restart. Only
+# the path is on argv - never the token (ps shows argv). The file is born
+# 0600 (os.open with the mode, never chmod after), put in place atomically,
+# and not trusted when it's a symlink, malformed, readable by others or
+# someone else's: then a new token replaces it and the port line says why
+# ("replaced"). A {"control": "rotate"} line on stdin makes a new token,
+# saves it and drops the old one at once (old links, cookies and open pages
+# get 401), then prints a new port line. Another Neovim's server using the
+# same file keeps the token it read until it restarts.
+
+_WEB_ROW_FIELDS = ("label", "title", "state", "ago", "cost", "detail")
+_WEB_COOKIE = "azvicli_web"
+_WEB_ALL_INTERFACES = ("", "*", "0.0.0.0", "::", "[::]")
+
+_WEB_STYLE = (
+    ":root{color-scheme:light dark;--bg:#fff;--fg:#1f2328;--muted:#59636e;--card:#f6f8fa;--line:#d1d9e0;"
+    "--accent:#0969da;--bad:#d1242f;--ok:#1a7f37;--wait:#9a6700}"
+    "@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9198a1;--card:#151b23;"
+    "--line:#3d444d;--accent:#4493f8;--bad:#f85149;--ok:#3fb950;--wait:#d29922}}"
+    "*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}"
+    "body{margin:0;padding:12px;background:var(--bg);color:var(--fg);"
+    "font:16px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;overflow-wrap:anywhere}"
+    "h1{font-size:1.3rem;margin:0}h2{font-size:1rem;margin:20px 0 8px;color:var(--muted)}"
+    "header p{margin:4px 0;color:var(--muted)}#status.stale{color:var(--bad)}"
+    ".row{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0 0 8px}"
+    ".top{display:flex;gap:8px;align-items:baseline}.label{color:var(--accent);font-weight:600;flex:none}"
+    ".title{flex:1;min-width:0}.meta{margin-top:4px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:.92rem}"
+    ".state{font-weight:600}.g1 .state{color:var(--wait)}.g2 .state{color:var(--accent)}"
+    ".g3 .state,.g4 .state{color:var(--ok)}.muted{color:var(--muted)}"
+    ".detail{margin-top:4px;font-size:.85rem;color:var(--muted);font-family:ui-monospace,monospace}"
+)
+
+_WEB_HEADER = "X-Azvicli-Token"
+
+# First, before anything that could throw: the token from ?token= into
+# memory, and out of the address bar (#130).
+_WEB_SCRIPT = (
+    '"use strict";(function(){var token=null;'
+    'try{token=new URLSearchParams(location.search).get("token");'
+    'if(token!==null)history.replaceState(null,"","/");}catch(e){}'
+    'var rowsEl=document.getElementById("rows"),totalsEl=document.getElementById("totals"),'
+    'statusEl=document.getElementById("status"),last=0,failed=false,out=false;'
+    'function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;'
+    'if(text!=null)e.textContent=String(text);return e;}'
+    'function render(d){totalsEl.textContent=d.totals||"";rowsEl.textContent="";var items=d.items||[];'
+    'if(!items.length)rowsEl.appendChild(el("p","muted","No agents yet."));'
+    'items.forEach(function(it){if(it.header){rowsEl.appendChild(el("h2",null,it.header));return;}'
+    'var r=el("section","row g"+(it.group|0)),top=el("div","top"),meta=el("div","meta");'
+    'top.appendChild(el("span","label",it.label));top.appendChild(el("span","title",it.title));r.appendChild(top);'
+    'meta.appendChild(el("span","state",it.state));if(it.ago)meta.appendChild(el("span","muted",it.ago));'
+    'if(it.cost)meta.appendChild(el("span","muted",it.cost));r.appendChild(meta);'
+    'if(it.detail)r.appendChild(el("div","detail",it.detail));rowsEl.appendChild(r);});'
+    'if(d.hidden)rowsEl.appendChild(el("p","muted",d.hidden+" finished more than "+(d.finished_days||7)'
+    '+" days ago (not shown)"));}'
+    'function tick(){var s=Math.round((Date.now()-last)/1000);'
+    'statusEl.textContent=out?"Signed out - open the URL from :AzureCli web again."'
+    ':failed?("Can\\u2019t reach Neovim"+(last?" - last updated "+s+"s ago":""))'
+    ':last?"Updated "+s+"s ago":"Loading\\u2026";statusEl.className=(failed||out)?"stale":"";}'
+    'function poll(){fetch("/rows.json",{cache:"no-store",credentials:"same-origin",'
+    'headers:token?{"' + _WEB_HEADER + '":token}:{}}).then(function(r){'
+    'if(r.status===401){out=true;throw 0;}if(!r.ok)throw 0;return r.json();})'
+    '.then(function(d){render(d);last=Date.now();failed=false;tick();})'
+    '.catch(function(){failed=true;tick();});}'
+    'poll();setInterval(poll,3000);setInterval(tick,1000);'
+    'document.addEventListener("visibilitychange",function(){if(!document.hidden)poll();});'
+    '})();'
+)
+
+_WEB_PAGE = (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer">'
+    '<title>azure-vicli agents</title><style>' + _WEB_STYLE + '</style></head>'
+    '<body><header><h1>Agents</h1><p id="totals"></p><p id="status">Loading…</p></header>'
+    '<main id="rows"></main><script>' + _WEB_SCRIPT + '</script></body></html>'
+).encode("utf-8")
+
+
+def _web_csp_hash(text):
+    return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii") + "'"
+
+
+WEB_CSP = ("default-src 'none'; script-src {0}; style-src {1}; connect-src 'self'; img-src 'none'; "
+           "base-uri 'none'; form-action 'none'; frame-ancestors 'none'").format(
+               _web_csp_hash(_WEB_SCRIPT), _web_csp_hash(_WEB_STYLE))
+
+
+def _web_text(v, limit):
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return ""
+    return str(v)[:limit]
+
+
+def web_page_json(snap):
+    """What /rows.json serves for a snapshot Lua sent (web.lua's
+    M.snapshot): its items - group headers and rows - with only the fields
+    the Agents screen shows, as text, plus the totals line and how many
+    finished ones are hidden. Anything else in the snapshot is dropped.
+    Pure."""
+    snap = snap if isinstance(snap, dict) else {}
+    raw = snap.get("items")
+    items = []
+    for it in (raw if isinstance(raw, list) else [])[:500]:
+        if not isinstance(it, dict):
+            continue
+        if it.get("header"):
+            items.append({"header": _web_text(it["header"], 80)})
+            continue
+        row = {k: _web_text(it.get(k), 300) for k in _WEB_ROW_FIELDS}
+        g = it.get("group")
+        row["group"] = g if isinstance(g, int) and not isinstance(g, bool) and 1 <= g <= 4 else 3
+        items.append(row)
+
+    def count(k):
+        v = snap.get(k)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+    return {"items": items, "totals": _web_text(snap.get("totals"), 300),
+            "hidden": count("hidden"), "finished_days": count("finished_days")}
+
+
+def web_bind_allowed(bind):
+    """False for an address that listens on every interface (0.0.0.0, ::,
+    empty): the phone dashboard is only ever reachable where it was bound
+    on purpose."""
+    b = (bind or "").strip()
+    if b in _WEB_ALL_INTERFACES:
+        return False
+    try:
+        import ipaddress
+        return not ipaddress.ip_address(b.strip("[]")).is_unspecified
+    except ValueError:
+        return True  # a host name, e.g. localhost
+
+
+# What secrets.token_urlsafe(32) makes; a stored token has to look like it.
+_WEB_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+
+def web_new_token():
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def _web_token_tmp(path, token):
+    """A new file next to `path` holding `token`, born 0600 (O_EXCL: never
+    an existing file, whatever the umask). Returns its path."""
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    tmp = os.path.join(d, ".{0}.{1}.{2}.tmp".format(os.path.basename(path), os.getpid(), os.urandom(4).hex()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.write(fd, (token + "\n").encode("ascii"))
+        os.fsync(fd)
+    except OSError:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
+    os.close(fd)
+    return tmp
+
+
+def web_token_write(path, token):
+    """Saves `token` at `path`, replacing whatever is there in one step (a
+    symlink there is replaced, not followed). Raises OSError."""
+    tmp = _web_token_tmp(path, token)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        os.unlink(tmp)
+        raise
+
+
+def web_token_create(path, token):
+    """Saves `token` at `path` only if nothing is there yet: True when it
+    did, False when another process got there first. Raises OSError."""
+    tmp = _web_token_tmp(path, token)
+    try:
+        os.link(tmp, path)
+        return True
+    except FileExistsError:
+        return False
+    except (AttributeError, NotImplementedError, PermissionError):
+        # No hard links here: replace instead (the race it closes is two
+        # Neovims starting in the same instant).
+        os.replace(tmp, path)
+        return True
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
+def web_token_read(path):
+    """(token, None) for a stored token that can be trusted, else (None,
+    why): "missing", or why it isn't trusted - a symlink, malformed,
+    unreadable, someone else's, or readable by others (POSIX only)."""
+    import stat
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError as e:
+        return None, "unreadable ({0})".format(e.strerror or e)
+    if stat.S_ISLNK(st.st_mode):
+        return None, "a symlink"
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as e:
+        return None, "unreadable ({0})".format(e.strerror or e)
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            return None, "not a regular file"
+        if os.name != "nt":
+            if st.st_uid != os.getuid():
+                return None, "owned by another user"
+            if st.st_mode & 0o077:
+                return None, "permissions were {0:04o}".format(stat.S_IMODE(st.st_mode))
+        data = fh.read(256)
+    token = data.decode("ascii", errors="replace").strip()
+    if not _WEB_TOKEN_RE.match(token):
+        return None, "malformed"
+    return token, None
+
+
+def web_token_load(path):
+    """The token stored at `path`, or a new one saved there: (token,
+    replaced) where `replaced` says why a stored file wasn't used (None
+    when it was, or there was none). Raises OSError when it can't save."""
+    token, why = web_token_read(path)
+    if token:
+        return token, None
+    token = web_new_token()
+    if why == "missing":
+        if web_token_create(path, token):
+            return token, None
+        other, why = web_token_read(path)  # another Neovim wrote it first
+        if other:
+            return other, None
+    web_token_write(path, token)
+    return token, why
+
+
+def web_dashboard_serve(bind, port, stdin=None, stdout=None, stderr=None, token=None, token_file=None):
+    """--web-dashboard: serves the page and /rows.json on bind:port until
+    stdin closes, reading snapshots from stdin. The first stdout line is
+    {"port", "token"} (plus "stored", "replaced" or "error" with
+    `token_file`), and another follows each {"control": "rotate"} line.
+    Returns 2 (with a line on stderr) when the bind is refused or the port
+    can't be had."""
+    import hmac
+    import http.server
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    if not web_bind_allowed(bind):
+        stderr.write("ERROR: the phone dashboard won't listen on every interface ({0!r}): set "
+                     "dashboard_web.bind to your LAN or VPN address\n".format(bind))
+        stderr.flush()
+        return 2
+    note = {}
+
+    def cant_save(e):
+        note["stored"] = False
+        note["error"] = "can't save the token in {0}: {1}".format(token_file, e.strerror or e)
+
+    if not token and token_file:
+        try:
+            token, why = web_token_load(token_file)
+            note["stored"] = True
+            if why:
+                note["replaced"] = why
+        except OSError as e:
+            cant_save(e)
+    # One holder, read on every request: a rotate swaps it and the old
+    # token stops working at once.
+    current = {"token": token or web_new_token()}
+    latest = {"body": json.dumps(web_page_json({})).encode("utf-8")}
+
+    def authorised(given, token):
+        return bool(given) and hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        server_version = "azure-vicli"
+        sys_version = ""
+        timeout = 15  # a client that stops mid-request lets its thread go
+
+        def log_message(self, *args):
+            pass  # the first URL carries the token
+
+        def _send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=()):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy", WEB_CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cache-Control", "no-store")
+            for k, v in headers:
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _cookie(self):
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == _WEB_COOKIE:
+                    return value
+            return None
+
+        def _given(self):
+            # The page's header when there is one - judged alone, so a
+            # rotated token in an open page is 401 even with a good
+            # cookie - else the reload cookie.
+            header = self.headers.get(_WEB_HEADER)
+            return header if header is not None else self._cookie()
+
+        def do_GET(self):
+            token = current["token"]
+            url = urllib.parse.urlsplit(self.path)
+            given = urllib.parse.parse_qs(url.query, keep_blank_values=True).get("token") \
+                if url.path == "/" else None
+            if given is not None:
+                # The page itself, not a redirect (#130): its script keeps
+                # the token in memory; the cookie only serves reloads.
+                if not authorised(given[0], token):
+                    return self._send(401, b"unauthorized\n")
+                return self._send(200, _WEB_PAGE, "text/html; charset=utf-8", headers=(
+                    ("Set-Cookie", "{0}={1}; HttpOnly; SameSite=Lax; Path=/".format(_WEB_COOKIE, token)),))
+            if not authorised(self._given(), token):
+                return self._send(401, b"unauthorized\n")
+            if url.path == "/":
+                return self._send(200, _WEB_PAGE, "text/html; charset=utf-8")
+            if url.path == "/rows.json":
+                return self._send(200, latest["body"], "application/json")
+            return self._send(404, b"not found\n")
+
+        def _refuse(self):
+            self._send(405, b"read-only: GET only\n", headers=(("Allow", "GET"),))
+
+        do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _refuse
+
+    host = (bind or "").strip().strip("[]")
+
+    class Server(http.server.ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        daemon_threads = True
+
+    try:
+        server = Server((host, int(port)), Handler)
+    except (OSError, ValueError, OverflowError) as e:
+        stderr.write("ERROR: the phone dashboard can't listen on {0}:{1}: {2}\n".format(bind, port, e))
+        stderr.flush()
+        return 2
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def announce():
+        stdout.write(json.dumps(dict(note, port=server.server_address[1], token=current["token"])) + "\n")
+        stdout.flush()
+
+    announce()
+    for raw in stdin:
+        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("control") == "rotate":
+            # Swapped before it's saved: the old token is dead even if
+            # saving fails.
+            current["token"] = web_new_token()
+            note.pop("replaced", None)
+            if token_file:
+                try:
+                    web_token_write(token_file, current["token"])
+                    note["stored"] = True
+                    note.pop("error", None)
+                except OSError as e:
+                    cant_save(e)
+            announce()
+            continue
+        latest["body"] = json.dumps(web_page_json(msg), ensure_ascii=False).encode("utf-8")
+    server.shutdown()
+    server.server_close()
+    return 0
+
+
+def web_dashboard_main(args):
+    """argv after --web-dashboard: --bind <addr> --port <n> [--token-file
+    <path>]. There is no --token: argv is visible to every process."""
+    opts = {"--bind": "127.0.0.1", "--port": "8797", "--token-file": ""}
+    i = 0
+    while i < len(args):
+        if args[i] in opts and i + 1 < len(args):
+            opts[args[i]] = args[i + 1]
+            i += 2
+        else:
+            sys.stderr.write("ERROR: --web-dashboard takes --bind <addr> --port <n> [--token-file <path>]\n")
+            return 2
+    try:
+        port = int(opts["--port"])
+    except ValueError:
+        sys.stderr.write("ERROR: --web-dashboard: --port must be a number\n")
+        return 2
+    return web_dashboard_serve(opts["--bind"], port, token_file=opts["--token-file"] or None)
+
+
 def main(argv=None):
     """Thin wrapper: --serve runs the daemon loop, an empty argv either
     branch-prefetches or launches the nvim dashboard (both stay here rather
@@ -4760,6 +6564,7 @@ def main(argv=None):
     code for every headless flag.
     """
     argv = sys.argv[1:] if argv is None else argv
+    install_http_pool()
 
     if argv[:1] == ["--serve"]:
         return serve()
@@ -4767,6 +6572,8 @@ def main(argv=None):
         return mcp_serve()
     if argv[:1] == ["--mcp-http"]:
         return mcp_http_serve()
+    if argv[:1] == ["--web-dashboard"]:
+        return web_dashboard_main(argv[1:])
 
     if not argv:
         # No flags at all: either branch-prefetch (AZVICLI_PREFETCH=1|all -

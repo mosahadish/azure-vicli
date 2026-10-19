@@ -15,7 +15,7 @@
 -- conversation, the agent sees the screen and line), and the answer lands
 -- both there and under the line.
 --
---   pure:   wrap, virt_lines, reanchor, message, at_line, counts, count_label
+--   pure:   wrap, virt_lines, reanchor, message, at_line, pick_at_line, counts, count_label
 --   Neovim: draw, ask, show
 local M = {}
 
@@ -56,7 +56,8 @@ end
 -- a bar. opts: width (cells for the text), expanded, frame (spinner
 -- frame while asking), dw (width function), indent (cells before the bar),
 -- send (the key that sends queued change requests - the plan's gR, the
--- change viewer's gS). Pure.
+-- change viewer's gS), drop / edit (the keys that drop / edit a queued
+-- one - the plan's dd / cc; left out, they aren't mentioned). Pure.
 M.ANSWER_LINES = 4
 function M.virt_lines(th, opts)
   opts = opts or {}
@@ -72,7 +73,7 @@ function M.virt_lines(th, opts)
       out[#out + 1] = { bar, { (i == 1 and "\u{21AA} you: " or "       ") .. l, "AzureCliStatusOk" } }
     end
     out[#out + 1] = { bar, { th.status == "sent" and "  sent to the agent"
-      or "  goes to the agent with your approval (or change request)", "AzureCliThreadMeta" } }
+      or ("  not sent yet - " .. (opts.send or "gR") .. " sends it (approving does too)"), "AzureCliThreadMeta" } }
     return out
   end
   if th.kind == "request" then
@@ -81,8 +82,15 @@ function M.virt_lines(th, opts)
     for i, l in ipairs(M.wrap(th.question or "", width, opts.dw)) do
       out[#out + 1] = { bar, { (i == 1 and "\u{270E} " or "  ") .. l, "AzureCliThreadRequest" } }
     end
-    out[#out + 1] = { bar, { th.status == "sent" and "  sent with your change request"
-      or ("  queued - " .. (opts.send or "gR") .. " sends it, with the others"), "AzureCliThreadMeta" } }
+    local meta = "  sent with your change request"
+    if th.status ~= "sent" then
+      meta = "  queued - " .. (opts.send or "gR") .. " sends it, with the others"
+      local how = {}
+      if opts.drop then how[#how + 1] = opts.drop .. " drops" end
+      if opts.edit then how[#how + 1] = opts.edit .. " edits" end
+      if #how > 0 then meta = meta .. " \u{00B7} " .. table.concat(how, ", ") end
+    end
+    out[#out + 1] = { bar, { meta, "AzureCliThreadMeta" } }
     return out
   end
   local q = M.wrap(th.question or "", width, opts.dw)
@@ -168,6 +176,22 @@ function M.at_line(threads, line, match)
   return nil
 end
 
+-- The thread on line `line` that dd / cc act on, its index, and what it is:
+-- a change still queued ("queued") first - a question on the same line
+-- mustn't hide it - then a question or answer ("thread"), then a change
+-- already sent ("sent", which stays as history). nil on a line with none.
+-- Pure.
+function M.pick_at_line(threads, line)
+  local function queued(th) return th.kind == "request" and th.status ~= "sent" end
+  local th, i = M.at_line(threads, line, queued)
+  if th then return th, i, "queued" end
+  th, i = M.at_line(threads, line, function(t) return t.kind ~= "request" end)
+  if th then return th, i, "thread" end
+  th, i = M.at_line(threads, line)
+  if th then return th, i, "sent" end
+  return nil
+end
+
 -- How many of `threads` are questions (not change requests), and how many
 -- requests are still queued. Pure.
 function M.counts(threads)
@@ -224,7 +248,8 @@ function M.draw(buf, win, threads, row_of, keys)
       if th.status == "asking" then asking = true end
       pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, row - 1, 0, {
         virt_lines = M.virt_lines(th, { width = width, expanded = expanded[th.id], dw = vim.fn.strdisplaywidth,
-          frame = M.SPINNER[tick % #M.SPINNER + 1], send = keys and keys.send }),
+          frame = M.SPINNER[tick % #M.SPINNER + 1], send = keys and keys.send, drop = keys and keys.drop,
+          edit = keys and keys.edit }),
         sign_text = th.kind == "request" and "\u{270E}" or (th.kind == "answer" and "\u{21AA}" or "?"),
         sign_hl_group = th.kind == "request" and "AzureCliThreadRequest" or "AzureCliThreadBar",
       })

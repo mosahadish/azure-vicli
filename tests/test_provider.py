@@ -415,6 +415,44 @@ class HttpErrorMessageTests(unittest.TestCase):
 
 class DoctorTests(unittest.TestCase):
     GOOD = "accounts:\n  - project_name: p\n    org_url: https://dev.azure.com/o\n    pat: t\n"
+    TWO = ("accounts:\n"
+           "  - project_name: a\n    org_url: https://dev.azure.com/o\n    pat: t\n    work_items:\n      team: TA\n"
+           "  - project_name: b\n    org_url: https://dev.azure.com/o\n    pat: t\n")
+
+    def setUp(self):
+        # The developer's shell mustn't pick the work-items account.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("AZVICLI_WI_ACCOUNT", "AZVICLI_WI_TEAM"):
+            os.environ.pop(k, None)
+
+    def _work_items(self, text, **env):
+        os.environ.update(env)
+        with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id1", "J")):
+            checks = ac._doctor_config_checks(ac.Config.from_string(text))
+        return next(c for c in checks if c["check"] == "work items")
+
+    def test_work_items_checks_the_account_AZVICLI_WI_ACCOUNT_picks(self):
+        with_b = self.TWO + "    work_items:\n      team: TB\n"
+        row = self._work_items(with_b)
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["detail"], "team 'TA' on a")
+        row = self._work_items(with_b, AZVICLI_WI_ACCOUNT="b")
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["detail"], "team 'TB' on b (AZVICLI_WI_ACCOUNT)")
+
+    def test_work_items_fails_when_AZVICLI_WI_ACCOUNT_matches_nothing(self):
+        row = self._work_items(self.TWO, AZVICLI_WI_ACCOUNT="nope")
+        self.assertFalse(row["ok"])
+        self.assertIn("'nope'", row["detail"])
+
+    def test_work_items_takes_the_team_from_AZVICLI_WI_TEAM(self):
+        row = self._work_items(self.TWO, AZVICLI_WI_ACCOUNT="b", AZVICLI_WI_TEAM="T")
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["detail"], "team 'T' on b (AZVICLI_WI_ACCOUNT)")
+        row = self._work_items(self.TWO, AZVICLI_WI_ACCOUNT="b", AZVICLI_WI_TEAM="")
+        self.assertIn("not configured", row["detail"])
 
     def _write(self, td, text):
         path = os.path.join(td, "azure-cli.yml")
@@ -1075,7 +1113,7 @@ EXPECTED_FIELDS = {
     "closedThreads", "totalThreads", "myActiveThreads", "mentionThreads",
     "mentionTotal", "description", "buildStatus", "queuePosition", "buildUrl",
     "policies", "missingReviewers", "mergeConflict", "url", "cloneUrl",
-    "clonesDir", "myId", "myName", "reviewers",
+    "clonesDir", "myId", "myName", "reviewers", "sourceCommit",
 }
 
 
@@ -1090,6 +1128,19 @@ class SerializationTests(unittest.TestCase):
             USER, "Me Reviewer",
         )
         self.assertEqual(set(record.keys()), EXPECTED_FIELDS)
+
+    def test_source_commit_is_the_last_merge_source_commit(self):
+        # The dashboard keys its branch warm on it (#124): updatedIso is the
+        # creation date, so only this moves on a push.
+        def rec(pr):
+            return ac.to_record(pr, make_account(), "Actionable", (1, 2, 1, 0, 0),
+                                ("succeeded", None, "http://build", [], []), USER, "Me Reviewer")
+        pr = make_pr()
+        pr["lastMergeSourceCommit"] = {"commitId": "abc123"}
+        self.assertEqual(rec(pr)["sourceCommit"], "abc123")
+        pr = make_pr()
+        pr.pop("lastMergeSourceCommit", None)
+        self.assertEqual(rec(pr)["sourceCommit"], "")
 
     def test_record_is_json_serializable_as_ndjson_line(self):
         pr = make_pr()
@@ -1277,6 +1328,28 @@ class PatFileTests(unittest.TestCase):
             where = next(c for c in checks if c["check"].startswith("pat_file location"))
             self.assertTrue(where["ok"], where)
 
+    @unittest.skipIf(os.name == "nt", "no POSIX mode bits on Windows")
+    def test_doctor_names_the_account_on_its_pat_file_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "pat")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("t\n")
+            os.chmod(path, 0o600)
+            # A GitHub account has no project_name: its label, not "?".
+            gh = ac.Config.from_string("accounts:\n  - host: github\n    owner: octo\n    pat_file: {0}\n".format(path))
+            fake = mock.Mock()
+            fake.account_token.return_value = None
+            with mock.patch.object(ac, "github", return_value=fake):
+                names = [c["check"] for c in ac._doctor_config_checks(gh)]
+            self.assertIn("pat_file for GitHub (octo)", names)
+            self.assertIn("pat_file location for GitHub (octo)", names)
+            self.assertFalse(any("?" in n for n in names), names)
+            # Azure: unchanged, its project_name.
+            with mock.patch.object(ac.AzureDevOpsPullRequestSource, "_whoami_for_org", return_value=("id", "me")):
+                names = [c["check"] for c in ac._doctor_config_checks(self._cfg(path))]
+            self.assertIn("pat_file for p", names)
+            self.assertIn("pat_file location for p", names)
+
 
 class AccountsFromSetupTests(unittest.TestCase):
     """AZVICLI_ACCOUNTS_JSON - what config.lua exports for
@@ -1342,3 +1415,45 @@ class AccountsFromSetupTests(unittest.TestCase):
             checks = ac.doctor_checks()
         self.assertEqual([c["check"] for c in checks], ["config source", "config parses"])
         self.assertFalse(checks[1]["ok"])
+
+
+class BoardsTests(unittest.TestCase):
+    """--boards: which work-item boards the config has, for the I tab."""
+
+    def test_azure_only_has_no_issues(self):
+        cfg = ac.Config.from_dict({"accounts": [
+            {"project_name": "P", "org_url": "https://dev.azure.com/x", "pat": "t", "work_items": {"team": "T"}},
+            {"host": "github", "owner": "o"}]})
+        self.assertEqual(ac.boards(cfg), {"workItems": True, "issues": [], "azureClonesDir": ""})
+
+    def test_github_accounts_with_issues(self):
+        cfg = ac.Config.from_string("accounts:\n  - host: github\n    owner: o\n    issues: { project: 3, scope: all }\n"
+                                    "  - host: github\n    owner: p\n    issues:\n      project: Road Map\n")
+        self.assertEqual(ac.boards(cfg), {"workItems": False, "azureClonesDir": "", "issues": [
+            {"owner": "o", "project": "3", "scope": "all", "apiUrl": "https://api.github.com", "clonesDir": ""},
+            {"owner": "p", "project": "Road Map", "scope": "mine", "apiUrl": "https://api.github.com",
+             "clonesDir": ""}]})
+
+    def test_clones_dirs_come_from_the_config(self):
+        # start_story finds a clone before the PR list has loaded (#64).
+        cfg = ac.Config.from_dict({"accounts": [
+            {"project_name": "Q", "org_url": "https://dev.azure.com/y", "pat": "t", "clones_dir": "/other"},
+            {"project_name": "P", "org_url": "https://dev.azure.com/x", "pat": "t", "work_items": {"team": "T"},
+             "clones_dir": "/repos/az"},
+            {"host": "github", "owner": "o", "issues": {"project": 1}, "clones_dir": "/repos/gh"}]})
+        b = ac.boards(cfg)
+        self.assertEqual(b["azureClonesDir"], "/repos/az")
+        self.assertEqual(b["issues"][0]["clonesDir"], "/repos/gh")
+
+    def test_the_flag_reads_the_config_only(self):
+        with mock.patch.object(ac, "get_cached_config", return_value=ac.Config.from_dict(
+                {"accounts": [{"host": "github", "issues": {"project": 1}}]})), \
+                mock.patch.object(ac.Config, "is_configured", return_value=True):
+            code, out, _ = ac.dispatch(["--boards"], {})
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["issues"][0]["project"], "1")
+
+    def test_no_config_yet_is_no_boards(self):
+        with mock.patch.object(ac.Config, "is_configured", return_value=False):
+            code, out, _ = ac.dispatch(["--boards"], {})
+        self.assertEqual((code, json.loads(out)), (0, {"workItems": False, "issues": []}))

@@ -1,6 +1,7 @@
 -- test-linked-prs.lua: lua/azure-cli/workitems/linked_prs.lua's pure
 -- helpers (the dashboard's PR marker, the detail view's PR lines).
 -- Usage: luajit test-linked-prs.lua <linked_prs.lua path>
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local path = arg[1]
 assert(path, "usage: luajit test-linked-prs.lua <linked_prs.lua path>")
 local LP = dofile(path)
@@ -13,6 +14,14 @@ end
 check("marker: none", LP.marker(nil) == "" and LP.marker({}) == "")
 check("marker: one", LP.marker({ { id = 101 } }) == "!101")
 check("marker: several", LP.marker({ { id = 101 }, { id = 7 }, { id = 8 } }) == "!101 +2")
+
+-- The same PR on each host (hosts.ref): Azure's "!", GitHub's repo#.
+check("label: azure", LP.label({ id = 101, repo = "widgets" }) == "!101")
+check("label: github", LP.label({ id = 7, repo = "owner/repo" }, "github") == "owner/repo#7")
+check("label: github, no repo", LP.label({ id = 7 }, "github") == "#7")
+check("marker: github", LP.marker({ { id = 7, repo = "owner/repo" }, { id = 8 } }, "github") == "owner/repo#7 +1")
+local gl = LP.lines({ id = 7, repo = "owner/repo" }, "github")
+check("lines: github head", gl[1]:match("^  owner/repo#7") ~= nil, gl[1])
 
 check("status: active", LP.status({ status = "active" }) == "active")
 check("status: draft", LP.status({ status = "active", isDraft = true }) == "draft")

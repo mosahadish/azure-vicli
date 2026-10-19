@@ -22,6 +22,7 @@
 -- request and drops a late response that arrives after it, and
 -- AZVICLI_NO_DAEMON=1 always falls back to plain jobstart.
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 assert(arg[1], "usage: luajit test-rpc.lua <rpc.lua>")
 
 -- ---------------------------------------------------------------------------

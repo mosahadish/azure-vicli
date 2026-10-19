@@ -20,7 +20,8 @@ font (Noto Sans Mono by default; --font picks another).
 
 The sequence in SHOTS is the whole story of a review: dashboard -> open
 PR #101 -> its first file's diff -> the inline thread expanded -> the
-complete dialog -> the work-items dashboard -> a work item -> the chat's
+complete dialog -> a GitHub PR's merge dialog -> the work-items dashboard
+-> a work item -> the chat's
 plan window, a question under a line of a change, the Agents screen and the
 /skills popup (those scenes are
 seeded by tests/shot-plan.lua, tests/shot-change.lua, tests/shot-agents.lua and
@@ -53,7 +54,10 @@ SHOTS = [
     ("reviewer-diff", ["4j", "Enter"], "is_locked", 6),
     ("reviewer-thread", ["C-w", "l", "]C", "Tab"], "Should a locked", 6),
     ("complete-dialog", ["g", "m"], "Complete PR", 6),
-    ("workitems", ["Escape", "Escape", "q", "W"], "Sprint 42", 6),
+    # A GitHub PR's merge dialog: back on the dashboard, filter to the fake's
+    # doohickeys#7 (Signed off, so expand it), whose required check failed.
+    ("github-merge", ["Escape", "Escape", "q", "/", "wobble", "Enter", "za", "j", "g", "m"], "Can't merge", 6),
+    ("workitems", ["Escape", "W"], "Sprint 42", 6),
     ("workitem-detail", ["Enter"], "Acceptance", 6),
     # The chat's plan window and a question under a line of the agent's
     # change: scenes seeded by tests/shot-*.lua, not typed.

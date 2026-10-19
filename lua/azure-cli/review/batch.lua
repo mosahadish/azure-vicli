@@ -184,6 +184,57 @@ function M.submit(state, run_write, vote, hooks)
   end
 end
 
+-- A host that takes a whole review at once (hosts.lua's native_review:
+-- GitHub) gets the queue as one --submit-review payload instead:
+-- { event, body, items = { argv, ... } }. The verdict is `vote`'s key ("10",
+-- "-5"; none = a plain comment review), the body is `reason` followed by
+-- every PR-level comment and Conversation reply in the queue (a review has
+-- one body, not threads of its own there), and items are the rest - line
+-- and file comments, replies in review threads - each the argv it would
+-- have gone out as on its own. Pure.
+function M.review_payload(items, vote, reason)
+  local body, rest = {}, {}
+  if reason and reason ~= "" then body[#body + 1] = reason end
+  for _, item in ipairs(items) do
+    local args = M.item_args(item)
+    if args[1] == "--pr-comment" then
+      body[#body + 1] = args[2]
+    elseif args[1] == "--reply" and args[2] == "0" then
+      body[#body + 1] = args[3]
+    else
+      rest[#rest + 1] = args
+    end
+  end
+  return { event = vote and vote.key or "comment", body = table.concat(body, "\n\n"), items = rest }
+end
+
+-- Sends `state`'s queue as the one call `args` (the --submit-review argv)
+-- through run_write, with M.submit's hooks: before() for every item first,
+-- then - the review landed whole or not at all - after(item, ok, err) for
+-- each and done(results, nil) once (a failed verdict fails the review, so
+-- there's no separate vote error).
+function M.submit_native(state, run_write, args, hooks)
+  hooks = hooks or {}
+  local before = hooks.before or function() end
+  local after = hooks.after or function() end
+  local done = hooks.done or function() end
+  local items = {}
+  for _, it in ipairs(state.items) do items[#items + 1] = it end
+  state.submitting = true
+  for _, item in ipairs(items) do before(item) end
+  local function finish(ok, msg)
+    state.submitting = nil
+    local results = {}
+    for _, item in ipairs(items) do
+      if ok then M.remove_item(state, item) end
+      results[#results + 1] = { item = item, ok = ok, err = (not ok) and msg or nil }
+      after(item, ok, (not ok) and msg or nil)
+    end
+    done(results, nil)
+  end
+  run_write(args, function() finish(true) end, function(msg) finish(false, msg) end)
+end
+
 -- ---------------------------------------------------------------------------
 -- ctx wiring.
 
@@ -231,10 +282,10 @@ local function setup(ctx)
   -- the same queue again, the same way the ignore-whitespace toggle and
   -- last-search text already do (see review/init.lua's own STATE use).
   local function state()
-    local s = STATE.batch[ctx.ID]
+    local s = STATE.batch[ctx.KEY]
     if not s then
       s = { on = false, items = {} }
-      STATE.batch[ctx.ID] = s
+      STATE.batch[ctx.KEY] = s
     end
     return s
   end
@@ -255,8 +306,13 @@ local function setup(ctx)
     if item.kind == "thread" then
       if item.pending then ctx.drop_pending_thread(item.pending) end
     elseif item.kind == "reply" then
-      if item.thread and item.comment then
-        ctx.remove_entry(item.thread.comments, item.comment)
+      if item.comment then
+        -- A refresh since it was queued rebuilt the thread and carried the
+        -- comment into the new copy (reapply_pending): drop it from that
+        -- one too, not only from the copy it was queued on.
+        local live = ctx.find_thread(item.thread_id)
+        if live then ctx.remove_entry(live.comments, item.comment) end
+        if item.thread then ctx.remove_entry(item.thread.comments, item.comment) end
       end
       local reps = ctx.pending_replies()
       for i = #reps, 1, -1 do
@@ -314,7 +370,7 @@ local function setup(ctx)
   -- ...and take one back out (the undo of a draft): false once this
   -- reviewer is gone.
   STATE.batch_drop = STATE.batch_drop or {}
-  STATE.batch_drop[ctx.ID] = function(item)
+  STATE.batch_drop[ctx.KEY] = function(item)
     local lw = ctx.list_win()
     if not (lw and vim.api.nvim_win_is_valid(lw)) then return false end
     local s = state()
@@ -328,7 +384,7 @@ local function setup(ctx)
     return false
   end
   STATE.batch_live = STATE.batch_live or {}
-  STATE.batch_live[ctx.ID] = function(item)
+  STATE.batch_live[ctx.KEY] = function(item)
     local lw = ctx.list_win()
     if not (lw and vim.api.nvim_win_is_valid(lw)) then return false end
     local s = state()
@@ -514,19 +570,25 @@ local function setup(ctx)
       ctx.notify("No queued comments to submit.", vim.log.levels.WARN)
       return
     end
+    local caps = require("azure-cli.hosts").caps(ctx.current_pr_record and ctx.current_pr_record())
     local items = {}
-    for _, o in ipairs(ctx.VOTE_OPTIONS) do items[#items + 1] = o end
-    items[#items + 1] = { label = "No vote", none = true }
+    for _, o in ipairs(caps.votes) do
+      -- A review can't dismiss itself: on a native-review host the reset
+      -- vote isn't a verdict to submit with.
+      if not (caps.native_review and o.reset) then items[#items + 1] = o end
+    end
+    items[#items + 1] = { label = caps.native_review and "Comment only" or "No vote", none = true }
     require("azure-cli.prompt").select({ prompt = "Submit " .. #s.items .. " queued comment(s) - vote",
       items = items }, function(choice)
     if not choice then return end
     local vote = (not choice.none) and choice or nil
+    local function send(reason)
 
     -- The sends are detached jobs: leaving the reviewer while they're out
     -- doesn't stop them (the quit guard doesn't count them as queued, see
     -- state.submitting), and a redraw once its windows are gone is skipped.
     local function redraw() pcall(ctx.redraw) end
-    M.submit(s, ctx.run_write, vote, {
+    local hooks = {
       before = function(item)
         if item.kind == "thread" and item.pending then
           item.pending.entry.queued = nil
@@ -578,7 +640,20 @@ local function setup(ctx)
         ctx.notify(msg .. ".", fail_n > 0 and vim.log.levels.WARN or vim.log.levels.INFO)
         redraw()
       end,
-    })
+    }
+    if caps.native_review then
+      M.submit_native(s, ctx.run_write,
+        { "--submit-review", vim.json.encode(M.review_payload(s.items, vote, reason)) }, hooks)
+    else
+      M.submit(s, ctx.run_write, vote, hooks)
+    end
+    end
+    if vote and vote.reason then
+      require("azure-cli.prompt").input({ prompt = vote.label .. " - what needs changing?" },
+        function(text) if text then send(text) end end)
+    else
+      send()
+    end
     end)
   end
 

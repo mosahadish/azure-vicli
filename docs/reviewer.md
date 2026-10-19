@@ -4,13 +4,29 @@ _Part of the [azure-vicli](../README.md) docs._
 
 ## Reviewer
 
-Opening a PR adds a tab with the file list on the left and the selected
-content on the right. The first row is always the Overview: title,
-description, commits, and PR-level comments.
+Opening a PR adds an inner tab to Pull requests with the file list on the
+left and the selected content on the right. The first row is always the
+Overview: title, description, commits, and PR-level comments.
+
+The Overview's filetype is `azurecli-overview`, not `markdown`: only the
+description and the comment bodies are highlighted as Markdown (with Vim's
+own markdown syntax, minus its `markdownError`), so an `_` in a branch name
+or a commit subject isn't flagged as an error. The commit list and a
+commit's file list are `azurecli-commits`. A `FileType markdown` autocmd or
+a Markdown renderer (render-markdown.nvim, markview.nvim) no longer
+attaches to these buffers; hook `FileType azurecli-overview` instead if you
+want one there.
+
+Several reviews stay open side by side inside the Pull requests tab: the
+winbar's strip (`Pull requests │ !101 Fix auth │ [!102 Cache]`) lists them,
+`]r` / `[r` and `g1`..`g9` switch, and each keeps its file list, diff and
+cursor (and its own polling) while you're in another. `q` closes the one
+you're in and goes to the one before it, the list when it was the first
+([Inner tabs](commands-and-keys.md#keys)).
 
 ![The reviewer just opened: file list on the left, the Overview on the right](images/reviewer-files.png)
 
-![A file's diff: old/new line numbers in the gutter, a thread marker on the commented line](images/reviewer-diff.png)
+![A file's diff: one line-number column in the gutter, a thread marker on the commented line](images/reviewer-diff.png)
 
 ![The same thread expanded inline with Tab](images/reviewer-thread.png)
 
@@ -52,13 +68,13 @@ File list:
 | `gF` | Manage text filters that hide matching threads |
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
-| `gv` / `gm` | Vote / complete |
-| `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state, `gl`/`gL` link/unlink) |
+| `gv` / `gm` | Vote / complete (on GitHub: review verdict / merge - see [On GitHub](#on-github)) |
+| `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state, `gl`/`gL` link/unlink); on GitHub, the issues it closes |
 | `gl` / `gL` | Link a work item to this PR / unlink one (each a popup, mid-screen) |
 | `gc` | Open the PR's commit list |
 | `gB` | Toggle batch review for this PR |
 | `gQ` | Show the queued batch-review items |
-| `gS` | Submit the queued batch-review items, with a vote |
+| `gS` | Submit the queued batch-review items, with a vote (on GitHub, as one review) |
 | `<` / `>` | Resize the list |
 | `<BS>` | Back to the PR list |
 | `q` | Close the reviewer |
@@ -71,13 +87,17 @@ Diff pane:
 |---|---|
 | `]c` / `[c` | Next / previous change; at the last/first hunk in the file, continues into the next/previous file with any changes |
 | `]C` / `[C` | Next / previous comment thread; at the last/first one in the file, continues into the next/previous file that has comments |
-| `c` | Comment on the current line |
+| `c` | Comment on the current line (on GitHub, only on or near a change) |
 | `c` (visual mode) | Comment on the selected range of lines |
 | `K` | View the comments on the current line in a popup; `R` and `s` work inside it, plus `e`/`dd` to edit/delete a comment of yours |
 | `R` | Reply to the thread on the current line |
-| `s` | Set the thread's status |
+| `s` | Set the thread's status (on GitHub: resolve or unresolve) |
 | `]C` / `[C` | Next / previous thread |
 | `gd` / `gr` / `gf` | Code navigation, see below |
+| `za` / `<Space>` | Open or close the `· N unchanged lines ·` fold under the cursor (remembered, see below) |
+| `zR` / `zM` | Unfold / fold them all |
+| `<Tab>` | Expand the thread on the current line inline, or collapse it |
+| `m` / `]m` / `[m` | Toggle the file's viewed mark / next / previous file not yet viewed |
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
 | `gc` | Open the PR's commit list |
@@ -93,7 +113,8 @@ of the whole line reading as uniformly changed.
 Comments, replies and status changes appear the instant you submit them,
 tagged "(sending…)" until the server confirms. If the call fails the entry is
 removed and the prompt reopens with your text, so nothing is lost. Threads
-refresh in the background every minute, and new comments on your PR or on
+refresh in the background every `timing.poll_seconds` (30 s), slower while
+Neovim is idle or unfocused, and new comments on your PR or on
 threads you took part in raise a notification (both `vim.notify` and, unless
 disabled, a desktop toast).
 
@@ -105,18 +126,30 @@ for a retry if the call fails; a delete removes the comment at once and
 restores it (and its thread, if it was the thread's only comment) on
 failure.
 
-The diff pane's gutter shows the old and new line numbers side by side (an
-added line has no old number, a deleted line no new one). Runs of unchanged
-context beyond three lines of any change - or of any commented line - are
-folded to `· N unchanged lines ·`; `zR` unfolds them all and `zM` folds them
-again, and `]c` never lands inside one. Syntax highlighting follows
+The diff pane's gutter shows one line number: the new file's for a context
+or added line, and the old file's, dimmed, for a removed one. Runs of
+unchanged context beyond three lines of any change - or of any commented
+line - are folded to `· N unchanged lines ·`; `za` / `<Space>`
+(`toggle_fold`) opens or closes the one under the cursor, `zR` unfolds them
+all and `zM` folds them again, and `]c` never lands inside one. The folds
+you open are remembered per PR and file - when you come back to the file,
+reopen the PR or restart Neovim - until a push changes that file's diff.
+Vim's own `zo` / `zc` / `zA` and friends are remembered the same way. The
+plain diff, the whitespace-ignoring one (`gw`) and the since-your-last-review
+one (`gi`) each keep their own folds; they're stored next to the viewed
+marks, in `azure-cli-viewed.json` under Neovim's data directory. (The
+chat's change viewer shares the `diff` keys but doesn't fold-toggle or
+remember folds - `toggle_fold` is the reviewer's.)
+A UTF-8 byte-order mark at the start of a file isn't shown, and adding or
+removing one doesn't count as a change. Syntax highlighting follows
 Neovim's own filetype detection, so a `Dockerfile` or a `.csproj` is
 coloured too.
 
 A commented line's marker carries the thread's status (`[active]`,
 `[fixed]`, ...) and a line whose threads are all resolved is dimmed;
 `<Tab>` expands the thread right under its line, as virtual text, and
-collapses it again. `K` still opens the full popup.
+collapses it again. `K` still opens the full popup. (A GitHub thread is
+only ever `[active]` or `[fixed]` - see [On GitHub](#on-github).)
 
 Files you open with `<CR>` (or that `]c`/`]C` walk into) are marked viewed:
 `✓` and dimmed in the file list, counted in the winbar (`14 files, 3
@@ -141,7 +174,8 @@ dashboard's `gm`
 opens the same dialog. On success the reviewer closes. `gv` marks your current vote and
 confirms a Reject, and the Overview's Votes line updates at once. `q` asks
 before closing when batch-review items are queued or comment drafts are
-unsent.
+unsent. A GitHub PR's dialog and verdicts differ - see
+[On GitHub](#on-github).
 
 ![The complete dialog: merge type, toggles, build/thread/vote summary](images/complete-dialog.png)
 
@@ -180,7 +214,8 @@ an `@<GUID>` mention, never a plain-text one, so the editor translates every
 azure-cli.py's `--list` carries each reviewer's id (an
 `IdentityRefWithVote` id) alongside their name for exactly this. A name
 that's typed but isn't a recognised reviewer is sent as plain text and
-simply won't notify anyone.
+simply won't notify anyone. On GitHub the name is translated to the
+reviewer's `@login` instead, and an `@login` typed by hand notifies too.
 
 ### Per-commit diffs
 
@@ -193,6 +228,35 @@ diff. `<BS>` walks back a step the same way `gd`/`gr` do, and `q` goes all
 the way back to whatever diff or Overview you started from. Comments never
 show in a commit diff - they're anchored to the PR's final diff, not any one
 commit along the way - and the winbar there says so.
+
+### Images
+
+An image in the description or a comment (`![alt](url)`, `<img src=...>`, or
+a link to one) opens with `<CR>` or `gx` on its line, in the Overview and the
+K popup: azure-vicli downloads it with your PAT or token into Neovim's own
+temp directory (a `0600` file, deleted when Neovim exits) and opens it in the
+system viewer. The credential only goes to the PR's own server - the org's
+host (on `dev.azure.com`, the org's own path), or GitHub's - never along a
+redirect, and never on a command line or into the perf log. An image on any
+other host opens in the browser as it is, without your credentials. SVG
+isn't downloaded. On a line with no image, `<CR>` and `gx` do what they did
+before (a commit line's `<CR>` still opens that commit).
+
+With [snacks.nvim](https://github.com/folke/snacks.nvim)'s image module or
+[image.nvim](https://github.com/3rd/image.nvim) installed, in a terminal that
+can draw images (kitty, WezTerm, Ghostty; sixel terminals through image.nvim),
+the Overview also shows the images under their lines (the first 10, up to
+15 rows each) - neither plugin is required. `images = { inline = false }`
+in `setup()` turns that off. If the plugin errors, inline images stay off
+for the rest of the session and the error goes to `:AzureCli log`;
+`<CR>` / `gx` still open them.
+
+Nothing is drawn inline in the standalone launcher: it starts Neovim with
+its own `init.lua` (`nvim -u standalone/init.lua`) in place of yours, which
+adds only azure-vicli to the runtime path, so the image plugins your config
+sets up through a plugin manager (lazy.nvim, packer, ...) aren't loaded
+there. `<CR>` / `gx` still open images in the system viewer; for inline
+images, use azure-vicli as a plugin in your own Neovim.
 
 ### Range comments
 
@@ -216,18 +280,19 @@ closes. `gS` prompts for a vote - the same choices `gv` offers, plus "No
 vote" - then submits every queued item in order, each one flipping from
 "(queued)" to "(sending…)" to confirmed in turn; a failed item stays in the
 queue (still tagged) and the rest continue, then the vote (if you picked
-one) is cast last. Batch mode turns itself back off once everything lands
+one) is cast last. (On GitHub the queue goes as one review, all or
+nothing - see [On GitHub](#on-github).) Batch mode turns itself back off once everything lands
 cleanly; a failed submit leaves it on with just the failures still queued,
 so `gS` again retries only those. The queue survives leaving and
 re-opening the same PR within one nvim session.
 
 ### Chat
 
-`gq` (file list, diff pane, Overview, revision buffers) shows or hides the
-[chat panel](chat.md). The agent is told which file, line, code and comment
+`i` (file list, diff pane, Overview, revision buffers) takes you to the
+[chat panel](chat.md)'s input box, opening it if it's hidden. The agent is told which file, line, code and comment
 thread is under your cursor, so "what do you think about this comment?" or
 "triage this PR's comments" need no further explanation; with lines
-selected, `gq` sends the selection along. Replies it drafts land in this PR's
+selected, `<CR>` sends the selection along. Replies it drafts land in this PR's
 batch-review queue, tagged "(queued)", for `gS`. Notes it leaves on lines
 (`annotate_code`) show as virtual lines under them and are still there
 after a restart - `]a` / `[a` jump to the next / previous one, on into the
@@ -250,7 +315,9 @@ a "Since your last review" line with the same count plus how many files
 changed. `gi` again turns it back off. Because the source branch may have
 been pushed to more than once since you last looked, "since" means since
 the iteration (push) current at the time of your last activity, not since
-the most recent push before it.
+the most recent push before it. On GitHub an iteration is a commit, and
+the starting point is the commit your last review was on - see
+[On GitHub](#on-github).
 
 Comments anchored to the target-branch side of the diff ("L", i.e. lines
 that were removed or that a comment was left on the base copy of the file)
@@ -343,6 +410,72 @@ behind the picker follow along. Everything is classified before the picker
 opens, so toggling the filter back off is instant - nothing is re-fetched. If you haven't commented on this PR at
 all, or `gi`'s own "no last review to compare since" conditions apply (see
 above), `gu` says so instead of opening.
+
+### On GitHub
+
+A GitHub PR (from an account with `host: github`, see
+[GitHub accounts](configuration.md#github-accounts)) opens in the same
+reviewer, with the same keys. What differs:
+
+- **Names.** A PR is `repo#12` rather than `!101` - a number alone is
+  ambiguous across repositories.
+- **Verdicts, not votes.** `gv` offers GitHub's three: Approve, Request
+  changes and Dismiss my review. Request changes asks what needs changing
+  (GitHub wants a reason; left empty it sends "Changes requested."), and
+  dismissing needs write access to the repository. There's no Approve with
+  suggestions or Reject. On the dashboard, changes requested shows as `✗`.
+- **Resolved or not, not statuses.** `s` offers Unresolved and Resolved,
+  so thread markers only ever read `[active]` or `[fixed]`. The
+  Conversation tab is one thread on the Overview, with no status: replies
+  to it post a new comment there, and `s` on it says nobody resolves it.
+- **Line comments only near changes.** GitHub takes a line or range comment
+  only on a changed line or the few around one - not on lines you unfolded
+  with `zR`. Comment on the file (`C`) for anything else.
+- **Mentions** go out as `@login`. A login typed by hand notifies its
+  owner too.
+- **`gS` is one review.** The queue goes to GitHub as a single review: its
+  line comments and replies, the PR-level comments and Conversation replies
+  as its text, and the verdict you pick (or Comment only; there's no
+  Dismiss here). The author gets one notification, and if any part fails
+  GitHub gets nothing and the whole queue stays queued.
+- **Iterations are commits.** `gi`'s "N new iteration(s)" counts commits
+  (and force-pushes), dated by commit date. "Since my last review" starts
+  from the commit your last submitted review was on - a review with no
+  comments counts - and `gu` uses the same point.
+- **Merging (`gm`).** The dialog reads the PR fresh from GitHub first:
+  - its merge types are the ones the repository allows (Squash and merge,
+    Create a merge commit, Rebase and merge);
+  - it lists the checks, `(required)` where GitHub says so;
+  - anything that stops the merge - a conflict, a draft, the base moved on,
+    a failing or pending required check, a review still needed, changes
+    requested - is shown as `⛔ Can't merge: …`, and `<CR>` refuses; when
+    GitHub blocks it for none of those, the reason is "blocked by <base>'s
+    branch protection (e.g. unresolved conversations, signed commits)";
+  - a check that failed but isn't required is a warning, not a blocker:
+    "check `x` failed (not required)", or "some checks failed (not
+    required)" when GitHub doesn't say which;
+  - there's no work-items row (an issue closes through its `Closes #n`
+    line instead);
+  - "Auto-merge when requirements pass" is there only when the repository
+    allows auto-merge, and then the repository's own setting decides
+    whether the branch is deleted;
+  - a direct merge (not auto-merge) has the "Delete source branch"
+    checkbox, on by default;
+  - a branch in a fork is never deleted, even with that box checked.
+- **Checks, not builds.** The build state is the head commit's checks.
+  Re-queuing re-runs the failed jobs of its failed GitHub Actions runs;
+  the agent's build log is those jobs' failure annotations and the failed
+  step's log, and its test results are their annotations (GitHub has no
+  test counts, so a run's total is its failures).
+- **Issues, not work items.** `gW` lists the issues the PR will close
+  (including ones linked on github.com); `gl` / `gL` add or remove a
+  `Closes #n` line in the PR's description, which GitHub honours only for a
+  PR into the default branch - `gl` warns otherwise. The issues come from
+  the [Issues tab](work-items.md#issues-github)'s project.
+- **Viewed marks** stay local, as on Azure; they don't tick GitHub's
+  "Viewed" box.
+
+![A GitHub PR's merge dialog: the repository's merge type, its checks with the required one failing, and why it can't merge](images/github-merge.png)
 
 ## Code navigation
 

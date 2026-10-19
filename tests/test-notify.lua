@@ -12,6 +12,7 @@
 -- toast() calls with the same title inside the rate-limit window collapse
 -- into one call whose body says "(+1 more)".
 
+dofile((debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or ".") .. "/sandbox.lua")()
 local jobs = {}       -- recorded vim.fn.jobstart command tables, in order
 local timers = {}     -- queued fn.timer_start callbacks (+ their ms), drained by hand
 local stopped_timers = {}  -- timer ids fn.timer_stop was called on

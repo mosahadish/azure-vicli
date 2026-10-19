@@ -40,6 +40,7 @@ def main():
     tools_seen = "no azure-vicli tools"
     turn = 0
     model = None
+    quiet = None  # a GOQUIET prompt's id, answered at session/cancel
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -69,6 +70,13 @@ def main():
             if model:
                 text += ", model " + model
             prompt = "".join(p.get("text", "") for p in params.get("prompt") or [])
+            # GOQUIET: start, then say nothing until session/cancel (#27's
+            # idle timeout), which ends the turn as cancelled.
+            if "GOQUIET" in prompt:
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params.get("sessionId"),
+                      "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Thinking..."}}}})
+                quiet = mid
+                continue
             if "PERMS" in prompt:
                 # Ask permission for a read and an edit, the way Copilot
                 # does mid-turn, and report which option each got.
@@ -140,6 +148,10 @@ def main():
             if params.get("configId") == "model":
                 model = params.get("value")
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        elif method == "session/cancel":
+            if quiet is not None:
+                send({"jsonrpc": "2.0", "id": quiet, "result": {"stopReason": "cancelled"}})
+                quiet = None
         elif mid is not None:
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
 

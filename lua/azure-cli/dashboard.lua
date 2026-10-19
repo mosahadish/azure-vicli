@@ -44,6 +44,7 @@ local KEYS = require("azure-cli.keys")
 local UI = require("azure-cli.ui")
 local PROMPT = require("azure-cli.prompt")
 local PRS = require("azure-cli.prs")
+local HOSTS = require("azure-cli.hosts")
 local PR_WORKITEMS = require("azure-cli.pr_workitems")
 -- Shared housekeeping helpers (flash, config file, browser/clipboard, the
 -- JSON state files, a failed job's one-line summary) - see shell.lua for
@@ -156,9 +157,14 @@ local ROW_FIXED_WIDTH = 25 + 1 + 1 + 17 + 2
 -- Dropped after the reviewer summary and the updated time, before the
 -- author, when the window is narrow.
 local AGENT_COLUMN = { key = "agent", min = 12, ideal = 26, weight = 1, priority = 2.5 }
--- PR id -> its agent's row (chat/agents_view.lua's M.by_pr), as of the last
--- render.
+-- PR key -> its agent's row (chat/agents_view.lua's M.by_pr), as of the
+-- last render.
 local agent_of = {}
+-- By the PR's key (hosts.lua's), not its number: a GitHub number repeats
+-- across repositories (#109).
+local function agent_for(map, pr)
+  return require("azure-cli.chat.agents_view").for_pr(map, pr)
+end
 local function agents_by_pr()
   local ok, map = pcall(function()
     local CHAT = require("azure-cli.chat")
@@ -193,8 +199,11 @@ local DASHBOARD_ACTIONS = {
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
   { "agent_chat", "its agent's chat, in a popup" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
+  "Chat",
+  { "chat_input", "type in the chat" }, { "chat_selection", "in visual mode: ask the chat about the selected lines" },
   "Session",
-  { "refresh", "refresh" }, { "workitems", "work items" }, { "agents", "every plan's agent (the Agents screen)" },
+  { "refresh", "refresh" }, { "workitems", "work items" }, { "issues", "issues (GitHub)" },
+  { "agents", "every plan's agent (the Agents screen)" },
   { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
 }
@@ -252,7 +261,7 @@ end
 
 -- Records pr's current thread/mention counts as "seen" (called when the PR is opened).
 local function mark_pr_seen(pr)
-  seen.prs[tostring(pr.id)] = pr_snapshot(pr)
+  seen.prs[tostring(HOSTS.key(pr))] = pr_snapshot(pr)
   save_seen()
 end
 
@@ -272,7 +281,7 @@ end
 -- the row looked untouched and the only hint was reading the threads
 -- column closely enough to notice it now said 1/1.
 local function pr_is_unread(pr)
-  local rec = seen.prs[tostring(pr.id)]
+  local rec = seen.prs[tostring(HOSTS.key(pr))]
   if not rec then return false end
   local threads_changed = others_commented(pr, rec, pr.state == "Created")
   if pr.state ~= "Created" and not threads_changed then
@@ -292,9 +301,9 @@ end
 local function seed_unseen(fresh_prs)
   local dirty = false
   for _, pr in ipairs(fresh_prs) do
-    local rec = seen.prs[tostring(pr.id)]
+    local rec = seen.prs[tostring(HOSTS.key(pr))]
     if not rec then
-      seen.prs[tostring(pr.id)] = pr_snapshot(pr)
+      seen.prs[tostring(HOSTS.key(pr))] = pr_snapshot(pr)
       dirty = true
     else
       -- A record saved before the provider sent the others-comment counts:
@@ -406,6 +415,7 @@ end
 local function pr_env(pr)
   local e = {
     AZVICLI_PR = tostring(pr.id),
+    AZVICLI_PR_KEY = tostring(HOSTS.key(pr)),
     AZVICLI_REPO = pr.repo or "",
     AZVICLI_PROJECT = pr.project or "",
     AZVICLI_ORG = pr.org or "",
@@ -590,7 +600,7 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(fit(pr.autoComplete and "A" or "", 1), "AzureCliAutoComplete")
   seg(" ")
   -- Its linked work items, once pr_workitems.lua has read them: "#3001".
-  local wi = PR_WORKITEMS.label(PR_WORKITEMS.cached(pr.id))
+  local wi = PR_WORKITEMS.label(PR_WORKITEMS.cached(pr))
   local title_w = widths.title
   if wi ~= "" and title_w > #wi + 8 then
     seg(fit(pr.title, title_w - #wi - 2))
@@ -620,7 +630,7 @@ local function add_pr_row(lines, spans, row_pr, pr, now, widths)
   seg(fit(thr, 7), tgrp)
   if widths.agent then
     seg(" ")
-    local a = agent_of[tostring(pr.id)]
+    local a = agent_for(agent_of, pr)
     seg(fit(a and a.state or "", widths.agent - 1), a and a.hl)
   end
   if widths.reviewer then
@@ -713,7 +723,7 @@ local function render()
     if ok then
       local prev_pr = row_pr[cur[1]]
       if prev_pr then
-        prev_pr_id = prev_pr.id
+        prev_pr_id = HOSTS.key(prev_pr)
         prev_key = row_pr_key[cur[1]]
       else
         prev_key = row_header_key[cur[1]]
@@ -745,7 +755,7 @@ local function render()
   agent_of = agents_by_pr()
   local columns = SCALING_COLUMNS
   for _, pr in ipairs(prs) do
-    if agent_of[tostring(pr.id)] then
+    if agent_for(agent_of, pr) then
       columns = vim.list_extend(vim.list_slice(SCALING_COLUMNS), { AGENT_COLUMN })
       break
     end
@@ -840,7 +850,7 @@ local function render()
     local target
     if prev_pr_id then
       for ln, pr in pairs(row_pr) do
-        if pr.id == prev_pr_id then target = ln; break end
+        if HOSTS.key(pr) == prev_pr_id then target = ln; break end
       end
     end
     if not target and prev_key then
@@ -927,8 +937,7 @@ local function show_description()
   if type(pr.reviewers) == "table" and #pr.reviewers > 0 then
     local parts = {}
     for _, r in ipairs(pr.reviewers) do
-      local v = tonumber(r.vote) or 0
-      local g = v == 10 and "\u{2713}" or v == 5 and "\u{2713}~" or v == -5 and "~" or v == -10 and "\u{2717}" or "\u{00B7}"
+      local g = HOSTS.vote_glyph(pr, r.vote, true)
       parts[#parts + 1] = g .. " " .. (r.name or "?") .. ((r.name == pr.myName) and " (me)" or "")
     end
     lines[#lines + 1] = "  Reviewers: " .. table.concat(parts, "   ")
@@ -997,14 +1006,21 @@ local DASHBOARD_HELP_DESCS = {
   config = "open a config file",
   refresh = "refresh",
   workitems = "switch to the work-items dashboard",
+  issues = "switch to the issues dashboard (a GitHub account's issues: project)",
+  chat_input = "type in the chat (opens the panel; a draft stays)",
+  chat_selection = "in visual mode: ask the chat about the selected lines",
   quit = "quit",
   help = "this help",
 }
 local function show_help()
   local table_ = {}
+  -- I is there only once --boards says a GitHub account has issues:.
+  local issues = require("azure-cli.workitems.board").has_issues()
   for _, a in ipairs(DASHBOARD_ACTIONS) do
     if type(a) == "string" then
       table_[#table_ + 1] = a
+    elseif a[1] == "issues" and not issues then
+      -- left out
     else
       table_[#table_ + 1] = { a[1], DASHBOARD_HELP_DESCS[a[1]] or a[2] }
     end
@@ -1052,7 +1068,7 @@ end
 -- next open wait behind it. Shared tables let an in-flight pass's
 -- callbacks and the new instance see one truth.
 STATE.warm = STATE.warm or {
-  warmed = {},          -- id -> updatedIso the branches were last fetched for
+  warmed = {},          -- id -> warm_stamp (source commit) the branches were last fetched for
   warming = {},         -- id -> true while a branch fetch is in flight
   warm_cbs = {},        -- id -> pending callbacks to run once the fetch completes
   cloning = {},         -- id -> true while an auto-clone is in flight
@@ -1159,6 +1175,17 @@ local warm_cbs = STATE.warm.warm_cbs
 local cloning = STATE.warm.cloning
 local clone_cbs = STATE.warm.clone_cbs
 
+-- What warmed[id] remembers a PR's branches were fetched at: its source
+-- commit (the record's sourceCommit, which moves on every push), or its
+-- updatedIso when the host didn't send one. On Azure DevOps/TFS updatedIso
+-- is the PR's creation date, so keying on it alone never re-fetched a
+-- pushed PR (#124).
+local function warm_stamp(pr)
+  local c = pr.sourceCommit
+  if c and c ~= "" then return c end
+  return pr.updatedIso
+end
+
 -- Only this PR's own work counts as "syncing": its branch warm, its clone,
 -- or its content prefetch. The repository-wide fetch warm_all runs first
 -- (one per clone) is deliberately NOT reflected per row - it used to be,
@@ -1166,12 +1193,12 @@ local clone_cbs = STATE.warm.clone_cbs
 -- content prefetch behind the badge is limited to WARM_CONCURRENCY at a
 -- time. That fetch shows once, in the winbar (see set_winbar).
 pr_sync_state = function(pr)
-  local id = tostring(pr.id or "")
-  local key = CACHE.key(pr.id, pr.updatedIso)
+  local id = tostring(HOSTS.key(pr) or "")
+  local key = CACHE.key(HOSTS.key(pr), pr.updatedIso)
   if warming[id] or cloning[id] or CACHE.is_syncing(key) then
     return "syncing"
   end
-  if warmed[id] == pr.updatedIso and CACHE.is_complete(key) then
+  if warmed[id] == warm_stamp(pr) and CACHE.is_complete(key) then
     return "ready"
   end
   return nil
@@ -1193,11 +1220,11 @@ end
 
 local function ensure_warm(pr, cb, allow_clone)
   if not pr then return end
-  local id = tostring(pr.id or "")
+  local id = tostring(HOSTS.key(pr) or "")
   if id == "" then if cb then cb(true) end return end
 
   local function continue_warm()
-    if warmed[id] == pr.updatedIso then
+    if warmed[id] == warm_stamp(pr) then
       if cb then cb(true) end
       return
     end
@@ -1238,7 +1265,7 @@ local function ensure_warm(pr, cb, allow_clone)
       env = vim.tbl_extend("force", pr_env(pr), { AZVICLI_PREFETCH = "1" }),
       on_exit = function(_, code)
         warming[id] = nil
-        if code == 0 then warmed[id] = pr.updatedIso end  -- only cache a successful fetch
+        if code == 0 then warmed[id] = warm_stamp(pr) end  -- only cache a successful fetch
         schedule_render()
         local cbs = warm_cbs[id] or {}
         warm_cbs[id] = nil
@@ -1301,7 +1328,7 @@ local function prefetch_content(pr, cb)
     return
   end
   CACHE.prefetch({
-    id = pr.id, updatedIso = pr.updatedIso,
+    id = HOSTS.key(pr), updatedIso = pr.updatedIso,
     source = pr.source, target = pr.target, repo = path,
     totalThreads = pr.totalThreads,
     cmd = CONFIG.provider_argv(), env = pr_env(pr),
@@ -1352,7 +1379,7 @@ local function warm_all(list)
   local clone_state = {}
   local function clone_needs_fetch(path)
     for _, pr in ipairs(queue) do
-      if clone_for(pr) == path and warmed[tostring(pr.id)] ~= pr.updatedIso then return true end
+      if clone_for(pr) == path and warmed[tostring(HOSTS.key(pr))] ~= warm_stamp(pr) then return true end
     end
     return false
   end
@@ -1385,7 +1412,9 @@ local function warm_all(list)
         clone_state[path] = code == 0 and "ok" or "failed"
         if code == 0 then
           for _, q in ipairs(queue) do
-            if clone_for(q) == path then warmed[tostring(q.id)] = q.updatedIso end
+            -- HOSTS.key, as everywhere else warmed is read: a GitHub PR's
+            -- key isn't its number (q.id).
+            if clone_for(q) == path then warmed[tostring(HOSTS.key(q))] = warm_stamp(q) end
           end
         end
         for _, f in ipairs(waiting) do f(code == 0) end
@@ -1411,7 +1440,11 @@ local function warm_all(list)
       if active == 0 then STATE.warm.running = false end
       return
     end
-    if CACHE.is_complete(CACHE.key(pr.id, pr.updatedIso)) then
+    -- A complete cache isn't enough on its own: after a push the branches
+    -- need fetching first (prefetch_content then rebuilds the entry for
+    -- the moved refs, see cache.lua).
+    if warmed[tostring(HOSTS.key(pr))] == warm_stamp(pr)
+        and CACHE.is_complete(CACHE.key(HOSTS.key(pr), pr.updatedIso)) then
       worker()
       return
     end
@@ -1438,11 +1471,11 @@ end
 -- notification for every pre-existing comment or mention.
 local function notify_new_pr_comments(prev_prs, fresh_prs)
   local prev_by_id = {}
-  for _, p in ipairs(prev_prs) do prev_by_id[p.id] = p end
+  for _, p in ipairs(prev_prs) do prev_by_id[HOSTS.key(p)] = p end
 
   local mine_events, thread_events, mention_events, resolved_events = {}, {}, {}, {}
   for _, pr in ipairs(fresh_prs) do
-    local old = prev_by_id[pr.id]
+    local old = prev_by_id[HOSTS.key(pr)]
     if old then
       local is_mine = pr.state == "Created"
       if is_mine then
@@ -1470,7 +1503,7 @@ local function notify_new_pr_comments(prev_prs, fresh_prs)
     notify("New comment on your PR #" .. pr.id .. ": " .. (pr.title or ""))
     NOTIFY.toast("PR #" .. pr.id, "New comment on your PR: " .. (pr.title or ""))
     -- ...and a suggestion in the chat to triage them.
-    local old = prev_by_id[pr.id]
+    local old = prev_by_id[HOSTS.key(pr)]
     pcall(function()
       local n = (pr.othersComments or -1) >= 0 and old and (old.othersComments or -1) >= 0
         and pr.othersComments - old.othersComments or (pr.totalThreads or 0) - ((old and old.totalThreads) or 0)
@@ -1554,6 +1587,18 @@ local function load(silent, force)
         vim.bo[buf].modifiable = false
         return
       end
+      -- Some accounts failed but the rest listed: show those, and say which
+      -- - logged every time, warned only when the failing set changes.
+      local failed = PRS.failed_accounts(err)
+      local warn
+      warn, STATE.PR_LIST_FAILED = PRS.failed_accounts_changed(STATE.PR_LIST_FAILED, failed)
+      if #failed > 0 then
+        local LOG = require("azure-cli.log")
+        LOG.record("PR list", LOG.join_output({}, err))
+      end
+      if warn then
+        notify("Some accounts failed: " .. table.concat(failed, ", ") .. "  (:AzureCli log)", vim.log.levels.WARN)
+      end
       if not vim.api.nvim_buf_is_valid(buf) then return end
       for _, line in ipairs(out) do
         if line:gsub("%s", "") ~= "" then
@@ -1588,7 +1633,7 @@ warm_workitems = function(list)
   if workitems_running then return end
   local todo = {}
   for _, pr in ipairs(list or {}) do
-    if not PR_WORKITEMS.cached(pr.id) then todo[#todo + 1] = pr end
+    if not PR_WORKITEMS.cached(pr) then todo[#todo + 1] = pr end
   end
   if #todo == 0 then return end
   workitems_running = true
@@ -1600,7 +1645,7 @@ warm_workitems = function(list)
       workitems_running = false
       return
     end
-    PR_WORKITEMS.fetch(pr.id, pr_env(pr), function()
+    PR_WORKITEMS.fetch(pr, pr_env(pr), function()
       vim.schedule(function()
         if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
         next_one()
@@ -1632,6 +1677,7 @@ end
 -- Set the AZVICLI_* process env the reviewer (and its provider calls) read.
 local function set_pr_env(pr)
   vim.env.AZVICLI_PR = tostring(pr.id)
+  vim.env.AZVICLI_PR_KEY = tostring(HOSTS.key(pr))
   vim.env.AZVICLI_REPO = pr.repo or ""
   vim.env.AZVICLI_PROJECT = pr.project or ""
   vim.env.AZVICLI_ORG = pr.org or ""
@@ -1654,9 +1700,12 @@ local function open_pr_record(pr)
   if not pr then
     return
   end
-  -- Already open in a reviewer tab: go there rather than opening a twin.
-  if UI.goto_tab(function(b)
-    return vim.bo[b].filetype == "azurecli-files" and vim.b[b].azure_cli_pr == tostring(pr.id)
+  -- Already open (an inner tab of Pull requests, innertabs.lua, or a
+  -- reviewer tab of its own): go there rather than opening a twin.
+  local INNER = require("azure-cli.innertabs")
+  local key = tostring(HOSTS.key(pr))
+  if INNER.goto_key(key) or UI.goto_tab(function(b)
+    return vim.bo[b].filetype == "azurecli-files" and (vim.b[b].azure_cli_pr_key or vim.b[b].azure_cli_pr) == key
   end) then
     return
   end
@@ -1680,8 +1729,11 @@ local function open_pr_record(pr)
       notify("Could not open PR #" .. pr.id .. ": repo isn't available.", vim.log.levels.ERROR)
       return
     end
-    vim.cmd("tabnew")
-    require("azure-cli.review").open()
+    -- An inner tab of Pull requests (innertabs.lua), titled like the strip
+    -- shows it.
+    INNER.open("prs", key, "!" .. tostring(pr.id) .. " " .. tostring(pr.title or ""), function()
+      require("azure-cli.review").open()
+    end)
   end, true)
 end
 M.open_pr_by_record = open_pr_record
@@ -1742,47 +1794,55 @@ local function run_action(args, describe, apply)
   })
 end
 
-local VOTE_OPTIONS = {
-  { key = "10",  label = "Approve" },
-  { key = "5",   label = "Approve with suggestions" },
-  { key = "-5",  label = "Wait for author" },
-  { key = "-10", label = "Reject" },
-  { key = "0",   label = "Reset (no vote)" },
-}
 
 -- Record my vote on the row's record and recompute the derived vote ratio
 -- and reviewer summary the way the data provider does, so the row updates
 -- before the server has answered. Returns an undo function.
 local set_my_vote = PRS.apply_my_vote
 
--- My current vote on `pr` (a reviewer entry whose name is mine), as the
--- VOTE_OPTIONS key string, or nil when I haven't voted / am not a reviewer.
+-- My current vote on `pr` (a reviewer entry whose name is mine), as its
+-- vote option's key, or nil when I haven't voted / am not a reviewer.
 local my_vote_key = PRS.my_vote_key
 
 local function vote_pr()
   local pr = current_pr()
   if not pr then return end
   local cur = my_vote_key(pr)
-  PROMPT.select({ prompt = "Vote on PR #" .. pr.id .. "  " .. (pr.title or ""), items = VOTE_OPTIONS,
+  PROMPT.select({ prompt = "Vote on PR #" .. pr.id .. "  " .. (pr.title or ""), items = HOSTS.caps(pr).votes,
     current = function(o) return cur ~= nil and tostring(o.key) == cur end }, function(opt)
     if not opt then return end
-    run_action({ "--vote", opt.key }, "Voting on", function(p)
-      return set_my_vote(p, tonumber(opt.key) or 0)
-    end)
+    local function go(reason)
+      run_action({ "--vote", opt.key, reason }, "Voting on", function(p)
+        return set_my_vote(p, opt.key)
+      end)
+    end
+    if opt.reason then
+      PROMPT.input({ prompt = opt.label .. " - what needs changing?" }, function(text) if text then go(text) end end)
+    else
+      go()
+    end
   end)
 end
 
 local MERGE = require("azure-cli.merge")
-local MERGE_TYPES = MERGE.MERGE_TYPES
 
 -- Complete (merge) the PR under the cursor, or set/cancel auto-complete on
 -- it: the same dialog the reviewer's gm opens (lua/azure-cli/merge.lua) -
 -- merge type, work-item/branch/auto-complete toggles, build/threads/votes
 -- with a warning when they argue against merging - fed from the row's own
--- --list record.
-local function complete_pr()
-  local pr = current_pr()
+-- --list record. A GitHub PR's mergeability (required checks, what blocks
+-- it) is read fresh with --get-pr first, `m` (false: that failed): the
+-- list's goes stale.
+local function complete_pr(pr, m)
+  pr = type(pr) == "table" and pr or current_pr()
   if not pr then return end
+  if HOSTS.host(pr) == "github" and m == nil then
+    notify("Checking whether " .. HOSTS.ref(pr) .. " can be merged…")
+    MERGE.fetch_state(CONFIG.provider_argv("--get-pr"), pr_env(pr), function(state)
+      if current_pr() == pr then complete_pr(pr, state or false) end
+    end)
+    return
+  end
   local function set_auto(args, describe, on)
     run_action(args, describe, function(p)
       local was, by = p.autoComplete, p.autoCompleteSetBy
@@ -1790,7 +1850,7 @@ local function complete_pr()
       return function() p.autoComplete, p.autoCompleteSetBy = was, by end
     end)
   end
-  MERGE.dialog({
+  MERGE.dialog(MERGE.host_spec({
     id = pr.id,
     title = pr.title,
     source = pr.source,
@@ -1802,7 +1862,7 @@ local function complete_pr()
     auto_on = pr.autoComplete and true or false,
     auto_by = pr.autoCompleteSetBy,
     on_auto_off = function() set_auto({ "--auto-complete", "off" }, "Cancelling auto-complete on", false) end,
-  }, function(mt, delete_branch, work_items, auto)
+  }, pr, m or nil), function(mt, delete_branch, work_items, auto)
     if auto then
       set_auto({ "--auto-complete", "on", mt.key, tostring(delete_branch), tostring(work_items) },
         "Setting auto-complete on", true)
@@ -1818,7 +1878,7 @@ local function complete_pr()
       end
       if not at then return nil end
       table.remove(prs, at)
-      local unmark = PRS.mark_completed(STATE.PR_COMPLETED, p.id, os.time())
+      local unmark = PRS.mark_completed(STATE.PR_COMPLETED, HOSTS.key(p), os.time())
       return function()
         unmark()
         table.insert(prs, math.min(at, #prs + 1), p)
@@ -1834,6 +1894,9 @@ local function requeue_now(pr)
   local requeue_args = CONFIG.provider_argv()
   vim.list_extend(requeue_args, { "--requeue", tostring(pr.id) })
   RPC.run(requeue_args, {
+    -- The row's host and account: a GitHub row re-runs its own checks and
+    -- never reaches Azure's requeue, which goes by the number alone (#111).
+    env = pr_env(pr),
     detach = true,  -- finish the ADO write even if the user quits before it returns
     stdout_buffered = true,
     stderr_buffered = true,
@@ -1917,9 +1980,18 @@ KEYS.bind(buf, "dashboard", "unlink_workitem", unlink_workitem, { desc = "unlink
 KEYS.bind(buf, "dashboard", "workitems", function()
   require("azure-cli.home").go("workitems")
 end, { desc = "switch to the work-items dashboard (its own tab)" })
+-- I: the issues dashboard, bound once --boards says a GitHub account has
+-- issues: - never on an Azure-only setup.
+require("azure-cli.workitems.board").enabled(function()
+  if vim.api.nvim_buf_is_valid(buf) then
+    KEYS.bind(buf, "dashboard", "issues", function() require("azure-cli.home").go("issues") end,
+      { desc = "switch to the issues dashboard (its own tab)" })
+  end
+end)
 KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
--- gq: the chat panel (chat/init.lua), and what it's told this screen shows -
--- the PR under the cursor (chat/view.lua).
+-- i: straight into the chat panel's input box (chat/init.lua), opened if
+-- it's hidden, and what it's told this screen shows - the PR under the
+-- cursor (chat/view.lua).
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
 KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
@@ -1928,9 +2000,9 @@ KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("a
 KEYS.bind(buf, "dashboard", "agent_chat", function()
   local pr = current_pr()
   if not pr then return notify("Put the cursor on a pull request.") end
-  local a = agents_by_pr()[tostring(pr.id)]
+  local a = agent_for(agents_by_pr(), pr)
   if not a then
-    return notify("No agent on PR !" .. tostring(pr.id) .. " (the agent column shows the ones that have one).")
+    return notify("No agent on PR " .. HOSTS.ref(pr) .. " (the agent column shows the ones that have one).")
   end
   require("azure-cli.chat").popup(a.key)
 end, { desc = "its agent's chat, in a popup" })
@@ -1952,7 +2024,7 @@ end)
 -- run this session), :tabclose would refuse to close the last one, so this
 -- wipes the buffer instead and leaves Neovim itself open.
 KEYS.bind(buf, "dashboard", "quit", function()
-  if STATE.PR_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.PR_REFRESH_TIMER); STATE.PR_REFRESH_TIMER = nil end
+  if STATE.PR_REFRESH_TIMER then require("azure-cli.poll").stop(STATE.PR_REFRESH_TIMER); STATE.PR_REFRESH_TIMER = nil end
   if require("azure-cli").is_standalone() then
     vim.cmd("qa!")
     return
@@ -1999,16 +2071,20 @@ vim.api.nvim_create_autocmd("VimResized", {
 -- swap into this dashboard so timers don't stack across W/P swaps. Each poll is
 -- a full ADO sweep, guarded by list_inflight (below) so a slow sweep is
 -- skipped rather than stacked if the next tick fires before it returns -
--- see config.lua's timing.poll_seconds for the interval.
-if STATE.PR_REFRESH_TIMER then pcall(vim.fn.timer_stop, STATE.PR_REFRESH_TIMER) end
-STATE.PR_REFRESH_TIMER = vim.fn.timer_start(CONFIG.get().timing.poll_seconds * 1000, function()
-  -- Keep polling while the list is shown in any tab, so build/PR status stays
-  -- fresh even while a PR is open in an embedded reviewer tab; stop once the
-  -- dashboard buffer has been swapped away (e.g. to the work-items dashboard).
-  if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
-    load(true, true)
-  end
-end, { ["repeat"] = -1 })
+-- see config.lua's timing.poll_seconds for the interval, and poll.lua for
+-- how it slows down while you're away.
+require("azure-cli.poll").stop(STATE.PR_REFRESH_TIMER)
+STATE.PR_REFRESH_TIMER = require("azure-cli.poll").every("pr-dashboard", {
+  base = function() return CONFIG.get().timing.poll_seconds end,
+  tick = function()
+    -- Keep polling while the list is shown in any tab, so build/PR status stays
+    -- fresh even while a PR is open in an embedded reviewer tab; stop once the
+    -- dashboard buffer has been swapped away (e.g. to the work-items dashboard).
+    if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
+      load(true, true)
+    end
+  end,
+})
 
 -- The agent column follows its agents between polls: redrawn when one of
 -- them changes state.
