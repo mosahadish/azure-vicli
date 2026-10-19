@@ -167,12 +167,27 @@ return function(T)
         if type(args.message) ~= "string" or vim.trim(args.message) == "" then return done(nil, "the message is empty") end
         local key = PLAN().key(target)
         local conv = CHAT().find_conversation(key)
+        -- A PR an agent opened for its work item: that agent's (as gP).
+        if not conv and target.pr_id then
+          local pr = T.pr_record(target.pr_key or args.pr_id, not target.pr_key and args.repo or nil)
+          local owner = PLAN().owner_of_pr(pr or target.pr_id, pr and pr.source)
+          if owner then key, conv = owner.key, CHAT().find_conversation(owner.key) end
+        end
         if not conv then return done(nil, "no agent for " .. key .. " - start_agents starts one") end
         -- What it was started on stays its "current view".
         local snap
         for _, e in ipairs(conv.entries) do if e.role == "you" and e.view then snap = e.view end end
         local who = conv.label or key
         local text = "(From the user, through the main chat) " .. args.message
+        -- Its plan opened a PR still open: anything it plans for that PR
+        -- is a new revision of this plan, not a plan of the PR's own.
+        local rec = PLAN().load(key)
+        local wi = rec and type(rec.target) == "table" and rec.target.work_item_id
+        if wi and type(rec.pr) == "table" and not rec.pr_state then
+          text = text .. "\n\n(About PR !" .. tostring(rec.pr.id) .. ", which you opened for " .. PLAN().target_label(rec.target)
+            .. ": plan any change to it as a new revision of your plan - submit_plan with work_item_id " .. tostring(wi)
+            .. " - then make it with start_story and commit_and_push_fix for the same work item.)"
+        end
         local opts = { conv = conv, snap = snap, display = "From the main chat: " .. args.message,
           done_note = who .. "'s agent answered (the Agents screen lists them)." }
         -- Mid-turn: it waits in the agent's queue (#29's, chat/run.lua) for

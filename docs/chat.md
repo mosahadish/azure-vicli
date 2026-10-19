@@ -613,7 +613,7 @@ their line when the text around them changes.
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
 | `gD` | Discard this plan, as `dd` on the Agents screen: the question appears at once (with Discard all too), refused while its agent works; the files move to `plans/discarded/` and the plan's tab closes, then its worktree is checked in the background - removed if clean, kept if it has changes |
-| `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles) |
+| `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles); on an older revision: back to the current one, marked against that one |
 | `gh` | Open an older revision, read-only (on one: back to the current one) |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
@@ -686,12 +686,17 @@ shown - `gh` opens the revision before. `gi` turns the marks off and on.
 **Older revisions.** `gh` lists the plan's revisions, newest first, with
 who wrote each and when (`rev 3 (approved) · by the agent · 10-14 16:39`);
 picking an older one shows it in the plan pane, read-only - the winbar
-says `rev 3 of 5 · read-only`, the questions under the lines and the keys
-that write stay with the current one, and `gh` again (or `r`, or a new
-revision) goes back. A plan keeps its last `chat.plan_revisions` (3)
-revisions, and always the one last approved - with 5 revisions and the
-2nd approved, it keeps 2, 4 and 5. They keep their numbers. A plan with
-more from before is cut down the next time it's saved.
+says `rev 3 of 5 · read-only`, with the questions it had under its lines
+(as they were when the next revision replaced it); the keys that write
+stay with the current one, and `gh` again (or `r`, or a new revision)
+goes back. `gi` there goes back too, marking what the current revision
+changed since that one rather than since the one before. A plan keeps
+its last `chat.plan_revisions` (3) revisions, and always the one last
+approved and the one its pull request was opened from - with 5 revisions
+and the 2nd approved, it keeps 2, 4 and 5. So once its agent plans fixes
+to that PR, the original plan is still a `gh` away. They keep their
+numbers. A plan with more from before is cut down the next time it's
+saved.
 
 **From the plan to the code and back.** `gd` on a plan line opens the
 code it became: the agent ties the parts of its change to the plan lines
@@ -760,6 +765,8 @@ changes to agents rather than doing them itself:
   `message_agent` (the message shows in that agent's own chat, as coming
   from the main chat, and it answers there; while that agent is mid-turn the
   message is queued, like one you type there, and goes when the turn ends).
+  A message about a PR an agent opened for its work item goes to that
+  agent, as `gP` does.
   `start_agents` takes `board` like the other work-item tools, and each
   agent reads its item from that board; without it, the board a list showed
   the item on, else the one you're looking at.
@@ -842,7 +849,10 @@ agent opened for a work item goes back to that agent instead - the one
 that wrote the original plan and knows the change: it plans the fix as a
 new revision of that plan (on the Agents screen it's the work item's row
 again, waiting for you), and once you approve, it changes its story's
-worktree and pushes to the PR's branch. On the PR dashboard, the agent
+worktree and pushes to the PR's branch. However it comes to plan a fix
+to that PR - `gP`, or the main chat passing your question on - its plan
+is a new revision of the work item's, never a plan of the PR's own that
+no agent's row would show; `gh` in it opens the original. On the PR dashboard, the agent
 column shows each PR's agent and what it's doing, and `ga` there opens
 its conversation in a popup ([dashboard](dashboard.md)).
 

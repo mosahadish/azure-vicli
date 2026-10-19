@@ -6,8 +6,9 @@
 -- Once the agent has changed files, the list's Changes section shows its
 -- diff, file by file, in the plan pane (chat/plan_changes.lua). gh opens
 -- an older revision in the plan pane, read-only (view.old = its number):
--- no threads, no keys that write, gh again (or anything that reloads the
--- plan) back to the current one.
+-- the questions it had, no keys that write, gh again (or anything that
+-- reloads the plan) back to the current one; gi there goes back to the
+-- current one marking what changed since it (view.since_base).
 --
 -- plan.lua loads it on its own load and reaches into it through M.changed
 -- (save + redraw), M.plan_win and M.show; it reaches plan.lua lazily
@@ -49,6 +50,8 @@ local LIST_HELP = {
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
   { "discard", "discard this plan - asks first; a worktree with changes stays (as dd on Agents)" },
   "See",
+  { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
+    .. "on an older revision: the current one, marked against that one" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "refresh", "reload it" },
@@ -86,7 +89,8 @@ local PLAN_HELP = {
   { "open_file", "edit the plan by hand" },
   { "discard", "discard this plan - asks first; a worktree with changes stays (as dd on Agents)" },
   "See",
-  { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles)" },
+  { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
+    .. "on an older revision: the current one, marked against that one" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
   { "run_log", "the run log: revisions, questions, approvals, tests, the agent's tool calls" },
   { "refresh", "reload it" },
@@ -126,7 +130,7 @@ end
 -- on an older revision (gh) they only say it's read-only.
 local CURRENT_ONLY = {
   ask = true, request = true, answer = true, delete_thread = true, edit_request = true, expand_thread = true,
-  view_thread = true, approve = true, revise = true, open_file = true, goto_code = true, since = true,
+  view_thread = true, approve = true, revise = true, open_file = true, goto_code = true,
 }
 
 -- KEYS().bind for the plan surface, on a buffer of one plan's view: the
@@ -186,15 +190,18 @@ end
 
 local since_ns = vim.api.nvim_create_namespace("azure_cli_plan_since")
 
--- What this revision changed against the one before it (the previous one
--- kept: its number in view.changes_since), or nil (the first revision, gi
--- turned it off, an older one shown): revision_changes' { changed, removed }.
+-- What this revision changed against the one before it - or the one gi
+-- picked on an older revision (view.since_base), while it's kept - (its
+-- number in view.changes_since), or nil (the first revision, gi turned it
+-- off, an older one shown): revision_changes' { changed, removed }.
 local function since()
   local revs = view.rec.revisions
   view.changes_since = nil
   if view.since_off or view.old or #revs < 2 then return nil end
-  view.changes_since = revs[#revs - 1].n or (#revs - 1)
-  local old = vim.split(revs[#revs - 1].markdown or "", "\n", { plain = true })
+  local base = PLAN().revision(view.rec, view.since_base)
+  if not base or base == revs[#revs] then base, view.since_base = revs[#revs - 1], nil end
+  view.changes_since = base.n or (#revs - 1)
+  local old = vim.split(base.markdown or "", "\n", { plain = true })
   local new = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
   local diff = (vim.text and vim.text.diff) or vim.diff
   local ok, hunks = pcall(diff, table.concat(old, "\n") .. "\n", table.concat(new, "\n") .. "\n",
@@ -216,11 +223,12 @@ local function draw_since()
   end
 end
 
--- The questions and requests under their lines - none on an older
--- revision: they're on the current one's lines.
+-- The questions and requests under their lines - on an older revision,
+-- the ones it had when the next replaced it.
 local function draw_threads()
   if not (view and valid_buf(view.plan_buf)) then return end
-  THREADS().draw(view.plan_buf, view.plan_win, view.old and {} or view.rec.threads, function(th) return th.line end,
+  local threads = view.old and ((old_rev() or {}).threads or {}) or view.rec.threads
+  THREADS().draw(view.plan_buf, view.plan_win, threads, function(th) return th.line end,
     { send = KEYS().name("plan", "revise"), drop = key_of("plan", "delete_thread"), edit = key_of("plan", "edit_request") })
   draw_links()
 end
@@ -251,7 +259,8 @@ local function set_winbars()
     -- An older revision (gh): which one, and the way back.
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. PLAN().target_label(rec.target),
       "rev " .. view.old .. " of " .. count, "read-only" },
-      { "[" .. (key_of("plan", "revisions") or "gh") .. " back to the current one]" }))
+      { "[" .. (key_of("plan", "revisions") or "gh") .. " back to the current one]",
+        "[" .. (key_of("plan", "since") or "gi") .. " the current one against it]" }))
   elseif valid_win(view.plan_win) then
     pcall(UI().wo, view.plan_win, "winbar", UI().winbar({ "Plan " .. PLAN().target_label(rec.target),
       count > 1 and ("rev " .. count) or nil }, tags))
@@ -351,6 +360,7 @@ local function render_list()
   if view.old then
     -- An older revision: only the way back (the other keys need the current one).
     hints[#hints + 1] = { "plan", "revisions", "back to the current revision" }
+    hints[#hints + 1] = { "plan", "since", "the current one, marking what changed since this" }
     hints[#hints + 1] = { "plan", "run_log", "what happened so far" }
   else
     if not decided then
@@ -747,6 +757,19 @@ local function revisions()
     end)
 end
 
+-- gi: the marks of what this revision changed, on or off - on an older
+-- revision, back to the current one marked against that one.
+local function since_key()
+  if view.old then
+    view.since_base, view.since_off, view.old = view.old, false, nil
+  else
+    view.since_off, view.since_base = not view.since_off, nil
+  end
+  render()
+  notify(view.since_off and "Not marking what changed." or (view.changes and "Marking what changed since revision "
+    .. tostring(view.changes_since) .. ".") or "This is the first revision.")
+end
+
 local function ask(from, to)
   local rec = view.rec
   local lines = vim.api.nvim_buf_get_lines(view.plan_buf, from - 1, to, false)
@@ -836,6 +859,7 @@ local function setup_list(buf)
   bind(buf, "next_thread", function() jump_thread(1) end, { desc = "move the plan to the next open question or thread" })
   bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "move the plan to the previous open question or thread" })
   bind(buf, "revisions", revisions, { desc = "open an older revision, read-only / back to the current one" })
+  bind(buf, "since", since_key, { desc = "mark what this revision changed (toggle)" })
   bind(buf, "help", function() help(LIST_HELP) end, { desc = "keys" })
   bind_common(buf)
   -- Moving through the sections scrolls the plan to each one.
@@ -881,12 +905,7 @@ local function setup_plan(buf)
   bind(buf, "delete_thread", delete_here, { desc = "drop the queued change (asks first) / forget the question here" })
   bind(buf, "edit_request", edit_here, { desc = "edit the queued change under this line" })
   bind(buf, "answer", answer_here, { desc = "answer this open question" })
-  bind(buf, "since", function()
-    view.since_off = not view.since_off
-    render()
-    notify(view.since_off and "Not marking what changed." or (view.changes and "Marking what changed since revision "
-      .. tostring(view.changes_since) .. ".") or "This is the first revision.")
-  end, { desc = "mark what this revision changed (toggle)" })
+  bind(buf, "since", since_key, { desc = "mark what this revision changed (toggle)" })
   bind(buf, "next_thread", function() jump_thread(1) end, { desc = "next open question or thread" })
   bind(buf, "prev_thread", function() jump_thread(-1) end, { desc = "previous open question or thread" })
   bind(buf, "back", function()
