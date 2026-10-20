@@ -65,7 +65,7 @@ open goes back to it as you left it - the older revision you were reading,
 the Changes file you were on - and `dd` on that row discards its plan,
 after asking (see [Several agents at once](chat.md#several-agents-at-once)).
 `gp` goes between a PR (its dashboard row or its review) and its agent's
-plan, both ways. Plans
+plan or Agents row, both ways. Plans
 and changes only open when you open them: an agent finishing one never
 opens it for you. One opened from elsewhere (`gW` in a review, a plan
 opened from its change viewer) goes back there when you close it.
@@ -460,6 +460,7 @@ paste the output here after changing a default.
 | `issues` | `I` |
 | `last_row` | `G` |
 | `open` | `<CR>` |
+| `open_pr` | `gp` |
 | `palette` | `g.` |
 | `pr_list` | `P` |
 | `quit` | `q` |

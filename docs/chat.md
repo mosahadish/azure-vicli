@@ -831,6 +831,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
+| `gp` | Its pull request in the reviewer - the one it opened, or the one it fixes (`gp` there comes back to its plan) |
 | `<C-c>` | Stop what it's doing |
 | `dd` | Discard its plan, any plan (an agent's too), and everything the agent left on this machine. It asks at once - **Discard** or **Cancel**, Discard first - listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). Discard deletes the plan's files and its conversation's, the row goes, and a queued agent for it is taken off the queue; then, in the background, its worktree is deleted (forced: uncommitted and unpushed changes go with it) along with the local branch it was on, and a toast says what went. The branch on the server is never touched. It can't be undone. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
@@ -856,8 +857,8 @@ is a new revision of the work item's, never a plan of the PR's own that
 no agent's row would show; `gh` in it opens the original. On the PR dashboard, the agent
 column shows each PR's agent and what it's doing, and `ga` there opens
 its conversation in a popup ([dashboard](dashboard.md)). `gp` on that row,
-or anywhere in the PR's reviewer, opens the agent's plan; `gp` in the plan
-goes back to its PR.
+or anywhere in the PR's reviewer, opens the agent's plan; `gp` in the plan,
+or on its Agents row, goes back to its PR.
 
 Every plan you open gets an inner tab of its own under Agents, and so does
 every change - opening another doesn't replace the one you were reading,

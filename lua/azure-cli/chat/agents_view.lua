@@ -370,6 +370,7 @@ local HELP = {
   "This agent",
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
+  { "open_pr", "its pull request in the reviewer (the one it opened, or the one it fixes)" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
@@ -397,6 +398,13 @@ local function setup(buf)
     local r = row_here()
     if r then require("azure-cli.chat.plan").open_run_log(r.key) end
   end, { desc = "logs" })
+  -- gp: its PR in the reviewer, as gp in its plan (gp there comes back).
+  K.bind(buf, "agents", "open_pr", function()
+    local r = row_here()
+    if not r then return end
+    if not r.pr_key then return notify((r.label or "That agent") .. " has no pull request yet.") end
+    require("azure-cli.chat.plan_view").open_pr(r.pr_key, r.pr_id)
+  end, { desc = "its pull request" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "main chat" })

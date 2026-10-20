@@ -997,6 +997,12 @@ do
   opened = nil
   check("gp: a PR with no agent opens nothing", AV.open_for_pr("o~c~7") == false and opened == nil)
   PL.open = function() end
+  -- gp in a plan or on an Agents row: that PR, by key, in the reviewer.
+  local had_dash, got = package.loaded["azure-cli.dashboard"], nil
+  package.loaded["azure-cli.dashboard"] = { open_pr_by_record = function(p) got = p end }
+  PV.open_pr("o~b~7", 7)
+  package.loaded["azure-cli.dashboard"] = had_dash
+  check("#109 gp in a plan / on an Agents row: b's #7 in the reviewer", got == b7, vim.inspect(got))
   -- Linked and closed by key: closing a's #7 leaves b's.
   PL.save({ key = "wi-95", target = { work_item_id = 95 }, status = "done", revisions = {}, threads = {} })
   PL.link_pr({ 95 }, nil, a7)
