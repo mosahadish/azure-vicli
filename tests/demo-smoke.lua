@@ -3861,7 +3861,7 @@ section("INNERTABS-PLAN", function()
   -- dd on #3101's row while its tab is open: the tab closes, the list stays.
   vim.api.nvim_set_current_tabpage(atab)
   vim.api.nvim_set_current_win(av.win)
-  -- (dd's question is Discard / Discard all / Cancel since #122: Discard)
+  -- (dd's question is Discard / Cancel: Discard)
   local choose = UI.choose
   UI.choose = function(_, cb) cb(1) end
   for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do

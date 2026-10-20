@@ -612,7 +612,7 @@ their line when the text around them changes.
 | `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
-| `gD` | Discard this plan, as `dd` on the Agents screen: the question appears at once (with Discard all too), refused while its agent works; the files move to `plans/discarded/` and the plan's tab closes, then its worktree is checked in the background - removed if clean, kept if it has changes |
+| `gD` | Discard this plan and everything its agent left, as `dd` on the Agents screen: the question (Discard / Cancel, Discard first) appears at once, refused while its agent works; the files are deleted and the plan's tab closes, then its worktree and local branch are deleted in the background |
 | `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles); on an older revision: back to the current one, marked against that one |
 | `gh` | Open an older revision, read-only (on one: back to the current one) |
 | `ga` | Ask about this line (in visual mode: these lines) |
@@ -778,8 +778,8 @@ changes to agents rather than doing them itself:
   conversation was pruned - gets an idle agent conversation of its own when
   the plans are restored, so the Agents screen lists it. Approve it (`gA`)
   to hand it to that agent, or discard it: `dd` on its row, `gD` in the
-  plan itself, or ask the main chat to `discard_plan` it (all ask first;
-  the files move to `plans/discarded/`).
+  plan itself (both ask first, and delete it), or ask the main chat to
+  `discard_plan` it (its files move to `plans/discarded/`).
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
   tab. The main chat can't approve a plan, and an agent can't start or
   message other agents.
@@ -831,7 +831,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
 | `<C-c>` | Stop what it's doing |
-| `dd` | Discard its plan, any plan (an agent's too). It asks at once, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is looked at only after you answer, in the background: removed when there's nothing in it, kept when it has uncommitted or unpushed changes (or git can't tell), and a toast says which. The question also offers **Discard all**: it asks once more with the count and the names, then discards every plan the screen lists whose agent isn't working (finished ones hidden after 7 days are left out), keeping worktrees with changes, with one toast for all. The main chat's `discard_plan` still only discards a plan no agent worked on |
+| `dd` | Discard its plan, any plan (an agent's too), and everything the agent left on this machine. It asks at once - **Discard** or **Cancel**, Discard first - listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). Discard deletes the plan's files and its conversation's, the row goes, and a queued agent for it is taken off the queue; then, in the background, its worktree is deleted (forced: uncommitted and unpushed changes go with it) along with the local branch it was on, and a toast says what went. The branch on the server is never touched. It can't be undone. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `i` | The main chat (its input box), whatever row you're on |
 | `gg` / `G` | First / last row (with a count, that row) |

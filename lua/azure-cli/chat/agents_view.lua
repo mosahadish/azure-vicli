@@ -352,7 +352,7 @@ local HELP = {
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
-  { "discard", "discard its plan (asks first; not while it works; a worktree with changes is kept)" },
+  { "discard", "discard its plan, its worktree and local branch (asks first; not while it works)" },
   "Window",
   { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },

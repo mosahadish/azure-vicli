@@ -48,7 +48,7 @@ local LIST_HELP = {
   { "approve", "approve it - the agent goes ahead" },
   { "revise", "ask for changes or send your answers (you say what; your unsent answers go along)" },
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
-  { "discard", "discard this plan - asks first; a worktree with changes stays (as dd on Agents)" },
+  { "discard", "discard this plan, its worktree and local branch - asks first (as dd on Agents)" },
   "See",
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
     .. "on an older revision: the current one, marked against that one" },
@@ -87,7 +87,7 @@ local PLAN_HELP = {
       .. KEYS().name("plan", "request") .. ") and your unsent answers"
   end },
   { "open_file", "edit the plan by hand" },
-  { "discard", "discard this plan - asks first; a worktree with changes stays (as dd on Agents)" },
+  { "discard", "discard this plan, its worktree and local branch - asks first (as dd on Agents)" },
   "See",
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
     .. "on an older revision: the current one, marked against that one" },
