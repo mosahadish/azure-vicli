@@ -644,6 +644,7 @@ end
 local PLUGIN_FT = {
   ["azurecli-dashboard"] = true, ["azurecli-files"] = true, ["azurecli-workitems"] = true, ["azurecli-workitem"] = true,
   ["azurecli-changes"] = true, ["azurecli-plan"] = true, ["azurecli-agents"] = true,
+  ["azurecli-issues"] = true, ["azurecli-issue"] = true,
 }
 local function plugin_tab(tab)
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
@@ -854,6 +855,15 @@ function M.hide()
   STATE().visible = false
   local main = M.main_win()
   close_here()
+  -- Hidden everywhere, not just here: a panel left open in another tab
+  -- would greet you there, as if it had opened by itself.
+  for tab, w in pairs(STATE().wins) do
+    for _, win in ipairs({ w.input, w.log }) do
+      if win and vim.api.nvim_win_is_valid(win) and #vim.api.nvim_tabpage_list_wins(tab) > 1 then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end
+  end
   if main and vim.api.nvim_win_is_valid(main) then pcall(vim.api.nvim_set_current_win, main) end
 end
 
@@ -920,8 +930,35 @@ vim.api.nvim_create_autocmd({ "TabEnter", "BufWinEnter" }, {
         local st = STATE()
         local tab = vim.api.nvim_get_current_tabpage()
         if st.visible and not panel_open_in(tab) and plugin_tab(tab) then open_here(false) end
+        -- Already open here: at the size it was last given in any tab.
+        local w = st.wins[tab]
+        if st.size and w and w.log and vim.api.nvim_win_is_valid(w.log) then
+          local pos = config().position or "right"
+          if pos == "right" or pos == "left" then
+            if vim.api.nvim_win_get_width(w.log) ~= st.size then pcall(vim.api.nvim_win_set_width, w.log, st.size) end
+          elseif vim.api.nvim_win_get_height(w.log) ~= st.size then
+            pcall(vim.api.nvim_win_set_height, w.log, st.size)
+          end
+        end
       end)
     end)
+  end,
+})
+-- Resized by hand (the mouse, <C-w> < >): that size sticks for the
+-- session, in every tab the panel follows into, as its own < / > do.
+pcall(vim.api.nvim_create_autocmd, "WinResized", {
+  group = group,
+  callback = function()
+    local st = STATE()
+    local w = st.wins[vim.api.nvim_get_current_tabpage()]
+    if not (w and w.log and vim.api.nvim_win_is_valid(w.log)) then return end
+    for _, id in ipairs((vim.v.event or {}).windows or {}) do
+      if id == w.log then
+        local pos = config().position or "right"
+        st.size = (pos == "right" or pos == "left") and vim.api.nvim_win_get_width(w.log)
+          or vim.api.nvim_win_get_height(w.log)
+      end
+    end
   end,
 })
 vim.api.nvim_create_autocmd("WinClosed", {
@@ -934,8 +971,9 @@ vim.api.nvim_create_autocmd("WinClosed", {
           for _, win in ipairs({ w.log, w.input }) do
             if win ~= closed and win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
           end
-          -- Closed by hand while its tab lives on: that's hiding it.
-          if vim.api.nvim_tabpage_is_valid(tab) then STATE().visible = false end
+          -- Closed by hand while its tab lives on: that's hiding it, in
+          -- every tab (M.hide).
+          if vim.api.nvim_tabpage_is_valid(tab) and STATE().visible then M.hide() end
         end)
         STATE().wins[tab] = nil
       end

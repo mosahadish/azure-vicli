@@ -1733,6 +1733,9 @@ section("CHAT", function()
   end
   feed("q")
   if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("q inside the chat didn't hide it") end
+  for _, w in pairs(st.wins) do
+    if w.log and vim.api.nvim_win_is_valid(w.log) then return fail("q inside the chat left it open in another tab") end
+  end
   vim.ui.select = real_select
   smoke_ok("CHAT")
 end)

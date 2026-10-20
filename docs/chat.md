@@ -39,10 +39,11 @@ azure-vicli ships no agent configuration; you choose the agent and model
 it opens the panel, or jumps into it if it's already showing, and puts you
 in its input box, typing - keeping whatever you had typed there. The
 screens are read-only views, so `i` there has nothing else to do. `q`
-inside the panel hides it, and `<BS>` goes back to the screen next to it
-while leaving it open. Once shown, the panel appears in every azure-vicli
-tab you visit (dashboard, reviewer, work items) until you hide it. The
-conversation is the same in every tab. (`gq` did this before; it's gone -
+inside the panel hides it - in every tab, so it doesn't greet you again in
+the next one - and `<BS>` goes back to the screen next to it while leaving
+it open. Once shown, the panel appears in every azure-vicli tab you visit
+(dashboard, reviewer, work items, issues, Agents, plans) until you hide it,
+at the size you last gave it. The conversation is the same in every tab. (`gq` did this before; it's gone -
 a `gq` left in your `setup()` is skipped, with a warning when you had
 changed it.) `chat.allowed_skills` is gone too: `setup()` stops with an
 error until you remove it, and you allow a skill from `/skills` instead
@@ -66,9 +67,9 @@ error until you remove it, and you allow a skill from `/skills` instead
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `gM` / `gm` | Choose the agent / the model |
 | `<C-c>` | Stop the agent's answer - its session stays for your next message (what you queued is held until you send it) |
-| `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
+| `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab - so is a size you drag it to or set with `<C-w>`) |
 | `<BS>` | Back to the screen next to the panel |
-| `q` | Hide the panel (`i` on a screen brings you back to it) |
+| `q` | Hide the panel, in every tab (`i` on a screen brings it back) |
 | `?` | These keys |
 
 Every message is sent together with a description of what you're looking at:
@@ -130,6 +131,8 @@ launcher sets them in its own palette.
 **Saved prompts.** `/triage`, `/review`, `/explain`, `/build`, `/plan` and `/standup`
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
+`/triage` only sorts a PR's open threads (fix, push back, question,
+already done) and says why - it drafts no replies; ask for those after.
 They run against what's on screen like any message. (`/skills` isn't a
 prompt: it opens a popup of the agent's skills, without asking the agent -
 see [Permissions](#github-copilot-cli).) Add your own, replace
@@ -949,7 +952,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
 | `link_pr_to_work_item` | Links a PR and a work item | no (**yes** on GitHub, where it edits the PR's description) |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
-| `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
+| `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it. A reply can carry the status its thread gets once it's sent (`bydesign` for a false positive it explains); `s` in `gQ` changes it | no |
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
 | `create_work_item` | A new top-level work item (title, body, type, sprint), assigned to you | **yes** |
 | `requeue_build` | Queues the PR's build again | no |

@@ -129,7 +129,8 @@ end
 -- the prompt followed by `rest`.
 M.DEFAULT_PROMPTS = {
   triage = "Triage this pull request's open comment threads: for each, say whether the reviewer is right "
-    .. "(fix / push back / question / already done), why, and draft a short reply with draft_reply.",
+    .. "(fix / push back / question / already done) and why. Don't draft replies or change anything - "
+    .. "I'll ask for replies if I want them.",
   review = "Review this pull request's change for correctness bugs, missing tests and risky spots. "
     .. "Leave notes on the lines that matter with annotate_code, and summarise here.",
   explain = "Explain what this code or comment is about, and what the change does around it.",

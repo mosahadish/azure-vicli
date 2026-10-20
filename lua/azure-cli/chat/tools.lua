@@ -586,16 +586,31 @@ M.list = {
   {
     name = "draft_reply",
     description = "Drafts a reply to a comment thread. It is NOT posted: it goes into the PR's batch-review queue, "
-      .. "where the user reviews it and sends it. Runs without asking.",
+      .. "where the user reviews it and sends it. `status` (optional) is the status the thread gets once the "
+      .. "user sends it - fixed, wontfix, bydesign, closed, pending or active on Azure DevOps (fixed = resolved, "
+      .. "active = unresolved on GitHub): give it when the reply settles the thread, e.g. bydesign for a false "
+      .. "positive the reply explains. Runs without asking.",
     schema = { type = "object", properties = { pr_id = { type = "integer" }, thread_id = { type = "integer" },
-      text = { type = "string" } }, required = { "pr_id", "thread_id", "text" } },
+      text = { type = "string" }, status = { type = "string" } }, required = { "pr_id", "thread_id", "text" } },
     risk = "write",
     run = function(args, _, done)
       local pr = need_pr(args, done)
       if not pr then return end
-      local item = { kind = "reply", thread_id = args.thread_id, text = args.text }
+      local status = args.status and tostring(args.status):lower():gsub("[^%a]", "") or nil
+      if status == "" then status = nil end
+      if status then
+        local keys = {}
+        for _, o in ipairs(require("azure-cli.hosts").caps(pr).thread_statuses) do keys[o.key] = o.label end
+        if not keys[status] then
+          local names = vim.tbl_keys(keys)
+          table.sort(names)
+          return done(nil, "status must be one of: " .. table.concat(names, ", "))
+        end
+      end
+      local item = { kind = "reply", thread_id = args.thread_id, text = args.text, status = status }
       queue_draft(pr.id, item)
       done("Drafted a reply to thread #" .. args.thread_id .. " on PR #" .. pr.id
+        .. (status and (", setting it to " .. status .. " when sent") or "")
         .. " - queued for the user to review and send (" .. queue_keys() .. ").", nil,
         { op = "drop_draft", pr_id = pr.id, item = item })
     end,
