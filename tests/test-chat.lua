@@ -989,6 +989,14 @@ do
   check("#109 agent column / ga: each #7 to its own agent",
     (AV.for_pr(by, a7) or {}).key == "pr-github-o~a~7" and (AV.for_pr(by, b7) or {}).key == "pr-github-o~b~7"
     and AV.for_pr(by, { id = 7 }) == nil)
+  -- gp on a PR (the dashboard, the reviewer): its agent's plan, by key.
+  local opened
+  PL.open = function(k) opened = k end
+  check("#109 gp: b's #7 opens b's agent's plan", AV.open_for_pr("o~b~7") == true and opened == "pr-github-o~b~7",
+    tostring(opened))
+  opened = nil
+  check("gp: a PR with no agent opens nothing", AV.open_for_pr("o~c~7") == false and opened == nil)
+  PL.open = function() end
   -- Linked and closed by key: closing a's #7 leaves b's.
   PL.save({ key = "wi-95", target = { work_item_id = 95 }, status = "done", revisions = {}, threads = {} })
   PL.link_pr({ 95 }, nil, a7)

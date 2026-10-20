@@ -165,15 +165,7 @@ local agent_of = {}
 local function agent_for(map, pr)
   return require("azure-cli.chat.agents_view").for_pr(map, pr)
 end
-local function agents_by_pr()
-  local ok, map = pcall(function()
-    local CHAT = require("azure-cli.chat")
-    pcall(CHAT.restore_plans)
-    local AV = require("azure-cli.chat.agents_view")
-    return AV.by_pr(AV.rows(CHAT.conversations(), {}, require("azure-cli.chat.plan").load, os.time(), "\u{22EF}"))
-  end)
-  return ok and map or {}
-end
+local function agents_by_pr() return require("azure-cli.chat.agents_view").by_pr_now() end
 local function pr_matches(pr, q)
   if tostring(pr.id or ""):find(q, 1, true) then return true end
   local hay = ((pr.title or "") .. " " .. (pr.repo or "") .. " " .. (pr.author or "")):lower()
@@ -197,7 +189,7 @@ local DASHBOARD_ACTIONS = {
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
   { "vote", "vote" }, { "complete", "complete / auto-complete" },
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
-  { "agent_chat", "its agent's chat, in a popup" },
+  { "agent_chat", "its agent's chat, in a popup" }, { "goto_plan", "its agent's plan" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
   "Chat",
   { "chat_input", "type in the chat" }, { "chat_selection", "in visual mode: ask the chat about the selected lines" },
@@ -2006,6 +1998,14 @@ KEYS.bind(buf, "dashboard", "agent_chat", function()
   end
   require("azure-cli.chat").popup(a.key)
 end, { desc = "its agent's chat, in a popup" })
+-- gp: that agent's plan, as <CR> on its Agents row opens it.
+KEYS.bind(buf, "dashboard", "goto_plan", function()
+  local pr = current_pr()
+  if not pr then return notify("Put the cursor on a pull request.") end
+  if not require("azure-cli.chat.agents_view").open_for_pr(HOSTS.key(pr)) then
+    notify("No agent on PR " .. HOSTS.ref(pr) .. " (the agent column shows the ones that have one).")
+  end
+end, { desc = "its agent's plan" })
 require("azure-cli.chat.view").register("azurecli-dashboard", function(w)
   local pr = row_pr[vim.api.nvim_win_get_cursor(w)[1]]
   local snap = { screen = "PR dashboard" }

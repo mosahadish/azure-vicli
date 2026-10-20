@@ -63,7 +63,9 @@ The same goes for work items (inside Work items), issues (inside Issues)
 and plans (inside Agents): `<CR>` on an Agents row whose plan is already
 open goes back to it as you left it - the older revision you were reading,
 the Changes file you were on - and `dd` on that row discards its plan,
-after asking (see [Several agents at once](chat.md#several-agents-at-once)). Plans
+after asking (see [Several agents at once](chat.md#several-agents-at-once)).
+`gp` goes between a PR (its dashboard row or its review) and its agent's
+plan, both ways. Plans
 and changes only open when you open them: an agent finishing one never
 opens it for you. One opened from elsewhere (`gW` in a review, a plan
 opened from its change viewer) goes back there when you close it.
@@ -139,6 +141,7 @@ paste the output here after changing a default.
 | `expand_all` | `zR` |
 | `filter` | `/` |
 | `first_pr` | `gg` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `issues` | `I` |
 | `last_pr` | `G` |
@@ -174,6 +177,7 @@ paste the output here after changing a default.
 | `config` | `gO` |
 | `filters` | `gF` |
 | `followup` | `gu` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
@@ -272,6 +276,7 @@ paste the output here after changing a default.
 | `edit_comment` | `e` |
 | `filters` | `gF` |
 | `followup` | `gu` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
@@ -427,6 +432,7 @@ paste the output here after changing a default.
 | `next_thread` | `]t` |
 | `open` | `<CR>` |
 | `open_file` | `gf` |
+| `open_pr` | `gp` |
 | `palette` | `g.` |
 | `prev_thread` | `[t` |
 | `quit` | `q` |
@@ -469,5 +475,4 @@ paste the output here after changing a default.
 | `next` | `]r` |
 | `pick` | `g1` / `g2` / `g3` / `g4` / `g5` / `g6` / `g7` / `g8` / `g9` |
 | `prev` | `[r` |
-
 <!-- END GENERATED KEYS TABLE -->

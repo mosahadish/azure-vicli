@@ -22,7 +22,7 @@ local DEFAULT_KEYS = {
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", agents = "A", plan_agents = "gP",
-    agent_chat = "ga", chat_input = "i", chat_selection = "<CR>",
+    agent_chat = "ga", goto_plan = "gp", chat_input = "i", chat_selection = "<CR>",
   },
   -- Reviewer file list.
   list = {
@@ -34,7 +34,7 @@ local DEFAULT_KEYS = {
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP",
+    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP", goto_plan = "gp",
     chat_input = "i", chat_selection = "<CR>",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
@@ -59,7 +59,8 @@ local DEFAULT_KEYS = {
     toggle_fold = { "za", "<Space>" },
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
-    goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
+    -- The plan of the PR's agent; in the chat's change viewer, the plan line this code carries out.
+    goto_plan = "gp",
     delete_thread = "dd",  -- the chat's change viewer only: forget the question / queued change here
     accept_hunk = "gy", reject_hunk = "gn",  -- the chat's change viewer only: per hunk
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
@@ -73,7 +74,7 @@ local DEFAULT_KEYS = {
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", open_image = { "<CR>", "gx" }, batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP",
+    link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP", goto_plan = "gp",
     chat_input = "i", chat_selection = "<CR>",
   },
   -- Code-navigation peek/revision buffers.
@@ -131,6 +132,7 @@ local DEFAULT_KEYS = {
     edit_request = "cc",
     revisions = "gh",
     discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
+    open_pr = "gp",  -- the PR its agent opened, or the one it fixes
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to

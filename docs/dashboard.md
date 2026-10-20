@@ -73,6 +73,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
 | `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which PR is under the cursor. `<CR>` on a visual selection sends it along |
 | `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
+| `gp` | The plan of the PR's agent, as `<CR>` on its row on the Agents screen opens it (`gp` in the plan comes back to the PR) |
 | `gP` | Start an agent that plans the fix of the PR's open comments (on selected rows: one per PR) - see [Several agents at once](chat.md#several-agents-at-once) |
 | `[r` / `]r`, `g1`-`g9` | Previous / next inner tab, or the n-th (`g1` is this list) - see above |
 | `W` | Switch to the work-items dashboard |

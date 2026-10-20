@@ -50,6 +50,7 @@ local LIST_HELP = {
   { "open_file", "edit the plan by hand (saving it makes that the version the agent gets)" },
   { "discard", "discard this plan, its worktree and local branch - asks first (as dd on Agents)" },
   "See",
+  { "open_pr", "its pull request in the reviewer (the one its agent opened, or the one it fixes)" },
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
     .. "on an older revision: the current one, marked against that one" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
@@ -89,6 +90,7 @@ local PLAN_HELP = {
   { "open_file", "edit the plan by hand" },
   { "discard", "discard this plan, its worktree and local branch - asks first (as dd on Agents)" },
   "See",
+  { "open_pr", "its pull request in the reviewer (the one its agent opened, or the one it fixes)" },
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
     .. "on an older revision: the current one, marked against that one" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
@@ -810,6 +812,29 @@ goto_code = function()
   notify("Nothing in the change is linked to this line (a Files entry opens its file).")
 end
 
+-- gp: the PR the plan's agent opened, or the one a PR fix's plan fixes, in
+-- the reviewer (gp there comes back). Looked up on the server when the
+-- dashboard doesn't list it (a completed one).
+local function open_pr()
+  local rec = view and PLAN().load(view.key)
+  if not rec then return end
+  local t, pr = rec.target or {}, type(rec.pr) == "table" and rec.pr or {}
+  local key, id = pr.key or t.pr_key or pr.id or t.pr_id, pr.id or t.pr_id
+  if not key then
+    return notify("This plan has no pull request yet - its agent opens one once the plan is carried out.")
+  end
+  local TOOLS = require("azure-cli.chat.tools")
+  local function go(found) require("azure-cli.dashboard").open_pr_by_record(found) end
+  local known = TOOLS.pr_record(key)
+  if known then return go(known) end
+  if not id then return notify("PR " .. tostring(key) .. " isn't on the dashboard.") end
+  TOOLS.fetch_pr(id, function(found, err)
+    vim.schedule(function()
+      if found then go(found) else notify(err or ("PR !" .. tostring(id) .. " wasn't found."), vim.log.levels.WARN) end
+    end)
+  end)
+end
+
 local function bind_common(buf)
   bind(buf, "approve", approve, { desc = "approve the plan" })
   bind(buf, "revise", revise, { desc = "ask for changes / send your answers" })
@@ -826,6 +851,7 @@ local function bind_common(buf)
   -- gD: Agents' dd from here (#103) - asks first, then closes this tab.
   bind(buf, "discard", function() require("azure-cli.chat.plan_discard").ask({ key = view.key }) end,
     { desc = "discard this plan (asks first)" })
+  bind(buf, "open_pr", open_pr, { desc = "its pull request, in the reviewer" })
 end
 
 local function goto_section(s, focus)

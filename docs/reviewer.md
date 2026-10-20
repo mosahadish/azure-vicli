@@ -69,6 +69,7 @@ File list:
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
 | `gv` / `gm` | Vote / complete (on GitHub: review verdict / merge - see [On GitHub](#on-github)) |
+| `gp` | The plan of this PR's agent - the one fixing its comments, or the one whose plan opened it - as `<CR>` on its Agents row opens it; `gp` in the plan comes back here |
 | `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state, `gl`/`gL` link/unlink); on GitHub, the issues it closes |
 | `gl` / `gL` | Link a work item to this PR / unlink one (each a popup, mid-screen) |
 | `gc` | Open the PR's commit list |

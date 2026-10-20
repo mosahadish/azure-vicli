@@ -113,6 +113,12 @@ local function setup(ctx)
     if kind ~= "nav" then
       ctx.add_key(kind, "plan_agents", function() require("azure-cli.chat").plan_agents_here(0) end,
         "an agent plans the fix of this PR's comments (on a thread: that one)")
+      -- gp: the plan of the agent on this PR, as gp on the dashboard.
+      ctx.add_key(kind, "goto_plan", function()
+        if not require("azure-cli.chat.agents_view").open_for_pr(ctx.KEY) then
+          ctx.notify("No agent on this PR - gP starts one.")
+        end
+      end, "the plan of this PR's agent")
     end
   end
 

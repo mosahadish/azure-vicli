@@ -615,6 +615,7 @@ their line when the text around them changes.
 | `gD` | Discard this plan and everything its agent left, as `dd` on the Agents screen: the question (Discard / Cancel, Discard first) appears at once, refused while its agent works; the files are deleted and the plan's tab closes, then its worktree and local branch are deleted in the background |
 | `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles); on an older revision: back to the current one, marked against that one |
 | `gh` | Open an older revision, read-only (on one: back to the current one) |
+| `gp` | Its pull request in the reviewer - the one its agent opened, or the one it fixes (looked up on the server when the dashboard doesn't list it); `gp` there comes back to the plan |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
@@ -854,7 +855,9 @@ to that PR - `gP`, or the main chat passing your question on - its plan
 is a new revision of the work item's, never a plan of the PR's own that
 no agent's row would show; `gh` in it opens the original. On the PR dashboard, the agent
 column shows each PR's agent and what it's doing, and `ga` there opens
-its conversation in a popup ([dashboard](dashboard.md)).
+its conversation in a popup ([dashboard](dashboard.md)). `gp` on that row,
+or anywhere in the PR's reviewer, opens the agent's plan; `gp` in the plan
+goes back to its PR.
 
 Every plan you open gets an inner tab of its own under Agents, and so does
 every change - opening another doesn't replace the one you were reading,

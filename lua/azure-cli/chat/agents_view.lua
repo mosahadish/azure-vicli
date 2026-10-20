@@ -131,6 +131,17 @@ function M.for_pr(map, pr)
   return map[tostring(require("azure-cli.hosts").key(pr))]
 end
 
+-- M.by_pr of every agent as it is now: the dashboard's agent column, ga,
+-- and gp on a PR.
+function M.by_pr_now()
+  local ok, map = pcall(function()
+    local CHAT = require("azure-cli.chat")
+    pcall(CHAT.restore_plans)
+    return M.by_pr(M.rows(CHAT.conversations(), {}, require("azure-cli.chat.plan").load, os.time(), "\u{22EF}"))
+  end)
+  return ok and map or {}
+end
+
 -- The screen's groups, in order: what needs you first.
 M.GROUPS = { "Needs you", "Working", "In progress", "Finished" }
 -- Finished agents older than this are hidden until gF shows them.
@@ -341,6 +352,16 @@ local function open_agent(r)
   end
   if r.conv then return CHAT().popup(r.key) end
   notify((r.label or "That row") .. " is waiting for an agent - nothing to show yet.")
+end
+
+-- gp on a PR (the dashboard, the reviewer): its agent, as <CR> on its row
+-- here opens it - its plan, else its conversation. False when the PR (by
+-- hosts.lua's key) has no agent.
+function M.open_for_pr(key)
+  local r = M.by_pr_now()[tostring(key)]
+  if not r then return false end
+  open_agent(r)
+  return true
 end
 
 local HELP = {
