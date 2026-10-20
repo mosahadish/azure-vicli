@@ -280,5 +280,39 @@ do
   check("submit_native: every item failed with the error", results[1].err == "nope" and results[4].err == "nope")
 end
 
+-- --- a reply's status --------------------------------------------------------
+
+do
+  check("status_args: a reply's status", table.concat(M.status_args({ kind = "reply", thread_id = 9, status = "bydesign" }),
+    " ") == "--status 9 bydesign")
+  check("status_args: none without one", M.status_args({ kind = "reply", thread_id = 9 }) == nil
+    and M.status_args({ kind = "thread", status = "fixed" }) == nil)
+  -- The status goes after its reply, before the thread's next reply.
+  local state = { on = true, items = {
+    { kind = "reply", thread_id = 9, text = "one", status = "bydesign" },
+    { kind = "reply", thread_id = 9, text = "two" },
+  } }
+  local log, results = {}, nil
+  M.submit(state, fake_run_write(function() return true end, log), nil, { done = function(r) results = r end })
+  check("submit: reply, its status, then the next reply", #log == 3 and log[1][1] == "--reply"
+    and log[2][1] == "--status" and log[2][3] == "bydesign" and log[3][3] == "two")
+  check("submit: both sent", results and results[1].ok and results[2].ok and #state.items == 0)
+  -- A failed status leaves the reply sent, with status_err.
+  state = { on = true, items = { { kind = "reply", thread_id = 9, text = "one", status = "wontfix" } } }
+  log, results = {}, nil
+  M.submit(state, fake_run_write(function(a) return a[1] ~= "--status" or "denied" end, log), nil,
+    { done = function(r) results = r end })
+  check("submit: a failed status keeps the reply sent", results and results[1].ok and results[1].status_err == "denied"
+    and #state.items == 0)
+  -- A native review sets the statuses after it lands.
+  state = { on = true, items = { { kind = "reply", thread_id = 9, text = "one", status = "fixed" },
+    { kind = "reply", thread_id = 8, text = "two" } } }
+  log, results = {}, nil
+  M.submit_native(state, fake_run_write(function() return true end, log), { "--submit-review", "{}" },
+    { done = function(r) results = r end })
+  check("submit_native: the review, then the status", #log == 2 and log[1][1] == "--submit-review"
+    and log[2][1] == "--status" and log[2][2] == "9" and results and #results == 2 and state.submitting == nil)
+end
+
 print(fails == 0 and "test-review-batch: all cases pass" or ("test-review-batch: " .. fails .. " unexpected"))
 if fails > 0 then os.exit(1) end

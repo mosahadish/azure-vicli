@@ -288,8 +288,10 @@ local function setup(ctx)
         return
       end
       vim.bo[fbuf].modifiable = true
-      pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, (ctx.threads_to_lines(threads)))
+      pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false,
+        (ctx.threads_to_lines(threads, vim.b[fbuf].azure_cli_thread_width)))
       vim.bo[fbuf].modifiable = false
+      require("azure-cli.review.thread_text").paint(fbuf)
     end
 
     vim.keymap.set("n", "e", function()

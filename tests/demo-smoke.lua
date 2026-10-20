@@ -596,6 +596,45 @@ if not ok then return fail("gA again didn't bring my thread back\n" .. tostring(
 smoke_ok("FOLLOWUP")
 end)
 
+-- ]C on the file list goes to the comment itself, in the diff pane (the
+-- focus with it), not just to the row of a file that has one; ]c the same
+-- for a change.
+section("LISTJUMP", function()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  ensure_review()
+  local lw = vim.fn.bufwinid(files)
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { 1, 0 })
+  local ns = vim.api.nvim_get_namespaces()["azure_cli_comments"]
+  local function on_comment()
+    local w = vim.api.nvim_get_current_win()
+    if w == lw or vim.api.nvim_win_get_config(w).relative ~= "" then return false end
+    local row = vim.api.nvim_win_get_cursor(w)[1] - 1
+    local b = vim.api.nvim_win_get_buf(w)
+    return #vim.api.nvim_buf_get_extmarks(b, ns, { row, 0 }, { row, -1 }, {}) > 0
+  end
+  feed("]C")
+  if not vim.wait(15000, on_comment, 50) then
+    return fail("]C on the file list didn't land on a comment in the diff pane: "
+      .. vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()) .. " line " .. vim.api.nvim_win_get_cursor(0)[1])
+  end
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { 1, 0 })
+  local before = vim.api.nvim_win_get_buf(vim.api.nvim_get_current_win())
+  feed("]c")
+  local landed = vim.wait(15000, function()
+    local w = vim.api.nvim_get_current_win()
+    if w == lw then return false end
+    local m = (require("azure-cli.review.pane").entry(vim.api.nvim_win_get_buf(w)) or {}).map
+    local at = m and m[vim.api.nvim_win_get_cursor(w)[1]]
+    return at ~= nil and (at.kind == "add" or at.kind == "del")
+  end, 50)
+  if not landed or before == nil then return fail("]c on the file list didn't land on a change in the diff pane") end
+  smoke_ok("LISTJUMP")
+end)
+
 -- Remembered folds (#131) and toggle_fold. PR #101 appends a section to
 -- README.md, so its first four unchanged lines fold away. <Space> opens
 -- that fold; it stays open when you go to another file and back, when the

@@ -471,6 +471,8 @@ local function resize_list(delta)
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     local w = math.max(20, vim.api.nvim_win_get_width(list_win) + delta)
     pcall(vim.api.nvim_win_set_width, list_win, w)
+    -- Kept from now on: re-fitting the list (a refresh, K) leaves it.
+    EXT.list_width = vim.api.nvim_win_get_width(list_win)
   end
 end
 
@@ -951,7 +953,9 @@ end
 -- lines render at - built by the same loop that builds `lines`, so a caller
 -- wanting "the comment under this line" always matches what's on screen
 -- exactly. Existing callers only use the first return, so this is additive.
-local function threads_to_lines(threads)
+-- `width` (optional): wrap each comment's text to that many cells
+-- (review/thread_text.lua, which also tidies its links).
+local function threads_to_lines(threads, width)
   local lines = {}
   local comment_map = {}
   for ti, t in ipairs(threads) do
@@ -966,8 +970,8 @@ local function threads_to_lines(threads)
     for _, c in ipairs(t.comments) do
       lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
       comment_map[#lines] = { thread = t, comment = c }
-      for _, cl in ipairs(vim.split(c.content, "\n", { plain = true })) do
-        lines[#lines + 1] = "│   " .. cl
+      for _, cl in ipairs(require("azure-cli.review.thread_text").comment_lines(c.content, "│   ", width)) do
+        lines[#lines + 1] = cl
       end
     end
   end
@@ -1168,9 +1172,11 @@ end
 -- are declared much further down this chunk, so this function can't close
 -- over them; it goes through EXT.file_index / EXT.file_count /
 -- EXT.open_file_at, which the closing loader defines once they exist.
-local function jump_change(dir)
+-- `from_idx` (optional): start past file-list index `from_idx` instead of
+-- from the cursor (the file list's ]c with no file open yet).
+local function jump_change(dir, from_idx)
   local buf = vim.api.nvim_get_current_buf()
-  local i = require("azure-cli.diffbuf").next_change(maps_by_buf[buf], vim.api.nvim_win_get_cursor(0)[1], dir)
+  local i = not from_idx and require("azure-cli.diffbuf").next_change(maps_by_buf[buf], vim.api.nvim_win_get_cursor(0)[1], dir)
   if i then
     vim.api.nvim_win_set_cursor(0, { i, 0 })
     vim.cmd("normal! zz")
@@ -1180,7 +1186,7 @@ local function jump_change(dir)
   local function no_more()
     notify(dir > 0 and "No further changes." or "No previous changes.")
   end
-  local cur_idx = EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf])
+  local cur_idx = from_idx or (EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf]))
   if not cur_idx then
     no_more()
     return
@@ -1434,8 +1440,9 @@ local function reply_to_thread(target, on_success)
   -- the floating editor opens anchored just below it (see EDITOR.open's
   -- `anchor`), so a reply typed from the K popup never hides what's being
   -- replied to.
-  local thread_lines = threads_to_lines({ target })
+  local thread_lines = threads_to_lines({ target }, require("azure-cli.review.thread_text").popup_width())
   local fwin = open_float(thread_lines, false)
+  if fwin then require("azure-cli.review.thread_text").paint(vim.api.nvim_win_get_buf(fwin)) end
   local function close_thread_float()
     if fwin and vim.api.nvim_win_is_valid(fwin) then
       pcall(vim.api.nvim_win_close, fwin, true)
@@ -1568,68 +1575,19 @@ local function apply_status_to_matches(matches, status, label, on_change)
   end
 end
 
--- Prompt for a status and apply it to the given thread. When `host` is given
--- (host.buf/host.win of an already-open float, e.g. the K popup, plus
--- host.restore() to redraw that float's normal content and host.close() to
--- close it), the picker is shown inline inside that same window instead of
--- nvim's cmdline inputlist, so you never leave the comment you're looking at.
--- Falls back to inputlist when there's no host float (e.g. `s` on the diff
--- line directly).
+-- Prompt for a status and apply it to the given thread: the numbered menu
+-- (prompt.select), over the K popup when `host` (that popup's host.win) is
+-- given - the popup keeps showing the thread, and gets the focus back.
 local function set_thread_status(target, on_success, host)
   if not target or not target.id then
     notify("Thread id unknown; cannot set status.", vim.log.levels.ERROR)
     return
   end
-
-  if host and host.buf and vim.api.nvim_buf_is_valid(host.buf)
-    and host.win and vim.api.nvim_win_is_valid(host.win) then
-    local numkeys = {}
-    local kopts = { buffer = host.buf, silent = true, nowait = true }
-    -- Restore whatever q/Esc normally do for this popup (close it), since we
-    -- temporarily repurpose them to cancel the status menu below. Without
-    -- this, q/Esc would be left unbound after picking a status, and there'd
-    -- be no way to close the popup from the keyboard.
-    local function rebind_close()
-      if host.close then
-        vim.keymap.set("n", "q", host.close, kopts)
-        vim.keymap.set("n", "<Esc>", host.close, kopts)
-      end
-    end
-    local function cleanup()
-      for _, k in ipairs(numkeys) do pcall(vim.keymap.del, "n", k, { buffer = host.buf }) end
-    end
-    local function finish(status)
-      cleanup()
-      rebind_close()
-      if status then
-        apply_status(target, status, on_success)
-      end
-      if host.restore then host.restore() end
-    end
-
-    local lines = { "Set thread " .. target.id .. " status:", "" }
-    for i, o in ipairs(status_options()) do
-      lines[#lines + 1] = string.format("  %d. %s%s", i, o.label,
-        (target.status == o.key) and "  (current)" or "")
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "(1-" .. #status_options() .. ": choose   q/Esc: cancel)"
-    vim.bo[host.buf].modifiable = true
-    pcall(vim.api.nvim_buf_set_lines, host.buf, 0, -1, false, lines)
-    vim.bo[host.buf].modifiable = false
-
-    for i, status in ipairs(status_options()) do
-      local key = tostring(i)
-      numkeys[#numkeys + 1] = key
-      vim.keymap.set("n", key, function() finish(status) end, kopts)
-    end
-    vim.keymap.set("n", "q", function() finish(nil) end, kopts)
-    vim.keymap.set("n", "<Esc>", function() finish(nil) end, kopts)
-    return
-  end
-
   require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = status_options(),
     current = function(o) return target.status == o.key end }, function(o)
+    if host and host.win and vim.api.nvim_win_is_valid(host.win) then
+      pcall(vim.api.nvim_set_current_win, host.win)
+    end
     if o then apply_status(target, o, on_success) end
   end)
 end
@@ -1654,17 +1612,25 @@ local function show_comments_here()
     decorate_comments(buf, paths_by_buf[buf], maps_by_buf[buf])
   end
   refresh_file_rows()
-  local win = open_float(threads_to_lines(threads), true, { big = true })
+  -- Sized to the threads (not the big fixed size), centred, their text
+  -- wrapped under the gutter; an address wider than that wraps indented.
+  local TT = require("azure-cli.review.thread_text")
+  local width = TT.popup_width()
+  local win = open_float(threads_to_lines(threads, width), true, { center = true, min_width = math.min(60, width) })
   if not win then return end
   local fbuf = vim.api.nvim_win_get_buf(win)
+  vim.b[fbuf].azure_cli_thread_width = width
+  UI.wo(win, "breakindentopt", "shift:4")
+  TT.paint(fbuf)
 
   -- Redraw the popup with the current `threads` (used after a cancelled
   -- status change, and as the tail of refresh() below).
   local function show_threads()
     if not vim.api.nvim_buf_is_valid(fbuf) then return end
     vim.bo[fbuf].modifiable = true
-    pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, threads_to_lines(threads))
+    pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, threads_to_lines(threads, width))
     vim.bo[fbuf].modifiable = false
+    TT.paint(fbuf)
   end
   local function close()
     if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
@@ -1902,9 +1868,10 @@ end
 -- files - and only reports "no further comments" once no such file is
 -- left. File-list access goes through the EXT.file_* accessors the
 -- closing loader defines, since `files`/`open_file` are declared later.
-local function jump_comment(dir)
+-- `from_idx` (optional): as jump_change's.
+local function jump_comment(dir, from_idx)
   local buf = vim.api.nvim_get_current_buf()
-  local per_line = comments_by_buf[buf]
+  local per_line = not from_idx and comments_by_buf[buf]
   local total = vim.api.nvim_buf_line_count(buf)
   local i = vim.api.nvim_win_get_cursor(0)[1] + dir
   while per_line and i >= 1 and i <= total do
@@ -1919,7 +1886,7 @@ local function jump_comment(dir)
   local function no_more()
     notify(dir > 0 and "No further comments." or "No previous comments.")
   end
-  local cur_idx = EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf])
+  local cur_idx = from_idx or (EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf]))
   if not cur_idx then
     no_more()
     return
@@ -2047,8 +2014,10 @@ local function build_overview()
       for _, c in ipairs(t.comments) do
         lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
         comment_map[#lines] = { thread = t, comment = c }
-        for _, cl in ipairs(vim.split(c.content, "\n", { plain = true })) do
-          lines[#lines + 1] = "│   " .. cl
+        -- Links and bots' reference lines as in the K popup (unwrapped:
+        -- the window wraps).
+        for _, cl in ipairs(require("azure-cli.review.thread_text").comment_lines(c.content, "│   ")) do
+          lines[#lines + 1] = cl
         end
       end
     end
@@ -2708,7 +2677,7 @@ function fit_list_width()
     longest = math.max(longest, vim.fn.strdisplaywidth(line))
   end
   local cap = math.max(20, math.floor(vim.o.columns * 0.6))
-  local w = math.min(cap, math.max(20, longest + 5))
+  local w = math.min(cap, EXT.list_width or math.max(20, longest + 5))
   pcall(vim.api.nvim_win_set_width, list_win, w)
 end
 fit_list_width()
@@ -2931,41 +2900,28 @@ manage_ignore_texts = function(on_change)
   vim.keymap.set("n", "<Esc>", close, kopts)
 end
 
--- Jump to the next (dir=1) / previous (dir=-1) file row that has at least
--- one comment thread once the gA active-only / gF text filters are applied -
--- same "filtered" total used for each row's "(closed/total)" suffix, so
--- this only stops on files whose badge is actually showing. Walks
--- EXT.filelist's own row numbering (directory headers included, skipped
--- over silently since they're never in row_to_file) rather than `files`
--- directly, since the grouped/sorted display order can now differ from it.
--- Cursor lines are offset by +1 versus model row numbers since the Overview
--- row is pinned at line 1.
-local function jump_file_with_comments(dir)
+-- ]C / [C and ]c / [c on the file list: the next / previous comment or
+-- change itself, landed on in the diff pane (focused) - from the diff's
+-- cursor, on into the next file, as the same keys there do. With no file
+-- in the diff yet (the Overview), from the file under the list's cursor.
+-- The list's own row numbers are one off the model's (the Overview row).
+local function jump_from_list(jump, dir)
+  local dbuf = diff_win and vim.api.nvim_win_is_valid(diff_win) and vim.api.nvim_win_get_buf(diff_win)
+  if dbuf and paths_by_buf[dbuf] then
+    vim.api.nvim_set_current_win(diff_win)
+    return jump(dir)
+  end
   local model = EXT.filelist
-  if not model or #model.ordered_files == 0 then
-    notify("No files in this PR.")
-    return
-  end
-  local i = (vim.api.nvim_win_get_cursor(0)[1] - 1) + dir
-  while i >= 1 and i <= #model.lines do
-    local path = model.row_to_file[i]
-    if path then
-      local _, total = file_thread_count(path)
-      if total > 0 then
-        vim.api.nvim_win_set_cursor(0, { i + 1, 0 })
-        vim.cmd("normal! zz")
-        return
-      end
-    end
-    i = i + dir
-  end
-  notify(dir > 0 and "No further files with comments." or "No previous files with comments.")
+  local path = model and model.row_to_file[vim.api.nvim_win_get_cursor(0)[1] - 1]
+  local idx = path and EXT.file_index and EXT.file_index(path)
+  jump(dir, idx and (idx - dir) or (dir > 0 and 0 or EXT.file_count() + 1))
 end
 
 HELP.list_help = {
   "Navigate",
   { "open", "open and focus the file" },
-  { "next_file_with_comments", "next file with comments" }, { "prev_file_with_comments", "previous file with comments" },
+  { "next_comment", "next comment, in the diff (on into the next file)" }, { "prev_comment", "previous comment" },
+  { "next_hunk", "next change, in the diff (on into the next file)" }, { "prev_hunk", "previous change" },
   { "next_unviewed", "next file not yet viewed" },
   { "prev_unviewed", "previous file not yet viewed" },
   { "search", "search text across the PR's changed files" },
@@ -3035,8 +2991,10 @@ KEYS.bind(list_buf, "list", "ignore_ws", toggle_ignore_ws, { desc = "toggle igno
 KEYS.bind(list_buf, "list", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(list_buf, "list", "vote", cast_vote, { desc = "vote" })
 KEYS.bind(list_buf, "list", "complete", complete_pr, { desc = "complete" })
-KEYS.bind(list_buf, "list", "next_file_with_comments", function() jump_file_with_comments(1) end, { desc = "next file with comments" })
-KEYS.bind(list_buf, "list", "prev_file_with_comments", function() jump_file_with_comments(-1) end, { desc = "previous file with comments" })
+KEYS.bind(list_buf, "list", "next_comment", function() jump_from_list(jump_comment, 1) end, { desc = "next comment" })
+KEYS.bind(list_buf, "list", "prev_comment", function() jump_from_list(jump_comment, -1) end, { desc = "previous comment" })
+KEYS.bind(list_buf, "list", "next_hunk", function() jump_from_list(jump_change, 1) end, { desc = "next change" })
+KEYS.bind(list_buf, "list", "prev_hunk", function() jump_from_list(jump_change, -1) end, { desc = "previous change" })
 KEYS.bind(list_buf, "list", "resize_less", function() resize_list(-5) end, { desc = "shrink the list" })
 KEYS.bind(list_buf, "list", "resize_more", function() resize_list(5) end, { desc = "grow the list" })
 KEYS.bind(list_buf, "list", "comment_file", function()

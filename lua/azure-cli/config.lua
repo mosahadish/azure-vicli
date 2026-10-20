@@ -29,7 +29,8 @@ local DEFAULT_KEYS = {
     open = "<CR>", back = "<BS>", quit = "q", pr_comment = "gC",
     search = "g/", active_filter = "gA", filters = "gF", ignore_ws = "gw",
     config = "gO", vote = "gv", complete = "gm",
-    next_file_with_comments = "]C", prev_file_with_comments = "[C",
+    -- The comment / change itself, in the diff pane.
+    next_comment = "]C", prev_comment = "[C", next_hunk = "]c", prev_hunk = "[c",
     resize_less = "<", resize_more = ">", comment_file = "C", help = "?", palette = "g.",
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
@@ -151,6 +152,8 @@ local REMOVED_KEYS = {
   ["dashboard.auto_complete"] = { default = "ga", why = "auto-complete is a checkbox in gm's dialog now" },
   ["chat.toggle"] = { default = "gq", why = "q hides the chat" },
   ["agents.chat"] = { default = "gq", why = "Enter (keys.agents.open) opens the row's agent" },
+  ["list.next_file_with_comments"] = { default = "]C", why = "]C on the file list goes to the next comment itself (keys.list.next_comment)" },
+  ["list.prev_file_with_comments"] = { default = "[C", why = "[C on the file list goes to the previous comment itself (keys.list.prev_comment)" },
 }
 -- gq (issue #118): i opens the chat on every screen now.
 for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "plan" }) do

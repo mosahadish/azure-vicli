@@ -11,7 +11,9 @@ Overview: title, description, commits, and PR-level comments.
 The Overview's filetype is `azurecli-overview`, not `markdown`: only the
 description and the comment bodies are highlighted as Markdown (with Vim's
 own markdown syntax, minus its `markdownError`), so an `_` in a branch name
-or a commit subject isn't flagged as an error. The commit list and a
+or a commit subject isn't flagged as an error. In a comment, a link reads
+as its text with its address under the comment, as in the `K` popup, and
+a bot's `[KEY]: value` lines are left out. The commit list and a
 commit's file list are `azurecli-commits`. A `FileType markdown` autocmd or
 a Markdown renderer (render-markdown.nvim, markview.nvim) no longer
 attaches to these buffers; hook `FileType azurecli-overview` instead if you
@@ -63,7 +65,8 @@ File list:
 | `<CR>` | Open and focus the file |
 | `C` | Comment on the whole file |
 | `gC` | New PR-level comment |
-| `]C` / `[C` | Next / previous file with comments |
+| `]C` / `[C` | Next / previous comment, landed on in the diff pane - from where the diff's cursor is, on into the next file, as in the diff itself |
+| `]c` / `[c` | Next / previous change, the same way |
 | `gA` | Show only active (unresolved) comments |
 | `gF` | Manage text filters that hide matching threads |
 | `gw` | Toggle ignoring whitespace in diffs |
@@ -74,9 +77,9 @@ File list:
 | `gl` / `gL` | Link a work item to this PR / unlink one (each a popup, mid-screen) |
 | `gc` | Open the PR's commit list |
 | `gB` | Toggle batch review for this PR |
-| `gQ` | Show the queued batch-review items |
+| `gQ` | Show the queued batch-review items (`s` on a reply: the status its thread gets when sent) |
 | `gS` | Submit the queued batch-review items, with a vote (on GitHub, as one review) |
-| `<` / `>` | Resize the list |
+| `<` / `>` | Resize the list (it keeps that width until you close the review) |
 | `<BS>` | Back to the PR list |
 | `q` | Close the reviewer |
 
@@ -90,7 +93,7 @@ Diff pane:
 | `]C` / `[C` | Next / previous comment thread; at the last/first one in the file, continues into the next/previous file that has comments |
 | `c` | Comment on the current line (on GitHub, only on or near a change) |
 | `c` (visual mode) | Comment on the selected range of lines |
-| `K` | View the comments on the current line in a popup; `R` and `s` work inside it, plus `e`/`dd` to edit/delete a comment of yours |
+| `K` | View the comments on the current line in a popup, sized to them; a link reads as its text, with its address under the comment (`gx` on it opens it). `R` and `s` work inside it, plus `e`/`dd` to edit/delete a comment of yours |
 | `R` | Reply to the thread on the current line |
 | `s` | Set the thread's status (on GitHub: resolve or unresolve) |
 | `]C` / `[C` | Next / previous thread |
@@ -276,8 +279,11 @@ instead turns on batch review for the rest of this PR: from then on, every
 new comment, file comment, PR comment and reply is queued instead of sent,
 shown at once the same way but tagged "(queued)" rather than "(sending…)",
 and the winbar grows a `[batch: N]` tag. `gQ` opens a float listing the
-queue (`kind`, location, text); `dd` on a line removes that item, `q`/`<Esc>`
-closes. `gS` prompts for a vote - the same choices `gv` offers, plus "No
+queue - each item where it goes (a reply by its file and line) over the
+start of its text; moving shows it in the diff, `<Tab>` goes there, `dd`
+removes it, and `s` on a reply picks the status its thread gets once the
+reply is sent (shown as `→ By design`; an agent's `draft_reply` can set it
+too), `q`/`<Esc>` closes. `gS` prompts for a vote - the same choices `gv` offers, plus "No
 vote" - then submits every queued item in order, each one flipping from
 "(queued)" to "(sending…)" to confirmed in turn; a failed item stays in the
 queue (still tagged) and the rest continue, then the vote (if you picked

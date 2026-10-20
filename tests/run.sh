@@ -555,6 +555,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-review-overview-syntax.lua (headless nvim)" "$out"
   fi
 
+  # How a comment reads in the K popup (review/thread_text.lua): links,
+  # bots' reference lines, wrapping under the gutter, the colours.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-review-thread-text.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all thread text tests passed"* ]]; then
+    pass "test-review-thread-text.lua (headless nvim)"
+  else
+    fail "test-review-thread-text.lua (headless nvim)" "$out"
+  fi
+
   # poll.lua (#93): the network polls slow while unfocused or idle and
   # refresh once on return, on a clock the test turns by hand; the phone
   # dashboard's feed keeps its pace.
@@ -805,6 +814,7 @@ $out"
   smoke_check "smoke: demo.sh --headless renders the fake dashboard, numbers its rows, <Space> folds a section" DEMO
   smoke_check "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" NAV
   smoke_check "smoke: gu lists my comments and gA filters them there like everywhere else" FOLLOWUP
+  smoke_check "smoke: ]C / ]c on the file list land on the comment / change itself in the diff pane" LISTJUMP
   smoke_check "smoke: an unfolded diff fold stays open across files, a reopen and a restart; a push drops it; zR/zM and toggle_fold" FOLDS
   smoke_check "smoke: a PR row shows its linked work item, PR #101 opens in the reviewer, and gW opens the item from the dashboard and the reviewer" PRWI REVIEW-WI
   smoke_check "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" LINK
