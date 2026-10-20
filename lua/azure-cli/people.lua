@@ -51,7 +51,8 @@ function M.pick(pr, title, cb)
 end
 
 -- gR: adds a reviewer to `pr`, then on_done(person) once the host has
--- them (the record's reviewers list has them too, for the screens).
+-- them (the record's reviewers list has them too, and the PR dashboard is
+-- redrawn and refetched).
 function M.add_reviewer(pr, on_done)
   if not pr then return notify("No PR here.", vim.log.levels.WARN) end
   if not HOSTS().caps(pr).add_reviewer then
@@ -70,11 +71,17 @@ function M.add_reviewer(pr, on_done)
           end
           if not have then
             table.insert(pr.reviewers, { name = p.name, id = p.id, vote = 0, isRequired = required or nil })
+            require("azure-cli.prs").recompute(pr)
           end
           local okj, d = pcall(vim.json.decode, out)
           local note = okj and type(d) == "table" and d.note
           notify("Added " .. p.name .. " as a " .. (required and "required " or "") .. "reviewer"
             .. (note and (" (" .. note .. ")") or "") .. ".")
+          -- The PR dashboard shows them at once (the record is its own),
+          -- then as the host has them.
+          local STATE = require("azure-cli.state")
+          if STATE.PR_DASHBOARD_RENDER then STATE.PR_DASHBOARD_RENDER() end
+          if STATE.PR_DASHBOARD_RELOAD then STATE.PR_DASHBOARD_RELOAD() end
           if on_done then on_done(p) end
         end)
     end

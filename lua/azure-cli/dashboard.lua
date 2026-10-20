@@ -1666,6 +1666,10 @@ end
 STATE.PR_DASHBOARD_RENDER = function()
   if vim.api.nvim_buf_is_valid(buf) then pcall(render) end
 end
+-- ... and fetch it afresh (a reviewer added from inside a PR: gR).
+STATE.PR_DASHBOARD_RELOAD = function()
+  if vim.api.nvim_buf_is_valid(buf) then pcall(load, true, true) end
+end
 
 -- Set the AZVICLI_* process env the reviewer (and its provider calls) read.
 local function set_pr_env(pr)
@@ -1943,7 +1947,7 @@ KEYS.bind(buf, "dashboard", "open_build", open_build, { desc = "open the PR's bu
 KEYS.bind(buf, "dashboard", "filter", set_filter, { desc = "filter by title, repo or author" })
 KEYS.bind(buf, "dashboard", "vote", vote_pr, { desc = "vote" })
 KEYS.bind(buf, "dashboard", "add_reviewer", function()
-  require("azure-cli.people").add_reviewer(current_pr(), function() load(false, true) end)
+  require("azure-cli.people").add_reviewer(current_pr())
 end, { desc = "add a reviewer" })
 KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge), or set/cancel auto-complete" })
 KEYS.bind(buf, "dashboard", "requeue_build", requeue_pr, { desc = "re-queue build validation" })

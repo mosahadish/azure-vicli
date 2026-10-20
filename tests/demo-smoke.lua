@@ -665,6 +665,16 @@ section("PEOPLE", function()
     restore()
     return fail("gR didn't add Carol Chen to !101 (asked: " .. table.concat(asked, " | ") .. ")")
   end
+  -- The dashboard's row counts her straight away, without waiting for a poll.
+  local function row101()
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("#101 ", 1, true) then return l end
+    end
+  end
+  if not vim.wait(5000, function() return (row101() or ""):find("0 / 3", 1, true) ~= nil end, 50) then
+    restore()
+    return fail("the dashboard's !101 row didn't show the new reviewer: " .. tostring(row101()), dash)
+  end
   answer = "bob"
   local sent
   require("azure-cli.editor").open({ title = "PR comment", anchor = "center", pr = rec101(),
