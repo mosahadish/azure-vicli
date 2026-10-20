@@ -967,6 +967,19 @@ class ReviewerDescriptionTests(unittest.TestCase):
         code, _, err = loud(actions(c).add_reviewer, "zed")
         self.assertEqual((code, err), (1, "No GitHub user or team matches 'zed'."))
 
+    def test_find_people_by_name_or_login(self):
+        c = FakeClient({"ReviewerLookup": lookup([BOB, BOBBY])})
+        code, out, _ = loud(actions(c).find_people, "@bo")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [{"name": "Bob Brown", "id": "bob", "login": "bob"},
+                                           {"name": "Bobby Tables", "id": "bobby", "login": "bobby"}])
+        self.assertEqual(self.mutations(c, "ReviewerLookup")[0]["q"], "bo")
+
+    def test_find_people_falls_back_to_the_login(self):
+        c = FakeClient({"ReviewerLookup": lookup([]), "UserByLogin": {"user": {"id": "U_eve", "login": "eve", "name": None}}})
+        code, out, _ = loud(actions(c).find_people, "eve")
+        self.assertEqual(json.loads(out), [{"name": "eve", "id": "eve", "login": "eve"}])
+
     def test_the_author_is_refused_before_asking_github(self):
         c = FakeClient({"ReviewerLookup": lookup([BOB], author="Bob")})
         code, _, err = loud(actions(c).add_reviewer, "bob")

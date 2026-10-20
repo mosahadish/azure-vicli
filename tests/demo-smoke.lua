@@ -635,6 +635,55 @@ section("LISTJUMP", function()
   smoke_ok("LISTJUMP")
 end)
 
+-- gR adds a reviewer found by name (the fake's --find-people, then
+-- --add-reviewer with their id), and <C-t> in the comment editor tags
+-- someone who isn't on the PR: "@Bob Brown" in the text, the "@<GUID>" a
+-- mention is in what's sent.
+section("PEOPLE", function()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  ensure_review()
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  local PROMPT = require("azure-cli.prompt")
+  local real_sel, real_in = PROMPT.select, vim.ui.input
+  local asked = {}
+  PROMPT.select = function(o, cb) asked[#asked + 1] = o.prompt; cb(o.items[1]) end
+  local answer = "carol"
+  vim.ui.input = function(_, cb) cb(answer) end
+  local function restore() PROMPT.select, vim.ui.input = real_sel, real_in end
+  local function rec101()
+    for _, p in ipairs((require("azure-cli.state").PR_LIST_CACHE or {}).prs or {}) do
+      if tostring(p.id) == "101" then return p end
+    end
+  end
+  local function has(pr, name)
+    for _, r in ipairs(pr and pr.reviewers or {}) do if r.name == name then return true end end
+  end
+  feed("gR")
+  if not vim.wait(15000, function() return has(rec101(), "Carol Chen") end, 50) then
+    restore()
+    return fail("gR didn't add Carol Chen to !101 (asked: " .. table.concat(asked, " | ") .. ")")
+  end
+  answer = "bob"
+  local sent
+  require("azure-cli.editor").open({ title = "PR comment", anchor = "center", pr = rec101(),
+    mentions = require("azure-cli.hosts").mentions(rec101()), on_submit = function(t) sent = t end })
+  local ebuf = vim.api.nvim_get_current_buf()
+  feed("<C-t>")
+  local tagged = vim.wait(15000, function()
+    return vim.api.nvim_buf_is_valid(ebuf) and table.concat(vim.api.nvim_buf_get_lines(ebuf, 0, -1, false)):find("@Bob Brown", 1, true) ~= nil
+  end, 50)
+  if not tagged then restore() return fail("<C-t> didn't put \"@Bob Brown\" in the editor") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(ebuf))
+  feed("<C-s>")
+  restore()
+  if not (sent and sent:find("@<bbbbbbbb-0000-0000-0000-000000000002>", 1, true)) then
+    return fail("the tag wasn't sent as a mention: " .. tostring(sent))
+  end
+  smoke_ok("PEOPLE")
+end)
+
 -- Remembered folds (#131) and toggle_fold. PR #101 appends a section to
 -- README.md, so its first four unchanged lines fold away. <Space> opens
 -- that fold; it stays open when you go to another file and back, when the

@@ -63,7 +63,7 @@ GH_OWNER = "demo-gh"
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
               "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description",
-              "--requeue", "--build-log", "--test-results", "--fetch-image")
+              "--find-people", "--requeue", "--build-log", "--test-results", "--fetch-image")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -1107,7 +1107,7 @@ class Fake:
         if not self.need_pr():
             return 1
         who = (rest[0] if rest else "").lower()
-        people = [p for p in PEOPLE.values() if who and who in p["displayName"].lower()]
+        people = [p for p in PEOPLE.values() if who and (who in p["displayName"].lower() or who == p["id"])]
         if len(people) != 1:
             print("{0} people match '{1}'".format(len(people), who), file=sys.stderr)
             return 1
@@ -1116,6 +1116,15 @@ class Fake:
             pr["reviewers"].append({"name": people[0]["displayName"], "id": people[0]["id"], "vote": 0})
             self.ws.save(self.state)
         print(json.dumps({"added": people[0]["displayName"], "id": people[0]["id"]}))
+        return 0
+
+    def cmd_find_people(self, rest):
+        if not self.need_pr():
+            return 1
+        q = (rest[0] if rest else "").lower().strip()
+        print(json.dumps([{"name": p["displayName"], "id": p["id"],
+                           "account": p["displayName"].split()[0].lower() + "@example.com"}
+                          for p in PEOPLE.values() if q and q in p["displayName"].lower()]))
         return 0
 
     def cmd_set_description(self, rest):
@@ -2052,7 +2061,7 @@ class Fake:
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
                    "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
                    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
-                   "--get-pr", "--submit-review", "--fetch-image")
+                   "--get-pr", "--submit-review", "--fetch-image", "--find-people")
 
 
 def dispatch(ws, argv, env):
@@ -2101,6 +2110,7 @@ def dispatch(ws, argv, env):
         "--test-results": lambda: f.cmd_test_results(rest),
         "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
         "--set-description": lambda: f.cmd_set_description(rest),
+        "--find-people": lambda: f.cmd_find_people(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
         "--submit-review": lambda: f.cmd_submit_review(rest),

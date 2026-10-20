@@ -187,7 +187,7 @@ local DASHBOARD_ACTIONS = {
   { "toggle_section", "toggle section" }, { "expand_all", "expand all" }, { "collapse_all", "collapse all" },
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
-  { "vote", "vote" }, { "complete", "complete / auto-complete" },
+  { "vote", "vote" }, { "complete", "complete / auto-complete" }, { "add_reviewer", "add a reviewer" },
   { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
   { "agent_chat", "its agent's chat, in a popup" }, { "goto_plan", "its agent's plan" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
@@ -987,6 +987,7 @@ local DASHBOARD_HELP_DESCS = {
   open_build = "open the PR's build in the browser",
   filter = "filter as you type by id, title, repo or author (Esc clears)",
   vote = "vote",
+  add_reviewer = "add a reviewer (search by name, account or email)",
   complete = "complete (merge), or set/cancel auto-complete",
   requeue_build = "re-queue build validation",
   toggle_section = "toggle collapse on the section header under the cursor",
@@ -1941,6 +1942,9 @@ KEYS.bind(buf, "dashboard", "description", show_description, { desc = "show the 
 KEYS.bind(buf, "dashboard", "open_build", open_build, { desc = "open the PR's build in the browser" })
 KEYS.bind(buf, "dashboard", "filter", set_filter, { desc = "filter by title, repo or author" })
 KEYS.bind(buf, "dashboard", "vote", vote_pr, { desc = "vote" })
+KEYS.bind(buf, "dashboard", "add_reviewer", function()
+  require("azure-cli.people").add_reviewer(current_pr(), function() load(false, true) end)
+end, { desc = "add a reviewer" })
 KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge), or set/cancel auto-complete" })
 KEYS.bind(buf, "dashboard", "requeue_build", requeue_pr, { desc = "re-queue build validation" })
 KEYS.bind(buf, "dashboard", "toggle_section", toggle_section, { desc = "toggle collapse on the section header under the cursor" })

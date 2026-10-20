@@ -61,6 +61,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gb` | Open the PR's build in the browser |
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
+| `gR` | Add a reviewer: type part of a name, account or email, pick from the people found (on Azure, then optional or required) |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
 | `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't). On a GitHub PR: re-runs the failed jobs of its failed GitHub Actions runs |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |

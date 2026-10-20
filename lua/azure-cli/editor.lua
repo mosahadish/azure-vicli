@@ -34,6 +34,10 @@
 --                       float (the thread being replied to): the two are
 --                       stacked in the middle of the screen, the editor
 --                       as wide as that float and right under it.
+--   opts.pr              the PR record the comment is on: <C-t> then tags
+--                       anyone its host can find (people.lua), not only
+--                       the "@" list - the pick goes in as "@Name" and is
+--                       sent as a real mention.
 --   opts.on_submit(text)  called with the trimmed, mention-translated text
 --                       once <C-s>/<C-CR> submits non-empty content.
 --   opts.on_cancel(draft)  called on q/<Esc><Esc>/an empty submit, with the
@@ -292,7 +296,10 @@ function M.open(opts)
   win_opts.title = " " .. (opts.title or "Comment") .. (restored and "  (draft restored)" or "") .. " "
   win_opts.title_pos = "left"
   -- The keys, on the border, so a first-time user isn't guessing.
-  win_opts.footer = " <C-s> send \u{00B7} q / <Esc><Esc> cancel (keeps a draft) "
+  win_opts.footer = " " .. (opts.pr and "<C-t> tag \u{00B7} " or "")
+    .. "<C-s> send \u{00B7} q / <Esc><Esc> cancel (keeps a draft) "
+  width = math.max(width, vim.fn.strdisplaywidth(win_opts.footer) + 2)
+  win_opts.width = width
   win_opts.footer_pos = "right"
   local anchor = opts.anchor
   if anchor == "center" or not anchor then
@@ -301,11 +308,12 @@ function M.open(opts)
     win_opts.col = math.floor((vim.o.columns - width) / 2)
   elseif anchor.below and vim.api.nvim_win_is_valid(anchor.below) then
     local above = vim.api.nvim_win_get_config(anchor.below)
-    width = above.width
+    width = math.max(above.width, width)
     win_opts.width = width
     local top = math.max(0, math.floor((vim.o.lines - (above.height + 2) - (height + 2)) / 2))
     above.row, above.col = top, math.floor((vim.o.columns - width) / 2)
-    pcall(vim.api.nvim_win_set_config, anchor.below, { relative = "editor", row = above.row, col = above.col })
+    pcall(vim.api.nvim_win_set_config, anchor.below,
+      { relative = "editor", row = above.row, col = above.col, width = width })
     win_opts.relative = "editor"
     win_opts.row = math.min(top + above.height + 2, math.max(0, vim.o.lines - height - 4))
     win_opts.col = above.col
@@ -383,6 +391,32 @@ function M.open(opts)
   -- most; ZZ is vim's own "write and close".
   vim.keymap.set("n", "ZZ", do_submit, kopts)
   vim.keymap.set("n", "q", do_cancel, kopts)
+  if opts.pr then
+    vim.keymap.set({ "n", "i" }, "<C-t>", function()
+      local insert = vim.api.nvim_get_mode().mode:sub(1, 1) == "i"
+      local pos = vim.api.nvim_win_get_cursor(win)
+      local row, col = pos[1], pos[2]
+      -- Normal mode: after the character under the cursor, like `a`.
+      if not insert and #vim.api.nvim_get_current_line() > 0 then col = col + 1 end
+      if insert then vim.cmd("stopinsert") end
+      require("azure-cli.people").pick(opts.pr, "Tag someone", function(p)
+        if not vim.api.nvim_win_is_valid(win) then return end
+        local fmt = require("azure-cli.hosts").caps(opts.pr).mention
+        opts.mentions = opts.mentions or {}
+        table.insert(opts.mentions, { name = p.name, id = p.id, token = fmt and fmt(tostring(p.id)) or nil })
+        vim.api.nvim_set_current_win(win)
+        local text = "@" .. p.name .. " "
+        pcall(vim.api.nvim_buf_set_text, buf, row - 1, col, row - 1, col, { text })
+        local len = #(vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or "")
+        if col + #text >= len then
+          vim.cmd("startinsert!")
+        else
+          pcall(vim.api.nvim_win_set_cursor, win, { row, col + #text })
+          vim.cmd("startinsert")
+        end
+      end)
+    end, kopts)
+  end
   vim.keymap.set("n", "<Esc>", do_cancel, kopts)
 
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {

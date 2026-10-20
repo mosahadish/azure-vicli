@@ -509,9 +509,7 @@ local function parse_threads(json, by_key, file_by_path, general)
           authorId = c.author and c.author.id,
           content = c.content,
         }
-        if c.author and c.author.id and c.author.displayName then
-          require("azure-cli.review.thread_text").names[tostring(c.author.id):lower()] = c.author.displayName
-        end
+        if c.author then require("azure-cli.hosts").remember(EXT.pr_current, c.author.id, c.author.displayName) end
       end
     end
 
@@ -1111,7 +1109,7 @@ local function comment_here()
     title = EDITOR.format_title("line", { path = path, lineno = m.lineno }),
     context_lines = { (vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false))[1] or "" },
     anchor = { win = diff_win, row = lnum },
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "line", where),
     on_submit = function(text)
       post_new_thread({ "--post", path, m.side, tostring(m.lineno), text }, "line", where,
@@ -1133,7 +1131,7 @@ local function comment_on_file(path)
   EDITOR.open({
     title = EDITOR.format_title("file", { path = path }),
     anchor = "center",
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "file", path),
     on_submit = function(text)
       post_new_thread({ "--file-comment", path, text }, "file", path, path, nil, nil, text,
@@ -1149,7 +1147,7 @@ local function comment_on_pr()
   EDITOR.open({
     title = EDITOR.format_title("pr", {}),
     anchor = "center",
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "pr", ""),
     on_submit = function(text)
       post_new_thread({ "--pr-comment", text }, "general", nil, nil, nil, nil, text,
@@ -1461,7 +1459,7 @@ local function reply_to_thread(target, on_success)
   EDITOR.open({
     title = EDITOR.format_title("reply", { author = target.comments[1] and target.comments[1].author }),
     anchor = fwin and { below = fwin } or "center",
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "reply", tostring(target.id)),
     on_submit = function(text)
       close_thread_float()
@@ -2126,7 +2124,7 @@ HELP.overview_help = {
   { "status", "set the thread's status" },
   { "edit_comment", "edit a comment of yours" }, { "delete_comment", "delete a comment of yours" },
   "Review",
-  { "vote", "vote" }, { "complete", "complete" },
+  { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2161,6 +2159,9 @@ local function setup_overview_keymaps(buf)
   KEYS.bind(buf, "overview", "prev_comment", function() jump_comment(-1) end, { desc = "previous thread" })
   KEYS.bind(buf, "overview", "search", function() EXT.nav.search_files() end, { desc = "search text across the PR's changed files" })
   KEYS.bind(buf, "overview", "vote", cast_vote, { desc = "vote" })
+  KEYS.bind(buf, "overview", "add_reviewer", function()
+    require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
+  end, { desc = "add a reviewer" })
   KEYS.bind(buf, "overview", "complete", complete_pr, { desc = "complete" })
   KEYS.bind(buf, "overview", "active_filter", toggle_active_filter, { desc = "toggle active (unresolved) comments only" })
   KEYS.bind(buf, "overview", "filters", manage_ignore_texts, { desc = "manage text filters that hide matching threads" })
@@ -2234,7 +2235,7 @@ HELP.diff_help = {
   { "status", "set the thread's status" },
   "Review",
   { "toggle_viewed", "toggle this file's viewed mark" },
-  { "vote", "vote" }, { "complete", "complete" },
+  { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2277,6 +2278,9 @@ local function setup_diff_keymaps(buf)
   KEYS.bind(buf, "diff", "prev_unviewed", function() EXT.jump_unviewed(-1) end, { desc = "previous file not yet viewed" })
   KEYS.bind(buf, "diff", "status", set_status_here, { desc = "set the thread's status" })
   KEYS.bind(buf, "diff", "vote", cast_vote, { desc = "vote" })
+  KEYS.bind(buf, "diff", "add_reviewer", function()
+    require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
+  end, { desc = "add a reviewer" })
   KEYS.bind(buf, "diff", "complete", complete_pr, { desc = "complete" })
   KEYS.bind(buf, "diff", "next_comment", function() jump_comment(1) end, { desc = "next thread" })
   KEYS.bind(buf, "diff", "prev_comment", function() jump_comment(-1) end, { desc = "previous thread" })
@@ -2937,7 +2941,7 @@ HELP.list_help = {
   { "pr_comment", "new PR-level comment" },
   "Review",
   { "toggle_viewed", "toggle the file's viewed mark" },
-  { "vote", "vote" }, { "complete", "complete" },
+  { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2997,6 +3001,9 @@ KEYS.bind(list_buf, "list", "filters", manage_ignore_texts, { desc = "manage tex
 KEYS.bind(list_buf, "list", "ignore_ws", toggle_ignore_ws, { desc = "toggle ignoring whitespace in diffs" })
 KEYS.bind(list_buf, "list", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(list_buf, "list", "vote", cast_vote, { desc = "vote" })
+KEYS.bind(list_buf, "list", "add_reviewer", function()
+  require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
+end, { desc = "add a reviewer" })
 KEYS.bind(list_buf, "list", "complete", complete_pr, { desc = "complete" })
 KEYS.bind(list_buf, "list", "next_comment", function() jump_from_list(jump_comment, 1) end, { desc = "next comment" })
 KEYS.bind(list_buf, "list", "prev_comment", function() jump_from_list(jump_comment, -1) end, { desc = "previous comment" })

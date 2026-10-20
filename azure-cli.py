@@ -2385,7 +2385,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
-    "--submit-review", "--fetch-image",
+    "--submit-review", "--fetch-image", "--find-people",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2955,22 +2955,60 @@ class PrActions:
             return "https://vssps.dev.azure.com/" + m.group(1)
         return org
 
-    def add_reviewer(self, who, required="false"):
-        """Finds `who` (display name, account or email - Identities - Read
-        Identities, searchFilter=General) and adds them to the PR as a
-        reviewer (PUT .../reviewers/{id}, vote 0). Ambiguous or unknown
-        names are an error listing the matches."""
-        if _is_blank(who):
-            print("Who should review?", file=sys.stderr)
-            return 1
+    def _search_people(self, who):
+        """The people (not groups) Identities - Read Identities finds for
+        `who` (display name, account or email; searchFilter=General), or
+        None after printing why the search failed."""
         url = "{0}/_apis/identities?searchFilter=General&filterValue={1}&queryMembership=None".format(
             self._identities_base(), urllib.parse.quote(who))
         try:
             found = self.fetch(url, pat=self.pat, api_version="6.0")
         except AdoHttpError as e:
             print("REST identity search failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return None
+        return [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
+
+    def find_people(self, query):
+        """--find-people: who `query` names, as a JSON list of {name, id,
+        account} - the reviewer picker's and the comment editor's tag
+        search. At most 20."""
+        if _is_blank(query):
+            print("Search for whom?", file=sys.stderr)
             return 1
-        people = [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
+        people = self._search_people(query.strip())
+        if people is None:
+            return 1
+
+        def prop(i, key):
+            v = (i.get("properties") or {}).get(key)
+            return (v.get("$value") if isinstance(v, dict) else v) or ""
+        print(json.dumps([{"name": i.get("providerDisplayName") or i.get("customDisplayName") or "?",
+                           "id": i.get("id"), "account": prop(i, "Mail") or prop(i, "Account")}
+                          for i in people[:20] if i.get("id")], ensure_ascii=False))
+        return 0
+
+    def add_reviewer(self, who, required="false"):
+        """Finds `who` (display name, account or email - Identities - Read
+        Identities, searchFilter=General) and adds them to the PR as a
+        reviewer (PUT .../reviewers/{id}, vote 0). Ambiguous or unknown
+        names are an error listing the matches. An identity id (a GUID,
+        what --find-people gives) is added as it is, no search."""
+        if _is_blank(who):
+            print("Who should review?", file=sys.stderr)
+            return 1
+        if re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", who.strip()):
+            try:
+                r = self.fetch(self._pr_url("/reviewers/{0}".format(who.strip())), method="PUT",
+                               data={"vote": 0, "isRequired": _to_bool(required)}, pat=self.pat, api_version="6.0")
+            except AdoHttpError as e:
+                print("REST add-reviewer failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+                return 1
+            print(json.dumps({"added": (r or {}).get("displayName") or who.strip(), "id": who.strip()},
+                             ensure_ascii=False))
+            return 0
+        people = self._search_people(who)
+        if people is None:
+            return 1
         if len(people) != 1:
             names = ", ".join(i.get("providerDisplayName") or "?" for i in people[:8])
             print("{0} people match '{1}'{2}".format(len(people), who, (": " + names) if names else ""), file=sys.stderr)
@@ -3204,6 +3242,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.test_results(arg(0))
     if flag == "--add-reviewer":
         return actions.add_reviewer(arg(0), arg(1, "false"))
+    if flag == "--find-people":
+        return actions.find_people(arg(0))
     if flag == "--set-description":
         return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":
@@ -5123,6 +5163,7 @@ _GITHUB_ACTIONS = {
     # #110: through GraphQL (requestReviews, updatePullRequest).
     "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
     "--set-description": lambda a, arg: a.set_description(arg(0), arg(1)),
+    "--find-people": lambda a, arg: a.find_people(arg(0)),
     # #111: CI, through the head's GitHub Actions runs. --requeue comes from
     # cmd_requeue, not PR_ACTION_FLAGS.
     "--requeue": lambda a, arg: a.requeue(),

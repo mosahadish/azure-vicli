@@ -212,6 +212,27 @@ class ChatPrActionTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("2 people match 'B': Bob, Bea", err)
 
+    def test_find_people_lists_people_not_groups(self):
+        ident = "https://vssps.dev.azure.com/org/_apis/identities?searchFilter=General&filterValue=bo&queryMembership=None"
+        rc, out, _, _ = self.run_action("find_people", "bo", responses={ident: {"value": [
+            {"id": "1", "providerDisplayName": "Bob", "properties": {"Mail": {"$type": "System.String", "$value": "bob@x.com"}}},
+            {"id": "2", "providerDisplayName": "Bea", "properties": {"Account": {"$value": "bea"}}},
+            {"id": "g", "providerDisplayName": "[x]\\Team", "isContainer": True}]}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), [{"name": "Bob", "id": "1", "account": "bob@x.com"},
+                                           {"name": "Bea", "id": "2", "account": "bea"}])
+
+    def test_find_people_needs_a_query(self):
+        self.assertEqual(self.run_action("find_people", " ")[0], 1)
+
+    def test_add_reviewer_by_id_skips_the_search(self):
+        gid = "12345678-90ab-cdef-1234-567890abcdef"
+        rc, out, _, fetch = self.run_action("add_reviewer", gid, "false", responses={
+            self.PR + "/reviewers/" + gid: {"id": gid, "displayName": "Carol Chen"}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), {"added": "Carol Chen", "id": gid})
+        self.assertEqual([(c["method"], c["url"]) for c in fetch.calls], [("PUT", self.PR + "/reviewers/" + gid)])
+
     def test_set_description(self):
         rc, _, _, fetch = self.run_action("set_description", "New text")
         self.assertEqual(rc, 0)

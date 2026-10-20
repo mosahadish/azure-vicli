@@ -128,6 +128,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `add_reviewer` | `gR` |
 | `agent_chat` | `ga` |
 | `agents` | `A` |
 | `browser` | `o` |
@@ -165,6 +166,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `add_reviewer` | `gR` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -209,6 +211,7 @@ paste the output here after changing a default.
 |---|---|
 | `accept_hunk` | `gy` |
 | `active_filter` | `gA` |
+| `add_reviewer` | `gR` |
 | `ask` | `ga` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
@@ -265,6 +268,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `add_reviewer` | `gR` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |

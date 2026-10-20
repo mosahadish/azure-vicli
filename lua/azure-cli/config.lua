@@ -16,7 +16,7 @@ local M = {}
 local DEFAULT_KEYS = {
   dashboard = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
-    filter = "/", vote = "gv", complete = "gm",
+    filter = "/", vote = "gv", complete = "gm", add_reviewer = "gR",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", issues = "I", toasts = "gN", help = "?", palette = "g.", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
@@ -28,7 +28,7 @@ local DEFAULT_KEYS = {
   list = {
     open = "<CR>", back = "<BS>", quit = "q", pr_comment = "gC",
     search = "g/", active_filter = "gA", filters = "gF", ignore_ws = "gw",
-    config = "gO", vote = "gv", complete = "gm",
+    config = "gO", vote = "gv", complete = "gm", add_reviewer = "gR",
     -- The comment / change itself, in the diff pane.
     next_comment = "]C", prev_comment = "[C", next_hunk = "]c", prev_hunk = "[c",
     resize_less = "<", resize_more = ">", comment_file = "C", help = "?", palette = "g.",
@@ -46,7 +46,7 @@ local DEFAULT_KEYS = {
     -- so a two-key `cf` could never complete in the diff pane.
     comment = "c", comment_range = "c", comment_file = "C",
     next_hunk = "]c", prev_hunk = "[c", view_comments = "K", reply = "R",
-    status = "s", vote = "gv", complete = "gm", next_comment = "]C",
+    status = "s", vote = "gv", complete = "gm", add_reviewer = "gR", next_comment = "]C",
     prev_comment = "[C", next_note = "]a", prev_note = "[a", active_filter = "gA", filters = "gF",
     ignore_ws = "gw", config = "gO", goto_definition = "gd",
     find_references = "gr", open_file = "gf", search = "g/",
@@ -69,7 +69,7 @@ local DEFAULT_KEYS = {
   -- Reviewer Overview page.
   overview = {
     comment = "c", reply = "R", status = "s", next_comment = "]C",
-    prev_comment = "[C", search = "g/", vote = "gv", complete = "gm",
+    prev_comment = "[C", search = "g/", vote = "gv", complete = "gm", add_reviewer = "gR",
     active_filter = "gA", filters = "gF", ignore_ws = "gw", config = "gO",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",
     quit = "q", edit_comment = "e", delete_comment = "dd",

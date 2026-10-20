@@ -53,7 +53,7 @@ check("paint: header, author, address", got[0] == "AzureCliMuted" and got[1] == 
 
 -- "@<GUID>" mentions read as names: a comment author's, the signed-in
 -- user's (state.whoami), else "@someone".
-TT.names["aaaa-1111"] = "Bob Brown"
+require("azure-cli.hosts").remember(nil, "AAAA-1111", "Bob Brown")
 require("azure-cli.state").whoami = { ["org|proj"] = { id = "BBBB-2222", displayName = "Demo User" } }
 check("mentions: an author's id, any case", TT.mentions("ask @<AAAA-1111> please") == "ask @Bob Brown please")
 check("mentions: the signed-in user", TT.mentions("@<bbbb-2222> what?") == "@Demo User what?")

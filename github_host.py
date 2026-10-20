@@ -1292,6 +1292,29 @@ class Actions(object):
         print(json.dumps(out, ensure_ascii=False))
         return 0
 
+    def find_people(self, query):
+        """--find-people: the repository's people `query` names (login or
+        name), else the user with that login, as a JSON list of {name, id,
+        login} - `id` is the login, what --add-reviewer and a mention take."""
+        import sys
+        query = (query or "").strip().lstrip("@")
+        if not query:
+            print("Search for whom?", file=sys.stderr)
+            return 1
+        data = self.client.graphql(REVIEWER_QUERY, dict(self._vars(), q=query))
+        nodes = [p for p in (((data.get("repository") or {}).get("assignableUsers") or {}).get("nodes") or [])
+                 if p and p.get("login")]
+        if not nodes and not re.search(r"\s", query):
+            try:
+                u = self.client.graphql(USER_QUERY, {"login": query}).get("user") or {}
+            except RuntimeError:  # NOT_FOUND comes as a GraphQL error
+                u = {}
+            if u.get("login"):
+                nodes = [u]
+        print(json.dumps([{"name": p.get("name") or p["login"], "id": p["login"], "login": p["login"]}
+                          for p in nodes[:20]], ensure_ascii=False))
+        return 0
+
     def _find_user(self, who, people):
         """The one user `who` names among `people` (the repository's), else
         by login anywhere; an error string when none or several match."""

@@ -6,7 +6,8 @@
 --                its own under the comment ("[1] url"), never broken so gx
 --                opens it
 --   mentions     Azure DevOps' "@<GUID>" shows as "@Name" - names come from
---                the comments' authors (M.names) and the signed-in user
+--                the people seen this session (hosts.known: comment authors,
+--                search results) and the signed-in user
 --   references   "[KEY]: value" lines (a bot's metadata, which Azure DevOps
 --                and GitHub don't show either) are left out
 --   wrapping     given a width, each line breaks at spaces under the
@@ -15,14 +16,11 @@
 --                the accent colour, link addresses muted
 local M = {}
 
--- Lower-cased identity id -> display name, filled as threads are parsed
--- (review/init.lua) - every comment author on any PR seen this session.
-M.names = {}
-
 -- The name for identity `id`, or nil.
 local function name_of(id)
+  local known = require("azure-cli.hosts").name_of(id)
+  if known then return known end
   id = id:lower()
-  if M.names[id] then return M.names[id] end
   for _, w in pairs(require("azure-cli.state").whoami or {}) do
     if type(w) == "table" and tostring(w.id or ""):lower() == id and (w.displayName or "") ~= "" then
       return w.displayName
