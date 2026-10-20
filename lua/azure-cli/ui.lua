@@ -378,6 +378,10 @@ function M.open_float(lines, opts)
   M.wo(win, "wrap", true)
   M.wo(win, "linebreak", true)
   M.wo(win, "breakindent", true)
+  -- A help line ("  key   what it does", "↑ key ...") that wraps continues
+  -- under its description, not under the key.
+  vim.bo[buf].formatlistpat = "^[\u{2191} ] \\S.\\{-}\\s\\{2,}"
+  M.wo(win, "breakindentopt", "list:-1")
   M.wo(win, "cursorline", false)
   M.float_hl(win)
   if focus then

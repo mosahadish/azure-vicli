@@ -5,6 +5,8 @@
 --   links        [text](url) shows as "text [1]", the address on a line of
 --                its own under the comment ("[1] url"), never broken so gx
 --                opens it
+--   mentions     Azure DevOps' "@<GUID>" shows as "@Name" - names come from
+--                the comments' authors (M.names) and the signed-in user
 --   references   "[KEY]: value" lines (a bot's metadata, which Azure DevOps
 --                and GitHub don't show either) are left out
 --   wrapping     given a width, each line breaks at spaces under the
@@ -12,6 +14,27 @@
 --   paint        the K popup's colours: the thread header muted, authors in
 --                the accent colour, link addresses muted
 local M = {}
+
+-- Lower-cased identity id -> display name, filled as threads are parsed
+-- (review/init.lua) - every comment author on any PR seen this session.
+M.names = {}
+
+-- The name for identity `id`, or nil.
+local function name_of(id)
+  id = id:lower()
+  if M.names[id] then return M.names[id] end
+  for _, w in pairs(require("azure-cli.state").whoami or {}) do
+    if type(w) == "table" and tostring(w.id or ""):lower() == id and (w.displayName or "") ~= "" then
+      return w.displayName
+    end
+  end
+end
+
+-- `line` with every "@<GUID>" as "@Name" ("@someone" when nobody seen has
+-- that id). Pure but for the names.
+function M.mentions(line)
+  return (line:gsub("@<([%x%-]+)>", function(id) return "@" .. (name_of(id) or "someone") end))
+end
 
 -- The K popup's text width: up to 100 columns, less on a narrow screen.
 function M.popup_width()
@@ -26,6 +49,7 @@ function M.clean(content)
   for _, line in ipairs(vim.split(content or "", "\n", { plain = true })) do
     line = line:gsub("\r$", "")
     if not line:match("^%s*%[[^%]]+%]:%s") then
+      line = M.mentions(line)
       line = line:gsub("%[([^%]]*)%]%((%S-)%)", function(text, url)
         urls[#urls + 1] = url
         return (text ~= "" and text or url) .. " [" .. #urls .. "]"
@@ -62,7 +86,8 @@ end
 -- `width` cells in all (nil: unwrapped), then its link addresses. Pure.
 function M.comment_lines(content, prefix, width)
   local text, urls = M.clean(content)
-  local w = width and (width - vim.fn.strdisplaywidth(prefix)) or nil
+  -- One cell short of `width`, so text never touches the popup's border.
+  local w = width and (width - 1 - vim.fn.strdisplaywidth(prefix)) or nil
   local out = {}
   for _, l in ipairs(text) do
     for _, piece in ipairs(M.wrap(l, w)) do out[#out + 1] = prefix .. piece end

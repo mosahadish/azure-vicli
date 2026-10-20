@@ -30,7 +30,10 @@
 --                       an already-open K popup so it stays visible - see
 --                       README's Reviewer section), or the string
 --                       "center" (or nil) to centre it like a PR-level
---                       comment.
+--                       comment, or { below = <winid> } for a centred
+--                       float (the thread being replied to): the two are
+--                       stacked in the middle of the screen, the editor
+--                       as wide as that float and right under it.
 --   opts.on_submit(text)  called with the trimmed, mention-translated text
 --                       once <C-s>/<C-CR> submits non-empty content.
 --   opts.on_cancel(draft)  called on q/<Esc><Esc>/an empty submit, with the
@@ -296,6 +299,16 @@ function M.open(opts)
     win_opts.relative = "editor"
     win_opts.row = math.floor((vim.o.lines - height) / 2)
     win_opts.col = math.floor((vim.o.columns - width) / 2)
+  elseif anchor.below and vim.api.nvim_win_is_valid(anchor.below) then
+    local above = vim.api.nvim_win_get_config(anchor.below)
+    width = above.width
+    win_opts.width = width
+    local top = math.max(0, math.floor((vim.o.lines - (above.height + 2) - (height + 2)) / 2))
+    above.row, above.col = top, math.floor((vim.o.columns - width) / 2)
+    pcall(vim.api.nvim_win_set_config, anchor.below, { relative = "editor", row = above.row, col = above.col })
+    win_opts.relative = "editor"
+    win_opts.row = math.min(top + above.height + 2, math.max(0, vim.o.lines - height - 4))
+    win_opts.col = above.col
   elseif anchor.win and vim.api.nvim_win_is_valid(anchor.win) then
     -- "bufpos" anchors to a position inside that window's buffer, so this
     -- lands just under the anchor line regardless of scroll - the same

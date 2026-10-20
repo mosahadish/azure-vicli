@@ -190,8 +190,9 @@ selection), `C` (file comment), `gC`/`c` on the Overview (PR comment), `R`
 (reply, including from inside the K popup or the Overview, where the popup
 stays open behind it), `e` (edit) and the prompt a failed send reopens with -
 opens a small floating editor instead of a single-line command-line prompt,
-anchored just below the line/thread it's about (or centred for a PR-level
-comment/edit). It opens in insert mode, starts 3 lines tall and grows to 8
+anchored just below the line it's about (or centred for a PR-level
+comment/edit). A reply shows the thread centred with the editor right under
+it, as wide as the thread. It opens in insert mode, starts 3 lines tall and grows to 8
 as you type, with a rounded border and a title naming what it's for (e.g.
 "Comment · path:42", "Comment · path:42–48" for a range, "Reply · Jane
 Doe", "Edit comment", "PR comment"). The code line(s) being commented on (or
@@ -220,6 +221,9 @@ azure-cli.py's `--list` carries each reviewer's id (an
 that's typed but isn't a recognised reviewer is sent as plain text and
 simply won't notify anyone. On GitHub the name is translated to the
 reviewer's `@login` instead, and an `@login` typed by hand notifies too.
+The other way round, an `@<GUID>` in a comment you're reading shows as
+`@Display Name` (the name of a comment author with that id, or yours), or
+`@someone` when nobody seen so far has that id.
 
 ### Per-commit diffs
 

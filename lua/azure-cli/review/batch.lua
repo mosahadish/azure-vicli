@@ -280,19 +280,20 @@ local function item_location(item)
     if t and t.path and t.lineno then
       return "Reply on " .. tostring(t.path):match("[^/]*$") .. ":" .. t.lineno
     end
-    return "Reply to thread " .. tostring(item.thread_id)
+    return "Reply on a PR comment"
   end
   if item.bucket == "general" then
     return "PR comment"
   end
+  local file = tostring(item.path):match("[^/]*$")
   if item.bucket == "file" then
-    return item.path .. " (file)"
+    return "Comment on " .. file
   end
-  local loc = tostring(item.path) .. " " .. tostring(item.side) .. ":" .. tostring(item.lineno)
+  local loc = "Comment on " .. file .. ":" .. tostring(item.lineno)
   if item.end_lineno and item.lineno and item.end_lineno > item.lineno then
     loc = loc .. "-" .. item.end_lineno
   end
-  return loc
+  return loc .. (item.side == "L" and " (old side)" or "")
 end
 
 -- The gQ float's lines - two per item: where it goes (and the status a

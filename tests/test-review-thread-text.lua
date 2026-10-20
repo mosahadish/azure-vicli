@@ -51,6 +51,15 @@ for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = tru
 check("paint: header, author, address", got[0] == "AzureCliMuted" and got[1] == "AzureCliAccent" and got[2] == nil
   and got[3] == "AzureCliMuted", vim.inspect(got))
 
+-- "@<GUID>" mentions read as names: a comment author's, the signed-in
+-- user's (state.whoami), else "@someone".
+TT.names["aaaa-1111"] = "Bob Brown"
+require("azure-cli.state").whoami = { ["org|proj"] = { id = "BBBB-2222", displayName = "Demo User" } }
+check("mentions: an author's id, any case", TT.mentions("ask @<AAAA-1111> please") == "ask @Bob Brown please")
+check("mentions: the signed-in user", TT.mentions("@<bbbb-2222> what?") == "@Demo User what?")
+check("mentions: nobody seen", TT.mentions("cc @<cccc-3333>") == "cc @someone")
+check("clean: mentions resolved in comment text", TT.clean("hi @<aaaa-1111>")[1] == "hi @Bob Brown")
+
 if fails > 0 then
   print(fails .. " thread text test(s) failed")
   os.exit(1)

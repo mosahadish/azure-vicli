@@ -509,6 +509,9 @@ local function parse_threads(json, by_key, file_by_path, general)
           authorId = c.author and c.author.id,
           content = c.content,
         }
+        if c.author and c.author.id and c.author.displayName then
+          require("azure-cli.review.thread_text").names[tostring(c.author.id):lower()] = c.author.displayName
+        end
       end
     end
 
@@ -1285,7 +1288,10 @@ local function decorate_comments(buf, path, map)
         -- line, as virtual lines, instead of a popup over the diff.
         if EXT.inline_open and EXT.inline_open[buf] and EXT.inline_open[buf][bl] then
           local virt = {}
-          local tl = threads_to_lines(threads)
+          -- Wrapped to the diff window's text width, past the indent.
+          local win = vim.fn.bufwinid(buf)
+          local info = win ~= -1 and vim.fn.getwininfo(win)[1]
+          local tl = threads_to_lines(threads, info and (info.width - info.textoff - 7) or nil)
           for _, l in ipairs(tl) do virt[#virt + 1] = { { "      " .. l, "AzureCliInline" } } end
           mark.virt_lines = virt
         end
@@ -1440,8 +1446,9 @@ local function reply_to_thread(target, on_success)
   -- the floating editor opens anchored just below it (see EDITOR.open's
   -- `anchor`), so a reply typed from the K popup never hides what's being
   -- replied to.
-  local thread_lines = threads_to_lines({ target }, require("azure-cli.review.thread_text").popup_width())
-  local fwin = open_float(thread_lines, false)
+  local width = require("azure-cli.review.thread_text").popup_width()
+  local thread_lines = threads_to_lines({ target }, width)
+  local fwin = open_float(thread_lines, false, { center = true, min_width = math.min(60, width) })
   if fwin then require("azure-cli.review.thread_text").paint(vim.api.nvim_win_get_buf(fwin)) end
   local function close_thread_float()
     if fwin and vim.api.nvim_win_is_valid(fwin) then
@@ -1453,7 +1460,7 @@ local function reply_to_thread(target, on_success)
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("reply", { author = target.comments[1] and target.comments[1].author }),
-    anchor = fwin and { win = fwin, row = #thread_lines + 1 } or "center",
+    anchor = fwin and { below = fwin } or "center",
     mentions = mentions,
     draft_key = EDITOR.draft_key(KEY, "reply", tostring(target.id)),
     on_submit = function(text)
@@ -1583,7 +1590,7 @@ local function set_thread_status(target, on_success, host)
     notify("Thread id unknown; cannot set status.", vim.log.levels.ERROR)
     return
   end
-  require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = status_options(),
+  require("azure-cli.prompt").select({ prompt = "Thread status" .. (((target.comments or {})[1] or {}).author and (" - " .. target.comments[1].author) or ""), items = status_options(),
     current = function(o) return target.status == o.key end }, function(o)
     if host and host.win and vim.api.nvim_win_is_valid(host.win) then
       pcall(vim.api.nvim_set_current_win, host.win)
@@ -3140,8 +3147,12 @@ local function apply_files(list, status)
   EXT.refresh_file_list()
   set_list_winbar()
   prefetch_all_diffs()
-  notify(EXT.pr_words().name .. ": " .. #files
-    .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+  -- Once per PR: the list loads twice on open (cache, then the fetch).
+  if EXT.files_hint_for ~= KEY then
+    EXT.files_hint_for = KEY
+    notify(EXT.pr_words().name .. ": " .. #files
+      .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+  end
 end
 -- `git diff --name-status` (not just --name-only) so the file list can show
 -- each file's A/M/D/R status letter (review/filelist.lua) - status is part

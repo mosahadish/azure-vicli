@@ -792,7 +792,7 @@ local function open_picker(ctx, kind, new_iterations, review_point, anchored, un
     local row = selected()
     if not (row and row.thread) then return end
     local target = ctx.find_thread(row.thread.id) or row.thread
-    require("azure-cli.prompt").select({ prompt = "Set thread " .. tostring(target.id) .. " status",
+    require("azure-cli.prompt").select({ prompt = "Thread status" .. (((target.comments or {})[1] or {}).author and (" - " .. target.comments[1].author) or ""),
       items = ctx.status_options(),
       current = function(o) return target.status == o.key end }, function(o)
       if not o then return end
