@@ -934,7 +934,14 @@ def reviewer_info_list(pr):
     for r in pr.get("reviewers") or []:
         if not r or r.get("isContainer"):
             continue
-        out.append({"name": r.get("displayName") or "", "id": r.get("id") or "", "vote": r.get("vote") or 0})
+        entry = {"name": r.get("displayName") or "", "id": r.get("id") or "", "vote": r.get("vote") or 0}
+        # gX's list: who's required (Azure), whose review is still only
+        # requested (GitHub - the only ones it can take off).
+        if r.get("isRequired"):
+            entry["isRequired"] = True
+        if r.get("isRequested"):
+            entry["requested"] = True
+        out.append(entry)
     return out
 
 
@@ -2385,7 +2392,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
-    "--submit-review", "--fetch-image", "--find-people",
+    "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -3064,6 +3071,22 @@ class PrActions:
                           for p in people], ensure_ascii=False))
         return 0
 
+    def remove_reviewer(self, reviewer_id):
+        """--remove-reviewer: takes reviewer `reviewer_id` (their identity
+        id) off the PR - Pull Request Reviewers - Delete. A reviewer a
+        branch policy requires comes back as the server's own refusal."""
+        if _is_blank(reviewer_id):
+            print("Remove whom?", file=sys.stderr)
+            return 1
+        try:
+            self.fetch(self._pr_url("/reviewers/{0}".format(urllib.parse.quote(reviewer_id.strip(), safe=""))),
+                       method="DELETE", pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST remove-reviewer failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        print(json.dumps({"removed": reviewer_id.strip()}, ensure_ascii=False))
+        return 0
+
     def add_reviewer(self, who, required="false"):
         """Finds `who` (display name, account or email - Identities - Read
         Identities, searchFilter=General) and adds them to the PR as a
@@ -3321,6 +3344,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.add_reviewer(arg(0), arg(1, "false"))
     if flag == "--find-people":
         return actions.find_people(arg(0))
+    if flag == "--remove-reviewer":
+        return actions.remove_reviewer(arg(0))
     if flag == "--set-description":
         return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":
@@ -5298,6 +5323,7 @@ _GITHUB_ACTIONS = {
     "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
     "--set-description": lambda a, arg: a.set_description(arg(0), arg(1)),
     "--find-people": lambda a, arg: a.find_people(arg(0)),
+    "--remove-reviewer": lambda a, arg: a.remove_reviewer(arg(0)),
     # #111: CI, through the head's GitHub Actions runs. --requeue comes from
     # cmd_requeue, not PR_ACTION_FLAGS.
     "--requeue": lambda a, arg: a.requeue(),

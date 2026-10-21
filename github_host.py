@@ -446,7 +446,7 @@ def ado_pr(node):
     author_login = author.get("login") or ""
     reviewers, by_login, pending = [], {}, set()
 
-    def put(login, name, vote, container=False):
+    def put(login, name, vote, container=False, requested=False):
         if not login or login == author_login:
             return
         r = by_login.get(login)
@@ -454,6 +454,8 @@ def ado_pr(node):
             r = {"id": login, "displayName": name or login, "vote": vote, "isContainer": container}
             by_login[login] = r
             reviewers.append(r)
+        if requested:
+            r["isRequested"] = True  # a review request: the only kind gX can take back
         elif vote and not r["vote"] and login not in pending:
             r["vote"] = vote
 
@@ -465,7 +467,7 @@ def ado_pr(node):
             put("team:" + (rr.get("slug") or ""), rr.get("name") or rr.get("slug"), 0, True)
         elif rr.get("login"):
             pending.add(rr["login"])
-            put(rr["login"], rr.get("name"), 0)
+            put(rr["login"], rr.get("name"), 0, requested=True)
     for key in ("latestOpinionatedReviews", "latestReviews"):
         for n in ((node.get(key) or {}).get("nodes") or []):
             a = (n or {}).get("author") or {}
@@ -1298,6 +1300,28 @@ class Actions(object):
         if str(required).lower() == "true":
             out["note"] = NO_REQUIRED_REVIEWERS
         print(json.dumps(out, ensure_ascii=False))
+        return 0
+
+    def remove_reviewer(self, who):
+        """--remove-reviewer: takes back the review request to `who` (a
+        login, or team:<slug>) - DELETE .../requested_reviewers, over REST
+        either way. GitHub can't take off someone who has already
+        reviewed; it answers that as a no-op, said here."""
+        import sys
+        who = (who or "").strip().lstrip("@")
+        if not who:
+            print("Remove whom?", file=sys.stderr)
+            return 1
+        body = {"team_reviewers": [who[5:]]} if who.startswith("team:") else {"reviewers": [who]}
+        path = "/repos/{0}/{1}/pulls/{2}/requested_reviewers".format(
+            urllib.parse.quote(self.owner, safe=""), urllib.parse.quote(self.repo, safe=""), int(self.pr))
+        out = self.client.rest("DELETE", path, body) or {}
+        still = [r.get("login") for r in out.get("requested_reviewers") or []] + \
+            ["team:" + (t.get("slug") or "") for t in out.get("requested_teams") or []]
+        if who.lower() in [str(x).lower() for x in still]:
+            print("GitHub kept {0}'s review request.".format(who), file=sys.stderr)
+            return 1
+        print(json.dumps({"removed": who}, ensure_ascii=False))
         return 0
 
     def find_people(self, query):

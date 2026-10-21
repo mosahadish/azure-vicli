@@ -155,6 +155,7 @@ paste the output here after changing a default.
 | `plan_agents` | `gP` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `remove_reviewer` | `gX` |
 | `requeue_build` | `gr` |
 | `toasts` | `gN` |
 | `toggle_section` | `za` / `<Space>` |
@@ -197,6 +198,7 @@ paste the output here after changing a default.
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `remove_reviewer` | `gX` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `run_tests` | `gb` |
@@ -251,6 +253,7 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `reject_hunk` | `gn` |
+| `remove_reviewer` | `gX` |
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
@@ -295,6 +298,7 @@ paste the output here after changing a default.
 | `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `quit` | `q` |
+| `remove_reviewer` | `gX` |
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |

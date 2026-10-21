@@ -188,7 +188,7 @@ local DASHBOARD_ACTIONS = {
   "This PR",
   { "description", "description" }, { "copy_link", "copy" }, { "browser", "browser" }, { "open_build", "build" },
   { "vote", "vote" }, { "complete", "complete / auto-complete" }, { "add_reviewer", "add a reviewer" },
-  { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
+  { "remove_reviewer", "remove a reviewer" }, { "requeue_build", "re-queue build" }, { "open_workitem", "linked work items" },
   { "agent_chat", "its agent's chat, in a popup" }, { "goto_plan", "its agent's plan" },
   { "link_workitem", "link a work item" }, { "unlink_workitem", "unlink a work item" },
   "Chat",
@@ -988,6 +988,7 @@ local DASHBOARD_HELP_DESCS = {
   filter = "filter as you type by id, title, repo or author (Esc clears)",
   vote = "vote",
   add_reviewer = "add a reviewer (search by name, account or email)",
+  remove_reviewer = "remove a reviewer (or take back a GitHub review request)",
   complete = "complete (merge), or set/cancel auto-complete",
   requeue_build = "re-queue build validation",
   toggle_section = "toggle collapse on the section header under the cursor",
@@ -1949,6 +1950,9 @@ KEYS.bind(buf, "dashboard", "vote", vote_pr, { desc = "vote" })
 KEYS.bind(buf, "dashboard", "add_reviewer", function()
   require("azure-cli.people").add_reviewer(current_pr())
 end, { desc = "add a reviewer" })
+KEYS.bind(buf, "dashboard", "remove_reviewer", function()
+  require("azure-cli.people").remove_reviewer(current_pr())
+end, { desc = "remove a reviewer" })
 KEYS.bind(buf, "dashboard", "complete", complete_pr, { desc = "complete (merge), or set/cancel auto-complete" })
 KEYS.bind(buf, "dashboard", "requeue_build", requeue_pr, { desc = "re-queue build validation" })
 KEYS.bind(buf, "dashboard", "toggle_section", toggle_section, { desc = "toggle collapse on the section header under the cursor" })

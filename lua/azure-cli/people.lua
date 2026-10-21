@@ -11,6 +11,8 @@
 --                 narrows (picker.lua), searching the host for more
 --   add_reviewer  pick, then (Azure) optional or required, then
 --                 --add-reviewer with the person's id
+--   remove_reviewer  gX: pick one of the PR's reviewers, confirm, then
+--                 --remove-reviewer
 local M = {}
 
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
@@ -130,7 +132,8 @@ function M.add_reviewer(pr, on_done)
             if tostring(r.id or ""):lower() == tostring(p.id):lower() then have = true end
           end
           if not have then
-            table.insert(pr.reviewers, { name = p.name, id = p.id, vote = 0, isRequired = required or nil })
+            table.insert(pr.reviewers, { name = p.name, id = p.id, vote = 0, isRequired = required or nil,
+              requested = HOSTS().host(pr) == "github" or nil })
             require("azure-cli.prs").recompute(pr)
           end
           local okj, d = pcall(vim.json.decode, out)
@@ -154,6 +157,71 @@ function M.add_reviewer(pr, on_done)
       go(false)
     end
   end, { skip_reviewers = true })
+end
+
+-- What the PR dashboard and reviewer redraw after a reviewer change: the
+-- dashboard at once (the record is its own), then as the host has it.
+local function redraw()
+  local STATE = require("azure-cli.state")
+  if STATE.PR_DASHBOARD_RENDER then STATE.PR_DASHBOARD_RENDER() end
+  if STATE.PR_DASHBOARD_RELOAD then STATE.PR_DASHBOARD_RELOAD() end
+end
+
+-- "Bob Brown · approved", "Carol Chen · required, no vote" - a reviewer as
+-- gX lists them.
+function M.reviewer_label(pr, r)
+  local vote = "no vote"
+  for _, v in ipairs(HOSTS().caps(pr).votes or {}) do
+    if tostring(v.key) == tostring(r.vote or 0) and tostring(r.vote or 0) ~= "0" then vote = v.label:lower() end
+  end
+  return tostring(r.name or r.id) .. "  \u{00B7}  " .. (r.isRequired and "required, " or "") .. vote
+end
+
+-- The reviewers gX can take off `pr`: all of them on Azure; on GitHub only
+-- those whose review is still a request (GitHub keeps a submitted review).
+function M.removable(pr)
+  local out = {}
+  for _, r in ipairs(type(pr.reviewers) == "table" and pr.reviewers or {}) do
+    if r.id and r.id ~= "" and (HOSTS().host(pr) ~= "github" or r.requested) then out[#out + 1] = r end
+  end
+  return out
+end
+
+-- gX: picks one of `pr`'s reviewers, asks, and takes them off; then
+-- on_done(reviewer) once the host has (the record loses them too, and the
+-- PR dashboard is redrawn and refetched).
+function M.remove_reviewer(pr, on_done)
+  if not pr then return notify("No PR here.", vim.log.levels.WARN) end
+  if not HOSTS().caps(pr).remove_reviewer then
+    return notify("Removing reviewers isn't available for this PR.", vim.log.levels.WARN)
+  end
+  local list = M.removable(pr)
+  if #list == 0 then
+    return notify(HOSTS().host(pr) == "github"
+      and "No review requests to take back on " .. HOSTS().ref(pr) .. " - GitHub keeps a review once it's submitted."
+      or "No reviewers on " .. HOSTS().ref(pr) .. ".", vim.log.levels.WARN)
+  end
+  local PROMPT = require("azure-cli.prompt")
+  PROMPT.select({ prompt = "Remove a reviewer from " .. HOSTS().ref(pr), items = list,
+    format = function(r) return M.reviewer_label(pr, r) end }, function(r)
+    if not r then return end
+    PROMPT.confirm({ title = "Remove " .. tostring(r.name or r.id) .. "?" }, function(yes)
+      if not yes then return end
+      notify("Removing " .. tostring(r.name or r.id) .. "\u{2026}")
+      T().provider({ "--remove-reviewer", tostring(r.id) }, T().pr_env(pr), function(ok, _, err)
+        if not ok then
+          return notify("Couldn't remove " .. tostring(r.name or r.id) .. ": " .. err, vim.log.levels.ERROR)
+        end
+        for i, x in ipairs(pr.reviewers or {}) do
+          if x == r then table.remove(pr.reviewers, i) break end
+        end
+        require("azure-cli.prs").recompute(pr)
+        notify("Removed " .. tostring(r.name or r.id) .. " from " .. HOSTS().ref(pr) .. ".")
+        redraw()
+        if on_done then on_done(r) end
+      end)
+    end)
+  end)
 end
 
 return M

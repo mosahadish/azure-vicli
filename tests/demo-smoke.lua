@@ -736,6 +736,24 @@ section("PEOPLE", function()
   if not (sent and sent:find("@<bbbbbbbb-0000-0000-0000-000000000002>", 1, true)) then
     return fail("the tag wasn't sent as a mention: " .. tostring(sent))
   end
+  -- gX takes Carol off again: picked from the reviewers, confirmed, gone
+  -- from the record and the dashboard's count.
+  local real_confirm = PROMPT.confirm
+  local offered
+  PROMPT.select = function(o, cb)
+    offered = o.items
+    for _, r in ipairs(o.items) do if r.name == "Carol Chen" then return cb(r) end end
+    cb(nil)
+  end
+  PROMPT.confirm = function(_, cb) cb(true) end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  feed("gX")
+  ok = vim.wait(15000, function() return not has(rec101(), "Carol Chen") end, 50)
+  PROMPT.select, PROMPT.confirm = real_sel, real_confirm
+  if not ok then return fail("gX didn't take Carol Chen off !101 (offered: " .. vim.inspect(offered) .. ")") end
+  if not vim.wait(5000, function() return (row101() or ""):find("0 / 2", 1, true) ~= nil end, 50) then
+    return fail("the dashboard's !101 row still counts the removed reviewer: " .. tostring(row101()), dash)
+  end
   smoke_ok("PEOPLE")
 end)
 

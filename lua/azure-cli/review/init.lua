@@ -2125,6 +2125,7 @@ HELP.overview_help = {
   { "edit_comment", "edit a comment of yours" }, { "delete_comment", "delete a comment of yours" },
   "Review",
   { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
+  { "remove_reviewer", "remove a reviewer (or take back a GitHub review request)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2162,6 +2163,9 @@ local function setup_overview_keymaps(buf)
   KEYS.bind(buf, "overview", "add_reviewer", function()
     require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
   end, { desc = "add a reviewer" })
+  KEYS.bind(buf, "overview", "remove_reviewer", function()
+    require("azure-cli.people").remove_reviewer(current_pr_record(), render_overview)
+  end, { desc = "remove a reviewer" })
   KEYS.bind(buf, "overview", "complete", complete_pr, { desc = "complete" })
   KEYS.bind(buf, "overview", "active_filter", toggle_active_filter, { desc = "toggle active (unresolved) comments only" })
   KEYS.bind(buf, "overview", "filters", manage_ignore_texts, { desc = "manage text filters that hide matching threads" })
@@ -2236,6 +2240,7 @@ HELP.diff_help = {
   "Review",
   { "toggle_viewed", "toggle this file's viewed mark" },
   { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
+  { "remove_reviewer", "remove a reviewer (or take back a GitHub review request)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2281,6 +2286,9 @@ local function setup_diff_keymaps(buf)
   KEYS.bind(buf, "diff", "add_reviewer", function()
     require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
   end, { desc = "add a reviewer" })
+  KEYS.bind(buf, "diff", "remove_reviewer", function()
+    require("azure-cli.people").remove_reviewer(current_pr_record(), render_overview)
+  end, { desc = "remove a reviewer" })
   KEYS.bind(buf, "diff", "complete", complete_pr, { desc = "complete" })
   KEYS.bind(buf, "diff", "next_comment", function() jump_comment(1) end, { desc = "next thread" })
   KEYS.bind(buf, "diff", "prev_comment", function() jump_comment(-1) end, { desc = "previous thread" })
@@ -2942,6 +2950,7 @@ HELP.list_help = {
   "Review",
   { "toggle_viewed", "toggle the file's viewed mark" },
   { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
+  { "remove_reviewer", "remove a reviewer (or take back a GitHub review request)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -3004,6 +3013,9 @@ KEYS.bind(list_buf, "list", "vote", cast_vote, { desc = "vote" })
 KEYS.bind(list_buf, "list", "add_reviewer", function()
   require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
 end, { desc = "add a reviewer" })
+KEYS.bind(list_buf, "list", "remove_reviewer", function()
+  require("azure-cli.people").remove_reviewer(current_pr_record(), render_overview)
+end, { desc = "remove a reviewer" })
 KEYS.bind(list_buf, "list", "complete", complete_pr, { desc = "complete" })
 KEYS.bind(list_buf, "list", "next_comment", function() jump_from_list(jump_comment, 1) end, { desc = "next comment" })
 KEYS.bind(list_buf, "list", "prev_comment", function() jump_from_list(jump_comment, -1) end, { desc = "previous comment" })

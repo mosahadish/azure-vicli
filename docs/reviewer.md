@@ -73,6 +73,7 @@ File list:
 | `gi` | Toggle showing only changes since your last review |
 | `gv` / `gm` | Vote / complete (on GitHub: review verdict / merge - see [On GitHub](#on-github)) |
 | `gR` | Add a reviewer: a popup lists everyone who can review (on Azure the project's teams' members, on GitHub the repository's assignable people) and typing narrows it, best match first (fuzzy: `greg` finds "Stein, Gregory", `tal gross` finds "Gross, Tal"); a pause in typing also searches the host's directory for anyone outside those teams. `<C-n>`/`<C-p>` move, `<CR>` picks (on Azure, then optional or required). People already reviewing aren't offered - from the file list, a diff or the Overview |
+| `gX` | Remove a reviewer: pick one of the PR's reviewers (with their vote), confirm, and they're gone. On Azure DevOps any reviewer, except one a branch policy requires (the server says no); on GitHub only a review that's still requested, since GitHub keeps a submitted review |
 | `gp` | The plan of this PR's agent - the one fixing its comments, or the one whose plan opened it - as `<CR>` on its Agents row opens it; `gp` in the plan comes back here |
 | `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state, `gl`/`gL` link/unlink); on GitHub, the issues it closes |
 | `gl` / `gL` | Link a work item to this PR / unlink one (each a popup, mid-screen) |

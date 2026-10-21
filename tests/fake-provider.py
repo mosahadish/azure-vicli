@@ -63,7 +63,7 @@ GH_OWNER = "demo-gh"
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
               "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description",
-              "--find-people", "--requeue", "--build-log", "--test-results", "--fetch-image")
+              "--find-people", "--remove-reviewer", "--requeue", "--build-log", "--test-results", "--fetch-image")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -1127,6 +1127,20 @@ class Fake:
         print(json.dumps({"added": people[0]["displayName"], "id": people[0]["id"]}))
         return 0
 
+    def cmd_remove_reviewer(self, rest):
+        if not self.need_pr():
+            return 1
+        who = (rest[0] if rest else "").lower()
+        pr = self.pr()
+        keep = [r for r in pr["reviewers"] if r["id"].lower() != who]
+        if len(keep) == len(pr["reviewers"]):
+            print("REST remove-reviewer failed: HTTP 404: no reviewer {0}".format(who), file=sys.stderr)
+            return 1
+        pr["reviewers"] = keep
+        self.ws.save(self.state)
+        print(json.dumps({"removed": who}))
+        return 0
+
     def cmd_find_people(self, rest):
         if not self.need_pr():
             return 1
@@ -2092,7 +2106,7 @@ class Fake:
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
                    "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
                    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
-                   "--get-pr", "--submit-review", "--fetch-image", "--find-people")
+                   "--get-pr", "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer")
 
 
 def dispatch(ws, argv, env):
@@ -2142,6 +2156,7 @@ def dispatch(ws, argv, env):
         "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
         "--set-description": lambda: f.cmd_set_description(rest),
         "--find-people": lambda: f.cmd_find_people(rest),
+        "--remove-reviewer": lambda: f.cmd_remove_reviewer(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
         "--submit-review": lambda: f.cmd_submit_review(rest),

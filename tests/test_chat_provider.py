@@ -248,6 +248,23 @@ class ChatPrActionTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual([p["name"] for p in json.loads(out)], ["Gross, Tal", "Tal, Ron", "Grossman, Avi"])
 
+    def test_remove_reviewer_deletes_them(self):
+        gid = "12345678-90ab-cdef-1234-567890abcdef"
+        rc, out, _, fetch = self.run_action("remove_reviewer", gid)
+        self.assertEqual((rc, json.loads(out)), (0, {"removed": gid}))
+        self.assertEqual([(c["method"], c["url"], c["api_version"]) for c in fetch.calls],
+                         [("DELETE", self.PR + "/reviewers/" + gid, "6.0")])
+
+    def test_remove_reviewer_reports_the_servers_refusal(self):
+        url = self.PR + "/reviewers/req"
+        rc, _, err, _ = self.run_action("remove_reviewer", "req", raise_for={
+            url: tpa.ac.AdoHttpError(400, url, b"required by policy")})
+        self.assertEqual(rc, 1)
+        self.assertIn("HTTP 400", err)
+
+    def test_remove_reviewer_needs_someone(self):
+        self.assertEqual(self.run_action("remove_reviewer", " ")[0], 1)
+
     def test_add_reviewer_by_id_skips_the_search(self):
         gid = "12345678-90ab-cdef-1234-567890abcdef"
         rc, out, _, fetch = self.run_action("add_reviewer", gid, "false", responses={

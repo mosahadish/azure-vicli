@@ -815,7 +815,7 @@ $out"
   smoke_check "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" NAV
   smoke_check "smoke: gu lists my comments and gA filters them there like everywhere else" FOLLOWUP
   smoke_check "smoke: ]C / ]c on the file list land on the comment / change itself in the diff pane" LISTJUMP
-  smoke_check "smoke: gR adds a reviewer found by name; <C-t> in the comment editor tags anyone as a real mention" PEOPLE
+  smoke_check "smoke: gR adds a reviewer found by name, gX removes them; <C-t> in the comment editor tags anyone as a real mention" PEOPLE
   smoke_check "smoke: an unfolded diff fold stays open across files, a reopen and a restart; a push drops it; zR/zM and toggle_fold" FOLDS
   smoke_check "smoke: a PR row shows its linked work item, PR #101 opens in the reviewer, and gW opens the item from the dashboard and the reviewer" PRWI REVIEW-WI
   smoke_check "smoke: gl/gL popups link and unlink from either dashboard, and both update at once" LINK

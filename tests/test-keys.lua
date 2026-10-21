@@ -196,6 +196,8 @@ do
     ["workitem_view.comment"] = "opens the editor",
     ["dashboard.add_reviewer"] = "asks whom", ["list.add_reviewer"] = "asks whom",
     ["diff.add_reviewer"] = "asks whom", ["overview.add_reviewer"] = "asks whom",
+    ["dashboard.remove_reviewer"] = "picks whom, then confirms", ["list.remove_reviewer"] = "picks whom, then confirms",
+    ["diff.remove_reviewer"] = "picks whom, then confirms", ["overview.remove_reviewer"] = "picks whom, then confirms",
     ["overview.delete_comment"] = "confirms",
     ["plan.approve"] = "asks how (and whether to let it push)", ["agents.approve"] = "asks how",
     ["dashboard.requeue_build"] = "confirms (UI.confirm's popup)",
