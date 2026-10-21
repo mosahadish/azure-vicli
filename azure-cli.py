@@ -3664,7 +3664,18 @@ class WorkItemActions:
         "iteration": ("System.IterationPath", str),
         "tags": ("System.Tags", str),
         "description": ("System.Description", str),
+        "originalEstimate": ("Microsoft.VSTS.Scheduling.OriginalEstimate", float),
+        "remainingWork": ("Microsoft.VSTS.Scheduling.RemainingWork", float),
+        "completedWork": ("Microsoft.VSTS.Scheduling.CompletedWork", float),
     }
+    # The hours a work item can carry (usually a Task's), as the detail's
+    # item.hours keys.
+    _HOURS = (("originalEstimate", "Microsoft.VSTS.Scheduling.OriginalEstimate"),
+              ("remainingWork", "Microsoft.VSTS.Scheduling.RemainingWork"),
+              ("completedWork", "Microsoft.VSTS.Scheduling.CompletedWork"))
+    # (collection, project, type) -> the type's field reference names, or
+    # None when they couldn't be read; types don't change in a session.
+    _type_fields = {}
 
     def __init__(self, config, env=None):
         env = os.environ if env is None else env
@@ -4265,6 +4276,9 @@ class WorkItemActions:
             "url": "{0}/{1}/_workitems/edit/{2}".format(self.collection, self.project, full.get("id")),
             "pullRequests": self._wi_linked_prs(full.get("relations")),
         }
+        hours = self._wi_hours(item["type"], f)
+        if hours:
+            item["hours"] = hours
 
         try:
             comments, comments_unsupported = self._fetch_comments(wid)
@@ -4280,6 +4294,25 @@ class WorkItemActions:
         }
         print(json.dumps(out, ensure_ascii=False))
         return 0
+
+    def _wi_hours(self, wtype, fields):
+        """The item's hours ({originalEstimate, remainingWork,
+        completedWork}, "" where unset) - the ones its type has (Work
+        Item Types Field - List), so a Task shows empty hours to fill in and
+        a Bug without them shows none. When the type's fields can't be
+        read, the hours the item has set."""
+        key = (self.collection, self.project, wtype)
+        if key not in self._type_fields:
+            url = "{0}/{1}/_apis/wit/workitemtypes/{2}/fields".format(
+                self.collection, urllib.parse.quote(self.project, safe=""), urllib.parse.quote(wtype, safe=""))
+            try:
+                got = self._get(url, api_version="6.0")
+                self._type_fields[key] = {x.get("referenceName") for x in (got or {}).get("value") or []}
+            except AdoHttpError:
+                self._type_fields[key] = None
+        known = self._type_fields[key]
+        return {name: ("" if fields.get(ref) is None else fields.get(ref)) for name, ref in self._HOURS
+                if (ref in known if known is not None else ref in fields)}
 
     def _wi_linked_prs(self, relations):
         """The item's linked PRs with their title/status/branches, one GET
@@ -4673,14 +4706,18 @@ class WorkItemActions:
                   + ", ".join(sorted(self._FIELD_MAP)), file=sys.stderr)
             return 1
         ado_field, caster = mapping
-        try:
-            cast_value = caster(value)
-        except (TypeError, ValueError):
-            print("ERROR: invalid value for {0}: {1!r}".format(field, value), file=sys.stderr)
-            return 1
-
         url = "{0}/_apis/wit/workitems/{1}".format(self.collection, wid)
-        patch = [{"op": "add", "path": "/fields/{0}".format(ado_field), "value": cast_value}]
+        if caster is float and _is_blank(value):
+            # Hours left empty: cleared, not zero.
+            cast_value = None
+            patch = [{"op": "remove", "path": "/fields/{0}".format(ado_field)}]
+        else:
+            try:
+                cast_value = caster(str(value).replace(",", ".") if caster is float else value)
+            except (TypeError, ValueError):
+                print("ERROR: invalid value for {0}: {1!r}".format(field, value), file=sys.stderr)
+                return 1
+            patch = [{"op": "add", "path": "/fields/{0}".format(ado_field), "value": cast_value}]
         try:
             d = self._patch(url, patch, content_type="application/json-patch+json")
         except AdoHttpError as e:

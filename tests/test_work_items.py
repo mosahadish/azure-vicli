@@ -882,6 +882,41 @@ class WiDetailTests(unittest.TestCase):
         batch_call = next(c for c in fetch.calls if c["url"] == BATCH_URL)
         self.assertEqual(sorted(batch_call["data"]["ids"]), [10, 20])
 
+    def _detail_with_type_fields(self, wtype, fields, type_fields=None, type_error=None):
+        ac.WorkItemActions._type_fields.clear()
+        actions = make_actions()
+        item_url = "https://dev.azure.com/example-org/_apis/wit/workitems/9?$expand=all"
+        types_url = ("https://dev.azure.com/example-org/ExampleProject/_apis/wit/workitemtypes/"
+                     + wtype.replace(" ", "%20") + "/fields")
+        full = {"id": 9, "fields": dict({"System.WorkItemType": wtype, "System.State": "New", "System.Title": "t"},
+                                        **fields), "relations": []}
+        responses = {item_url: full}
+        if type_fields is not None:
+            responses[types_url] = {"value": [{"referenceName": r} for r in type_fields]}
+        actions.fetch = FakeFetch(responses=responses,
+                                  raise_for={types_url: type_error} if type_error else None)
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            self.assertEqual(actions.cmd_wi_detail("9"), 0)
+        return json.loads(buf.getvalue().strip())["item"]
+
+    def test_hours_are_the_ones_its_type_has_empty_when_unset(self):
+        item = self._detail_with_type_fields("Task", {"Microsoft.VSTS.Scheduling.RemainingWork": 3},
+                                             ["Microsoft.VSTS.Scheduling.OriginalEstimate",
+                                              "Microsoft.VSTS.Scheduling.RemainingWork",
+                                              "Microsoft.VSTS.Scheduling.CompletedWork"])
+        self.assertEqual(item["hours"], {"originalEstimate": "", "remainingWork": 3, "completedWork": ""})
+
+    def test_no_hours_for_a_type_without_them(self):
+        item = self._detail_with_type_fields("User Story", {}, ["System.Title"])
+        self.assertNotIn("hours", item)
+
+    def test_hours_set_on_the_item_when_its_type_cant_be_read(self):
+        url = ("https://dev.azure.com/example-org/ExampleProject/_apis/wit/workitemtypes/Bug/fields")
+        item = self._detail_with_type_fields("Bug", {"Microsoft.VSTS.Scheduling.CompletedWork": 2},
+                                             type_error=ac.AdoHttpError(404, url, b"no"))
+        self.assertEqual(item["hours"], {"completedWork": 2})
+
     def test_linked_prs_carry_title_status_and_branches(self):
         actions = make_actions()
         item_url = "https://dev.azure.com/example-org/_apis/wit/workitems/8?$expand=all"
@@ -1220,6 +1255,19 @@ class WiEditSetTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fetch.calls[0]["data"],
                           [{"op": "add", "path": "/fields/System.AssignedTo", "value": "Jordan Doe"}])
+
+    def test_set_hours_takes_a_comma_and_an_empty_value_clears(self):
+        actions = make_actions()
+        url = "https://dev.azure.com/example-org/_apis/wit/workitems/5"
+        fetch = FakeFetch(responses={url: {"id": 5, "fields": {}}})
+        actions.fetch = fetch
+        with mock.patch("sys.stdout", StringIO()):
+            self.assertEqual(actions.cmd_wi_edit(["set", "5", "remainingWork", "1,5"]), 0)
+            self.assertEqual(actions.cmd_wi_edit(["set", "5", "completedWork", ""]), 0)
+        self.assertEqual(fetch.calls[0]["data"], [{"op": "add", "path": "/fields/Microsoft.VSTS.Scheduling.RemainingWork",
+                                                   "value": 1.5}])
+        self.assertEqual(fetch.calls[1]["data"], [{"op": "remove",
+                                                   "path": "/fields/Microsoft.VSTS.Scheduling.CompletedWork"}])
 
     def test_set_unknown_field_is_rejected(self):
         actions = make_actions()

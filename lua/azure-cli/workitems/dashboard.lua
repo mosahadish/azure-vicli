@@ -15,7 +15,8 @@
 --   n      new work item: type, title, and parent (if the cursor is on one)
 --   ga     assign the item under the cursor
 --   gp     set the item's priority
---   ge     edit the item's title
+--   ge     edit the item: opens it (or goes to its tab) with ge's form over
+--          it - every field that can change (workitems/edit.lua)
 --   gi     move the item to another sprint of the quarter
 --   gU     move the item under another parent, or off its own (a picker)
 --   gl     link a pull request to the item under the cursor
@@ -1149,22 +1150,20 @@ local function set_priority()
   end)
 end
 
--- Edit the title of the item under the cursor, prefilled with the current one.
-local function edit_title()
+-- ge: open the item under the cursor (as <CR> does) with its edit form
+-- over it; when it's open already, go there and open the form.
+local function edit_item()
   local it = current_item()
   if not it then return end
-  PROMPT.input({ prompt = "Title for #" .. it.id .. ":", default = it.title or "" }, function(new)
-    if new == nil then return end
-    if new == it.title then
-      notify("Title unchanged.")
-      return
-    end
-    run_edit(it, { "set", ref(it), "title", new }, "Renaming", function(rec)
-      local prev = rec.title
-      rec.title = new
-      return function() rec.title = prev end
-    end, function() nudge_detail(ref(it)) end)
-  end)
+  local INNER = require("azure-cli.innertabs")
+  local built = false
+  INNER.open(INNER.item_home(B.host), INNER.item_key(B.host, ref(it)),
+    "#" .. tostring(it.id) .. " " .. tostring(it.title or ""), function()
+      built = true
+      require("azure-cli.workitems.view").open(B, ref(it), { edit = true })
+    end)
+  local open_form = not built and S.WI_VIEW_EDIT and S.WI_VIEW_EDIT[ref(it)]
+  if open_form then open_form() end
 end
 
 -- Move the item under the cursor to another sprint of the quarter, offered
@@ -1697,7 +1696,7 @@ local WORKITEMS_HELP = {
   { "state", "change the " .. WORDS.item .. "'s state (a popup; can set its children too; on a visual selection: all of them)" },
   { "assign", "assign the " .. WORDS.item .. " under the cursor" },
   { "priority", "set the " .. WORDS.item .. "'s priority" },
-  { "edit_title", "edit the " .. WORDS.item .. "'s title" },
+  { "edit_title", "edit the " .. WORDS.item .. ": opens it with every field in one popup" },
   { "move_sprint", "move the " .. WORDS.item .. " to another " .. SPRINT .. " of the " .. QUARTER },
   { "set_parent", "move the " .. WORDS.item .. " under another parent, or off its own (a picker)" },
   { "link_pr", "link a pull request to the " .. WORDS.item .. " under the cursor" },
@@ -1757,7 +1756,7 @@ KEYS.bind(buf, "workitems", "state", set_state_selection, { mode = "x", desc = "
 KEYS.bind(buf, "workitems", "new", new_item, { desc = "new " .. WORDS.item })
 KEYS.bind(buf, "workitems", "assign", assign_item, { desc = "assign the " .. WORDS.item .. " under the cursor" })
 KEYS.bind(buf, "workitems", "priority", set_priority, { desc = "set the " .. WORDS.item .. "'s priority" })
-KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the " .. WORDS.item .. "'s title" })
+KEYS.bind(buf, "workitems", "edit_title", edit_item, { desc = "edit the " .. WORDS.item .. " (every field)" })
 KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the " .. WORDS.item .. " to another " .. SPRINT })
 KEYS.bind(buf, "workitems", "set_parent", set_parent_item, { desc = "move the " .. WORDS.item .. " under another parent" })
 if B.caps.links then

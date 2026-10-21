@@ -4814,5 +4814,78 @@ section({ "REWARM", "REWARM-GH", "REWARM-REVIEW" }, function()
   if #calls ~= 1 then return fail("the queued callback ran " .. #calls .. " times") end
   smoke_ok("REWARM-REVIEW")
 end)
+-- ge (last, as it leaves #3011's tab open): on the board it opens the item
+-- with the edit form over it; <CR> on a field holds a change (marked, with the old value), <C-s>
+-- saves them all - here a Task's title, priority and remaining hours - and
+-- the item's view reloads showing them (its Hours line included).
+section("WIEDIT", { needs = { "TREE" } }, function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+if not require("azure-cli.state").wi_tree then feed("T") end
+local function wi(id)
+  local st = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, w in ipairs(st.workitems) do if w.id == id then return w end end
+end
+ok = vim.wait(15000, function() return text(wis):find("#3011 ", 1, true) ~= nil end, 100)
+if not ok then return fail("the tree doesn't list #3011", wis) end
+goto_row(3011)
+feed("ge")
+local form
+ok = vim.wait(15000, function()
+  form = shown_buf("azure-cli-wi-edit")
+  return form ~= nil and text(form):find("Remaining work", 1, true) ~= nil
+end, 50)
+if not ok then return fail("ge on #3011 didn't open its edit form with its hours") end
+local view = nil
+for _, b in ipairs(vim.api.nvim_list_bufs()) do
+  if vim.api.nvim_buf_is_valid(b) and text(b):find("^#3011  Task") then view = b end
+end
+if not (view and text(view):find("Hours:     original 8 h", 1, true)) then
+  return fail("#3011's view doesn't show its hours", view)
+end
+local PROMPT = require("azure-cli.prompt")
+local real_in, real_sel = PROMPT.input, PROMPT.select
+PROMPT.input = function(o, cb)
+  if o.prompt:find("^Title") then return cb("Count failed logins per user") end
+  if o.prompt:find("^Remaining") then return cb("1") end
+  cb(nil)
+end
+PROMPT.select = function(o, cb) cb(o.items[1]) end
+local function press(row_label, lhs)
+  local w = vim.fn.bufwinid(form)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(form, 0, -1, false)) do
+    if row_label and l:find("^ . " .. row_label) then vim.api.nvim_win_set_cursor(w, { i, 0 }) end
+  end
+  vim.api.nvim_set_current_win(w)
+  -- Neovim lists <C-s> as "<C-S>".
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(form, "n")) do
+    if m.lhs:lower() == lhs:lower() then return m.callback() end
+  end
+end
+press("Title", "<CR>")
+press("Priority", "<CR>")
+press("Remaining work", "<CR>")
+PROMPT.input, PROMPT.select = real_in, real_sel
+ok = vim.wait(5000, function()
+  local t = text(form)
+  return t:find("3 changes not saved yet", 1, true) and t:find("\u{25CF} Remaining work    1 h   (was 3 h)", 1, true)
+end, 50)
+if not ok then return fail("the form didn't hold the three changes", form) end
+press(nil, "<C-s>")
+ok = vim.wait(15000, function()
+  local w = wi(3011)
+  return w.title == "Count failed logins per user" and w.priority == 1 and w.remainingWork == 1
+    and not vim.api.nvim_buf_is_valid(form)
+end, 100)
+if not ok then return fail("<C-s> didn't save the form's changes: " .. vim.inspect(wi(3011))) end
+ok = vim.wait(10000, function()
+  local t = text(view)
+  return t:find("remaining 1 h", 1, true) and t:find("Priority:  P1", 1, true)
+    and t:find("Count failed logins per user", 1, true)
+end, 100)
+if not ok then return fail("#3011's view didn't reload with the saved changes", view) end
+smoke_ok("WIEDIT")
+end)
+
 print("SMOKE-DONE")
 vim.cmd("qa!")

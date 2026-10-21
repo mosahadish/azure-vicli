@@ -82,7 +82,11 @@ MERGE_STRATEGIES = ("squash", "noFastForward", "rebase", "rebaseMerge")
 WI_FIELDS = {
     "title": ("title", str), "assignedTo": ("assignedTo", str), "priority": ("priority", int),
     "iteration": ("iterationPath", str), "tags": ("tags", str), "description": ("description", str),
+    "originalEstimate": ("originalEstimate", float), "remainingWork": ("remainingWork", float),
+    "completedWork": ("completedWork", float),
 }
+# Tasks carry hours, like Azure's Agile/Scrum Task; other types don't.
+WI_HOURS = ("originalEstimate", "remainingWork", "completedWork")
 WI_TRANSITIONS = {
     "New": ["Active", "Removed"],
     "Active": ["Implemented", "Resolved", "New", "Removed"],
@@ -349,6 +353,7 @@ WI_FIXTURES = [
     # under a story usually do (the dashboard lists stories and bugs).
     {"id": 3011, "type": "Task", "state": "In Progress", "title": "Count failed logins per account",
      "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "originalEstimate": 8, "remainingWork": 3, "completedWork": 5,
      "description": "", "prs": [], "comments": []},
     {"id": 3012, "type": "Task", "state": "To Do", "title": "Tests for the lockout window",
      "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
@@ -1470,6 +1475,8 @@ class Fake:
                                           "description", "acceptanceCriteria", "reproSteps")}
         item["url"] = "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])
         item["pullRequests"] = [self.linked_pr(p) for p in w.get("prs", [])]
+        if w.get("type") == "Task":
+            item["hours"] = {k: ("" if w.get(k) is None else w.get(k)) for k in WI_HOURS}
         parent = self.wi(w["parentId"]) if w.get("parentId") else None
         children = [x for x in self.state["workitems"] if x.get("parentId") == w["id"]]
         print(json.dumps({"item": item, "parent": summary(parent) if parent else None,
@@ -1594,7 +1601,7 @@ class Fake:
             if a3 == "iteration" and value == "-":
                 value = BACKLOG
             try:
-                value = caster(value)
+                value = None if (caster is float and not value) else caster(value)
             except (TypeError, ValueError):
                 print("ERROR: invalid value for {0}: {1!r}".format(a3, a4), file=sys.stderr)
                 return 1
