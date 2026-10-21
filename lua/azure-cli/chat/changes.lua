@@ -432,8 +432,7 @@ local function reject_hunk(idx)
   local h = M.hunk_at(parsed, vim.api.nvim_win_get_cursor(0)[1])
   if not h then return notify("Put the cursor on a change.") end
   local dir, label = view.dir, f.path .. " (" .. h.lines[1]:match("^(@@.-@@)") .. ")"
-  require("azure-cli.prompt").confirm({ title = "Revert this?", prompt = "This change to " .. label
-    .. " goes from the worktree.", details = h.lines,
+  require("azure-cli.prompt").confirm({ title = "Revert this change to " .. label .. "?", details = h.lines,
     details_ft = "diff" }, function(yes)
     if not yes then return end
     local tmp = vim.fn.tempname()
@@ -536,7 +535,7 @@ local function run_tests()
   local dir, fp, title = view.dir, view.fp, view.title
   local cmd, source = TR.command(dir, view.plan)
   local last = TR.load(dir)
-  if TR.running(dir) then return notify("The tests are running - their result shows in the winbar.") end
+  if TR.running(dir) then return notify("The tests are running.") end
   local function go()
     if not cmd then
       return notify("No test command: set chat.test_cmd for this repository, or the plan's Test plan section needs "

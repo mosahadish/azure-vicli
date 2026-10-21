@@ -453,7 +453,7 @@ do
   local q, r = TH.counts(rec.threads)
   check("counts: an answer is neither a question nor a request", q == 1 and r == 0)
   local vl = TH.virt_lines({ kind = "answer", question = "No.", status = "queued" }, { width = 60 })
-  check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("approving", 1, true))
+  check("virt_lines: your answer, and when it goes", vl[1][2][1] == "\u{21AA} you: No." and vl[2][2][1]:find("not sent yet", 1, true))
   check("unanswered: answered questions stop counting", PLAN.unanswered(lines, rec.threads) == 1
     and PLAN.unanswered(lines, {}) == 3)
 end
@@ -888,7 +888,7 @@ do
   d = TR.describe({ cmd = "make", code = 0, fingerprint = "a", at = 5 }, "a", o)
   check("describe: a run from before who started it was kept", d:find("started by unknown at T5", 1, true) ~= nil, d)
   d = TR.describe({ cmd = "make", code = 1, fingerprint = "a" }, "a", { running = true })
-  check("describe: running now", d:find("^Tests: running now") ~= nil, d)
+  check("describe: running now", d == "Tests: running.", d)
   check("describe: timed out", TR.describe({ cmd = "m", code = 143, timed_out = true, fingerprint = "a", by = "user" }, "a", o)
     :find("^Tests: timed out") ~= nil)
   -- run keeps who started it; a declined run leaves the last result as it was.
@@ -1665,7 +1665,7 @@ do
   check("#120 submit_plan in the foreground: no tab, window or mode change", res and ok, detail .. tostring(err))
   check("#120 submit_plan: no plan view opened", PLAN.open_views()[key] == nil)
   check("#120 submit_plan: a notification and the desktop alert", #notified == 1 and #alerted == 1
-    and notified[1]:find("ready for you", 1, true) ~= nil, vim.inspect({ notified, alerted }))
+    and notified[1]:find("is ready on the Agents screen", 1, true) ~= nil, vim.inspect({ notified, alerted }))
   check("#120 submit_plan: shown is false, the note says it waits", res and res.shown == false
     and tostring(res.note):find("Agents screen", 1, true) ~= nil, vim.inspect(res))
 

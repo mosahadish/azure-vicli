@@ -165,7 +165,7 @@ use_as_reply = function()
     if st.entries[i].role == "you" then view = st.entries[i].view break end
   end
   local pr = view and view.pr
-  if not pr then return notify("That answer wasn't about a pull request - nothing to reply on.", vim.log.levels.WARN) end
+  if not pr then return notify("That answer wasn't about a pull request.", vim.log.levels.WARN) end
   local thread = view.thread
   local TOOLS = require("azure-cli.chat.tools")
   local EDITOR = require("azure-cli.editor")
@@ -270,7 +270,7 @@ pick_agent = function()
     st.session_id = nil
     st.model, st.model_agent = nil, nil
     CHAT().set_winbars()
-    notify("Chat agent: " .. (agents[choice].label or choice) .. " - it gets the conversation so far with your next message.")
+    notify("Chat agent: " .. (agents[choice].label or choice) .. ".")
   end)
 end
 

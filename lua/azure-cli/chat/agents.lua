@@ -91,7 +91,7 @@ local function start(q)
   if conv.running then return false end
   local entry = CHAT().send(q.prompt, {
     conv = conv, snap = q.snap, display = q.display,
-    done_note = q.label .. "'s agent answered (the Agents screen lists them).",
+    done_note = q.label .. "'s agent answered.",
   })
   return entry ~= nil
 end
@@ -215,10 +215,10 @@ local function enqueue(jobs, nothing)
   end
   M.pump()
   local waiting = #queue
-  local msg = "Planning " .. table.concat(added, ", ") .. " - one agent each"
+  local msg = "Planning " .. table.concat(added, ", ")
     .. (waiting > 0 and (", " .. waiting .. " waiting for an agent (chat.max_agents = " .. M.max() .. ")") or "")
     .. (#skipped > 0 and ("; already working on " .. table.concat(skipped, ", ")) or "")
-    .. ". The Agents screen lists them."
+    .. "."
   notify(msg)
   return msg, added
 end

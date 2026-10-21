@@ -130,8 +130,6 @@ local function show()
   if not (srv and srv.url) then return end
   local bind = require("azure-cli.config").get().dashboard_web.bind
   local lines = {
-    "Phone dashboard - the Agents screen, read-only",
-    "",
     "  " .. srv.url,
     "",
     "Open it on your phone (same network or a VPN such as Tailscale).",

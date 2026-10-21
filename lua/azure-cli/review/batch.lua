@@ -546,7 +546,7 @@ local function setup(ctx)
   local function open_queue()
     local s = state()
     if #s.items == 0 then
-      ctx.notify("No queued comments (gB to turn batch mode on, then comment as usual).")
+      ctx.notify("No queued comments.")
       return
     end
     local statuses = require("azure-cli.hosts").caps(ctx.current_pr_record and ctx.current_pr_record()).thread_statuses
@@ -657,7 +657,7 @@ local function setup(ctx)
   local function submit_batch()
     local s = state()
     if s.submitting then
-      ctx.notify("Still sending the last gS - the queue's left for after it.", vim.log.levels.WARN)
+      ctx.notify("Still sending the last gS.", vim.log.levels.WARN)
       return
     end
     if #s.items == 0 then

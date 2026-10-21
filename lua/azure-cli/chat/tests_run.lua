@@ -105,7 +105,7 @@ function M.describe(result, now_fp, opts)
   opts = opts or {}
   local key = opts.key or "gb"
   local fmt = opts.fmt or function(ts) return os.date("%m-%d %H:%M", ts) end
-  if opts.running then return "Tests: running now - their result isn't in yet." end
+  if opts.running then return "Tests: running." end
   if not result then return "Tests: not run on this change yet (" .. key .. " in the change viewer)." end
   local which = "`" .. tostring(result.cmd) .. "`, started by " .. started_by(result, key)
     .. (result.at and (" at " .. fmt(result.at)) or "")

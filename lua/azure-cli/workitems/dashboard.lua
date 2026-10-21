@@ -1358,7 +1358,7 @@ local function set_wi_filter()
     render()
   end
   UI.filter_prompt({
-    win = win, prompt = "Filter " .. WORDS.items .. " (id, title, state, assignee)", default = wi_filter,
+    win = win, prompt = "Filter " .. WORDS.items, default = wi_filter,
     on_change = apply, on_submit = apply,
     on_cancel = function() apply("") end,
   })

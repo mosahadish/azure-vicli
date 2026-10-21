@@ -415,8 +415,7 @@ idle timeout above your longest build.
 on the Agents screen, or a timeout) only stops that turn: Claude Code is
 sent a stream-json interrupt (`control_request`), Copilot a
 `session/cancel`. The process, its session and the worktree it was in stay,
-and your next message continues it - `· interrupted - the session stays,
-your next message continues it`. If the turn hasn't ended
+and your next message continues it - `· interrupted`. If the turn hasn't ended
 `interrupt_grace_seconds` later (or you press `<C-c>` again meanwhile), the
 process is killed instead: the status says so - `timed out (idle 10m,
 killed)`, `stopped (killed)` - and so does a line under it, and your next

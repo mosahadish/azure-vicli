@@ -1571,7 +1571,7 @@ local function apply_status_to_matches(matches, status, label, on_change)
           if failed == 0 then
             notify("Done: " .. total .. " comment(s) set to " .. status.label .. ".")
           else
-            notify(failed .. "/" .. total .. " failed to update (network/permission?); check them individually.",
+            notify(failed .. "/" .. total .. " failed to update.",
               vim.log.levels.WARN)
           end
         end)
@@ -2812,9 +2812,9 @@ manage_ignore_texts = function(on_change)
   local row_idx = {}
   local function render()
     row_idx = {}
-    local lines = { "Comment text filters (hide threads whose first comment contains any of these):", "" }
+    local lines = { "Comment text filters", "" }
     if #ignore_texts == 0 then
-      lines[#lines + 1] = "  (none — press a to add one)"
+      lines[#lines + 1] = "  (none)"
     else
       for i, f in ipairs(ignore_texts) do
         lines[#lines + 1] = "  " .. i .. ". " .. (f.persistent and "[P] " or "") .. f.text
@@ -2856,7 +2856,7 @@ manage_ignore_texts = function(on_change)
         table.insert(ignore_texts, { text = input:lower(), persistent = false })
         refresh_after_filter_change()
         if on_change then on_change() end
-        notify("Added text filter: " .. input .. " (not persistent — press p on it to keep it across sessions).")
+        notify("Added text filter: " .. input .. ".")
       end
       draw()
     end)
@@ -3169,8 +3169,7 @@ local function apply_files(list, status)
   -- Once per PR: the list loads twice on open (cache, then the fetch).
   if EXT.files_hint_for ~= KEY then
     EXT.files_hint_for = KEY
-    notify(EXT.pr_words().name .. ": " .. #files
-      .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+    notify(EXT.pr_words().name .. ": " .. #files .. " files.")
   end
 end
 -- `git diff --name-status` (not just --name-only) so the file list can show

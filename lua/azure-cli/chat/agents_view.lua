@@ -351,7 +351,7 @@ local function open_agent(r)
     return
   end
   if r.conv then return CHAT().popup(r.key) end
-  notify((r.label or "That row") .. " is waiting for an agent - nothing to show yet.")
+  notify((r.label or "That row") .. " is waiting for an agent.")
 end
 
 -- gp on a PR (the dashboard, the reviewer): its agent, as <CR> on its row

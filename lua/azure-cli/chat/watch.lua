@@ -134,7 +134,7 @@ local function act(rec, pr, pending)
     local _, added = require("azure-cli.chat.agents").start_for_prs({ pr }, { [pr.id] = pending.threads })
     -- Its agent busy (or no agent set): try again at the next poll.
     if not added or #added == 0 then return false end
-    CHAT().note(what .. " - an agent is planning the fix; the Agents screen shows it.")
+    CHAT().note(what .. " - an agent is planning the fix.")
   else
     CHAT().note(what .. " - open it and send /triage, or ask here.")
   end

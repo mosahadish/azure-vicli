@@ -386,7 +386,7 @@ local function ensure_cloned(pr, path, cb)
   end
 
   vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-  notify("Cloning " .. (pr.repo or "repo") .. " to " .. path .. " … this may take a while.")
+  notify("Cloning " .. (pr.repo or "repo") .. " to " .. path .. " …")
   vim.fn.jobstart({ "git", "clone", pr.cloneUrl, path }, {
     stdout_buffered = true,
     stderr_buffered = true,
@@ -1120,7 +1120,7 @@ local function set_filter()
     set_winbar()
   end
   UI.filter_prompt({
-    win = win, prompt = "Filter PRs (id, title, repo, author)", default = filter,
+    win = win, prompt = "Filter PRs", default = filter,
     on_change = apply, on_submit = apply,
     on_cancel = function() apply("") end,
   })
@@ -2006,7 +2006,7 @@ KEYS.bind(buf, "dashboard", "agent_chat", function()
   if not pr then return notify("Put the cursor on a pull request.") end
   local a = agent_for(agents_by_pr(), pr)
   if not a then
-    return notify("No agent on PR " .. HOSTS.ref(pr) .. " (the agent column shows the ones that have one).")
+    return notify("No agent on PR " .. HOSTS.ref(pr) .. ".")
   end
   require("azure-cli.chat").popup(a.key)
 end, { desc = "its agent's chat, in a popup" })
@@ -2015,7 +2015,7 @@ KEYS.bind(buf, "dashboard", "goto_plan", function()
   local pr = current_pr()
   if not pr then return notify("Put the cursor on a pull request.") end
   if not require("azure-cli.chat.agents_view").open_for_pr(HOSTS.key(pr)) then
-    notify("No agent on PR " .. HOSTS.ref(pr) .. " (the agent column shows the ones that have one).")
+    notify("No agent on PR " .. HOSTS.ref(pr) .. ".")
   end
 end, { desc = "its agent's plan" })
 require("azure-cli.chat.view").register("azurecli-dashboard", function(w)

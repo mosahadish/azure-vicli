@@ -120,7 +120,7 @@ function M.confirm_lines(info)
     goes[#goes + 1] = { "its conversation (" .. plural(info.turns, "turn")
       .. (#info.conversations > 0 and (", " .. plural(#info.conversations, "saved file")) or "") .. ")" }
   else
-    goes[#goes + 1] = { "no conversation: the main chat wrote this plan before planning moved to agents" }
+    goes[#goes + 1] = { "no conversation" }
   end
   if info.queued then goes[#goes + 1] = { "its place in the queue" } end
   for _, w in ipairs(info.worktrees) do

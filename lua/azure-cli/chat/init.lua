@@ -1017,7 +1017,7 @@ local function one_at_a_time(question, ask)
     return
   end
   asking = true
-  notify(question .. " (answer in the prompt)")
+  notify(question)
   M.alert("azure-vicli: a question for you", question)
   MAIN().question = question
   M.set_winbars()
@@ -1089,7 +1089,6 @@ function M.ask_questions(conv, questions, cb)
       if done_i then buttons[done_i] = "Done" end
       buttons[#buttons + 1] = "Cancel"
       local cancel = #buttons
-      if multi then lines[#lines + 1] = "(Pick any number of them.)" end
       local checks
       if multi then
         checks = {}
@@ -1131,7 +1130,7 @@ function M.ask_questions(conv, questions, cb)
         -- Done: what's ticked (nothing ticked asks again).
         local p = ticked(ch)
         if #p == 0 then
-          notify("Tick at least one, or pick Other\u{2026} - Esc declines.")
+          notify("Tick at least one, or pick Other\u{2026}")
           return ask(n, ch)
         end
         picks[n] = p

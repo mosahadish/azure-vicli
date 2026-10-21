@@ -488,7 +488,7 @@ local function send(text, display)
   local CHAT = require("azure-cli.chat")
   local conv = view and CHAT.find_conversation(view.key)
   if (conv and conv.running) or (not conv and CHAT.busy()) then
-    notify("The agent is still answering - tell it once it's done (it can read the plan with get_plan).",
+    notify("The agent is still answering - tell it once it's done.",
       vim.log.levels.WARN)
     return false
   end
@@ -572,7 +572,7 @@ local function answer_here()
   local lines = vim.api.nvim_buf_get_lines(view.plan_buf, 0, -1, false)
   local is_q = false
   for _, q in ipairs(PLAN().open_questions(lines)) do if q.line == row then is_q = true end end
-  if not is_q then return notify("Put the cursor on one of the plan's open questions (its Open questions section).") end
+  if not is_q then return notify("Put the cursor on one of the plan's open questions.") end
   local existing
   for _, th in ipairs(rec.threads) do if th.kind == "answer" and th.line == row then existing = th end end
   require("azure-cli.editor").open({
@@ -607,7 +607,7 @@ unsent = function()
 end
 
 local function already_sent()
-  notify("That change was sent to the agent already - it stays as history.")
+  notify("That change was sent to the agent already.")
 end
 
 -- Back to plan view `v`'s plan window once a popup it opened is answered,
@@ -631,7 +631,7 @@ local function delete_here()
   end
   local v, rec = view, view.rec
   require("azure-cli.prompt").confirm({ title = "Drop this queued change?",
-    prompt = "It won't be sent to the agent.", details = th.question }, function(yes)
+    details = th.question }, function(yes)
     refocus(v)
     if not yes then return end
     for j, t in ipairs(rec.threads) do
@@ -809,7 +809,7 @@ goto_code = function()
   end
   local file = PLAN().file_at_line(lines, row)
   if file then return go(file, nil) end
-  notify("Nothing in the change is linked to this line (a Files entry opens its file).")
+  notify("Nothing in the change is linked to this line.")
 end
 
 -- PR `key` (hosts.lua's; `id` its number) in the reviewer - gp in a plan
@@ -836,7 +836,7 @@ local function open_pr()
   local t, pr = rec.target or {}, type(rec.pr) == "table" and rec.pr or {}
   local key = pr.key or t.pr_key or pr.id or t.pr_id
   if not key then
-    return notify("This plan has no pull request yet - its agent opens one once the plan is carried out.")
+    return notify("This plan has no pull request yet.")
   end
   M.open_pr(key, pr.id or t.pr_id)
 end

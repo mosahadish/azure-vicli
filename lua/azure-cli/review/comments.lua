@@ -201,8 +201,7 @@ local function do_delete(ctx, t, c, on_change)
     ctx.notify("Still sending; try again once it's confirmed.", vim.log.levels.WARN)
     return
   end
-  require("azure-cli.prompt").confirm({ title = "Delete comment",
-    prompt = "Are you sure?" }, function(yes)
+  require("azure-cli.prompt").confirm({ title = "Delete this comment?" }, function(yes)
     if not yes then
       ctx.notify("Cancelled.")
       return
