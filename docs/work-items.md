@@ -237,7 +237,8 @@ Sections (and the `n` type picker) follow `work_items.types:` - configure
 `types: [Task, Feature]` and you get Tasks and Features sections instead
 of the default User Stories and Bugs. `/` filters by id, title, state or
 assignee as you type (`<Esc>` clears). `ga` picks from the team's members
-(plus "(me)" and typing a name), `gl` picks from the PR dashboard's cached
+(plus "(me)" and typing a name) and, as you type, anyone the server's
+directory finds, `gl` picks from the PR dashboard's cached
 list (or takes an id), and `gL` unlinks from the dashboard as well as the
 detail view. An empty description shows `(none)`.
 

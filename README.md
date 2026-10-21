@@ -199,14 +199,16 @@ your dotfiles repo instead:
 - **[Reviewer](docs/reviewer.md)** - a two-pane review with one
   line-number column, folded context (`za` / `<Space>`, remembered),
   inline threads, viewed-file tracking, comments and replies that appear
-  instantly, batch review, "since my last review" and follow-up views,
+  instantly, adding reviewers by name (`gR`, a list you narrow as you
+  type), batch review, "since my last review" and follow-up views,
   per-commit diffs, no-LSP code navigation, and
   [images](docs/reviewer.md#images) in the description and comments
   (`<CR>` / `gx`, inline with snacks.nvim or image.nvim). On
   GitHub, review verdicts and the repository's merge types
   ([what differs](docs/reviewer.md#on-github)).
 - **[Work items](docs/work-items.md)** - your sprint's items with state,
-  assignee, priority, sprint moves, discussion and PR links. With a GitHub
+  assignee, priority, sprint moves, discussion and PR links; `ge` edits
+  every field in one popup, a Task's hours included. With a GitHub
   account's `issues:` block, an [Issues tab](docs/work-items.md#issues-github)
   (`I`) does the same for a GitHub Projects v2 project.
 - **[Chat](docs/chat.md)** - an AI agent (Claude Code, the Copilot CLI, ...)
