@@ -1269,6 +1269,26 @@ class WiEditSetTests(unittest.TestCase):
         self.assertEqual(fetch.calls[1]["data"], [{"op": "remove",
                                                    "path": "/fields/Microsoft.VSTS.Scheduling.CompletedWork"}])
 
+    def test_people_searches_the_directory_and_assigns_by_account(self):
+        actions = make_actions()
+        ident = ("https://vssps.dev.azure.com/example-org/_apis/identities?searchFilter=General"
+                 "&filterValue=greg&queryMembership=None")
+        actions.fetch = FakeFetch(responses={ident: {"value": [
+            {"id": "1", "providerDisplayName": "Stein, Gregory",
+             "properties": {"Account": {"$value": "DOM\\gstein"}, "Mail": {"$value": "g@x.com"}}},
+            {"id": "g", "providerDisplayName": "[p]\\Greg's group", "isContainer": True}]}})
+        buf = StringIO()
+        with mock.patch("sys.stdout", buf):
+            self.assertEqual(actions.cmd_wi_list("people", "greg"), 0)
+        self.assertEqual([json.loads(l) for l in buf.getvalue().splitlines()],
+                         [{"name": "Stein, Gregory", "email": "g@x.com", "assign": "DOM\\gstein"}])
+
+    def test_people_needs_a_query(self):
+        actions = make_actions()
+        actions.fetch = FakeFetch()
+        with mock.patch("sys.stderr", StringIO()):
+            self.assertEqual(actions.cmd_wi_list("people", " "), 1)
+
     def test_set_unknown_field_is_rejected(self):
         actions = make_actions()
         actions.fetch = FakeFetch()

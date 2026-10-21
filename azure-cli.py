@@ -2406,6 +2406,58 @@ def _is_uint(s):
     return bool(s) and s.isdigit()
 
 
+def identities_base(org):
+    """Identity search lives on vssps.dev.azure.com for Azure DevOps
+    Services, and on the collection itself on Azure DevOps Server."""
+    org = (org or "").rstrip("/")
+    m = re.match(r"^https://dev\.azure\.com/([^/]+)", org)
+    if m:
+        return "https://vssps.dev.azure.com/" + m.group(1)
+    return org
+
+
+def search_identities(get, base, query):
+    """The people (not groups) Identities - Read Identities finds for
+    `query` (display name, account or email; searchFilter=General) under
+    `base` (identities_base), as [{name, id, mail, accountName}], at most
+    20 - `get(url)` fetches. Raises the full query's AdoHttpError.
+
+    Several words ("Tal Gross", "Gross, Tal") are also searched one by one,
+    since a directory matches the start of a name and "Last, First" names
+    don't start with the first name: whoever matches the most words comes
+    first."""
+    query = (query or "").strip()
+    words = [w for w in re.split(r"[\s,;]+", query) if w]
+
+    def one(q):
+        url = "{0}/_apis/identities?searchFilter=General&filterValue={1}&queryMembership=None".format(
+            base, urllib.parse.quote(q))
+        return [i for i in (get(url) or {}).get("value") or [] if not i.get("isContainer")]
+    found = one(query)
+    if len(words) > 1:
+        for w in words[:4]:
+            try:
+                found.extend(one(w))
+            except AdoHttpError:
+                pass  # the full query's answer stands
+
+    def prop(i, key):
+        v = (i.get("properties") or {}).get(key)
+        return (v.get("$value") if isinstance(v, dict) else v) or ""
+    seen, people = set(), []
+    for i in found:
+        if i.get("id") and i["id"] not in seen:
+            seen.add(i["id"])
+            people.append({"name": i.get("providerDisplayName") or i.get("customDisplayName") or "?",
+                           "id": i["id"], "mail": prop(i, "Mail"), "accountName": prop(i, "Account")})
+
+    def hits(p):
+        text = " ".join((p["name"], p["mail"], p["accountName"])).lower()
+        return sum(1 for w in words if w.lower() in text)
+    people.sort(key=lambda p: -hits(p))
+    return people[:20]
+
+
 def _is_blank(s):
     """Mirrors bash's `[[ -z "${x// }" ]]` - empty once spaces are stripped,
     not just an empty string (a comment of all spaces is still "empty").
@@ -2947,13 +2999,7 @@ class PrActions:
         return 0
 
     def _identities_base(self):
-        """Identity search lives on vssps.dev.azure.com for Azure DevOps
-        Services, and on the collection itself on Azure DevOps Server."""
-        org = (self.org or "").rstrip("/")
-        m = re.match(r"^https://dev\.azure\.com/([^/]+)", org)
-        if m:
-            return "https://vssps.dev.azure.com/" + m.group(1)
-        return org
+        return identities_base(self.org)
 
     def _search_people(self, who):
         """The people (not groups) Identities - Read Identities finds for
@@ -3000,46 +3046,22 @@ class PrActions:
     def find_people(self, query):
         """--find-people: who `query` names, as a JSON list of {name, id,
         account} - the reviewer picker's and the comment editor's tag
-        search. At most 20. No query: everyone in the project's teams
-        (_team_people), all of them.
-
-        Several words ("Tal Gross", "Gross, Tal") are also searched one by
-        one, since a directory matches the start of a name and "Last,
-        First" names don't start with the first name: whoever matches the
-        most words comes first."""
+        search (search_identities). No query: everyone in the project's
+        teams (_team_people), all of them."""
         if _is_blank(query):
             people = self._team_people()
             if people is None:
                 return 1
             print(json.dumps(people, ensure_ascii=False))
             return 0
-        query = query.strip()
-        words = [w for w in re.split(r"[\s,;]+", query) if w]
-        people = self._search_people(query)
-        if people is None:
+        try:
+            people = search_identities(lambda url: self.fetch(url, pat=self.pat, api_version="6.0"),
+                                       self._identities_base(), query)
+        except AdoHttpError as e:
+            print("REST identity search failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
-        if len(words) > 1:
-            for w in words[:4]:
-                people.extend(self._search_people(w) or [])
-
-        def prop(i, key):
-            v = (i.get("properties") or {}).get(key)
-            return (v.get("$value") if isinstance(v, dict) else v) or ""
-
-        def name(i):
-            return i.get("providerDisplayName") or i.get("customDisplayName") or "?"
-        found, order = {}, []
-        for i in people:
-            if i.get("id") and i["id"] not in found:
-                found[i["id"]] = i
-                order.append(i)
-
-        def hits(i):
-            text = " ".join((name(i), prop(i, "Mail"), prop(i, "Account"))).lower()
-            return sum(1 for w in words if w.lower() in text)
-        order.sort(key=lambda i: -hits(i))
-        print(json.dumps([{"name": name(i), "id": i.get("id"), "account": prop(i, "Mail") or prop(i, "Account")}
-                          for i in order[:20]], ensure_ascii=False))
+        print(json.dumps([{"name": p["name"], "id": p["id"], "account": p["mail"] or p["accountName"]}
+                          for p in people], ensure_ascii=False))
         return 0
 
     def add_reviewer(self, who, required="false"):
@@ -3877,8 +3899,8 @@ class WorkItemActions:
         return out
 
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'"
                   .format(select), file=sys.stderr)
             return 1
         if select == "items" and not item_path:
@@ -3895,6 +3917,8 @@ class WorkItemActions:
             return self._wi_list_sprints()
         if select == "members":
             return self._wi_list_members()
+        if select == "people":
+            return self._wi_list_people(item_path)
 
         if select == "items":
             sprint_path = item_path
@@ -4219,6 +4243,24 @@ class WorkItemActions:
                 continue
             seen.add(name.lower())
             print(json.dumps({"name": name, "email": ident.get("uniqueName") or ""}, ensure_ascii=False))
+        return 0
+
+    def _wi_list_people(self, query):
+        """--wi-list people <query>: who the directory finds for `query`
+        (search_identities - anyone, not only the team), as NDJSON {name,
+        email, assign} for the assignee picker's search; `assign` is what
+        `set assignedTo` takes: the account, else the email, else the name."""
+        if _is_blank(query):
+            print("ERROR: 'people' needs a name, account or email", file=sys.stderr)
+            return 1
+        try:
+            people = search_identities(lambda url: self._get(url, api_version="6.0"),
+                                       identities_base(self.collection), query)
+        except AdoHttpError as e:
+            return self._list_style_error(e, "GET")
+        for p in people:
+            print(json.dumps({"name": p["name"], "email": p["mail"] or p["accountName"],
+                              "assign": p["accountName"] or p["mail"] or p["name"]}, ensure_ascii=False))
         return 0
 
     # -- detail (wi-detail.sh) -----------------------------------------------

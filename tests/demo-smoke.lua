@@ -4814,6 +4814,36 @@ section({ "REWARM", "REWARM-GH", "REWARM-REVIEW" }, function()
   if #calls ~= 1 then return fail("the queued callback ran " .. #calls .. " times") end
   smoke_ok("REWARM-REVIEW")
 end)
+-- ga's popup lists the team; typing also searches the directory
+-- (--wi-list people), so "greg" finds "Stein, Gregory", who isn't on the
+-- team, and <CR> assigns #3001 to his account.
+section("WIASSIGN", function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+goto_row(3001)
+feed("ga")
+local ib, lb
+ok = vim.wait(10000, function()
+  ib, lb = shown_buf("azure-cli-pick"), shown_buf("azure-cli-pick-list")
+  return ib ~= nil and lb ~= nil and text(lb):find("Carol Chen", 1, true) ~= nil
+end, 50)
+if not ok then return fail("ga's popup didn't list the team", lb) end
+if text(lb):find("Stein", 1, true) then return fail("ga listed the directory before anything was typed", lb) end
+vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "greg" })
+ok = vim.wait(10000, function() return vim.split(text(lb), "\n")[1]:find("Stein, Gregory", 1, true) ~= nil end, 50)
+if not ok then return fail("typing \"greg\" into ga didn't find Stein, Gregory first", lb) end
+for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib, "i")) do
+  if m.lhs == "<CR>" then m.callback() break end
+end
+local function assignee()
+  local st = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, w in ipairs(st.workitems) do if w.id == 3001 then return w.assignedTo end end
+end
+ok = vim.wait(15000, function() return assignee() == "DEMO\\gstein" end, 100)
+if not ok then return fail("ga didn't assign #3001 to Gregory Stein's account: " .. tostring(assignee())) end
+smoke_ok("WIASSIGN")
+end)
+
 -- ge (last, as it leaves #3011's tab open): on the board it opens the item
 -- with the edit form over it; <CR> on a field holds a change (marked, with the old value), <C-s>
 -- saves them all - here a Task's title, priority and remaining hours - and

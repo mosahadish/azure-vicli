@@ -488,9 +488,9 @@ local function assign_item()
   -- The dashboard's team-member picker when it's been installed this
   -- session (it always is: a detail view is opened from the dashboard),
   -- else the plain typed prompt.
-  local function commit(new)
+  local function commit(new, name)
     apply_field("assignedTo", new, "Assigning", function()
-      if S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(ID, { assignedTo = new }) end
+      if S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(ID, { assignedTo = name or new }) end
     end)
   end
   if S.WI_PICK_ASSIGNEE then
@@ -544,8 +544,10 @@ function open_edit()
       for _, c in ipairs(done) do
         if c.key == "iteration" then
           if S.WI_ITEM_MOVED then S.WI_ITEM_MOVED(item_ref, c.from, c.value) end
-        elseif c.key == "title" or c.key == "assignedTo" or c.key == "tags" then
+        elseif c.key == "title" or c.key == "tags" then
           fields[c.key] = c.value
+        elseif c.key == "assignedTo" then
+          fields.assignedTo = c.label or c.value
         elseif c.key == "priority" then
           fields.priority = tonumber(c.value)
         end

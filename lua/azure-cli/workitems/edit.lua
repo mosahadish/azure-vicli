@@ -77,6 +77,7 @@ function M.value_text(row, v, sprints)
     return t == "" and "(none)" or (t .. " h")
   end
   if row.kind == "sprint" and type(v) == "table" then return v.label or v.name or v.path or "" end
+  if row.kind == "assign" and type(v) == "table" then return v.label end
   if row.kind == "sprint" then
     for _, sp in ipairs(sprints or {}) do
       if sp.path == v or sp.name == v then return sp.label or sp.name or v end
@@ -91,9 +92,12 @@ function M.value_text(row, v, sprints)
   return v == "" and "(none)" or v
 end
 
--- What `held[key]` sends: a sprint's path, everything else as text.
+-- What `held[key]` sends: a sprint's path, a person's account (the picker
+-- gives { value, label } for someone found in the directory), everything
+-- else as text.
 local function wire(row, v)
   if row.kind == "sprint" and type(v) == "table" then return v.path end
+  if row.kind == "assign" and type(v) == "table" then return v.value end
   if row.kind == "hours" then return M.hours_text(v) end
   return tostring(v)
 end
@@ -217,7 +221,10 @@ function M.open(ctx)
       end)
     end
     if r.kind == "assign" then
-      local function got(v) if v ~= nil then hold(r, v) else back() end end
+      local function got(v, name)
+        if v == nil then return back() end
+        hold(r, (name and name ~= v) and { value = v, label = name } or v)
+      end
       if ctx.pick_assignee then return ctx.pick_assignee(tostring(cur or ""), got) end
       return PROMPT().input({ prompt = "Assign to (empty = me)", default = tostring(cur or ""), allow_empty = true,
         silent = true }, got)
@@ -289,7 +296,8 @@ function M.open(ctx)
         on_exit = function(_, code)
           vim.schedule(function()
             if code == 0 then
-              done[#done + 1] = { key = r.key, value = wire(r, v), from = r.value, sprint = type(v) == "table" and v or nil }
+              done[#done + 1] = { key = r.key, value = wire(r, v), from = r.value,
+                label = type(v) == "table" and v.label or nil }
               held[r.key] = nil
             else
               failed[r.key] = true

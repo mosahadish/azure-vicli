@@ -171,6 +171,12 @@ ASSIGNABLE = """
 query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
   assignableUsers(first: 100) { nodes { login name } } } }
 """
+# The assignee picker's search: the repository's assignable people `q`
+# names (login or name) - on GitHub nobody else can be assigned.
+ASSIGNABLE_SEARCH = """
+query($owner: String!, $name: String!, $q: String!) { repository(owner: $owner, name: $name) {
+  assignableUsers(query: $q, first: 20) { nodes { login name } } } }
+"""
 
 ADD_ITEM = """mutation($project: ID!, $content: ID!) {
   addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }"""
@@ -681,8 +687,9 @@ class IssueActions(object):
         return self._types
 
     def cmd_wi_list(self, select, arg=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            _error("selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'".format(select))
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            _error("selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'"
+                   .format(select))
             return 1
         if select == "parents":
             return self._parents(arg)
@@ -697,6 +704,8 @@ class IssueActions(object):
             return 0
         if select == "members":
             return self._members()
+        if select == "people":
+            return self._members(arg)
         if select == "ids":
             return self._ids(arg)
         if select == "tree":
@@ -751,18 +760,29 @@ class IssueActions(object):
                     and (repo is None or _repo_of(issue) == repo))
         return board.iteration(values).get("iterationId") == path
 
-    def _members(self):
+    def _members(self, query=None):
+        """members: the repositories' assignable people; people <query>:
+        the ones `query` names (ASSIGNABLE_SEARCH)."""
+        if query is not None and not query.strip():
+            raise IssueError("'people' needs a login or name")
         p = self.project()
         repos = [self.default_repo()] if self.default_repo() else p.repos
         seen = set()
         for owner, repo in repos:
-            data = self.client.graphql(ASSIGNABLE, {"owner": owner, "name": repo})
+            if query is None:
+                data = self.client.graphql(ASSIGNABLE, {"owner": owner, "name": repo})
+            else:
+                data = self.client.graphql(ASSIGNABLE_SEARCH, {"owner": owner, "name": repo,
+                                                               "q": query.strip().lstrip("@")})
             for u in (((data.get("repository") or {}).get("assignableUsers") or {}).get("nodes") or []):
                 login = (u or {}).get("login") or ""
                 if login and login.lower() not in seen:
                     seen.add(login.lower())
                     # name is what `set assignedTo` takes back: the login.
-                    print(json.dumps({"name": login, "email": ""}, ensure_ascii=False))
+                    out = {"name": login, "email": ""}
+                    if query is not None:
+                        out = {"name": u.get("name") or login, "email": login, "assign": login}
+                    print(json.dumps(out, ensure_ascii=False))
         return 0
 
     def _refs(self, arg, what):

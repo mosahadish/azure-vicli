@@ -23,10 +23,16 @@ local function UI() return require("azure-cli.ui") end
 function M.rank(items, q, text, keep)
   q = vim.trim((q or ""):gsub("[,;]", " "))
   if q == "" then return vim.list_slice(items, 1, #items) end
-  local m = vim.fn.matchfuzzypos(items, q, { text_cb = text })
+  -- matchfuzzypos hands back copies of what it's given: match {i, t} pairs
+  -- and map each back to the item itself, so `keep` and the caller's
+  -- index still find it.
+  local cands = {}
+  for i, it in ipairs(items) do cands[i] = { i = i, t = text(it) } end
+  local m = vim.fn.matchfuzzypos(cands, q, { key = "t" })
   local words = vim.split(q:lower(), "%s+", { trimempty = true })
   local scored = {}
-  for i, it in ipairs(m[1]) do
+  for i, c in ipairs(m[1]) do
+    local it = items[c.i]
     local score = m[3][i]
     for word in text(it):lower():gmatch("[^%s,;]+") do
       for _, w in ipairs(words) do

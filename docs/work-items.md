@@ -22,7 +22,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `<CR>` | Open the item: parent, children, description |
 | `gs` | Change the item's state in a popup, optionally for its children too (see below) |
 | `n` | New work item: type, title, and parent (if the cursor is on one) |
-| `ga` | Assign the item under the cursor (empty input = assign to me) |
+| `ga` | Assign the item under the cursor: a popup with "(me)" and the team; typing narrows it and also searches everyone the server knows (on Azure DevOps the identity directory, on GitHub the repository's assignable people), so someone outside the team turns up too. "(type a name…)" takes any name (empty = me) |
 | `gp` | Set the item's priority (1-4) |
 | `ge` | Edit the item: opens it with every field that can change in one popup - title, state, assignee, priority, sprint, parent, tags, hours (see [Editing an item](#editing-an-item)) |
 | `gi` | Move the item to another sprint of the quarter |

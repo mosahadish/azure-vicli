@@ -834,6 +834,7 @@ $out"
   smoke_check "smoke: gs on a visual selection maps the other items onto the first one's state" SELECTION
   smoke_check "smoke: gs's popup maps a story's tasks by state category and sets only the checked ones" GS
   smoke_check "smoke: gU moves a work item under another parent (picked, then typed) and the tree regroups" PARENT
+  smoke_check "smoke: ga lists the team and, as you type, anyone the directory finds (greg: Stein, Gregory)" WIASSIGN
   smoke_check "smoke: ge opens a Task with its edit form; title, priority and hours are held, then saved with <C-s>" WIEDIT
   smoke_check "smoke: W's No sprint tab lists my open backlog/root items, and gi files one there" NOSPRINT
   smoke_check "smoke: two PRs open as inner tabs of Pull requests: one tab-line entry, the strip, ]r/[r/g2 keep each cursor, no twin, q goes back" INNERTABS

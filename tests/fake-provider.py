@@ -85,6 +85,10 @@ WI_FIELDS = {
     "originalEstimate": ("originalEstimate", float), "remainingWork": ("remainingWork", float),
     "completedWork": ("completedWork", float),
 }
+# The directory beyond the team: who --wi-list people finds besides the
+# members (a "Last, First" name, as on-prem TFS has them).
+DIRECTORY = [{"name": "Stein, Gregory", "account": "DEMO\\gstein", "mail": "gregory.stein@example.com"},
+             {"name": "Gross, Tal", "account": "DEMO\\tgross", "mail": "tal.gross@example.com"}]
 # Tasks carry hours, like Azure's Agile/Scrum Task; other types don't.
 WI_HOURS = ("originalEstimate", "remainingWork", "completedWork")
 WI_TRANSITIONS = {
@@ -1385,8 +1389,8 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'".format(select), file=sys.stderr)
             return 1
         if select == "parents":
             # Like the real one: open items on a higher backlog level.
@@ -1439,6 +1443,18 @@ class Fake:
         if select == "members":
             for name in self.state["members"]:
                 print(json.dumps({"name": name, "email": name.lower().replace(" ", ".") + "@example.com"}))
+            return 0
+        if select == "people":
+            # Like a directory: any of the query's words in the name or account.
+            words = [w for w in re.split(r"[\s,;]+", item_path.lower()) if w]
+            if not words:
+                print("ERROR: 'people' needs a name, account or email", file=sys.stderr)
+                return 1
+            team = [{"name": n, "account": "DEMO\\" + n.split()[0].lower(),
+                     "mail": n.lower().replace(" ", ".") + "@example.com"} for n in self.state["members"]]
+            for p in team + DIRECTORY:
+                if any(w in (p["name"] + " " + p["account"]).lower() for w in words):
+                    print(json.dumps({"name": p["name"], "email": p["mail"], "assign": p["account"]}, ensure_ascii=False))
             return 0
         if select == "items":
             if not item_path:
@@ -1736,8 +1752,8 @@ class Fake:
     def gh_wi_list(self, rest):
         select = rest[0] if rest else "current"
         arg = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            raise ValueError("selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            raise ValueError("selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'"
                              .format(select))
         states = GH_STATUS + ["Closed"]
         if select == "parents":
@@ -1767,6 +1783,11 @@ class Fake:
         if select == "members":
             for login in ("demo-user", "alice", "bob"):
                 print(json.dumps({"name": login, "email": ""}))
+            return 0
+        if select == "people":
+            for login in ("demo-user", "alice", "bob"):
+                if arg.strip().lower() in login:
+                    print(json.dumps({"name": login, "email": login, "assign": login}))
             return 0
         if select in ("ids", "tree"):
             refs = [x.strip() for x in arg.split(",") if x.strip()]
