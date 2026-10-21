@@ -127,9 +127,12 @@ column is highlighted, so "have I voted on this one?" needs no scanning for
 your surname, and `gd` lists the branches, author, an absolute timestamp,
 every reviewer's vote (you marked) and the PR's URL above the description.
 
-Every menu this tool shows (votes, work-item states, ...) goes through
-`vim.ui.select`, so a picker plugin such as telescope, fzf-lua or
-dressing.nvim draws it when installed; the current value is marked
+Every menu and text prompt this tool shows is a popup in the middle of
+the screen: a short menu numbered, a longer one with a search line that
+narrows it as you type (`<C-n>`/`<C-p>` move, `<CR>` picks), a text prompt
+one line to type in. Where a picker plugin such as telescope, fzf-lua or
+dressing.nvim has taken over `vim.ui.select` / `vim.ui.input`, it draws the
+long menus and the prompts instead; the current value is marked
 `(current)`. Completing a PR opens a small dialog instead (see
 [Reviewer](reviewer.md#reviewer)'s `gm`): the merge type, whether the linked
 work items are completed and the source branch deleted (both on by

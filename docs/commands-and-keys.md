@@ -35,9 +35,10 @@ Two keys work on every screen: `?` lists that screen's keys, grouped by what
 they're for, with `↑` before the ones that change something on Azure DevOps
 (GitHub on the Issues tab): a vote, a comment, a link, a work item's state -
 a comment in batch mode only once `gS` sends it; and `g.` (the
-`palette` action) lists every action bound there by what it does, through
-`vim.ui.select` - so with Telescope's, fzf-lua's or another picker standing
-in for it, you can type "approve" or "unlink" instead of remembering the key.
+`palette` action) lists every action bound there by what it does, in a
+popup you type into - "approve" or "unlink" instead of remembering the key
+(Telescope's, fzf-lua's or another picker's, when one has taken over
+`vim.ui.select`).
 The action you pick runs where you were, cursor and all. Actions that only
 work on a visual selection aren't listed.
 
