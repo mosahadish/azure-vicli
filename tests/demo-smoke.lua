@@ -4916,7 +4916,8 @@ press("Remaining work", "<CR>")
 PROMPT.input, PROMPT.select = real_in, real_sel
 ok = vim.wait(5000, function()
   local t = text(form)
-  return t:find("3 changes not saved yet", 1, true) and t:find("\u{25CF} Remaining work    1 h   (was 3 h)", 1, true)
+  local _, held = t:gsub("\u{25CF}", "")
+  return held == 3 and t:find("\u{25CF} Remaining work    1 h   (was 3 h)", 1, true)
 end, 50)
 if not ok then return fail("the form didn't hold the three changes", form) end
 press(nil, "<C-s>")

@@ -196,11 +196,10 @@ to, priority, sprint, parent, tags, the hours its type has (Original
 estimate, Remaining work, Completed work - a Task's, usually) and, on
 GitHub, the description. `<CR>` on a field changes it - text in a one-line
 popup, a choice from a list - but only holds the change: it's marked `●`
-with its old value beside it, and the line at the top counts what isn't
-saved yet. `<C-s>` saves them all; a change that fails stays held, marked
+with its old value beside it. `<C-s>` saves them all; a change that fails stays held, marked
 `✖`. `u` takes back the one under the cursor, and `q`/`<Esc>` closes,
 asking first while anything is held. State and parent are their own
-popups (`gs`'s and `gU`'s), which save at once - the row says so.
+popups (`gs`'s and `gU`'s), which save at once.
 
 The item's view shows its hours under Priority ("original 8 h · remaining
 3 h · completed 5 h", `—` for one not set). An empty hours value clears

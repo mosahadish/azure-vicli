@@ -84,7 +84,7 @@ function M.pick(pr, title, cb, opts)
     return new, all
   end
   local api = require("azure-cli.picker").open({
-    title = title .. " - name, account or email", items = {}, format = M.label,
+    title = title, items = {}, format = M.label,
     width = 70, height = M.MAX_ROWS, ft = "azure-cli-people", empty = "Nobody to list",
     on_query = function(q, api)
       if #q < M.MIN_CHARS or asked[q:lower()] then return end
@@ -198,7 +198,7 @@ function M.remove_reviewer(pr, on_done)
   local list = M.removable(pr)
   if #list == 0 then
     return notify(HOSTS().host(pr) == "github"
-      and "No review requests to take back on " .. HOSTS().ref(pr) .. " - GitHub keeps a review once it's submitted."
+      and "No review requests to take back on " .. HOSTS().ref(pr) .. "."
       or "No reviewers on " .. HOSTS().ref(pr) .. ".", vim.log.levels.WARN)
   end
   local PROMPT = require("azure-cli.prompt")

@@ -9,7 +9,7 @@
 -- until <C-s> saves them all (one --wi-edit set each); u takes the one
 -- under the cursor back, q / <Esc> closes (asking first when something is
 -- held). State and parent are their own popups (gs's, gU's), which save
--- at once - the row says so.
+-- at once.
 --
 -- M.open(ctx) -> form, from workitems/view.lua, which calls
 -- form.refresh(item, parent) after each reload. M.rows and M.value_text
@@ -108,7 +108,7 @@ end
 function M.open(ctx)
   local UI = require("azure-cli.ui")
   UI.link_hl({ AzureCliEditBorder = "DiagnosticWarn", AzureCliEditTitle = "DiagnosticWarn",
-    AzureCliEditHeld = "DiagnosticWarn", AzureCliEditOld = "Comment", AzureCliEditNote = "Comment" })
+    AzureCliEditHeld = "DiagnosticWarn", AzureCliEditOld = "Comment" })
   local B = ctx.board
   local item, parent = ctx.item, ctx.parent
   local rows = M.rows(item, parent, B)
@@ -121,7 +121,7 @@ function M.open(ctx)
   local function title()
     return " \u{270E} Editing " .. ((item.type and item.type ~= "") and (item.type .. " ") or "") .. "#" .. ctx.shown .. " "
   end
-  local cfg = { relative = "editor", width = width, height = #rows + 2, style = "minimal", border = UI.border(),
+  local cfg = { relative = "editor", width = width, height = #rows, style = "minimal", border = UI.border(),
     row = math.max(0, math.floor((vim.o.lines - #rows - 4) / 2)), col = math.floor((vim.o.columns - width) / 2),
     title = title(), title_pos = "left" }
   local win = vim.api.nvim_open_win(buf, true, cfg)
@@ -140,10 +140,6 @@ function M.open(ctx)
     if not vim.api.nvim_buf_is_valid(buf) then return end
     local lines, marks = {}, {}
     local n = count()
-    lines[1] = n == 0 and "  Nothing changed yet - <CR> on a field changes it."
-      or ("  " .. n .. " change" .. (n == 1 and "" or "s") .. " not saved yet - <C-s> saves "
-        .. (n == 1 and "it" or "them") .. ".")
-    lines[2] = ""
     for i, r in ipairs(rows) do
       local has = held[r.key] ~= nil
       local mark = failed[r.key] and "\u{2716}" or (has and "\u{25CF}" or " ")
@@ -154,21 +150,17 @@ function M.open(ctx)
       if has then
         old_s = #line
         line = line .. "   (was " .. M.value_text(r, r.value, ctx.sprints) .. ")"
-      elseif r.kind == "state" or r.kind == "parent" then
-        old_s = #line
-        line = line .. "   (its own popup, saves at once)"
       end
       -- One row each, cut to the window ("(was …)" can be long).
       if vim.fn.strdisplaywidth(line) > width - 1 then line = UI.fit(line, width - 1) end
       if old_s and old_s >= #line then old_s = nil end
       lines[#lines + 1] = line
-      marks[#marks + 1] = { row = i + 1, has = has, failed = failed[r.key], label_end = #label, old_s = old_s }
+      marks[#marks + 1] = { row = i - 1, has = has, failed = failed[r.key], label_end = #label, old_s = old_s }
     end
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
     vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-    vim.api.nvim_buf_add_highlight(buf, ns, n > 0 and "AzureCliEditHeld" or "AzureCliEditNote", 0, 0, -1)
     for _, m in ipairs(marks) do
       vim.api.nvim_buf_add_highlight(buf, ns, m.failed and "ErrorMsg" or (m.has and "AzureCliEditHeld" or "AzureCliWiViewLabel"),
         m.row, 0, m.label_end)
@@ -184,7 +176,7 @@ function M.open(ctx)
   end
   local function row_here()
     local l = vim.api.nvim_win_get_cursor(win)[1]
-    return rows[l - 2]
+    return rows[l]
   end
   local function hold(r, v)
     failed[r.key] = nil
@@ -256,8 +248,7 @@ function M.open(ctx)
 
   local function close(force)
     if not force and count() > 0 then
-      return PROMPT().confirm({ title = "Discard " .. count() .. " unsaved change" .. (count() == 1 and "" or "s") .. "?",
-        prompt = "Nothing is sent." }, function(yes)
+      return PROMPT().confirm({ title = "Discard " .. count() .. " unsaved change" .. (count() == 1 and "" or "s") .. "?" }, function(yes)
         if yes then close(true) else back() end
       end)
     end
@@ -326,7 +317,7 @@ function M.open(ctx)
   vim.keymap.set("n", "q", function() close(false) end, kopts)
   vim.keymap.set("n", "<Esc>", function() close(false) end, kopts)
   render()
-  pcall(vim.api.nvim_win_set_cursor, win, { 3, 0 })
+  pcall(vim.api.nvim_win_set_cursor, win, { 1, 0 })
 
   function form.valid() return vim.api.nvim_win_is_valid(win) end
   function form.focus() back() end
@@ -335,7 +326,7 @@ function M.open(ctx)
   function form.refresh(new_item, new_parent)
     item, parent = new_item or item, new_parent
     rows = M.rows(item, parent, B)
-    pcall(vim.api.nvim_win_set_config, win, { height = #rows + 2 })
+    pcall(vim.api.nvim_win_set_config, win, { height = #rows })
     render()
   end
   form.close = close
