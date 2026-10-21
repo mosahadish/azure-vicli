@@ -812,8 +812,9 @@ REVIEWER_QUERY = """query ReviewerLookup($owner: String!, $name: String!, $numbe
 }"""
 # The reviewer picker's list before anything is typed: everyone the PR can
 # be assigned to, a page at a time.
-PEOPLE_QUERY = """query AssignablePeople($owner: String!, $name: String!, $after: String) {
+PEOPLE_QUERY = """query AssignablePeople($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { author { login } }
     assignableUsers(first: 100, after: $after) { nodes { id login name } pageInfo { hasNextPage endCursor } } }
 }"""
 USER_QUERY = "query UserByLogin($login: String!) { user(login: $login) { id login name } }"
@@ -1303,19 +1304,22 @@ class Actions(object):
         """--find-people: the repository's people `query` names (login or
         name), else the user with that login, as a JSON list of {name, id,
         login} - `id` is the login, what --add-reviewer and a mention take.
-        No query: everyone the PR can be assigned to (_assignable_people)."""
+        No query: everyone the PR can be assigned to (_assignable_people).
+        Never the PR's author: GitHub won't ask them to review their own."""
         query = (query or "").strip().lstrip("@")
         if not query:
             return self._assignable_people()
         data = self.client.graphql(REVIEWER_QUERY, dict(self._vars(), q=query))
+        author = ((((data.get("repository") or {}).get("pullRequest") or {}).get("author") or {}).get("login")
+                  or "").lower()
         nodes = [p for p in (((data.get("repository") or {}).get("assignableUsers") or {}).get("nodes") or [])
-                 if p and p.get("login")]
+                 if p and p.get("login") and p["login"].lower() != author]
         if not nodes and not re.search(r"\s", query):
             try:
                 u = self.client.graphql(USER_QUERY, {"login": query}).get("user") or {}
             except RuntimeError:  # NOT_FOUND comes as a GraphQL error
                 u = {}
-            if u.get("login"):
+            if u.get("login") and u["login"].lower() != author:
                 nodes = [u]
         print(json.dumps([{"name": p.get("name") or p["login"], "id": p["login"], "login": p["login"]}
                           for p in nodes[:20]], ensure_ascii=False))
@@ -1323,12 +1327,14 @@ class Actions(object):
 
     def _assignable_people(self):
         """--find-people with no query: everyone the repository's PRs can be
-        assigned to (up to 500), sorted by name."""
-        nodes, after = [], None
+        assigned to (up to 500) but the PR's author, sorted by name."""
+        nodes, after, author = [], None, ""
         for _ in range(5):
-            data = self.client.graphql(PEOPLE_QUERY, {"owner": self.owner, "name": self.repo, "after": after})
-            page = (data.get("repository") or {}).get("assignableUsers") or {}
-            nodes.extend(p for p in page.get("nodes") or [] if p and p.get("login"))
+            data = self.client.graphql(PEOPLE_QUERY, dict(self._vars(), after=after))
+            repo = data.get("repository") or {}
+            author = author or ((((repo.get("pullRequest") or {}).get("author") or {}).get("login")) or "").lower()
+            page = repo.get("assignableUsers") or {}
+            nodes.extend(p for p in page.get("nodes") or [] if p and p.get("login") and p["login"].lower() != author)
             info = page.get("pageInfo") or {}
             if not info.get("hasNextPage"):
                 break

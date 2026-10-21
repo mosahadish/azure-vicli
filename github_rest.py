@@ -668,14 +668,17 @@ def reviewer_lookup(client, variables):
 def assignable_people(client, variables):
     # One page holds everyone (no cursor): names only where already known -
     # a /users call per person would make the list slow to open.
+    owner, name, number = variables["owner"], variables["name"], int(variables["number"])
+    p = client.rest("GET", _repo_path(owner, name, "/pulls/{0}".format(number))) or {}
     people = []
-    for u in _pages(client, _repo_path(variables["owner"], variables["name"], "/assignees"), limit=500):
+    for u in _pages(client, _repo_path(owner, name, "/assignees"), limit=500):
         login = (u or {}).get("login") or ""
         if login:
             with _lock:
                 name = _names.get((client.api_url, login))
             people.append({"id": login, "login": login, "name": name})
-    return {"repository": {"assignableUsers": {"nodes": people, "pageInfo": {"hasNextPage": False}}}}
+    return {"repository": {"pullRequest": {"author": {"login": (p.get("user") or {}).get("login")}},
+                           "assignableUsers": {"nodes": people, "pageInfo": {"hasNextPage": False}}}}
 
 
 def user(client, variables):
@@ -685,6 +688,9 @@ def user(client, variables):
         if e.status == 404:
             return {"user": None}
         raise
+    # /users/<login> answers for an organization too; GraphQL's user() doesn't.
+    if u.get("type") == "Organization":
+        return {"user": None}
     return {"user": {"id": u.get("login"), "login": u.get("login"), "name": u.get("name")}}
 
 

@@ -980,6 +980,21 @@ class ReviewerDescriptionTests(unittest.TestCase):
         code, out, _ = loud(actions(c).find_people, "eve")
         self.assertEqual(json.loads(out), [{"name": "eve", "id": "eve", "login": "eve"}])
 
+    def test_find_people_leaves_out_the_author(self):
+        c = FakeClient({"ReviewerLookup": lookup([BOB, BOBBY], author="bobby")})
+        code, out, _ = loud(actions(c).find_people, "bo")
+        self.assertEqual([p["login"] for p in json.loads(out)], ["bob"])
+
+    def test_find_people_with_no_query_lists_everyone_but_the_author(self):
+        page = {"repository": {"pullRequest": {"author": {"login": "alice"}}, "assignableUsers": {
+            "nodes": [{"id": "U_a", "login": "alice", "name": "Alice"}, BOBBY, BOB],
+            "pageInfo": {"hasNextPage": False}}}}
+        c = FakeClient({"AssignablePeople": page})
+        code, out, _ = loud(actions(c).find_people, "")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [{"name": "Bob Brown", "id": "bob", "login": "bob"},
+                                           {"name": "Bobby Tables", "id": "bobby", "login": "bobby"}])
+
     def test_the_author_is_refused_before_asking_github(self):
         c = FakeClient({"ReviewerLookup": lookup([BOB], author="Bob")})
         code, _, err = loud(actions(c).add_reviewer, "bob")

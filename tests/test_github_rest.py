@@ -364,6 +364,22 @@ class ReviewTests(Base):
 
 
 class WriteTests(Base):
+    def test_find_people_lists_the_assignees_but_the_author(self):
+        c = RestClient(base_routes({
+            ("GET", r"/repos/o/r/assignees"): [{"login": "alice"}, {"login": "bob"}],
+        }))
+        code, out, _ = run(gh.Actions(None, env(), c).find_people, "")
+        self.assertEqual(code, 0)
+        self.assertEqual([p["login"] for p in json.loads(out)], ["bob"])
+
+    def test_an_organization_is_no_user(self):
+        c = RestClient(base_routes({
+            ("GET", r"/repos/o/r/assignees"): [],
+            ("GET", r"/users/(\w+)"): lambda m, d: {"login": m.group(1), "name": "Acme Inc", "type": "Organization"},
+        }))
+        code, out, _ = run(gh.Actions(None, env(), c).find_people, "acme")
+        self.assertEqual((code, json.loads(out)), (0, []))
+
     def test_add_reviewer_requests_by_login(self):
         routes = base_routes({
             ("GET", r"/repos/o/r/assignees"): [{"login": "bob"}, {"login": "carol"}],
