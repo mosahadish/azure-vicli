@@ -426,7 +426,7 @@ end
 local function reject_hunk(idx)
   local f = view.files[idx]
   if view.title:find("(last commit)", 1, true) then
-    return notify("This is the pushed commit - there's nothing uncommitted to take back.", vim.log.levels.WARN)
+    return notify("This is the pushed commit: nothing to take back.", vim.log.levels.WARN)
   end
   local parsed = file_hunks(idx)
   local h = M.hunk_at(parsed, vim.api.nvim_win_get_cursor(0)[1])

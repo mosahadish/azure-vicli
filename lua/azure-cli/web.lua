@@ -135,16 +135,10 @@ local function show()
     "Open it on your phone (same network or a VPN such as Tailscale).",
     "Anyone with this URL can see the page while it runs, until",
     ":AzureCli web rotate.",
-    "",
   }
-  if srv.stored then
-    lines[#lines + 1] = "The token is stored in " .. M.token_path() .. ","
-    lines[#lines + 1] = "so the URL survives restarts."
-  elseif srv.error then
+  if srv.error then
+    lines[#lines + 1] = ""
     lines[#lines + 1] = "The token couldn't be stored (" .. srv.error .. "):"
-    lines[#lines + 1] = "the next start makes a new URL."
-  else
-    lines[#lines + 1] = "The token is kept in memory only (persist_token = false):"
     lines[#lines + 1] = "the next start makes a new URL."
   end
   if LOOPBACK[trim(bind)] then

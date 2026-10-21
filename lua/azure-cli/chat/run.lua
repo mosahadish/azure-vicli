@@ -1020,7 +1020,7 @@ send = function(text, opts)
     if turn.done then return end
     if not turn.interrupt_id then return pcall(vim.fn.jobstop, job) end
     turn.killed = true
-    table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(why)) .. " - your next message starts it again and replays the conversation")
+    table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(why)))
     render_soon()
     stop_tree(job)
   end

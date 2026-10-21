@@ -260,7 +260,7 @@ function M.restore_plans()
   if #adopted > 0 then
     table.sort(adopted)
     notify("Plan" .. (#adopted == 1 and " " or "s ") .. table.concat(adopted, ", ") .. " had no agent - "
-      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now: approve to hand on, or dd there to discard.")
+      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now.")
   end
 end
 
@@ -1275,7 +1275,7 @@ function M.on_new_comments(pr, count)
   -- The chat's own PRs: chat/watch.lua says it (or plans the fix) itself.
   if require("azure-cli.chat.watch").watched(pr) then return end
   M.note("!" .. tostring(pr.id) .. " \"" .. tostring(pr.title or "") .. "\" got " .. tostring(count)
-    .. " new comment" .. (count == 1 and "" or "s") .. " - open it and send /triage, or ask here.")
+    .. " new comment" .. (count == 1 and "" or "s") .. ".")
 end
 
 -- The PR dashboard loaded: once a day (chat.daily_summary), run /standup
@@ -1292,7 +1292,7 @@ function M.on_dashboard_loaded(dash_win)
   pcall(vim.fn.writefile, { today }, stamp)
   new_chat(true)
   send("/standup", { view_win = dash_win, on_done = function()
-    notify("Your daily summary is ready in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input") .. ").")
+    notify("Your daily summary is ready in the chat.")
   end })
 end
 

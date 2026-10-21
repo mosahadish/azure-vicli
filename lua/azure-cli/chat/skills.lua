@@ -120,7 +120,7 @@ function M.report(cwd)
       .. "; chat.skill_dirs changes where."
     return table.concat(lines, "\n")
   end
-  lines[1] = "Skills (" .. #list .. ") - start a message with /<name> to use one; \u{2713} = allowed, its prompts don't ask:"
+  lines[1] = "Skills (" .. #list .. "):"
   for _, s in ipairs(list) do
     local d = s.description ~= "" and ("  - " .. (#s.description > 100 and (s.description:sub(1, 97) .. "...") or s.description)) or ""
     lines[#lines + 1] = "  " .. (s.allowed and "\u{2713} " or "  ") .. "/" .. s.name .. d
@@ -215,7 +215,7 @@ function M.popup(cwd, on_use)
   local UI = require("azure-cli.ui")
   local lines, at = M.popup_lines(list)
   local win, buf = UI.open_float(lines, {
-    title = "Skills (" .. #list .. ") \u{00B7} \u{2713} allowed: its prompts don't ask", center = true, min_width = 60,
+    title = "Skills (" .. #list .. ")", center = true, min_width = 60,
     footer = "<CR> use in the chat \u{00B7} <Space> allow / ask",
   })
   if not win then return nil end

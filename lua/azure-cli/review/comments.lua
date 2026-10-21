@@ -203,7 +203,6 @@ local function do_delete(ctx, t, c, on_change)
   end
   require("azure-cli.prompt").confirm({ title = "Delete this comment?" }, function(yes)
     if not yes then
-      ctx.notify("Cancelled.")
       return
     end
     local bucket = (#t.comments == 1) and locate_bucket(ctx, t) or nil

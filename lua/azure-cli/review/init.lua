@@ -169,7 +169,7 @@ local function leave(force)
     return
   end
   local what = {}
-  if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") .. " (gS submits)" end
+  if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") end
   if drafts > 0 then what[#what + 1] = drafts .. " unsent draft" .. (drafts == 1 and "" or "s") end
   -- How this PR is named (merge.lua's pr_words): current_pr_record and
   -- EXT.pr_words come further down, so its cache lookup is done here.
@@ -1990,7 +1990,7 @@ local function build_overview()
   if overview_commits == nil then
     lines[#lines + 1] = "  (loading…)"
   elseif #overview_commits == 0 then
-    lines[#lines + 1] = "  (none found - branch may not be fetched yet)"
+    lines[#lines + 1] = "  (none found)"
   else
     for _, c in ipairs(overview_commits) do
       lines[#lines + 1] = "  " .. c

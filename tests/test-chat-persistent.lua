@@ -451,7 +451,7 @@ do
   end
   local function pid_of(e) return e and e.text:match("pid (%d+)") end
   local KEPT = "\u{00B7} interrupted"
-  local KILLED = "so it was killed - your next message starts it again and replays the conversation"
+  local KILLED = "so it was killed"
 
   -- Idle timeout, interrupt honoured.
   agent(1, 30)

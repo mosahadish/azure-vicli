@@ -868,7 +868,7 @@ do
   check("watch: new ones wait for a quiet poll", #notes == 0)
   W.poll()
   check("watch: then the chat says so (suggest)", #notes == 1 and notes[1]:find("1 new comment", 1, true) ~= nil
-    and notes[1]:find("/triage", 1, true) ~= nil and #started == 0, vim.inspect(notes))
+    and #started == 0, vim.inspect(notes))
   comment(1, 2, "me")
   W.poll(); W.poll()
   check("watch: my own comments don't count", #notes == 1, vim.inspect(notes))

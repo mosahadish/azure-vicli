@@ -395,8 +395,8 @@ local function ensure_cloned(pr, path, cb)
         notify("Cloned " .. (pr.repo or "repo") .. " to " .. path .. ".")
         cb(true)
       else
-        notify("Clone failed for " .. (pr.repo or "repo") .. " (exit " .. code .. "). "
-          .. "Check the URL/credentials, or clone it manually to " .. path .. ".", vim.log.levels.ERROR)
+        notify("Clone failed for " .. (pr.repo or "repo") .. " (exit " .. code .. "). Clone it to " .. path .. ".",
+          vim.log.levels.ERROR)
         cb(false)
       end
     end,

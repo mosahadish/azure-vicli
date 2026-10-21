@@ -136,7 +136,7 @@ local function act(rec, pr, pending)
     if not added or #added == 0 then return false end
     CHAT().note(what .. " - an agent is planning the fix.")
   else
-    CHAT().note(what .. " - open it and send /triage, or ask here.")
+    CHAT().note(what .. ".")
   end
   return true
 end

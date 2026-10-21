@@ -176,9 +176,7 @@ use_as_reply = function()
       local item = thread and { kind = "reply", thread_id = thread.id, text = text }
         or { kind = "thread", args = { "--pr-comment", text }, bucket = "general", text = text, label = "PR comment" }
       TOOLS.queue_draft(pr.id, item)
-      local KEYS = require("azure-cli.keys")
-      notify("Queued as a draft on PR !" .. pr.id .. " (" .. KEYS.name("list", "batch_queue") .. " in the reviewer lists it, "
-        .. KEYS.name("list", "batch_submit") .. " sends it).")
+      notify("Queued as a draft on PR !" .. pr.id .. ".")
     end,
   })
 end

@@ -99,7 +99,7 @@ function M.pick(pr, title, cb, opts)
       end)
     end,
   }, function(p)
-    if p then cb(p) else notify("Cancelled.") end
+    if p then cb(p) end
   end)
   local cached = M.everyone[everyone_key(pr)]
   if cached then return api.add((sort(cached))) end
