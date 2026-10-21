@@ -810,6 +810,12 @@ REVIEWER_QUERY = """query ReviewerLookup($owner: String!, $name: String!, $numbe
     pullRequest(number: $number) { id author { login } }
     assignableUsers(query: $q, first: 10) { nodes { id login name } } }
 }"""
+# The reviewer picker's list before anything is typed: everyone the PR can
+# be assigned to, a page at a time.
+PEOPLE_QUERY = """query AssignablePeople($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    assignableUsers(first: 100, after: $after) { nodes { id login name } pageInfo { hasNextPage endCursor } } }
+}"""
 USER_QUERY = "query UserByLogin($login: String!) { user(login: $login) { id login name } }"
 TEAM_QUERY = """query TeamBySlug($org: String!, $slug: String!) {
   organization(login: $org) { team(slug: $slug) { id name slug } } }"""
@@ -1036,6 +1042,7 @@ REST_BUILDERS = {
     SUBMIT_REVIEW: ("submit_review",),
     DELETE_REVIEW: ("delete_review",),
     REVIEWER_QUERY: ("reviewer_lookup",),
+    PEOPLE_QUERY: ("assignable_people",),
     USER_QUERY: ("user",),
     TEAM_QUERY: ("team",),
     REQUEST_REVIEWS: ("request_reviews",),
@@ -1295,12 +1302,11 @@ class Actions(object):
     def find_people(self, query):
         """--find-people: the repository's people `query` names (login or
         name), else the user with that login, as a JSON list of {name, id,
-        login} - `id` is the login, what --add-reviewer and a mention take."""
-        import sys
+        login} - `id` is the login, what --add-reviewer and a mention take.
+        No query: everyone the PR can be assigned to (_assignable_people)."""
         query = (query or "").strip().lstrip("@")
         if not query:
-            print("Search for whom?", file=sys.stderr)
-            return 1
+            return self._assignable_people()
         data = self.client.graphql(REVIEWER_QUERY, dict(self._vars(), q=query))
         nodes = [p for p in (((data.get("repository") or {}).get("assignableUsers") or {}).get("nodes") or [])
                  if p and p.get("login")]
@@ -1313,6 +1319,22 @@ class Actions(object):
                 nodes = [u]
         print(json.dumps([{"name": p.get("name") or p["login"], "id": p["login"], "login": p["login"]}
                           for p in nodes[:20]], ensure_ascii=False))
+        return 0
+
+    def _assignable_people(self):
+        """--find-people with no query: everyone the repository's PRs can be
+        assigned to (up to 500), sorted by name."""
+        nodes, after = [], None
+        for _ in range(5):
+            data = self.client.graphql(PEOPLE_QUERY, {"owner": self.owner, "name": self.repo, "after": after})
+            page = (data.get("repository") or {}).get("assignableUsers") or {}
+            nodes.extend(p for p in page.get("nodes") or [] if p and p.get("login"))
+            info = page.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+        people = [{"name": p.get("name") or p["login"], "id": p["login"], "login": p["login"]} for p in nodes]
+        print(json.dumps(sorted(people, key=lambda p: p["name"].lower()), ensure_ascii=False))
         return 0
 
     def _find_user(self, who, people):

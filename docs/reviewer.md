@@ -72,7 +72,7 @@ File list:
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
 | `gv` / `gm` | Vote / complete (on GitHub: review verdict / merge - see [On GitHub](#on-github)) |
-| `gR` | Add a reviewer: type part of a name, account or email, pick from the people found (on Azure, then optional or required) - from the file list, a diff or the Overview |
+| `gR` | Add a reviewer: a popup lists everyone who can review (on Azure the project's teams' members, on GitHub the repository's assignable people) and typing narrows it, best match first (fuzzy: `greg` finds "Stein, Gregory", `tal gross` finds "Gross, Tal"); a pause in typing also searches the host's directory for anyone outside those teams. `<C-n>`/`<C-p>` move, `<CR>` picks (on Azure, then optional or required). People already reviewing aren't offered - from the file list, a diff or the Overview |
 | `gp` | The plan of this PR's agent - the one fixing its comments, or the one whose plan opened it - as `<CR>` on its Agents row opens it; `gp` in the plan comes back here |
 | `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state, `gl`/`gL` link/unlink); on GitHub, the issues it closes |
 | `gl` / `gL` | Link a work item to this PR / unlink one (each a popup, mid-screen) |
@@ -216,7 +216,7 @@ survive a Neovim restart). A successful submit clears the draft.
 Typing `@` opens completion over the PR's reviewers, then everyone else
 seen this session (comment authors, people a search found); picking one
 inserts their display name as plain text. To tag someone who isn't there,
-press `<C-t>`: type part of their name, account or email, pick them, and
+press `<C-t>`: the same search-as-you-type picker as `gR`, and
 `@Their Name` goes in at the cursor as a real mention. Azure DevOps only sends a notification for
 an `@<GUID>` mention, never a plain-text one, so the editor translates every
 `@Display Name` it recognises to `@<their GUID>` right before submitting -

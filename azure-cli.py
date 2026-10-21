@@ -2968,23 +2968,78 @@ class PrActions:
             return None
         return [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
 
+    def _team_people(self):
+        """Everyone in any of the project's teams (Teams - Get Teams, then
+        each team's members; groups left out), as --find-people's {name,
+        id, account} sorted by name: who the reviewer picker lists before
+        anything is typed. None after printing why the teams couldn't be
+        read."""
+        base = "{0}/_apis/projects/{1}/teams".format(self.org, urllib.parse.quote(self.project, safe=""))
+        try:
+            teams = (self.fetch(base + "?$top=200", pat=self.pat, api_version="6.0") or {}).get("value") or []
+        except AdoHttpError as e:
+            print("REST teams failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return None
+
+        def members(team):
+            try:
+                url = "{0}/{1}/members?$top=1000".format(base, team.get("id"))
+                return (self.fetch(url, pat=self.pat, api_version="6.0") or {}).get("value") or []
+            except AdoHttpError:
+                return []  # one unreadable team shouldn't hide the others
+        people = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for got in pool.map(members, [t for t in teams if t.get("id")][:100]):
+                for m in got:
+                    i = m.get("identity") or m
+                    if i.get("id") and not i.get("isContainer") and i.get("displayName"):
+                        people[i["id"]] = {"name": i["displayName"], "id": i["id"],
+                                           "account": i.get("uniqueName") or ""}
+        return sorted(people.values(), key=lambda p: p["name"].lower())
+
     def find_people(self, query):
         """--find-people: who `query` names, as a JSON list of {name, id,
         account} - the reviewer picker's and the comment editor's tag
-        search. At most 20."""
+        search. At most 20. No query: everyone in the project's teams
+        (_team_people), all of them.
+
+        Several words ("Tal Gross", "Gross, Tal") are also searched one by
+        one, since a directory matches the start of a name and "Last,
+        First" names don't start with the first name: whoever matches the
+        most words comes first."""
         if _is_blank(query):
-            print("Search for whom?", file=sys.stderr)
-            return 1
-        people = self._search_people(query.strip())
+            people = self._team_people()
+            if people is None:
+                return 1
+            print(json.dumps(people, ensure_ascii=False))
+            return 0
+        query = query.strip()
+        words = [w for w in re.split(r"[\s,;]+", query) if w]
+        people = self._search_people(query)
         if people is None:
             return 1
+        if len(words) > 1:
+            for w in words[:4]:
+                people.extend(self._search_people(w) or [])
 
         def prop(i, key):
             v = (i.get("properties") or {}).get(key)
             return (v.get("$value") if isinstance(v, dict) else v) or ""
-        print(json.dumps([{"name": i.get("providerDisplayName") or i.get("customDisplayName") or "?",
-                           "id": i.get("id"), "account": prop(i, "Mail") or prop(i, "Account")}
-                          for i in people[:20] if i.get("id")], ensure_ascii=False))
+
+        def name(i):
+            return i.get("providerDisplayName") or i.get("customDisplayName") or "?"
+        found, order = {}, []
+        for i in people:
+            if i.get("id") and i["id"] not in found:
+                found[i["id"]] = i
+                order.append(i)
+
+        def hits(i):
+            text = " ".join((name(i), prop(i, "Mail"), prop(i, "Account"))).lower()
+            return sum(1 for w in words if w.lower() in text)
+        order.sort(key=lambda i: -hits(i))
+        print(json.dumps([{"name": name(i), "id": i.get("id"), "account": prop(i, "Mail") or prop(i, "Account")}
+                          for i in order[:20]], ensure_ascii=False))
         return 0
 
     def add_reviewer(self, who, required="false"):

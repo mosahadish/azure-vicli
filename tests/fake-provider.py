@@ -1121,10 +1121,13 @@ class Fake:
     def cmd_find_people(self, rest):
         if not self.need_pr():
             return 1
-        q = (rest[0] if rest else "").lower().strip()
+        # Like a directory: any of the query's words found in the name; no
+        # query is everyone (the project's teams).
+        words = [w for w in re.split(r"[\s,;]+", (rest[0] if rest else "").lower()) if w]
         print(json.dumps([{"name": p["displayName"], "id": p["id"],
                            "account": p["displayName"].split()[0].lower() + "@example.com"}
-                          for p in PEOPLE.values() if q and q in p["displayName"].lower()]))
+                          for p in PEOPLE.values()
+                          if not words or any(w in p["displayName"].lower() for w in words)]))
         return 0
 
     def cmd_set_description(self, rest):

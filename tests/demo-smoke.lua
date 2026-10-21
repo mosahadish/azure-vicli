@@ -638,7 +638,8 @@ end)
 -- gR adds a reviewer found by name (the fake's --find-people, then
 -- --add-reviewer with their id), and <C-t> in the comment editor tags
 -- someone who isn't on the PR: "@Bob Brown" in the text, the "@<GUID>" a
--- mention is in what's sent.
+-- mention is in what's sent. Both type into the search-as-you-type picker;
+-- "brown, bob" finds "Bob Brown" (each word searched, ranked fuzzily).
 section("PEOPLE", function()
   for _, w in ipairs(vim.api.nvim_list_wins()) do
     if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
@@ -646,12 +647,45 @@ section("PEOPLE", function()
   ensure_review()
   vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
   local PROMPT = require("azure-cli.prompt")
-  local real_sel, real_in = PROMPT.select, vim.ui.input
+  local real_sel = PROMPT.select
   local asked = {}
   PROMPT.select = function(o, cb) asked[#asked + 1] = o.prompt; cb(o.items[1]) end
-  local answer = "carol"
-  vim.ui.input = function(_, cb) cb(answer) end
-  local function restore() PROMPT.select, vim.ui.input = real_sel, real_in end
+  local function restore() PROMPT.select = real_sel end
+  -- The people picker's search line and its list, once it's open.
+  local function picker()
+    local ib, lines
+    vim.wait(5000, function()
+      for _, b in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(b) and vim.bo[b].filetype == "azure-cli-people" then ib = b return true end
+      end
+    end, 20)
+    return ib, function()
+      for _, w in ipairs(vim.api.nvim_list_wins()) do
+        local b = vim.api.nvim_win_get_buf(w)
+        if vim.bo[b].filetype == "azure-cli-people-list" then
+          lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+        end
+      end
+      return table.concat(lines or {}, "\n")
+    end
+  end
+  -- Types `q` into the people picker, waits for `expect` at the top of its
+  -- list and presses <CR>; an error string if that never happens.
+  local function answer(q, expect)
+    local ib, list = picker()
+    if not ib then return "the picker didn't open" end
+    vim.api.nvim_buf_set_lines(ib, 0, -1, false, { q })
+    local top
+    if not vim.wait(10000, function()
+      top = vim.split(list(), "\n")[1]
+      return top and top:find(expect, 1, true) ~= nil
+    end, 20) then return "\"" .. q .. "\" didn't list " .. expect .. " first (top: " .. tostring(top) .. ")" end
+    -- nvim_buf_get_keymap, not maparg: 0.9's maparg can't hand back a Lua callback.
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib, "i")) do
+      if m.lhs == "<CR>" then return m.callback() end
+    end
+    return "the picker has no <CR>"
+  end
   local function rec101()
     for _, p in ipairs((require("azure-cli.state").PR_LIST_CACHE or {}).prs or {}) do
       if tostring(p.id) == "101" then return p end
@@ -661,6 +695,16 @@ section("PEOPLE", function()
     for _, r in ipairs(pr and pr.reviewers or {}) do if r.name == name then return true end end
   end
   feed("gR")
+  -- Before anything is typed it lists everyone who can review, less the
+  -- PR's reviewers (Bob Brown is one).
+  local _, list = picker()
+  if not vim.wait(10000, function() return list():find("Carol Chen", 1, true) ~= nil end, 20)
+    or not list():find("Alice Andersson", 1, true) or list():find("Bob Brown", 1, true) then
+    restore()
+    return fail("gR's list before typing: " .. list())
+  end
+  local err = answer("carol", "Carol Chen")
+  if err then restore() return fail("gR: " .. err) end
   if not vim.wait(15000, function() return has(rec101(), "Carol Chen") end, 50) then
     restore()
     return fail("gR didn't add Carol Chen to !101 (asked: " .. table.concat(asked, " | ") .. ")")
@@ -675,12 +719,13 @@ section("PEOPLE", function()
     restore()
     return fail("the dashboard's !101 row didn't show the new reviewer: " .. tostring(row101()), dash)
   end
-  answer = "bob"
   local sent
   require("azure-cli.editor").open({ title = "PR comment", anchor = "center", pr = rec101(),
     mentions = require("azure-cli.hosts").mentions(rec101()), on_submit = function(t) sent = t end })
   local ebuf = vim.api.nvim_get_current_buf()
   feed("<C-t>")
+  err = answer("brown, bob", "Bob Brown")
+  if err then restore() return fail("<C-t>: " .. err) end
   local tagged = vim.wait(15000, function()
     return vim.api.nvim_buf_is_valid(ebuf) and table.concat(vim.api.nvim_buf_get_lines(ebuf, 0, -1, false)):find("@Bob Brown", 1, true) ~= nil
   end, 50)

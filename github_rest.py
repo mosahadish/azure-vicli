@@ -665,6 +665,19 @@ def reviewer_lookup(client, variables):
                            "assignableUsers": {"nodes": people}}}
 
 
+def assignable_people(client, variables):
+    # One page holds everyone (no cursor): names only where already known -
+    # a /users call per person would make the list slow to open.
+    people = []
+    for u in _pages(client, _repo_path(variables["owner"], variables["name"], "/assignees"), limit=500):
+        login = (u or {}).get("login") or ""
+        if login:
+            with _lock:
+                name = _names.get((client.api_url, login))
+            people.append({"id": login, "login": login, "name": name})
+    return {"repository": {"assignableUsers": {"nodes": people, "pageInfo": {"hasNextPage": False}}}}
+
+
 def user(client, variables):
     try:
         u = client.rest("GET", "/users/" + _q(variables["login"])) or {}
