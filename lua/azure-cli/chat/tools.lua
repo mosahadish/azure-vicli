@@ -12,7 +12,8 @@
 -- risk = "read"|"write"|"ask", run = function(args, env, done) } (an "ask"
 -- one can also have confirm(args) -> what it would do, details(args, cb)
 -- -> lines shown with the question, preapproved(args, cb(ok, by_what))
--- -> whether the question can be skipped), where
+-- -> whether the question can be skipped, always_ask(args) -> true when
+-- this call asks whatever chat.permissions says), where
 -- done(result) answers with a table (sent as JSON) or a string, and
 -- done(nil, err) reports a failure. `env` is chat/init.lua's: main_win()
 -- (the window the user was last in), log(line) (a line in the chat
@@ -787,6 +788,8 @@ function M.call(name, args, env, cb)
   args = type(args) == "table" and args or {}
   local perm = M.permission(tool, perms())
   if perm == "deny" then return cb("The user doesn't allow " .. name .. ".", true) end
+  local must_ask = tool.always_ask and tool.always_ask(args) or false
+  if must_ask then perm = "ask" end
   -- A task agent without an approved plan only looks (#143).
   local ro = require("azure-cli.chat.plan").task_refusal(env and env.conv, tool)
   if ro then
@@ -842,7 +845,7 @@ function M.call(name, args, env, cb)
     -- "ask" for it outright. preapproved's cb(ok, why): what allowed it, or
     -- why it asks after all (nil: nothing to explain).
     local explicit = (perms() or {})[name] == "ask"
-    if tool.preapproved and not explicit then
+    if tool.preapproved and not explicit and not must_ask then
       return tool.preapproved(args, function(ok, why)
         if ok then
           env.log("\u{2713} " .. name .. ": allowed by " .. tostring(why or "you"))

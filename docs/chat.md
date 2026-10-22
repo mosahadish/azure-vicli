@@ -201,7 +201,13 @@ failed build, `chat.on_failed_build` says what happens - `"suggest"`
 from the build's log and failed tests (`get_build_log`,
 `get_test_results`), `"off"` does nothing. An expired build (Azure) doesn't
 count - it needs a requeue (`gr`), not a fix - nor does one that had failed
-already when the PR started being watched. A PR stops being watched once it's
+already when the PR started being watched. When it conflicts with its target,
+`chat.on_conflict` says what happens - `"suggest"` (default) a note, `"rebase"`
+has the PR's agent plan a rebase onto the target; once you approve it, the
+agent rebases, runs the plan's tests and force-pushes (`commit_and_push_fix`
+with `rebased`), `"off"` nothing. Once per conflict: going into conflict
+again, or a push that still conflicts, counts again; the target moving on
+while it conflicts doesn't. A PR stops being watched once it's
 completed or abandoned, and the agents behind it show as finished on the
 Agents screen. Comments that arrived while azure-vicli was closed
 are picked up at the first check after it starts. The list is kept in
@@ -479,7 +485,7 @@ to one conversation with one agent and model.
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `skill_dirs` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
-(`"suggest"` or `"plan"`), `on_failed_build` (`"suggest"`, `"plan"` or `"off"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
+(`"suggest"` or `"plan"`), `on_failed_build` (`"suggest"`, `"plan"` or `"off"`), `on_conflict` (`"suggest"`, `"rebase"` or `"off"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
 (default true), `plan_template` and `plan_revisions` (default 3) ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).
 
@@ -1027,7 +1033,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `start_story` | Implementing a work item: a new branch on the server (linked to it) and a worktree of it to change code in (before its plan is approved, only a read-only worktree of the branch, to plan in). `show_fix` / `discard_fix` / `commit_and_push_fix` then take the work item's id | no |
 | `run_tests` | Runs the plan's test command (or another) in the fix/story worktree; returns the exit code and the end of the output | **yes**, showing the command |
 | `delete_fix_file` | Deletes a file in the fix/story worktree (the agent's own file tools can't delete); any path outside the worktree is refused, so it needs no shell permission | no |
-| `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
+| `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch. With `rebased`, a force push (`--force-with-lease` on the commit last seen), only when HEAD contains the target's tip | **yes**, showing the diff; with `rebased` always, even under a plan or `permissions` that allow it |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
 | `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description, and the title when one is given | **yes** (the description, and any new title, is shown) |
 | `suggest_reviewers` | Opens `gR`'s popup with the people it suggests first, each with why; you pick who's added | - |
