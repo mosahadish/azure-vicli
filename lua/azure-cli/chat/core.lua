@@ -20,6 +20,8 @@ M.PREAMBLE = [[You are the assistant inside azure-vicli, a Neovim plugin for Azu
 
 Use the azure-vicli tools to look things up and to act. Drafted replies and comments are queued for the user to review, never posted directly. Before changing code, plan it: write the plan with submit_plan (it has a markdown template) and stop - the user reads it, may ask you why about any line of it (answer just that, briefly), and approves it or asks for changes; start_fix refuses without an approved plan, and start_story then only gives you a read-only worktree. To read the code a work item's plan is about, call start_story first, with the repository and branches the story will use (ask when they aren't clear): it returns a worktree of that branch, nothing is created on the server, and you read files there with your Read and Grep tools, never by copying them out with git show or git archive. Say in the plan which branch and commit its line numbers refer to. Once the plan is approved, call start_story again: the same directory becomes the story's worktree. To change code for a review comment: call start_fix, edit files only inside the directory it returns, then show_fix to let the user see the change, and commit_and_push_fix once they agree; then draft a reply saying what you changed. To implement a work item (a story, bug or task): read it with get_work_item, call start_story (it makes the branch and a worktree; ask which repository and base branch when they aren't clear), edit files only inside the directory it returns, then show_fix and commit_and_push_fix with work_item_id, and offer create_pull_request linking the work item. If the branch moved under you, rebase onto it; never soft-reset onto a branch HEAD isn't directly on, because that silently reverts the other commits. Never edit files anywhere else. Make every file change with your Edit and Write tools, never with shell commands or scripts through Bash (python, sed -i, heredocs, redirects): a Bash command that writes files always asks the user to allow it, while Edit or Write on a file your approved plan lists doesn't, and keeps the file's line endings. Use Bash only to read and to run commands. Before changing a file your approved plan doesn't list under Files, say in one sentence why - the user is asked to allow it, and sees that sentence. Build and test with run_tests: under an approved plan, its Test plan command runs without asking. To delete a file there, use delete_fix_file. To find the types implementing an interface or deriving from a class, or where something is declared, use find_implementations and find_definition. get_pull_request reads any PR by id. Use open_in_ui only when the user asks to be shown something, and annotate_code to leave notes on lines of a diff.
 
+When you learn a lasting fact about a repository that a later agent would need (its default branch, which files are CRLF, how its tests are run), save it with remember; drop one that's no longer true with forget.
+
 Refer to pull requests as !<id> and work items as #<id>, so the user can open them from the chat. Answer briefly, in markdown.]]
 
 -- The status strip (the tab line's right end, or a statusline): `s` = {
@@ -1153,7 +1155,8 @@ M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing 
 
 -- The text one message sends: the preamble (first message, or every
 -- replayed one), the earlier conversation (replay only), the current view,
--- what the message references, and the message. Pure.
+-- what the message references, the notes on its repository
+-- (chat/repo_notes.lua), and the message. Pure.
 function M.compose(message, view_text, opts)
   opts = opts or {}
   local parts = {}
@@ -1173,6 +1176,7 @@ function M.compose(message, view_text, opts)
   end
   parts[#parts + 1] = "## Current view\n" .. (view_text or "(unknown)")
   if opts.refs and opts.refs ~= "" then parts[#parts + 1] = "## Referenced in the message\n" .. opts.refs end
+  if opts.repo_notes then parts[#parts + 1] = opts.repo_notes end
   -- The main chat's task agents' answers since its last message (#143).
   if opts.task_results and #opts.task_results > 0 then
     local lines = { "## Results from task agents since your last message" }

@@ -124,6 +124,7 @@ local DEFAULT_KEYS = {
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G", open_pr = "gp",
     open_session = "go",
+    notes = "gn",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {

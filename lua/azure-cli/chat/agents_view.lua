@@ -429,6 +429,7 @@ local HELP = {
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
   { "open_pr", "its pull request in the reviewer (the one it opened, or the one it fixes)" },
   { "open_session", "its session in a terminal, in its directory (the agent's resume_cmd; not while it works)" },
+  { "notes", "the notes agents keep on its repository" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
@@ -465,6 +466,19 @@ local function setup(buf)
   end, { desc = "its pull request" })
   K.bind(buf, "agents", "open_session", function() open_session(row_here()) end,
     { desc = "its session in a terminal" })
+  K.bind(buf, "agents", "notes", function()
+    local r = row_here()
+    if not r then return end
+    local NOTES = require("azure-cli.chat.repo_notes")
+    local repo = NOTES.of_target(r.target)
+    if not repo then return notify((r.label or "That agent") .. " has no repository yet.") end
+    local path = NOTES.path(repo)
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+    vim.cmd("botright split " .. vim.fn.fnameescape(path))
+    if vim.fn.filereadable(path) == 0 then
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# " .. NOTES.label(repo), "" })
+    end
+  end, { desc = "its repository's notes" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "main chat" })

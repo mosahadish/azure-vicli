@@ -494,6 +494,9 @@ setmetatable(M, { __call = function(_, T)
         local id = args.work_item_id
         local PLAN = require("azure-cli.chat.plan")
         local B = T.board_for(args, env)
+        -- Its answer brings what earlier agents noted on the repository.
+        done = require("azure-cli.chat.repo_notes").with_notes(done, env.conv, args.repo,
+          B.host == "github" and "github" or nil)
         -- A GitHub issue's by its key (#114), the calling agent's own first;
         -- without an id, a task agent's own task (#143).
         local target

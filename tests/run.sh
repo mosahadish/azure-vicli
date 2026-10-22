@@ -546,6 +546,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat-watchdog.lua (headless nvim)" "$out"
   fi
 
+  # Notes per repository (chat/repo_notes.lua): remember / forget, the
+  # file read back (a hand-edited one too), the cap, the first message.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-repo-notes.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all repo-notes tests passed"* ]]; then
+    pass "test-repo-notes.lua (headless nvim)"
+  else
+    fail "test-repo-notes.lua (headless nvim)" "$out"
+  fi
+
   # The reviewer Overview's highlighting (review/overview_syntax.lua, #135):
   # Markdown only in the description and comment bodies, no markdownError.
   out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-review-overview-syntax.lua" 2>&1)"

@@ -470,6 +470,7 @@ paste the output here after changing a default.
 | `help` | `?` |
 | `issues` | `I` |
 | `last_row` | `G` |
+| `notes` | `gn` |
 | `open` | `<CR>` |
 | `open_pr` | `gp` |
 | `open_session` | `go` |
