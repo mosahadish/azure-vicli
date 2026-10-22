@@ -3174,9 +3174,10 @@ class PrActions:
     def get_pr(self):
         """Any PR in the project by id (GET {org}/{project}/_apis/git/
         pullrequests/{id} - no repository needed), printed as the same record
-        --list prints for a dashboard row, minus what --list works out on top
-        (thread counts, build, policies). For the chat's get_pull_request on
-        a PR that isn't on the user's dashboard."""
+        --list prints for a dashboard row, minus the thread counts --list
+        works out on top. Its build (and policies) are --list's: the chat's
+        watch tells a failed build by it (#141). For the chat's
+        get_pull_request on a PR that isn't on the user's dashboard."""
         if not _is_uint(self.pr_id):
             print("get-pr needs a numeric AZVICLI_PR", file=sys.stderr)
             return 1
@@ -3199,10 +3200,20 @@ class PrActions:
             project = self.project
             clones_dir = (getattr(account, "clones_dir", "") or "") if account else ""
 
+        project_id = (((pr or {}).get("repository") or {}).get("project") or {}).get("id")
         record = to_record(pr or {}, _Acct, (pr or {}).get("status") or "", (None, None, None, None, None),
-                           ("none", None, "", [], []), None, None)
+                           self._build_info(project_id, pr or {}), None, None)
         print(json.dumps(record, ensure_ascii=False))
         return 0
+
+    def _build_info(self, project_id, pr):
+        """PR `pr`'s build as --list works it out (_get_build_status: "none"
+        when that fails), its requests going through self.fetch."""
+        source = AzureDevOpsPullRequestSource(self.config)
+        fetch = self.fetch
+        source.fetch = lambda method, url, pat, data=None, api_version="7.1": fetch(
+            url, method=method, data=data, pat=pat, api_version=api_version)
+        return source._get_build_status(self.org, self.pat, self.project, project_id, pr)
 
     def complete_pr(self, strategy, del_branch="true", transition="true"):
         if strategy not in _MERGE_STRATEGIES:

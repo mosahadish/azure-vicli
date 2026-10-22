@@ -903,6 +903,102 @@ do
   require("azure-cli.config").setup({})
 end
 
+-- --- chat/watch.lua: the chat's PRs, watched for failed builds (#141) ---------------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local AG = require("azure-cli.chat.agents")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    start = AG.start_for_build, comments = AG.start_for_prs }
+  local notes, started, busy = {}, {}, false
+  local build, url = "failed", "o/p/_build/results?buildId=1"
+  local threads = { { id = 1, comments = { { id = 1, author = { id = "me" }, content = "mine" } } } }
+  CH.current_agent = function() return { name = "x" } end
+  CH.note = function(t) notes[#notes + 1] = t end
+  CH.alert = function() end
+  T.provider = function(argv, _, cb)
+    if argv[1] == "--get-pr" then
+      return cb(true, vim.json.encode({ id = 501, title = "T", state = "active", org = "o", project = "p", repo = "r",
+        buildStatus = build, buildUrl = url }), "")
+    end
+    cb(true, vim.json.encode({ value = threads }), "")
+  end
+  AG.start_for_build = function(pr)
+    if busy then return "busy", {} end
+    started[#started + 1] = pr.id
+    return "ok", { "PR !501" }
+  end
+  AG.start_for_prs = function() return "ok", { "PR !501" } end
+  ST.whoami = { ["o|p"] = { id = "me" } }
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  require("azure-cli.config").setup({})
+  check("failed_build: by its url, else its status; not expired",
+    W.failed_build({ buildStatus = "failed", buildUrl = "u" }) == "u"
+    and W.failed_build({ buildStatus = "failed", buildUrl = "" }) == "failed"
+    and W.failed_build({ buildStatus = "expired", buildUrl = "u" }) == nil
+    and W.failed_build({ buildStatus = "running" }) == nil)
+  W.add({ id = 501, org = "o", project = "p", repo = "r" })
+  W.poll()
+  check("watch build: a failure already there isn't new", #notes == 0, vim.inspect(notes))
+  W.poll()
+  check("watch build: nor at the next poll", #notes == 0, vim.inspect(notes))
+  build, url = "running", "o/p/_build/results?buildId=2"
+  W.poll()
+  build = "failed"
+  W.poll()
+  check("watch build: a new failure - the note says just that (suggest)",
+    #notes == 1 and notes[1] == "!501 \"T\"'s build failed.", vim.inspect(notes))
+  W.poll()
+  check("watch build: the same build again says nothing", #notes == 1, vim.inspect(notes))
+  url = "o/p/_build/results?buildId=3"
+  W.poll()
+  check("watch build: another failed build, another note", #notes == 2, vim.inspect(notes))
+  build, url = "expired", "o/p/_build/results?buildId=4"
+  W.poll()
+  check("watch build: an expired one doesn't count", #notes == 2, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_failed_build = "off" } })
+  build, url = "failed", "o/p/_build/results?buildId=5"
+  W.poll()
+  check("watch build: off says nothing", #notes == 2 and #started == 0, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_failed_build = "plan" } })
+  build, url = "running", "o/p/_build/results?buildId=6"
+  W.poll()
+  build = "failed"
+  busy = true
+  table.insert(threads, { id = 2, comments = { { id = 1, author = { id = "alice" }, content = "c" } } })
+  W.poll(); W.poll()
+  check("watch build: plan - its agent busy, it waits; the comments still say so",
+    #started == 0 and #notes == 3 and notes[3]:find("1 new comment", 1, true) ~= nil, vim.inspect(notes))
+  W._reset()  -- a restart in between: what's pending is kept
+  busy = false
+  W.poll()
+  check("watch build: plan - its agent plans the fix", vim.deep_equal(started, { 501 })
+    and notes[4] == "!501 \"T\"'s build failed - an agent is planning the fix.", vim.inspect({ started, notes }))
+  W.poll()
+  check("watch build: plan - once", #started == 1, vim.inspect(started))
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  CH.current_agent, CH.note, CH.alert, T.provider = orig.agent, orig.note, orig.alert, orig.provider
+  AG.start_for_build, AG.start_for_prs = orig.start, orig.comments
+  require("azure-cli.config").setup({})
+end
+
+-- --- agents.lua: an agent for a PR's failed build (#141) ------------------------------
+do
+  local AG = require("azure-cli.chat.agents")
+  local p = AG.build_prompt({ id = 502, title = "Fix", key = "own~repo~502" })
+  check("build_prompt: a PR's", p:find("^/plan PR !502 in own/repo \"Fix\": its build failed") ~= nil
+    and p:find("get_build_log and get_test_results (pr_id 502)", 1, true) ~= nil
+    and p:find("submit_plan (pr_id 502)", 1, true) ~= nil, p)
+  p = AG.build_prompt({ id = 502, title = "Fix" }, 91)
+  check("build_prompt: the work item's agent that opened it", p:find("which you opened for #91, failed", 1, true) ~= nil
+    and p:find("submit_plan (work_item_id 91)", 1, true) ~= nil
+    and p:find("commit_and_push_fix (work_item_id 91)", 1, true) ~= nil, p)
+end
+
 -- --- a PR an agent opened: its comments go back to that agent ------------------------
 do
   local PL = require("azure-cli.chat.plan")

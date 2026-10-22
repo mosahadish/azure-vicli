@@ -174,7 +174,7 @@ Check model names and flags against the installed CLI (`copilot --help`,
 "Let the agent set itself up" in that file.
 
 Other `chat` fields: `position`, `size`, `max_agents`, `test_cmd`,
-`plan_first`, `on_new_comments`, `watch_seconds`, `prompts`, ... -
+`plan_first`, `on_new_comments`, `on_failed_build`, `watch_seconds`, `prompts`, ... -
 [docs/chat.md](../../../docs/chat.md#fields).
 
 ### Permissions (`chat.permissions`)
