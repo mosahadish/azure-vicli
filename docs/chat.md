@@ -207,7 +207,8 @@ has the PR's agent plan a rebase onto the target; once you approve it, the
 agent rebases, runs the plan's tests and force-pushes (`commit_and_push_fix`
 with `rebased`), `"off"` nothing. Once per conflict: going into conflict
 again, or a push that still conflicts, counts again; the target moving on
-while it conflicts doesn't. A PR stops being watched once it's
+while it conflicts doesn't. A new conflict counts once two checks in a row
+see it (right after a push the host can still report the old status). A PR stops being watched once it's
 completed or abandoned, and the agents behind it show as finished on the
 Agents screen. Comments that arrived while azure-vicli was closed
 are picked up at the first check after it starts. The list is kept in

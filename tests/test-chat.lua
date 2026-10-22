@@ -1160,13 +1160,22 @@ do
   W.poll()
   conflict, tgt = true, "t3"
   W.poll()
+  check("watch conflict: a new one waits for a second poll", #notes == 0, vim.inspect(notes))
+  W.poll()
   check("watch conflict: a new one - the note says just that (suggest)",
     #notes == 1 and notes[1] == "!503 \"T\" conflicts with main.", vim.inspect(notes))
   W.poll()
   check("watch conflict: the same one again says nothing", #notes == 1, vim.inspect(notes))
   src = "s2"
-  W.poll()
+  W.poll(); W.poll()
   check("watch conflict: a push that still conflicts, another note", #notes == 2, vim.inspect(notes))
+  -- Right after a push the host still reports the old status once: nothing.
+  src = "s3"
+  W.poll()
+  conflict = false
+  W.poll()
+  check("watch conflict: a stale status after a push says nothing", #notes == 2, vim.inspect(notes))
+  conflict, src = true, "s2"
   conflict = false
   W.poll()
   conflict = true

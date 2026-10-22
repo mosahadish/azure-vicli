@@ -241,11 +241,18 @@ local function check_conflict(rec, fresh, pr)
   local first = not rec.conflict_seen
   rec.conflict_seen = true
   if not key then
-    rec.conflict, rec.conflict_pending = nil, nil
+    rec.conflict, rec.conflict_pending, rec.conflict_candidate = nil, nil, nil
     return
   end
   local new = (rec.conflict == nil or source_of(rec.conflict) ~= source_of(key)) and key ~= rec.conflict_told
-  rec.conflict = key
+  -- Right after a push the host may still report the old merge status for
+  -- the new commit (it's worked out in the background): a new conflict
+  -- counts once a second poll sees the same one.
+  if new and not first and rec.conflict_candidate ~= key then
+    rec.conflict_candidate = key
+    return
+  end
+  rec.conflict, rec.conflict_candidate = key, nil
   if new then
     rec.conflict_told = key
     if not first then rec.conflict_pending = true end
