@@ -200,6 +200,9 @@ end
 
 -- The worktree's change: `git add -A -N` first so new files show, then the
 -- diff against its base. cb(ok, diff, stat).
+-- show_fix returns the diff up to this many bytes; over it, the stat only.
+M.SHOW_DIFF_MAX = 12000
+
 function M.diff(wt, cb, git)
   git({ "git", "-C", wt, "add", "-A", "-N" }, function()
     git({ "git", "-C", wt, "diff", "HEAD" }, function(ok, out, err)
@@ -335,6 +338,19 @@ setmetatable(M, { __call = function(_, T)
     work_item_id = { type = "integer", description = "for a start_story change" },
   } }
 
+  -- Why fetching `branch` from `clone`'s origin failed, for the agent: a
+  -- branch that isn't there says what the default branch is (an agent
+  -- guessing main where it's master). cb(message).
+  local function fetch_failed(clone, branch, ferr, cb)
+    if not tostring(ferr):find("couldn't find remote ref", 1, true) then
+      return cb("fetching " .. branch .. " failed: " .. ferr)
+    end
+    T.git({ "git", "-C", clone, "ls-remote", "--symref", "origin", "HEAD" }, function(_, out)
+      local default = tostring(out or ""):match("ref: refs/heads/(%S+)%s+HEAD")
+      cb("there's no branch " .. branch .. " on origin" .. (default and (" - its default branch is " .. default) or ""))
+    end)
+  end
+
   -- start_story before its plan is approved (#71): a worktree of the branch
   -- the story goes on - origin/<name>, or origin/<from> for a new branch -
   -- for the planner to read the code in. Detached (so a branch out
@@ -346,7 +362,7 @@ setmetatable(M, { __call = function(_, T)
       local branch = vim.trim(heads or "") ~= "" and args.name or args.from
       local ref = "origin/" .. branch
       T.git({ "git", "-C", clone, "fetch", "-q", "origin", branch }, function(fok, _, ferr)
-        if not fok then return done(nil, "fetching " .. branch .. " failed: " .. ferr) end
+        if not fok then return fetch_failed(clone, branch, ferr, function(m) done(nil, m) end) end
         local function ready(kept)
           T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
             sha = vim.trim(sha or "")
@@ -524,7 +540,7 @@ setmetatable(M, { __call = function(_, T)
         local function checkout(existing)
           env.log("git fetch " .. args.name)
           T.git({ "git", "-C", clone, "fetch", "-q", "origin", args.name }, function(fok, _, ferr)
-            if not fok then return failed("fetching " .. args.name .. " failed: " .. ferr) end
+            if not fok then return fetch_failed(clone, args.name, ferr, failed) end
             vim.fn.mkdir(M.root(), "p")
             T.git({ "git", "-C", clone, "worktree", "prune" }, function()
               M.add_story_worktree(clone, wt, args.name, function(ok, err, note)
@@ -569,7 +585,8 @@ setmetatable(M, { __call = function(_, T)
     {
       name = "show_fix",
       description = "Makes the change in the start_fix or start_story directory ready for the user to review (they're "
-        .. "told it's waiting on the Agents screen; nothing opens by itself) and returns the diff, plus plan_check "
+        .. "told it's waiting on the Agents screen; nothing opens by itself) and returns its stat and diff (a big "
+        .. "diff: the stat only - read it with git diff in the directory), plus plan_check "
         .. "when the change and its plan's Files section disagree (files changed that the plan doesn't list, files it "
         .. "lists that weren't changed). Give pr_id for a fix, work_item_id for a story.",
       schema = { type = "object", properties = {
@@ -614,8 +631,14 @@ setmetatable(M, { __call = function(_, T)
             env.log("! against the plan: " .. #check.unplanned .. " file(s) not in it, "
               .. #check.missing .. " planned file(s) not changed")
           end
-          if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
-          done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked,
+          -- A big diff isn't returned (#34): Claude Code would put it in a
+          -- file to dig through. The agent reads its own worktree instead.
+          local diff_note
+          if #diff > M.SHOW_DIFF_MAX then
+            diff, diff_note = nil, "The diff is too big to return (" .. #paths .. " files): run git diff HEAD -- <file> in "
+              .. t.dir .. " for one file's."
+          end
+          done({ stat = stat, diff = diff, diff_note = diff_note, plan_check = plan_check, steps_linked = linked,
             shown = false, ci = M.ci(args.pr_id, t.branch),
             note = "The change isn't on screen: it waits for the user on the Agents screen - say it's ready, not "
               .. "that you opened it." })

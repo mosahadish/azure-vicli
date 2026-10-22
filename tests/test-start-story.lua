@@ -229,6 +229,10 @@ do
   check("#71 new branch, no plan: preview of the base, no branch made", res and res.read_only and head(wt) == ""
     and sh({ "git", "-C", wt, "rev-parse", "HEAD" }) == sh({ "git", "-C", origin, "rev-parse", "main" })
     and #created == made, err or vim.inspect(created))
+  -- A base that isn't on origin: the error names the default branch.
+  local r13, e13 = story(91, "master", "feature/91-z")
+  check("start_story: a missing base names origin's default branch", r13 == nil
+    and e13 == "there's no branch master on origin - its default branch is main", vim.inspect({ r13, e13 }))
   approve(12)
   res, err = story(12, "main", "feature/12-y")
   check("#71 new branch, approved: made and checked out in the same directory", res and res.directory == wt

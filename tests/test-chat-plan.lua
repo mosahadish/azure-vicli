@@ -1731,6 +1731,13 @@ do
     res and res.shown == false and tostring(res.diff):find("+return 2", 1, true) ~= nil
       and FIX.last and FIX.last.dir == wt, vim.inspect({ res, FIX.last }))
   check("#120 show_fix: the plan view's Changes section is poked", poked >= 1, poked)
+  -- #34: a big diff comes back as its stat, with where to read it.
+  vim.fn.writefile(vim.split(string.rep("return 'a long line of the change'\n", 600), "\n"), wt .. "/b.lua")
+  res = call("show_fix", { work_item_id = 9120 }, env)
+  check("#34 show_fix: a big diff isn't returned, the stat is", res and res.diff == nil and tostring(res.stat):find("b.lua", 1, true)
+    and tostring(res.diff_note):find("git diff HEAD", 1, true), vim.inspect(res and { res.stat, res.diff_note }))
+  vim.fn.delete(wt .. "/b.lua")
+
 
   -- #126: its change viewer already open, the user in another tab: show_fix
   -- redraws it in place - no tab, window or mode change.
