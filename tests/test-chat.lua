@@ -1230,6 +1230,31 @@ do
   AG.reset()
 end
 
+-- --- #142: go on the Agents screen - the agent's session in a terminal ------------------
+do
+  local AV = require("azure-cli.chat.agents_view")
+  local list = { resume_cmd = { "claude", "--resume", "{session_id}" } }
+  local shell = { resume_cmd = "copilot --resume {session_id}" }
+  local conv = { session_id = "abc 1", agent_cwd = "/work/wt" }
+  local cmd, cwd = AV.resume_command(list, conv, "/fallback")
+  check("#142 resume_command: {session_id} expanded, in its own directory",
+    vim.deep_equal(cmd, { "claude", "--resume", "abc 1" }) and cwd == "/work/wt", vim.inspect({ cmd, cwd }))
+  cmd = AV.resume_command(shell, conv)
+  check("#142 resume_command: a shell string gets it shell-escaped", cmd == "copilot --resume 'abc 1'", tostring(cmd))
+  cmd, cwd = AV.resume_command(list, { session_id = "x" }, "/fallback")
+  check("#142 resume_command: no directory kept - the fallback", cwd == "/fallback", tostring(cwd))
+  local function refused(name, agent, c, needle)
+    local got, why = AV.resume_command(agent, c, "/fallback")
+    check("#142 resume_command refuses " .. name, got == nil and tostring(why):find(needle, 1, true) ~= nil, why)
+  end
+  refused("while it works", list, { session_id = "x", running = {} }, "still working")
+  refused("before a session", list, { agent_cwd = "/w" }, "hasn't started a session")
+  refused("without resume_cmd", { cmd = { "claude" } }, conv, "no resume_cmd")
+  refused("with no conversation", list, nil, "no agent yet")
+  local _, why = AV.resume_command(list, { session_id = "x" }, nil)
+  check("#142 resume_command refuses not knowing where", tostring(why):find("Don't know where", 1, true) ~= nil, why)
+end
+
 -- --- #113: two GitHub cli#7s get a fix worktree each; old <repo>-<id> ones still work --
 do
   local PL = require("azure-cli.chat.plan")

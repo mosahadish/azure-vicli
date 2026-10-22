@@ -57,6 +57,17 @@ local count = 0
 for _ in io.lines(marker) do count = count + 1 end
 check("only one agent process was ever started", count == 1, count)
 
+-- #142: the ACP session id is kept on the conversation, with where and by
+-- which agent it runs, and saved with it - the Agents screen's go resumes it.
+check("the ACP session id is kept", STATE.chat.session_id == "fake-acp-1", tostring(STATE.chat.session_id))
+check("with its directory and agent", type(STATE.chat.agent_cwd) == "string" and STATE.chat.agent_cwd ~= ""
+  and STATE.chat.session_agent == "Fake ACP", vim.inspect({ STATE.chat.agent_cwd, STATE.chat.session_agent }))
+do
+  local saved = require("azure-cli.chat.store").load(STATE.chat.conv_id) or {}
+  check("and saved with the conversation", saved.session_id == "fake-acp-1" and saved.agent_cwd == STATE.chat.agent_cwd
+    and saved.session_agent == "Fake ACP", vim.inspect({ saved.session_id, saved.agent_cwd, saved.session_agent }))
+end
+
 CHAT.new_chat(true)
 vim.wait(2000, function() return vim.fn.jobwait({ pj.job }, 0)[1] ~= -1 end, 20)
 check("a new chat stops the ACP process", vim.fn.jobwait({ pj.job }, 0)[1] ~= -1)

@@ -405,6 +405,7 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 | `stdin` | What each message writes to its stdin, as one line (default: Claude Code's stream-json user message, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}`). Unused with `acp`. |
 | `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option`). |
 | `planner_model` / `implementer_model` | A plan's own agent (`gP`, `/plan`, `start_agents`) plans on `planner_model`, and once you approve its plan, implements on `implementer_model`; the main chat stays on `model`. Either missing: that stage uses `model`. An ACP agent switches in its session; another starts again on the new model and gets the conversation. `gm` picks a model for the conversation you're in only, over all of these. |
+| `resume_cmd` | The agent's own CLI on one of its sessions, `{session_id}` expanded (a list, or a string run through `'shell'`): `go` on the Agents screen opens it in a terminal split - see below. |
 | `label` | The agent's name in the panel. |
 | `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls). Unused with `acp`. |
 | `env` | Extra environment. |
@@ -431,6 +432,21 @@ killed)`, `stopped (killed)` - and so does a line under it, and your next
 message starts the agent again and replays the conversation to it. An
 agent with its own `stdin` template is a CLI that may not understand the
 interrupt, so it's stopped by killing it straight away.
+
+**Taking over an agent's session.** `go` on a row of the Agents screen
+opens a terminal split running the agent's `resume_cmd` on that agent's
+session, in the directory it ran in - to carry on by hand, or see what it
+did in its own CLI:
+
+```lua
+resume_cmd = { "claude", "--resume", "{session_id}" },   -- Claude Code
+resume_cmd = { "copilot", "--resume", "{session_id}" },  -- Copilot (its ACP session id)
+```
+
+It's refused while the agent is working (stop it first, `<C-c>`), before it
+has a session, and for an agent without `resume_cmd`. An idle agent's
+process lets go of the session first; your next message to it starts the
+agent again and replays the conversation.
 
 `followup`, `session_pattern` and `persistent` are gone: they were for
 starting a process per message and resuming a session each time. A config

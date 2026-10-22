@@ -677,6 +677,9 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
           return finish("failed", tostring(serr or "the agent didn't return a session id"))
         end
         pj.acp_session_id = result.sessionId
+        -- Kept on the conversation too (saved with it), with where and by
+        -- which agent it runs: the Agents screen's go resumes it (#142).
+        st.session_id, st.agent_cwd, st.session_agent = result.sessionId, agent_cwd(snap), agent_name
         set_model(pj, function() if live() then send_prompt(pj) end end)
       end)
     end)
@@ -999,6 +1002,9 @@ send = function(text, opts)
       entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
       return render()
     end
+    -- Where and by which agent its session runs (the session id itself
+    -- comes with the answer, turn.finish): the Agents screen's go (#142).
+    st.agent_cwd, st.session_agent = agent_cwd(snap), agent_name
     pj.job = job
     st.persistent_job = pj
   end

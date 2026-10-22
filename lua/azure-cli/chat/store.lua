@@ -46,6 +46,7 @@ function M.save(conv)
   SHELL().write_json(conv_dir() .. "/" .. conv.id .. ".json", {
     id = conv.id, created = conv.created, updated = os.time(), entries = entries,
     session_id = conv.session_id, agent = conv.agent, model = conv.model, plan = conv.plan,
+    agent_cwd = conv.agent_cwd, session_agent = conv.session_agent,
     title = require("azure-cli.chat.core").title(entries),
   })
   if not conv.plan then pcall(vim.fn.writefile, { conv.id }, M.root() .. "/current") end
