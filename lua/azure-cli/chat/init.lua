@@ -283,6 +283,8 @@ function M.restore_plans()
       end
     end
   end
+  -- A plan another waits for may have finished while azure-vicli was closed.
+  vim.schedule(function() pcall(PLAN.release_waiting) end)
   if #adopted > 0 then
     table.sort(adopted)
     notify("Plan" .. (#adopted == 1 and " " or "s ") .. table.concat(adopted, ", ") .. " had no agent - "

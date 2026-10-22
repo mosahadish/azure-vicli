@@ -632,6 +632,19 @@ because the tests ran on an earlier version of the change").
 `chat.permissions = { commit_and_push_fix = "ask" }` (or
 `create_pull_request`) always asks.
 
+**Two plans changing the same files.** When a plan you approve changes
+files that another approved, unfinished plan of the same repository
+changes too (it's still being carried out, or its PR is open), `gA`
+says so (`#141 also changes: lua/azure-cli/chat/agents.lua`) and offers
+**Approve after #141**: the plan is approved, but its agent isn't told
+until #141 is finished - its PR merged or abandoned, or the plan
+discarded. Then it gets the go-ahead, told to start from the target
+branch as it is now. With several, it waits for all of them; approving
+several rows at once, a later one counts the earlier ones. The Agents
+screen shows it as `waits for #141`; `gA` on it starts it now. A plan
+whose repository can't be told yet (no worktree, no PR) is compared with
+every one.
+
 **Hunk by hunk.** `gy` on a change marks it accepted (a `✓` beside it,
 and `✓ 2/5 accepted` in the winbar - press it again to take that back);
 `gn` takes that one change out of the worktree (after asking - the
@@ -867,7 +880,8 @@ first - Needs you, Working, In progress, Finished - with the most recent
 first in each group (finished ones over 7 days old are hidden until `gF`).
 For each it shows what it's doing (working, with its latest step; waiting
 for an agent; its plan waiting for you; changes asked, not revised yet;
-approved; pushed; `PR !123 open` once it opened one; finished - `merged`
+approved; `waits for #141`, a plan approved to start after another;
+pushed; `PR !123 open` once it opened one; finished - `merged`
 or `PR abandoned` - once that PR is closed, which it learns from the
 [watched PRs](#conversations-agents-and-models) check; failed or timed
 out; idle). A timed-out agent is always under Needs you; a failed one is

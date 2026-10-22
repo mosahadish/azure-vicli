@@ -650,8 +650,13 @@ end
 function M.gate_check(rec, mode, target)
   if mode == nil then mode = true end
   if mode == false or (mode == "stories" and not (target.work_item_id or target.task_id)) then return true end
-  if rec and rec.status == "approved" then return true end
   local label = M.target_label(target)
+  local waits = M.waiting_on(rec)
+  if #waits > 0 then
+    return false, "The plan for " .. label .. " is approved to start once " .. table.concat(waits, ", ")
+      .. " is finished (it changes some of the same files). Wait - you'll get a message then."
+  end
+  if rec and rec.status == "approved" then return true end
   if not rec then
     return false, "No plan for " .. label .. " yet. Write one with submit_plan first (following its template), then "
       .. "stop and wait: the user reads it, may ask about it, and approves it before you change any code."
@@ -684,6 +689,63 @@ function M.push_check(rec, has_cmd, result, fp)
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- Two plans changing the same files: their PRs conflict.
+
+-- Whether plan `rec` is approved and not finished: being carried out, or
+-- carried out with its PR not merged or abandoned yet (the Agents screen's
+-- groups: only plan.pr_closed finishes one). Pure.
+function M.in_flight(rec)
+  if type(rec) ~= "table" or rec.pr_state then return false end
+  return rec.status == "approved" or rec.status == "done" or type(rec.pr) == "table"
+end
+
+-- Which of `others` ({ { key, label, repo, files } }) change files that
+-- `mine` ({ key, repo, files }) changes too: { { key, label, files } },
+-- `files` the ones of mine they share (matched as check_files does), in
+-- `others`' order. Not one in another repository - when both say which;
+-- a plan that can't tell is compared with every one. Pure.
+function M.overlaps(mine, others)
+  local out = {}
+  for _, o in ipairs(others) do
+    if o.key ~= mine.key and not (mine.repo and o.repo and mine.repo ~= o.repo) then
+      local shared, seen = {}, {}
+      for _, p in ipairs(mine.files or {}) do
+        if not seen[p] and M.paths_planned(o.files or {}, { p }) then
+          seen[p] = true
+          shared[#shared + 1] = p
+        end
+      end
+      if #shared > 0 then out[#out + 1] = { key = o.key, label = o.label, files = shared } end
+    end
+  end
+  return out
+end
+
+-- The approval popup's lines for the overlaps of plans `keys` (`found`:
+-- key -> M.overlaps' list, `label_of(key)`): "#141 also changes: a, b",
+-- "#150 and #141 both change: a" when approving several. Pure.
+function M.overlap_lines(keys, found, label_of)
+  local out = {}
+  for _, k in ipairs(keys) do
+    for _, o in ipairs(found[k] or {}) do
+      local files = table.concat(o.files, ", ")
+      out[#out + 1] = #keys == 1 and (o.label .. " also changes: " .. files)
+        or (label_of(k) .. " and " .. o.label .. " both change: " .. files)
+    end
+  end
+  return out
+end
+
+-- The plans approved plan `rec` still waits for before its agent hears
+-- (plan.approve's wait_for): their labels. Pure.
+function M.waiting_on(rec)
+  local out = {}
+  if type(rec) ~= "table" or rec.status ~= "approved" or type(rec.wait_for) ~= "table" then return out end
+  for _, w in ipairs(rec.wait_for) do if not w.done then out[#out + 1] = w.label end end
+  return out
+end
+
 local STATUS = {
   draft = { "\u{25CF} Waiting for your review", "AzureCliStatusDraft" },
   approved = { "\u{2713} Approved", "AzureCliStatusOk" },
@@ -695,6 +757,8 @@ function M.status_label(rec)
   -- Its PR merged or abandoned (plan.pr_closed): finished, whatever it was.
   if rec.pr_state == "completed" then return "\u{2713} Finished: PR merged", "AzureCliStatusDone" end
   if rec.pr_state == "abandoned" then return "\u{2717} Finished: PR abandoned", "AzureCliMuted" end
+  local waits = M.waiting_on(rec)
+  if #waits > 0 then return "\u{231B} Approved, waits for " .. table.concat(waits, ", "), "AzureCliStatusOk" end
   local s = STATUS[rec.status] or STATUS.draft
   return s[1], s[2]
 end

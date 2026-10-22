@@ -18,6 +18,10 @@
 -- PR is merged or abandoned the plan is finished (pr_closed, from
 -- chat/watch.lua).
 --
+-- Two plans changing the same files make PRs that conflict: approving one
+-- that overlaps a plan still in flight says so, and can hold its go-ahead
+-- back until that one is finished (wait_for; M.release_waiting).
+--
 -- Kept under stdpath("data")/azure-cli-chat/plans/: <key>.md (the plan's
 -- text, the file gf edits) and <key>.json (its title, status, revisions
 -- and questions), key = "wi-<id>", "pr-<id>" (Azure) or
@@ -394,6 +398,8 @@ end
 function M.forget(key)
   if index then index[key] = nil end
   redraw_soon()
+  -- A plan waiting for this one may start now.
+  vim.schedule(function() pcall(M.release_waiting) end)
 end
 
 local function last_rev(rec) return rec.revisions[#rec.revisions] end
@@ -535,6 +541,7 @@ function M.add_revision(rec, markdown, by)
   rec.allow_push = nil
   rec.allowed_files, rec.allowed_rev = nil, nil
   rec.allowed_commands, rec.allowed_commands_rev = nil, nil
+  rec.wait_for = nil
 end
 
 -- The labels of the plans waiting for your review (submitted, not yet
@@ -626,24 +633,89 @@ function M.set_links(target, steps)
   return #links
 end
 
--- How to approve plans `keys` (one question for all of them): cb(allow_push)
--- once you've picked - plain approval, or letting each push once its tests
--- pass (without asking, for a plan with no test command).
+-- The repository plan `rec`'s change is in, as far as it says: its
+-- GitHub key's, its linked PR's, its listed PR's, else its worktree's
+-- name (start_story makes one before approval, to read the code in). nil
+-- when nothing does. Lower case, without the owner.
+function M.repo_of(rec)
+  local t = type(rec) == "table" and type(rec.target) == "table" and rec.target or {}
+  local function name(s) return s and s ~= "" and tostring(s):lower() or nil end
+  local key = t.pr_key or t.item_key or (type(rec.pr) == "table" and rec.pr.key)
+  local from_key = key and tostring(key):match("^[^~]*~(.-)~%d+$")
+  if from_key then return name(from_key) end
+  if t.pr_id then
+    local ok, pr = pcall(require("azure-cli.chat.tools").pr_record, t.pr_id)
+    return name(ok and type(pr) == "table" and pr.repo or nil)
+  end
+  if t.work_item_id or t.task_id then
+    local d = require("azure-cli.chat.tools_fix").story_dirs(t)[1]
+    local dir = d and vim.fn.fnamemodify(d, ":t")
+    return dir and name(dir:match("^(.-)%-wi%d+$") or dir:match("^(.-)%-task%d+$"))
+  end
+  return nil
+end
+
+-- The plans approved and not finished (M.in_flight) - and `also`, keys
+-- approved along with it - that change some of plan `key`'s files:
+-- M.overlaps'.
+function M.overlapping(key, also)
+  local rec = M.load(key)
+  if not rec then return {} end
+  local with = {}
+  for _, k in ipairs(also or {}) do with[k] = true end
+  local others = {}
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/*.json", false, true)) do
+    local k = vim.fn.fnamemodify(f, ":t:r")
+    local o = k ~= key and M.load(k)
+    if o and type(o.target) == "table" and (with[k] or M.in_flight(o)) then
+      others[#others + 1] = { key = k, label = M.target_label(o.target), repo = M.repo_of(o), files = M.planned_paths(o) }
+    end
+  end
+  return M.overlaps({ key = key, repo = M.repo_of(rec), files = M.planned_paths(rec) }, others)
+end
+
+-- How to approve plans `keys` (one question for all of them): cb(allow_push,
+-- wait_for) once you've picked - plain approval, or letting each push once
+-- its tests pass (without asking, for a plan with no test command). When
+-- one changes files a plan in flight changes too (M.overlapping; an earlier
+-- of `keys` counts), the popup says which and offers to approve it to start
+-- once those are finished: wait_for = key -> { { key, label } }.
 function M.ask_approval(keys, cb)
   local has_cmd = false
   for _, k in ipairs(keys) do
     local rec = M.load(k)
     if rec and M.test_command(current_lines(rec)) then has_cmd = true end
   end
-  local what = #keys == 1 and ("the plan for " .. M.target_label(M.load(keys[1]).target)) or (#keys .. " plans")
+  local function label_of(k) return M.target_label(M.load(k).target) end
+  local found, waits, blockers, seen = {}, nil, {}, {}
+  for i, k in ipairs(keys) do
+    found[k] = M.overlapping(k, vim.list_slice(keys, 1, i - 1))
+    for _, o in ipairs(found[k]) do
+      waits = waits or {}
+      waits[k] = waits[k] or {}
+      table.insert(waits[k], { key = o.key, label = o.label })
+      if not seen[o.key] then seen[o.key] = true; blockers[#blockers + 1] = o.label end
+    end
+  end
+  local what = #keys == 1 and ("the plan for " .. label_of(keys[1])) or (#keys .. " plans")
   local plain, with_push = "Approve", has_cmd and "Approve, and let it push and open the PR once the tests pass"
     or "Approve, and let it push and open the PR without asking"
+  local buttons, bkeys = { plain, with_push }, { a = 1, p = 2 }
+  local hint = "a approve \u{00B7} p approve and let it push \u{00B7} "
+  if waits then
+    buttons[3] = #keys == 1 and ("Approve after " .. table.concat(blockers, ", ")) or "Approve, each after the plans it overlaps"
+    bkeys.w = 3
+    hint = hint .. "w approve after \u{00B7} "
+  end
+  buttons[#buttons + 1] = "Cancel"
   require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
       -- #57: p on a plan that works on an existing branch opens no PR.
       "On an existing branch it pushes straight to it - no PR.",
-    }, buttons = { plain, with_push, "Cancel" }, keys = { a = 1, p = 2 }, cancel = 3,
-    hint = "a approve \u{00B7} p approve and let it push \u{00B7} Esc cancel \u{00B7} Tab moves" }, function(i)
+    }, details = waits and M.overlap_lines(keys, found, label_of) or nil,
+    buttons = buttons, keys = bkeys, cancel = #buttons,
+    hint = hint .. "Esc cancel \u{00B7} Tab moves" }, function(i)
     if i == 1 or i == 2 then cb(i == 2) end
+    if i == 3 and waits then cb(false, waits) end
   end)
 end
 
@@ -656,11 +728,39 @@ local function untouched(conv)
   return true
 end
 
--- Approves plan `key`: its status, the run log, and the go-ahead (with
--- your answers, and your version if you edited it) to the agent that
--- wrote it - its own conversation when it has one (a board agent), else
--- the main chat. False and why when it can't be approved now.
-function M.approve(key, allow_push)
+-- The go-ahead to approved plan `rec`'s agent (with your answers, and your
+-- version if you edited it): its own conversation when it has one (a
+-- board agent), else the main chat. `note`, when given, goes first.
+local function go_ahead(rec, note, display)
+  local CHAT = require("azure-cli.chat")
+  local conv = CHAT.find_conversation(rec.key)
+  local text = M.approval_message(rec, current_lines(rec))
+  -- An orphan plan's agent (#86) starts with this: it knows nothing yet.
+  if conv and untouched(conv) and not rec.target.task_id then
+    text = "This plan was written before it had an agent; it's yours now - read it with get_plan ("
+      .. (rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id)))
+      .. ") and its " .. (rec.target.work_item_id and "work item" or "pull request") .. " first.\n\n" .. text
+  end
+  if note then text = note .. "\n\n" .. text end
+  local entry = CHAT.send(text, {
+    conv = conv, view_win = VIEW().plan_win(rec.key),
+    display = display or ("Approved the plan for " .. M.target_label(rec.target)
+      .. (rec.allow_push and " (it may push and open the PR once the tests pass)." or ".")),
+  })
+  if entry then
+    for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
+    VIEW().changed(rec)
+  else
+    notify("Approved " .. M.target_label(rec.target) .. " - its agent is still answering; tell it once it's done.",
+      vim.log.levels.WARN)
+  end
+end
+
+-- Approves plan `key`: its status, the run log, and the go-ahead to its
+-- agent - held back while `wait_for` ({ { key, label } }, M.ask_approval's)
+-- names plans to wait for: M.release_waiting sends it once they're
+-- finished. False and why when it can't be approved now.
+function M.approve(key, allow_push, wait_for)
   local rec = M.load(key)
   if not rec then return false, "no plan" end
   if rec.status ~= "draft" and rec.status ~= "changes_requested" then
@@ -673,31 +773,76 @@ function M.approve(key, allow_push)
   rec.allow_push = allow_push or nil
   -- Commands allowed for the plan last time are asked about again.
   rec.allowed_commands, rec.allowed_commands_rev = nil, nil
+  rec.wait_for = (type(wait_for) == "table" and #wait_for > 0) and vim.deepcopy(wait_for) or nil
+  local waits = M.waiting_on(rec)
   M.add_event(rec, "approved", "Approved revision " .. rec.approved_rev
-    .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
+    .. (rec.allow_push and " - pushing allowed once the tests pass" or "")
+    .. (#waits > 0 and (" - to start after " .. table.concat(waits, ", ")) or ""))
   VIEW().changed(rec)
-  local CHAT = require("azure-cli.chat")
-  local conv = CHAT.find_conversation(key)
-  local text = M.approval_message(rec, current_lines(rec))
-  -- An orphan plan's agent (#86) starts with this: it knows nothing yet.
-  if conv and untouched(conv) and not rec.target.task_id then
-    text = "This plan was written before it had an agent; it's yours now - read it with get_plan ("
-      .. (rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id)))
-      .. ") and its " .. (rec.target.work_item_id and "work item" or "pull request") .. " first.\n\n" .. text
-  end
-  local entry = CHAT.send(text, {
-    conv = conv, view_win = VIEW().plan_win(key),
-    display = "Approved the plan for " .. M.target_label(rec.target)
-      .. (rec.allow_push and " (it may push and open the PR once the tests pass)." or "."),
-  })
-  if entry then
-    for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
-    VIEW().changed(rec)
-  else
-    notify("Approved " .. M.target_label(rec.target) .. " - its agent is still answering; tell it once it's done.",
-      vim.log.levels.WARN)
-  end
+  if #waits == 0 then go_ahead(rec) end
   return true
+end
+
+-- Plan `key`, approved to start after others, starts now: its go-ahead
+-- sent, with `note` (M.release_waiting's), or without (you didn't wait).
+function M.start_waiting(key, note)
+  local rec = M.load(key)
+  local waits = M.waiting_on(rec)
+  if #waits == 0 then return false end
+  rec.wait_for = nil
+  M.add_event(rec, "approved", note and ("Started: " .. table.concat(waits, ", ") .. " finished")
+    or ("Started without waiting for " .. table.concat(waits, ", ")))
+  VIEW().changed(rec)
+  go_ahead(rec, note, "Approved the plan for " .. M.target_label(rec.target)
+    .. (note and (" (after " .. table.concat(waits, ", ") .. ")") or "") .. ".")
+  return true
+end
+
+-- The plans approved to start after others: each whose others are all
+-- finished (merged, abandoned or discarded: no longer M.in_flight) gets
+-- its go-ahead, told to start from the target branch as it is now; the
+-- rest remember which have finished. Run when a plan finishes or goes,
+-- and once a session (one may have while azure-vicli was closed). Returns
+-- the keys started.
+function M.release_waiting()
+  local started = {}
+  for _, f in ipairs(vim.fn.glob(M.root() .. "/*.json", false, true)) do
+    local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
+    if rec and rec.key and #M.waiting_on(rec) > 0 then
+      local left, changed = 0, false
+      for _, w in ipairs(rec.wait_for) do
+        if not w.done and not M.in_flight(M.load(w.key)) then w.done, changed = true, true end
+        if not w.done then left = left + 1 end
+      end
+      if left == 0 then
+        local all = {}
+        for _, w in ipairs(rec.wait_for) do
+          all[#all + 1] = w.label
+          w.done = nil  -- so start_waiting names them all
+        end
+        M.save(rec)
+        pcall(require("azure-cli.chat").restore_plans)
+        M.start_waiting(rec.key, table.concat(all, ", ") .. " (changing some of the same files) is finished: start "
+          .. "from the target branch as it is now, fetched fresh - not an older checkout of it.")
+        started[#started + 1] = rec.key
+      elseif changed then
+        VIEW().changed(rec)
+      end
+    end
+  end
+  return started
+end
+
+-- gA on a plan that waits for others: start it now, asking first. cb()
+-- once it has.
+function M.ask_start_now(key, cb)
+  local rec = M.load(key)
+  local waits = M.waiting_on(rec)
+  if #waits == 0 then return end
+  require("azure-cli.ui").choose({ title = "Start " .. M.target_label(rec.target) .. " now, without waiting for "
+    .. table.concat(waits, ", ") .. "?", buttons = { "Start", "Cancel" }, keys = { s = 1 }, cancel = 2 }, function(i)
+    if i == 1 and M.start_waiting(key) and cb then cb() end
+  end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -853,6 +998,7 @@ function M.pr_closed(pr, state)
       n = n + 1
     end
   end
+  if n > 0 then pcall(M.release_waiting) end
   return n
 end
 

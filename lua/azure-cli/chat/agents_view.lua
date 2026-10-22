@@ -52,6 +52,7 @@ function M.rows(convs, queued, plan_of, now, frame)
     if c.plan_key then
       seen[c.plan_key] = true
       local rec = plan_of(c.plan_key)
+      local waits = require("azure-cli.chat.plan_text").waiting_on(rec)
       local last = c.entries[#c.entries]
       local state, hl, group
       local detail = ""
@@ -74,6 +75,9 @@ function M.rows(convs, queued, plan_of, now, frame)
         state, hl, group = "\u{25CF} plan waits for you", "AzureCliStatusDraft", 1
       elseif rec and rec.status == "changes_requested" then
         state, hl, group = "\u{21BA} changes asked, not revised yet", "AzureCliStatusBad", 1
+      elseif #waits > 0 then
+        -- Approved to start once the plans it overlaps are finished.
+        state, hl, group = "\u{231B} waits for " .. table.concat(waits, ", "), "AzureCliMuted", 3
       elseif rec and rec.status == "approved" then
         state, hl, group = "\u{2713} approved", "AzureCliStatusOk", 3
       elseif rec and rec.status == "done" and type(rec.pr) == "table" then
@@ -487,9 +491,12 @@ local function setup(buf)
       if rec and (rec.status == "draft" or rec.status == "changes_requested") then keys[#keys + 1] = r.key
       else skipped[#skipped + 1] = r.label end
     end
+    if #keys == 0 and #rows == 1 and #PLAN.waiting_on(PLAN.load(rows[1].key)) > 0 then
+      return PLAN.ask_start_now(rows[1].key, render)
+    end
     if #keys == 0 then return notify("No plan there waits for your approval.") end
-    PLAN.ask_approval(keys, function(allow_push)
-      for _, k in ipairs(keys) do PLAN.approve(k, allow_push) end
+    PLAN.ask_approval(keys, function(allow_push, wait_for)
+      for _, k in ipairs(keys) do PLAN.approve(k, allow_push, wait_for and wait_for[k]) end
       notify("Approved " .. #keys .. " plan" .. (#keys == 1 and "" or "s")
         .. (#skipped > 0 and (" (not " .. table.concat(skipped, ", ") .. ": nothing to approve)") or "") .. ".")
       render()
