@@ -9,11 +9,13 @@ local M = {}
 -- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 },
 -- "pr-github-o~r~7" for { pr_id = 7, pr_key = "o~r~7" } (#109: a GitHub
 -- number repeats across repos), "wi-github-o~r~7" for { work_item_id = 7,
--- item_key = "o~r~7" } (#114, the same for issues), nil for none. A key is
--- a file name under plans/: anything but [%w._~-] becomes "_", so it holds
--- no "/".
+-- item_key = "o~r~7" } (#114, the same for issues), "task-3" for
+-- { task_id = 3 } (#143: a task the main chat handed an agent), nil for
+-- none. A key is a file name under plans/: anything but [%w._~-] becomes
+-- "_", so it holds no "/".
 function M.key(target)
   if type(target) ~= "table" then return nil end
+  if target.task_id then return "task-" .. tostring(target.task_id) end
   if target.item_key then return "wi-github-" .. (tostring(target.item_key):gsub("[^%w%._~%-]", "_")) end
   if target.work_item_id then return "wi-" .. tostring(target.work_item_id) end
   if target.pr_key then return "pr-github-" .. (tostring(target.pr_key):gsub("[^%w%._~%-]", "_")) end
@@ -45,6 +47,7 @@ local function key_ref(key)
 end
 
 function M.target_label(target)
+  if target.task_id then return "Task " .. tostring(target.task_id) end
   if target.item_key and key_ref(target.item_key) then return key_ref(target.item_key) end
   if target.work_item_id then return "#" .. tostring(target.work_item_id) end
   local ref = target.pr_key and key_ref(target.pr_key)
@@ -491,10 +494,11 @@ function M.missing(markdown, template)
 end
 
 -- Whether a change may start for `target`, given its plan record `rec`
--- (nil: none yet) and the plan_first setting `mode`: ok, why. Pure.
+-- (nil: none yet) and the plan_first setting `mode`: ok, why. A task's
+-- change (#143) is gated as a story's is. Pure.
 function M.gate_check(rec, mode, target)
   if mode == nil then mode = true end
-  if mode == false or (mode == "stories" and not target.work_item_id) then return true end
+  if mode == false or (mode == "stories" and not (target.work_item_id or target.task_id)) then return true end
   if rec and rec.status == "approved" then return true end
   local label = M.target_label(target)
   if not rec then
@@ -643,14 +647,18 @@ function M.approval_message(rec, lines)
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
   if rec.allow_push then
-    local id = rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id))
+    local id = rec.target.task_id and "without work_item_id or pr_id: your task's own"
+      or rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id))
     text = text .. "\n\nYou may push without waiting for me: after show_fix, "
       .. (M.test_command(lines) and ("run the plan's tests with run_tests (only run_tests counts - not your own "
         .. "shell), fix the change until they pass, then ") or "")
       .. "call commit_and_push_fix (" .. id .. ") - it won't ask."
       .. (rec.target.work_item_id and (" Then open its pull request with create_pull_request (source your story "
         .. "branch, target the branch you started from, work_item_ids [" .. rec.target.work_item_id .. "], no "
-        .. "description - the plan's is used - and not a draft); it won't ask either.") or "")
+        .. "description - the plan's is used - and not a draft); it won't ask either.")
+        or rec.target.task_id and (" Then open its pull request with create_pull_request (source your task's "
+          .. "branch, target the branch you started from, no work_item_ids, no description - the plan's is used - "
+          .. "and not a draft); it won't ask either.") or "")
       .. " If the tests keep failing, stop and tell me what's wrong instead of pushing."
   end
   local answers = M.answers_block(rec, lines)

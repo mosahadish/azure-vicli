@@ -4,7 +4,9 @@
 -- agents themselves don't get to use these: only the main chat starts or
 -- messages agents. Approving a plan stays the user's (no tool for it).
 --
---   start_agents   an agent per work item, or for a PR's review comments
+--   start_agents   an agent per work item, or for a PR's review comments,
+--                  or for a free-form task (#143: read-only, its answer
+--                  comes back to the main chat)
 --   list_agents    each agent: what it's on, what it's doing, its plan's state
 --   message_agent  a message to one agent, shown in its own chat
 --
@@ -22,6 +24,7 @@ return function(T)
   end
 
   local function target_of(args, env)
+    if args.task_id then return { task_id = args.task_id } end
     if args.work_item_id then return PLAN().item_target_for(args.work_item_id, env, args.repo) end
     if args.pr_id then return PLAN().pr_target_for(args.pr_id, env, args.repo) end
   end
@@ -70,6 +73,7 @@ return function(T)
   local target_props = {
     work_item_id = { type = "integer", description = "the agent's work item" },
     pr_id = { type = "integer", description = "the agent's pull request" },
+    task_id = { type = "integer", description = "the task agent's number (Task <n>)" },
     repo = { type = "string", description = "GitHub only: the PR's or issue's repository (owner/repo), when two "
       .. "share the number" },
   }
@@ -82,12 +86,17 @@ return function(T)
         .. "(thread_ids, default every active one). At most chat.max_agents work at once; the rest queue. They show "
         .. "on the Agents screen. `instructions` (optional) goes to each of them with its first message. `board` "
         .. "says which board the work items are on, and each agent reads its item from there; without it, the "
-        .. "board a list showed the item on, else the board the user is looking at.",
+        .. "board a list showed the item on, else the board the user is looking at. `task` (no work item or PR) "
+        .. "starts a task agent on it instead: it researches or does it read-only (no edits, no pushes, no plan "
+        .. "first), shows on the Agents screen as Task <n>, and its answer comes back to you with a later message. "
+        .. "It writes a plan only when the user tells it to. `title`: a few words naming the task.",
       schema = { type = "object", properties = {
         work_item_ids = { type = "array", items = { type = "integer" } },
         pr_id = { type = "integer" },
         repo = target_props.repo,
         thread_ids = { type = "array", items = { type = "integer" } },
+        task = { type = "string", description = "a free-form task for a task agent, in full" },
+        title = { type = "string", description = "the task's title, a few words" },
         instructions = { type = "string" },
         board = T.board_props.board,
       } },
@@ -112,7 +121,10 @@ return function(T)
             local threads = type(args.thread_ids) == "table" and #args.thread_ids > 0 and args.thread_ids or nil
             said[#said + 1] = (AGENTS().start_for_prs({ pr }, { [pr.id] = threads }, args.instructions))
           end
-          if #said == 0 then return done(nil, "give work_item_ids or pr_id") end
+          if type(args.task) == "string" and vim.trim(args.task) ~= "" then
+            said[#said + 1] = (AGENTS().start_for_task(args.task, args.title, args.instructions))
+          end
+          if #said == 0 then return done(nil, "give work_item_ids, pr_id or task") end
           done(table.concat(said, " "))
         end
         -- One at a time, then start them all.
@@ -150,20 +162,20 @@ return function(T)
     },
     {
       name = "message_agent",
-      description = "Passes a message on to the agent for work_item_id or pr_id - the user's instructions, or a "
+      description = "Passes a message on to the agent for work_item_id, pr_id or task_id - the user's instructions, or a "
         .. "question - shown in that agent's own chat as coming from the main chat. It answers there, not here; "
         .. "list_agents / get_plan show what came of it. While that agent is mid-turn the message is queued, and "
         .. "goes to it (in order, one turn each) when the turn ends.",
       schema = { type = "object", properties = {
-        work_item_id = target_props.work_item_id, pr_id = target_props.pr_id, repo = target_props.repo,
-        message = { type = "string" },
+        work_item_id = target_props.work_item_id, pr_id = target_props.pr_id, task_id = target_props.task_id,
+        repo = target_props.repo, message = { type = "string" },
       }, required = { "message" } },
       risk = "write",
       run = function(args, env, done)
         local why = main_only(env)
         if why then return done(nil, why) end
         local target = target_of(args, env)
-        if not target then return done(nil, "give work_item_id or pr_id") end
+        if not target then return done(nil, "give work_item_id, pr_id or task_id") end
         if type(args.message) ~= "string" or vim.trim(args.message) == "" then return done(nil, "the message is empty") end
         local key = PLAN().key(target)
         local conv = CHAT().find_conversation(key)

@@ -203,6 +203,25 @@ local function save(st)
     plan = st.plan_key })
 end
 
+-- Moves conversation `old` to plan key `new` (a task agent taking on a
+-- work item's or PR's plan, #143), with `fields` ({ target, label }) set
+-- on it, and saves it under its new key (a restart brings it back as
+-- that). Its agent id stays, so its tool calls still land in it.
+function M.rekey_conversation(old, new, fields)
+  local main = MAIN()
+  local c = main.convs[old]
+  if not c or old == new then return c end
+  main.convs[old] = nil
+  main.convs[new] = c
+  c.plan_key = new
+  for k, v in pairs(fields or {}) do c[k] = v end
+  if main.active == old then main.active = new end
+  if popup and popup.key == old then popup.key = new end
+  pcall(require("azure-cli.chat.agents").unqueue, old)
+  save(c)
+  return c
+end
+
 local function load_conversation(rec, st)
   st = st or STATE()
   st.entries = rec.entries or {}
@@ -227,9 +246,13 @@ function M.restore_plans()
     if s.plan and not seen[s.plan] and not main.convs[s.plan] then
       seen[s.plan] = true
       local plan = PLAN.load(s.plan)
-      local rec = plan and STORE.load(s.id)
+      -- A task agent's (#143) comes back whether or not it wrote a plan.
+      local task = tonumber(s.plan:match("^task%-(%d+)$"))
+      local rec = (plan or task) and STORE.load(s.id)
       if rec then
-        local c = M.conversation(s.plan, { label = PLAN.target_label(plan.target), target = plan.target, title = plan.title })
+        local target = plan and plan.target or { task_id = task }
+        local title = plan and plan.title or (tostring(s.title or ""):gsub("^/task%s+", ""))
+        local c = M.conversation(s.plan, { label = PLAN.target_label(target), target = target, title = title })
         c.entries, c.conv_id, c.created, c.session_id = rec.entries or {}, rec.id, rec.created, rec.session_id
       end
     end
@@ -1259,14 +1282,18 @@ end
 -- ---------------------------------------------------------------------------
 -- Proactive.
 
--- A note in the conversation (no agent run).
-function M.note(text)
-  local st = STATE()
+-- A note in the conversation (no agent run): the panel's, or with
+-- opts.main the main chat's whichever the panel shows (#143).
+function M.note(text, opts)
   restore_once()
+  local st = (opts and opts.main) and MAIN() or STATE()
   table.insert(st.entries, { role = "note", text = text })
   render()
-  save()
+  save(st)
 end
+
+-- The main conversation (the coordinator's).
+function M.main_conversation() return MAIN() end
 
 -- The dashboard saw new comments on one of my PRs: suggest a triage in the
 -- chat (chat.suggest_on_new_comments, on by default when an agent is set).
