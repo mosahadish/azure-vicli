@@ -61,7 +61,8 @@ _Every screenshot is generated from the test suite's [fake provider](docs/develo
 - bash, for `install.sh` and the standalone `azure-cli` launcher (Git for
   Windows provides one on Windows). The plugin install doesn't need it.
 - For an Azure DevOps (or TFS) account: a personal access token (PAT) with
-  Code read/write and Work Items read/write scopes. A PAT is always
+  Code read/write, Work Items read/write, Project and Team read and
+  Identity read scopes. A PAT is always
   required there; there is no Azure AD sign-in.
 - For a [GitHub account](docs/configuration.md#github-accounts): a token
   with the `repo` scope (plus `project` for the Issues tab), or just the
@@ -158,8 +159,8 @@ and the dashboard opens. `install.sh` isn't part of a plugin install.
 1. `./azure-cli` (or `:AzureCli` as a plugin). With no config file yet it
    writes a template to its platform location (`~/.config/azure-cli.yml`,
    `%APPDATA%\azure-cli.yml` on Windows) and opens it. Fill in `org_url`,
-   `project_name` and a PAT with Code (read & write) and Work Items (read &
-   write) scopes, then save - the dashboard opens. For GitHub, add an
+   `project_name` and a PAT with Code (read & write), Work Items (read &
+   write), Project and Team (read) and Identity (read) scopes, then save - the dashboard opens. For GitHub, add an
    account with `host: github` instead or as well
    ([GitHub accounts](docs/configuration.md#github-accounts)).
 2. `./azure-cli --doctor` (or `:AzureCli doctor`) whenever something looks
@@ -200,7 +201,7 @@ your dotfiles repo instead:
   line-number column, folded context (`za` / `<Space>`, remembered),
   inline threads, viewed-file tracking, comments and replies that appear
   instantly, adding reviewers by name (`gR`, a list you narrow as you
-  type), batch review, "since my last review" and follow-up views,
+  type) and removing them (`gX`), batch review, "since my last review" and follow-up views,
   per-commit diffs, no-LSP code navigation, and
   [images](docs/reviewer.md#images) in the description and comments
   (`<CR>` / `gx`, inline with snacks.nvim or image.nvim). On

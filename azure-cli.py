@@ -564,7 +564,8 @@ class Config:
             for name in missing:
                 hint = ""
                 if name == "pat":
-                    hint = (" (a personal access token with Code and Work Items read/write scopes, "
+                    hint = (" (a personal access token with Code and Work Items read/write and Project and Team "
+                            "and Identity read scopes, "
                             "or pat_file: a file holding just the token)")
                 elif name == "org_url":
                     hint = " (e.g. https://dev.azure.com/my-org)"
@@ -1216,10 +1217,12 @@ def _auth_hint(status):
     named too."""
     if status in (401, 203):
         return ("the PAT was rejected - expired, revoked, or for a different organization? "
-                "Create one with Code (read & write) and Work Items (read & write) scopes and put it in azure-cli.yml.")
+                "Create one with Code (read & write), Work Items (read & write), Project and Team (read) and "
+                "Identity (read) scopes and put it in azure-cli.yml.")
     if status == 403:
         return ("the PAT is valid but lacks permission for this - check its scopes "
-                "(Code read & write, Work Items read & write) and that it covers this organization.")
+                "(Code read & write, Work Items read & write, Project and Team read, Identity read) "
+                "and that it covers this organization.")
     return None
 
 

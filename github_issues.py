@@ -441,7 +441,7 @@ def _error(msg):
 def _scope_hint(msg):
     m = str(msg)
     if "scope" in m.lower() and "project" in m.lower():
-        return m + " - the token needs the project scope: run `gh auth refresh -s project`"
+        return m + " - the token needs the project scope: run `gh auth refresh -h github.com -s project`"
     return m
 
 

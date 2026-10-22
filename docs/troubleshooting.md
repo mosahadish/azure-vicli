@@ -45,7 +45,7 @@ _Part of the [azure-vicli](../README.md) docs._
 - **"No GitHub token" / "no GitHub token for …"**: set `pat_file` on the
   account, or sign in with `gh auth login`.
 - **"… the token needs the project scope"** (the Issues tab): run
-  `gh auth refresh -s project`.
+  `gh auth refresh -h github.com -s project`.
 - **"Auto-merge isn't allowed on owner/repo (its settings)."**: turn on
   auto-merge in the repository's settings, or merge it instead.
 - **"Auto-merge needs <branch> to require checks or reviews (branch
