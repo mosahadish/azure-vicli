@@ -432,6 +432,50 @@ do
   check("agents rows: their groups", rows[1].group == 3 and rows[2].group == 4 and rows[3].group == 4)
 end
 
+-- --- ]w / [w: what waits for you next ---------------------------------------------------------
+do
+  check("change_waits: shown since you opened it, while approved",
+    PLAN.change_waits({ status = "approved", change_shown = 5 })
+    and PLAN.change_waits({ status = "approved", change_shown = 5, change_seen = 4 })
+    and not PLAN.change_waits({ status = "approved", change_shown = 5, change_seen = 5 })
+    and not PLAN.change_waits({ status = "done", change_shown = 5 })
+    and not PLAN.change_waits({ status = "approved" }) and not PLAN.change_waits(nil))
+  local AV = require("azure-cli.chat.agents_view")
+  local rows = AV.rows({ { plan_key = "wi-1", entries = {} }, { plan_key = "wi-2", entries = {} } }, {},
+    function(k) return ({ ["wi-1"] = { status = "approved", change_shown = 3 }, ["wi-2"] = { status = "draft" } })[k] end, 10)
+  check("agents rows: a change waiting for review", rows[1].review and not rows[2].review and rows[2].waiting)
+
+  local W = require("azure-cli.chat.waiting")
+  local qs = {
+    a = { { line = 9, text = "q9" }, { line = 4, text = "q4" }, { line = 6, text = "q6", answer = {} } },
+    b = { { line = 2, text = "q2" } },
+  }
+  local arranged = { { header = "Needs you (2)" }, { key = "a", waiting = true }, { key = "b", waiting = true },
+    { key = "busy", waiting = true, conv = { running = {} } }, { header = "In progress (1)" }, { key = "c", review = true } }
+  local stops = W.stops(arranged, function(r) return qs[r.key] end)
+  local got = {}
+  for _, s in ipairs(stops) do got[#got + 1] = s.key .. ":" .. s.kind .. (s.line and (":" .. s.line) or "") end
+  check("waiting stops: each plan's unanswered questions by line, its approval, then a change; not one being worked on",
+    table.concat(got, ",") == "a:question:4,a:question:9,a:approve,b:question:2,b:approve,c:review", table.concat(got, ","))
+  local function at(s) return s and (s.key .. ":" .. s.kind .. (s.line and (":" .. s.line) or "")) or "nil" end
+  check("waiting step: from elsewhere, the first / the last", at(W.step(stops, nil, 1)) == "a:question:4"
+    and at(W.step(stops, nil, -1)) == "c:review" and at(W.step(stops, { key = "zzz", kind = "question", line = 1 }, 1)) == "a:question:4")
+  check("waiting step: in a plan, its next question after the cursor",
+    at(W.step(stops, { key = "a", kind = "question", line = 1 }, 1)) == "a:question:4"
+    and at(W.step(stops, { key = "a", kind = "question", line = 4 }, 1)) == "a:question:9"
+    and at(W.step(stops, { key = "a", kind = "question", line = 6 }, 1)) == "a:question:9")
+  check("waiting step: past its questions its approval, then the next plan",
+    at(W.step(stops, { key = "a", kind = "question", line = 9 }, 1)) == "a:approve"
+    and at(W.step(stops, { key = "a", kind = "approve" }, 1)) == "b:question:2"
+    and at(W.step(stops, { key = "b", kind = "approve" }, 1)) == "c:review")
+  check("waiting step: wraps around", at(W.step(stops, { key = "c", kind = "review" }, 1)) == "a:question:4"
+    and at(W.step(stops, { key = "a", kind = "question", line = 4 }, -1)) == "c:review")
+  check("waiting step: backwards", at(W.step(stops, { key = "a", kind = "approve" }, -1)) == "a:question:9"
+    and at(W.step(stops, { key = "b", kind = "question", line = 1 }, -1)) == "a:approve"
+    and at(W.step(stops, { key = "a", kind = "question", line = 9 }, -1)) == "a:question:4")
+  check("waiting step: nothing waits", W.step({}, nil, 1) == nil and W.step({}, { key = "a", kind = "approve" }, -1) == nil)
+end
+
 -- --- open questions and your answers ---------------------------------------------------------
 do
   local lines = { "## Goal", "x?", "## Open questions", "- Should admins be exempt?", "1. Error or fallback?",

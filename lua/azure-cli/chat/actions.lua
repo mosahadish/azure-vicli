@@ -207,6 +207,8 @@ show_help = function()
       .. KEYS.name("diff", "next_hunk") .. " / " .. KEYS.name("diff", "prev_hunk") .. ", "
       .. KEYS.name("diff", "open_file") .. ", " .. KEYS.name("diff", "quit") .. ")" },
     { "agents", "every plan's agent: what each is doing (the Agents screen)" },
+    { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+    { "prev_waiting", "the previous thing waiting for you" },
     "Conversation",
     { "new_chat", "start a new conversation" }, { "history", "open an earlier conversation" },
     { "agent", "choose the agent" }, { "model", "choose the model" },

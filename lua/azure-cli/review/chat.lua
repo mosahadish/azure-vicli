@@ -108,6 +108,11 @@ local function setup(ctx)
       "type in the chat (opens the panel; a draft stays)")
     ctx.add_key(kind, "chat_selection", function() require("azure-cli.chat").capture_selection() end,
       "ask the chat about the selected lines", "x")
+    -- ]w / [w: the next / previous thing that waits for you (chat/waiting.lua).
+    ctx.add_key(kind, "next_waiting", function() require("azure-cli.chat.waiting").go(1) end,
+      "the next thing waiting for you: a plan's open question, its approval, a change to review")
+    ctx.add_key(kind, "prev_waiting", function() require("azure-cli.chat.waiting").go(-1) end,
+      "the previous thing waiting for you")
     -- gP: an agent plans the fix of this PR's review comments - on a
     -- thread, that one; elsewhere every active one (chat/agents.lua).
     if kind ~= "nav" then

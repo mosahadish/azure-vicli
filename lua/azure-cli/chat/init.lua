@@ -601,6 +601,7 @@ local function make_bufs(name)
   -- Not in the input box: A there is Vim's own "append at the end".
   KEYS.bind(log_buf, "chat", "agents", function() require("azure-cli.home").go("agents") end,
     { desc = "every plan's agent (the Agents screen)" })
+  require("azure-cli.chat.waiting").bind(log_buf, "chat")
   KEYS.bind(log_buf, "chat", "expand", function()
     -- <Tab>: all of this turn's tool calls and answer, or folded again.
     local st = STATE()

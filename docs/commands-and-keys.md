@@ -49,6 +49,11 @@ screen, `I` to the issues, from any of them (or click the tab). The
 standalone launcher opens them all at startup and keeps them the first
 tabs; what you open from them stays inside them, as inner tabs (below).
 
+**What waits for you.** `]w` on every screen goes to the next thing an
+agent waits on you for - a plan's unanswered open question, its approval,
+a change ready for review - and `[w` to the previous one, in the Agents
+screen's order (see [Several agents at once](chat.md#several-agents-at-once)).
+
 **Inner tabs.** A pull request you open stays inside the Pull requests tab,
 as an inner tab: the tab line keeps one entry for Pull requests, and the
 winbar shows a strip - `Pull requests │ !101 Fix auth │ [!102 Cache]` - the
@@ -148,11 +153,13 @@ paste the output here after changing a default.
 | `issues` | `I` |
 | `last_pr` | `G` |
 | `link_workitem` | `gl` |
+| `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_build` | `gb` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
+| `prev_waiting` | `[w` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `remove_reviewer` | `gX` |
@@ -188,6 +195,7 @@ paste the output here after changing a default.
 | `next_comment` | `]C` |
 | `next_hunk` | `]c` |
 | `next_unviewed` | `]m` |
+| `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
@@ -196,6 +204,7 @@ paste the output here after changing a default.
 | `prev_comment` | `[C` |
 | `prev_hunk` | `[c` |
 | `prev_unviewed` | `[m` |
+| `prev_waiting` | `[w` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `remove_reviewer` | `gX` |
@@ -242,6 +251,7 @@ paste the output here after changing a default.
 | `next_hunk` | `]c` |
 | `next_note` | `]a` |
 | `next_unviewed` | `]m` |
+| `next_waiting` | `]w` |
 | `open_file` | `gf` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
@@ -250,6 +260,7 @@ paste the output here after changing a default.
 | `prev_hunk` | `[c` |
 | `prev_note` | `[a` |
 | `prev_unviewed` | `[m` |
+| `prev_waiting` | `[w` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `reject_hunk` | `gn` |
@@ -291,12 +302,14 @@ paste the output here after changing a default.
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
 | `next_comment` | `]C` |
+| `next_waiting` | `]w` |
 | `open_commit` | `<CR>` |
 | `open_image` | `<CR>` / `gx` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
+| `prev_waiting` | `[w` |
 | `quit` | `q` |
 | `remove_reviewer` | `gX` |
 | `reply` | `R` |
@@ -320,7 +333,9 @@ paste the output here after changing a default.
 | `find_references` | `gr` |
 | `goto_definition` | `gd` |
 | `help` | `?` |
+| `next_waiting` | `]w` |
 | `palette` | `g.` |
+| `prev_waiting` | `[w` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `search` | `g/` |
@@ -350,12 +365,14 @@ paste the output here after changing a default.
 | `move_sprint` | `gi` |
 | `new` | `n` |
 | `next_sprint` | `<Tab>` |
+| `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `pr_list` | `P` |
 | `prev_sprint` | `<S-Tab>` |
+| `prev_waiting` | `[w` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
@@ -382,9 +399,11 @@ paste the output here after changing a default.
 | `help` | `?` |
 | `link_pr` | `gl` |
 | `move_sprint` | `gi` |
+| `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_pr` | `gR` |
 | `palette` | `g.` |
+| `prev_waiting` | `[w` |
 | `priority` | `gp` |
 | `quit` | `q` |
 | `refresh` | `r` |
@@ -411,9 +430,11 @@ paste the output here after changing a default.
 | `new_chat` | `gn` |
 | `newline` | `<S-CR>` / `<C-j>` |
 | `next_message` | `<Down>` |
+| `next_waiting` | `]w` |
 | `open_ref` | `<CR>` |
 | `palette` | `g.` |
 | `prev_message` | `<Up>` |
+| `prev_waiting` | `[w` |
 | `prompts` | `gp` |
 | `queue_drop` | `dd` |
 | `queue_edit` | `cc` |
@@ -441,11 +462,13 @@ paste the output here after changing a default.
 | `goto_code` | `gd` |
 | `help` | `?` |
 | `next_thread` | `]t` |
+| `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_file` | `gf` |
 | `open_pr` | `gp` |
 | `palette` | `g.` |
 | `prev_thread` | `[t` |
+| `prev_waiting` | `[w` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `request` | `gc` |
@@ -470,11 +493,13 @@ paste the output here after changing a default.
 | `help` | `?` |
 | `issues` | `I` |
 | `last_row` | `G` |
+| `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_pr` | `gp` |
 | `open_session` | `go` |
 | `palette` | `g.` |
 | `pr_list` | `P` |
+| `prev_waiting` | `[w` |
 | `quit` | `q` |
 | `refresh` | `r` |
 | `run_log` | `gH` |
@@ -488,4 +513,5 @@ paste the output here after changing a default.
 | `next` | `]r` |
 | `pick` | `g1` / `g2` / `g3` / `g4` / `g5` / `g6` / `g7` / `g8` / `g9` |
 | `prev` | `[r` |
+
 <!-- END GENERATED KEYS TABLE -->

@@ -749,6 +749,8 @@ local WORKITEM_VIEW_HELP = {
   { "browser", "open this " .. ITEM .. " in the browser" },
   { "copy_link", "copy this " .. ITEM .. "'s link" },
   "Session",
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   { "refresh", "refresh" },
   { "back", "close and return to the dashboard" },
   { "help", "this help" },
@@ -811,6 +813,8 @@ KEYS.bind(buf, "workitem_view", "refresh", function() if ID ~= "" then load(ID, 
 KEYS.bind(buf, "workitem_view", "back", leave, { desc = "close and return to the dashboard" })
 KEYS.bind(buf, "workitem_view", "quit", leave, { desc = "close and return to the dashboard" })
 KEYS.bind(buf, "workitem_view", "help", show_help, { desc = "this help" })
+-- ]w / [w: the next / previous thing that waits for you (chat/waiting.lua).
+require("azure-cli.chat.waiting").bind(buf, "workitem_view")
 -- The chat (B.caps.chat): on GitHub its board tools then take board =
 -- "github", which the snapshot names.
 if B.caps.chat then
