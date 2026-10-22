@@ -120,7 +120,9 @@ end
 
 -- Whether conversation `conv` is a task agent without an approved plan:
 -- then it changes no files and runs only M.TASK_TOOLS of the write tools.
+-- A change's reviewer (chat/review.lua) always is, with no write tools.
 function M.task_read_only(conv)
+  if conv and type(conv.target) == "table" and conv.target.review_of then return true end
   if not (conv and type(conv.target) == "table" and conv.target.task_id) then return false end
   local rec = M.load(conv.plan_key or M.key(conv.target))
   return not (rec and (rec.status == "approved" or rec.status == "done"))
@@ -133,6 +135,9 @@ M.TASK_TOOLS = { submit_plan = true, draft_reply = true, draft_comment = true, s
 
 -- nil, or why tool `tool` ({ name, risk }) refuses a call from `conv`.
 function M.task_refusal(conv, tool)
+  if tool.risk ~= "read" and conv and type(conv.target) == "table" and conv.target.review_of then
+    return "a reviewer is read-only: " .. tool.name .. " isn't available. Answer with your findings."
+  end
   if tool.risk == "read" or M.TASK_TOOLS[tool.name] or not M.task_read_only(conv) then return nil end
   return "a task agent is read-only until the user approves a plan: " .. tool.name .. " isn't available. If the "
     .. "user asked for a change, write a plan with submit_plan and wait for their approval."

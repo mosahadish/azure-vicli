@@ -171,7 +171,8 @@ function M.busy() return STATE().running ~= nil end
 -- The model conversation `st` (default: the panel's) uses on `agent`: the
 -- one picked there with gm, else its stage's - a plan's own agent is on
 -- agent.planner_model until you approve its plan, then on
--- agent.implementer_model - else agent.model, else the first of
+-- agent.implementer_model, a change's reviewer (chat/review.lua) on
+-- agent.reviewer_model - else agent.model, else the first of
 -- agent.models, else nil.
 function M.current_model(agent, st)
   st = st or STATE()
@@ -180,7 +181,9 @@ function M.current_model(agent, st)
       if a == agent and st.model_agent == name then return st.model end
     end
   end
-  if agent and st.plan_key and (agent.planner_model or agent.implementer_model) then
+  if agent and type(st.target) == "table" and st.target.review_of then
+    if agent.reviewer_model then return agent.reviewer_model end
+  elseif agent and st.plan_key and (agent.planner_model or agent.implementer_model) then
     local rec = require("azure-cli.chat.plan").load(st.plan_key)
     local approved = rec and (rec.status == "approved" or rec.status == "done")
     local staged = approved and agent.implementer_model or (not approved and agent.planner_model)

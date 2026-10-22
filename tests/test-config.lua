@@ -515,6 +515,13 @@ do
     check("chat: on_conflict = " .. v, pcall(config.setup, { chat = { on_conflict = v } })
       and config.get().chat.on_conflict == v)
   end
+  rejects("a bad self_review", { self_review = "yes" }, "chat.self_review must be a boolean")
+  rejects("a bad reviewer_model", { agent = { cmd = { "a" }, reviewer_model = 3 } }, "chat.agent.reviewer_model must be a string")
+  config.setup({ chat = {} })
+  check("chat: self_review off by default", config.get().chat.self_review == nil)
+  config.setup({ chat = { self_review = true, agent = { cmd = { "a" }, reviewer_model = "mini" } } })
+  check("chat: self_review and reviewer_model", config.get().chat.self_review == true
+    and config.get().chat.agent.reviewer_model == "mini")
   -- resume_cmd (#142): a list or a shell string, like cmd.
   config.setup({ chat = { agent = { cmd = { "claude" }, resume_cmd = { "claude", "--resume", "{session_id}" } } } })
   check("chat: resume_cmd as a list", config.get().chat.agent.resume_cmd[2] == "--resume")
