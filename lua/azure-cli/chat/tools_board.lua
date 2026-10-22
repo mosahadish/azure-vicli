@@ -1,6 +1,6 @@
 -- lua/azure-cli/chat/tools_board.lua: the chat agent's work-item tools
 -- beyond reading and state changes (chat/tools.lua) - new items (top-level
--- or child tasks), assignment, sprints and comments. Every one goes
+-- or child tasks), assignment, fields and hours, sprints and comments. Every one goes
 -- through the same --wi-edit subcommands the work-items screens use, on the board
 -- T.board_for picks (Azure work items, or the GitHub project's issues).
 --
@@ -39,6 +39,14 @@ return function(T)
   end
   -- For list_work_items (chat/tools.lua).
   T.sprints, T.find_sprint = sprints, find_sprint
+  -- edit_work_item's fields, in the order it sets them (--wi-edit set's names).
+  T.EDIT_FIELDS = {
+    { key = "title", label = "title" }, { key = "priority", label = "priority" }, { key = "tags", label = "tags" },
+    { key = "originalEstimate", label = "original estimate", hours = true },
+    { key = "remainingWork", label = "remaining work", hours = true },
+    { key = "completedWork", label = "completed work", hours = true },
+    { key = "description", label = "description" },
+  }
 
   return {
     {
@@ -158,6 +166,83 @@ return function(T)
               { op = "set_field", id = args.id, field = "assignedTo", value = before or "", board = B.host, ref = ref })
           end)
         end, B, args.repo)
+      end,
+    },
+    {
+      name = "edit_work_item",
+      description = "Changes a work item's fields: title, priority (1-4; on GitHub one of the project's Priority "
+        .. "options), tags (\"a; b\"; on GitHub its labels), description and, on Azure DevOps, hours: "
+        .. "originalEstimate, remainingWork, completedWork (numbers; \"\" clears one). Give only the fields to "
+        .. "change. State, assignee, sprint and parent have their own tools. Asks first.",
+      schema = { type = "object", properties = T.with_board({ id = { type = "integer" },
+        title = { type = "string" }, priority = { type = { "integer", "string" } }, tags = { type = "string" },
+        description = { type = "string" }, originalEstimate = { type = { "number", "string" } },
+        remainingWork = { type = { "number", "string" } }, completedWork = { type = { "number", "string" } } }),
+        required = { "id" } },
+      risk = "ask",
+      confirm = function(a)
+        local labels = {}
+        for _, f in ipairs(T.EDIT_FIELDS) do
+          if a[f.key] ~= nil then labels[#labels + 1] = f.label end
+        end
+        return "change #" .. tostring(a.id) .. "'s " .. table.concat(labels, ", ")
+      end,
+      details = function(a, cb)
+        local lines = {}
+        for _, f in ipairs(T.EDIT_FIELDS) do
+          if a[f.key] ~= nil and f.key ~= "description" then
+            lines[#lines + 1] = f.label .. ": " .. tostring(a[f.key])
+          end
+        end
+        if a.description ~= nil then
+          if #lines > 0 then lines[#lines + 1] = "" end
+          lines[#lines + 1] = "Description:"
+          vim.list_extend(lines, vim.split(tostring(a.description), "\n", { plain = true }))
+        end
+        cb(lines)
+      end,
+      run = function(args, env, done)
+        local B = T.board_for(args, env)
+        local ref = T.wi_ref(B, args.id, args.repo)
+        local todo = {}
+        for _, f in ipairs(T.EDIT_FIELDS) do
+          if args[f.key] ~= nil then
+            if f.hours and B.host == "github" then return done(nil, "GitHub issues have no hours") end
+            todo[#todo + 1] = f
+          end
+        end
+        if #todo == 0 then return done(nil, "give at least one field to change") end
+        T.provider({ "--wi-detail", ref }, B.env, function(dok, dout)
+          local okd, d = pcall(vim.json.decode, dok and dout or "")
+          local item = okd and type(d) == "table" and (d.item or d) or {}
+          local before, changed, i = {}, {}, 0
+          local function finish(err)
+            T.refresh_item(B, args.id)
+            local said = #changed > 0 and ("Changed #" .. args.id .. "'s " .. table.concat(changed, ", ") .. ".") or ""
+            -- The description comes back as text, not its HTML: it isn't undone.
+            local undo = #before > 0 and { op = "set_fields", id = args.id, ref = ref, board = B.host, fields = before }
+              or nil
+            if not err then return done(said, nil, undo) end
+            if #changed == 0 then return done(nil, err) end
+            done(said .. " But " .. err .. ".", nil, undo)
+          end
+          local function nxt()
+            i = i + 1
+            local f = todo[i]
+            if not f then return finish() end
+            local was
+            if f.hours then was = (item.hours or {})[f.key] else was = item[f.key] end
+            T.provider({ "--wi-edit", "set", ref, f.key, tostring(args[f.key]) }, B.env, function(ok, _, err)
+              if not ok then return finish("setting " .. f.label .. " failed: " .. err) end
+              changed[#changed + 1] = f.label
+              if f.key ~= "description" and was ~= nil and was ~= vim.NIL then
+                before[#before + 1] = { key = f.key, label = f.label, value = tostring(was) }
+              end
+              nxt()
+            end)
+          end
+          nxt()
+        end)
       end,
     },
     {

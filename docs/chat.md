@@ -944,6 +944,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `list_pull_requests`, `get_pull_request` | Your dashboard's PRs; one PR's details - any PR in the project by id, not only your dashboard's (after it, the other PR tools work for that PR too) | - |
 | `find_implementations`, `find_definition` | Across a whole repository (the fix/story worktree, a PR's source branch, or a local clone): the types implementing an interface or deriving from a class, and the ones deriving from those; where a type or member is declared. Text-based (`git grep` and declaration patterns for C#, Java, TypeScript, Kotlin, Python, ...), no build needed | - |
 | `get_pr_threads`, `get_pr_diff` | A PR's comment threads (fresh) and its diff | - |
+| `find_people` | People by name, account, email or login: with a PR, who can review it (no query: everyone on its project's teams, or the repository's assignable people); without, who the board's directory finds, to assign | - |
 | `get_build_log` | Why a PR's build failed: the failed steps, their errors, the end of their logs | - |
 | `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
 | `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items (each with its iteration: the path on Azure; on GitHub the name, and `iteration_id` for `move_to_sprint`); one item in full; the team's sprints. These and the other work-item tools also work on GitHub issues (see [Issues on GitHub](#issues-on-github)) | - |
@@ -962,9 +963,11 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
 | `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description, and the title when one is given | **yes** (the description, and any new title, is shown) |
+| `remove_reviewer` | Takes a reviewer off a PR (on GitHub, only a review request still waiting). Undoable: the undo adds them back | **yes** |
 | `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items; its description from the approved plan unless it writes one); merges one | **yes** |
 | `vote` | Votes on a PR | **yes** |
 | `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
+| `edit_work_item` | A work item's title, priority, tags, description and (Azure) hours: original estimate, remaining and completed work. Undoable, except the description | **yes**, showing the new values |
 | `set_work_item_parent` | Moves a work item under another parent, or off its own (`"none"`) - on GitHub, makes the issue a sub-issue of the parent. Undoable: the undo puts the old parent back | **yes** |
 
 When a tool asks, a popup comes up in the middle of the screen ("The agent

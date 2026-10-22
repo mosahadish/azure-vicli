@@ -921,6 +921,37 @@ M.undoers = {
       cb(ok, ok and ("Thread #" .. u.thread_id .. " is " .. u.status .. " again.") or err)
     end)
   end,
+  readd_reviewer = function(u, cb)
+    local pr = M.pr_record(u.pr_key or u.pr_id)
+    if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
+    M.provider({ "--add-reviewer", tostring(u.id), u.required and "true" or "false" }, pr_env(pr), function(ok, _, err)
+      if ok then
+        pr.reviewers = pr.reviewers or {}
+        table.insert(pr.reviewers, { name = u.name, id = u.id, vote = 0, isRequired = u.required,
+          requested = require("azure-cli.hosts").host(pr) == "github" or nil })
+        pcall(require("azure-cli.prs").recompute, pr)
+      end
+      cb(ok, ok and (tostring(u.name or u.id) .. " is a reviewer again.") or err)
+    end)
+  end,
+  set_fields = function(u, cb)
+    local B = undo_board(u)
+    local i = 0
+    local function nxt()
+      i = i + 1
+      local f = u.fields[i]
+      if not f then
+        M.refresh_item(B, u.id)
+        return cb(true, "#" .. u.id .. "'s " .. table.concat(vim.tbl_map(function(x) return x.label end, u.fields), ", ")
+          .. (#u.fields == 1 and " is" or " are") .. " back.")
+      end
+      M.provider({ "--wi-edit", "set", u.ref or tostring(u.id), f.key, f.value or "" }, B.env, function(ok, _, err)
+        if not ok then return cb(false, err) end
+        nxt()
+      end)
+    end
+    nxt()
+  end,
   description = function(u, cb)
     local pr = M.pr_record(u.pr_id)
     if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end

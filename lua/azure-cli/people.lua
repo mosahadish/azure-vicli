@@ -12,7 +12,7 @@
 --   add_reviewer  pick, then (Azure) optional or required, then
 --                 --add-reviewer with the person's id
 --   remove_reviewer  gX: pick one of the PR's reviewers, confirm, then
---                 --remove-reviewer
+--                 --remove-reviewer (take_off, which the chat's tool uses too)
 local M = {}
 
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
@@ -187,6 +187,43 @@ function M.removable(pr)
   return out
 end
 
+-- Takes reviewer `r` (one of M.removable(pr)) off `pr` with
+-- --remove-reviewer; the record loses them and the dashboard is redrawn.
+-- cb(ok, err). gX's and the chat's remove_reviewer.
+function M.take_off(pr, r, cb)
+  T().provider({ "--remove-reviewer", tostring(r.id) }, T().pr_env(pr), function(ok, _, err)
+    if not ok then return cb(false, err) end
+    for i, x in ipairs(pr.reviewers or {}) do
+      if x == r then table.remove(pr.reviewers, i) break end
+    end
+    require("azure-cli.prs").recompute(pr)
+    redraw()
+    cb(true)
+  end)
+end
+
+-- The one of `list` (reviewers or people) `who` names - its id, account,
+-- login or name, exactly (any case), else as the only one whose name or
+-- account contains it. nil, and the names that matched, when it isn't one.
+function M.match(list, who)
+  local w = vim.trim(tostring(who or "")):gsub("^@", ""):lower()
+  if w == "" then return nil, {} end
+  local function fields(p) return { p.id, p.account, p.login, p.name } end
+  for _, p in ipairs(list) do
+    for _, f in ipairs(fields(p)) do
+      if f and tostring(f):lower() == w then return p, {} end
+    end
+  end
+  local hits = {}
+  for _, p in ipairs(list) do
+    for _, f in ipairs({ p.name, p.account, p.login }) do
+      if f and tostring(f):lower():find(w, 1, true) then hits[#hits + 1] = p break end
+    end
+  end
+  if #hits == 1 then return hits[1], {} end
+  return nil, vim.tbl_map(function(p) return tostring(p.name or p.id) end, hits)
+end
+
 -- gX: picks one of `pr`'s reviewers, asks, and takes them off; then
 -- on_done(reviewer) once the host has (the record loses them too, and the
 -- PR dashboard is redrawn and refetched).
@@ -208,16 +245,11 @@ function M.remove_reviewer(pr, on_done)
     PROMPT.confirm({ title = "Remove " .. tostring(r.name or r.id) .. "?" }, function(yes)
       if not yes then return end
       notify("Removing " .. tostring(r.name or r.id) .. "\u{2026}")
-      T().provider({ "--remove-reviewer", tostring(r.id) }, T().pr_env(pr), function(ok, _, err)
+      M.take_off(pr, r, function(ok, err)
         if not ok then
           return notify("Couldn't remove " .. tostring(r.name or r.id) .. ": " .. err, vim.log.levels.ERROR)
         end
-        for i, x in ipairs(pr.reviewers or {}) do
-          if x == r then table.remove(pr.reviewers, i) break end
-        end
-        require("azure-cli.prs").recompute(pr)
         notify("Removed " .. tostring(r.name or r.id) .. " from " .. HOSTS().ref(pr) .. ".")
-        redraw()
         if on_done then on_done(r) end
       end)
     end)

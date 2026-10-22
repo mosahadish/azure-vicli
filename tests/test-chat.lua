@@ -152,8 +152,8 @@ do
   table.sort(asks)
   check("tools: what asks first - everything others see or that leaves the machine",
     table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
-      .. "complete_pull_request,create_pull_request,create_work_item,discard_plan,run_tests,set_thread_status,set_work_item_parent,"
-      .. "set_work_item_state,update_pr_description,vote",
+      .. "complete_pull_request,create_pull_request,create_work_item,discard_plan,edit_work_item,remove_reviewer,"
+      .. "run_tests,set_thread_status,set_work_item_parent,set_work_item_state,update_pr_description,vote",
     table.concat(asks, ","))
   check("tools: links, branches, drafts, tasks and sprints don't",
     TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
@@ -193,7 +193,8 @@ do
   ST.BOARDS = saved_boards
   for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
       "create_branch", "list_sprints", "create_child_task", "create_work_item", "assign_work_item", "move_to_sprint",
-      "set_work_item_parent", "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents" }) do
+      "set_work_item_parent", "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents",
+      "edit_work_item", "find_people" }) do
     local props = TOOLS.by_name[name].schema.properties
     check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
       and props.board.enum[1] == "azure" and props.board.enum[2] == "github")
@@ -700,6 +701,76 @@ do
         and TOOLS.by_name.update_pr_description.unsupported({ pr_id = 101 }) == nil
         and TOOLS.by_name.add_reviewer.unsupported({ pr_id = 999 }) == nil)
     TOOLS.provider, S.PR_LIST_CACHE = real_provider, saved
+  end
+  do
+    -- find_people, remove_reviewer (and its undo) and edit_work_item.
+    local S = require("azure-cli.state")
+    local saved, real_provider = S.PR_LIST_CACHE, TOOLS.provider
+    local AZ = require("azure-cli.workitems.board").get("azure")
+    local saved_list = AZ.state.WI_LIST_CACHE
+    AZ.state.WI_LIST_CACHE = nil
+    S.PR_LIST_CACHE = { prs = {
+      { id = 101, repo = "w", project = "p", org = "https://dev.azure.com/x", reviewers = {
+        { name = "Bob Brown", id = "b1", vote = 10 }, { name = "Carol Chen", id = "c1", vote = 0, isRequired = true } } },
+      { id = 7, key = "o~web~7", host = "github", repo = "web", project = "o", org = "https://api.github.com",
+        reviewers = { { name = "Dan", id = "dan", vote = 10 }, { name = "Eve", id = "eve", vote = 0, requested = true } } } } }
+    local calls = {}
+    TOOLS.provider = function(argv, _, cb)
+      calls[#calls + 1] = argv
+      if argv[1] == "--find-people" then return cb(true, '[{"name": "Tal Gross", "id": "t1", "account": "tal@x"}]', "") end
+      if argv[1] == "--wi-list" then return cb(true, '{"name": "Tal Gross", "email": "tal@x", "assign": "tal"}\n', "") end
+      if argv[1] == "--wi-detail" then
+        return cb(true, '{"item": {"id": 3011, "title": "Old", "priority": 2, "hours": {"remainingWork": 3}}}', "")
+      end
+      cb(true, "{}", "")
+    end
+    local asked = 0
+    local env = { log = function() end, confirm = function(_, cb) asked = asked + 1; cb(true) end }
+    local got
+    local function call(name, args) TOOLS.call(name, args, env, function(t, e) got = { t, e } end) end
+
+    call("find_people", { pr_id = 101, query = "gross" })
+    check("find_people: with a PR, its host's --find-people", got[2] == false and calls[1][1] == "--find-people"
+      and calls[1][2] == "gross" and vim.json.decode(got[1])[1].id == "t1", vim.inspect({ calls, got }))
+    call("find_people", { query = "gross" })
+    check("find_people: without, the board's directory", got[2] == false and calls[2][1] == "--wi-list"
+      and calls[2][2] == "people" and vim.json.decode(got[1])[1].assign == "tal", vim.inspect({ calls[2], got }))
+    call("find_people", {})
+    check("find_people: the board needs a query", got[2] == true and #calls == 2)
+
+    calls = {}
+    call("remove_reviewer", { pr_id = 101, who = "r" })
+    check("remove_reviewer: a name two reviewers share is refused, saying whose", got[2] == true and #calls == 0
+      and got[1]:find("Bob Brown, Carol Chen", 1, true) ~= nil, vim.inspect(got))
+    call("remove_reviewer", { pr_id = 101, who = "carol" })
+    local pr101 = S.PR_LIST_CACHE.prs[1]
+    check("remove_reviewer: asks, takes them off by id", got[2] == false and vim.deep_equal(calls[1], { "--remove-reviewer", "c1" })
+      and #pr101.reviewers == 1 and got[1] == "Removed Carol Chen from PR !101's reviewers.", vim.inspect({ calls, got }))
+    local undone
+    TOOLS.undo({ undo = TOOLS.last_undo }, function(ok, msg) undone = { ok, msg } end)
+    check("remove_reviewer: undo adds them back, required again", undone[1] == true
+      and vim.deep_equal(calls[2], { "--add-reviewer", "c1", "true" }) and #pr101.reviewers == 2
+      and pr101.reviewers[2].isRequired == true, vim.inspect({ calls, undone }))
+    call("remove_reviewer", { pr_id = 7, who = "dan" })
+    check("remove_reviewer: on GitHub a given review stays", got[2] == true and #calls == 2
+      and got[1]:find("(those are: Eve)", 1, true) ~= nil, vim.inspect(got))
+
+    calls, asked = {}, 0
+    call("edit_work_item", { id = 3011, title = "New", remainingWork = 2 })
+    check("edit_work_item: asks once, then sets each field", asked == 1 and got[2] == false
+      and calls[1][1] == "--wi-detail" and vim.deep_equal(calls[2], { "--wi-edit", "set", "3011", "title", "New" })
+      and vim.deep_equal(calls[3], { "--wi-edit", "set", "3011", "remainingWork", "2" })
+      and got[1] == "Changed #3011's title, remaining work.", vim.inspect({ calls, got }))
+    check("edit_work_item: the undo keeps what they were", TOOLS.last_undo.op == "set_fields"
+      and TOOLS.last_undo.fields[1].value == "Old" and TOOLS.last_undo.fields[2].value == "3", vim.inspect(TOOLS.last_undo))
+    check("edit_work_item: the question names the fields",
+      TOOLS.by_name.edit_work_item.confirm({ id = 3011, title = "x", priority = 1 }) == "change #3011's title, priority")
+    calls = {}
+    call("edit_work_item", { id = 12, board = "github", remainingWork = 2 })
+    check("edit_work_item: GitHub issues have no hours", got[2] == true and #calls == 0, vim.inspect(got))
+    call("edit_work_item", { id = 3011 })
+    check("edit_work_item: nothing to change", got[2] == true and #calls == 0)
+    TOOLS.provider, S.PR_LIST_CACHE, AZ.state.WI_LIST_CACHE = real_provider, saved, saved_list
   end
   do
     -- find_implementations / find_definition's patterns against real git grep.
