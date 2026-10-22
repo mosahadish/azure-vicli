@@ -897,9 +897,15 @@ send = function(text, opts)
   if not st.plan_key and st.task_results and #st.task_results > 0 then
     task_results, st.task_results = st.task_results, nil
   end
+  -- What earlier agents noted on the repository in view, once per agent
+  -- process (a new one, replayed to, hasn't seen them).
+  if not reuse then st.repo_notes_sent = nil end
+  local NOTES = require("azure-cli.chat.repo_notes")
+  local ok_notes, repo_notes = pcall(function() return NOTES.once(st, NOTES.of_snap(snap)) end)
   local message = CORE.compose(expanded, view_text, {
     first = first, history = replay and history or nil, orchestrator = not st.plan_key,
     refs = require("azure-cli.chat.refs").describe(expanded), task_results = task_results,
+    repo_notes = ok_notes and repo_notes or nil,
   })
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,

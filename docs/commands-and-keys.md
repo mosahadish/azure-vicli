@@ -494,6 +494,7 @@ paste the output here after changing a default.
 | `issues` | `I` |
 | `last_row` | `G` |
 | `next_waiting` | `]w` |
+| `notes` | `gn` |
 | `open` | `<CR>` |
 | `open_pr` | `gp` |
 | `open_session` | `go` |

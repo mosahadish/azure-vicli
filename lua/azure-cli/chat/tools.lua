@@ -733,6 +733,7 @@ for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", 
   vim.list_extend(M.list, require(mod)(M))
 end
 vim.list_extend(M.list, require("azure-cli.chat.plan").tools(M))
+vim.list_extend(M.list, require("azure-cli.chat.repo_notes").tools(M))
 
 M.by_name = {}
 for _, t in ipairs(M.list) do M.by_name[t.name] = t end
@@ -960,6 +961,14 @@ M.undoers = {
       end)
     end
     nxt()
+  end,
+  forget_note = function(u, cb)
+    local ok = require("azure-cli.chat.repo_notes").remove(u.repo, u.note)
+    cb(ok ~= nil, ok and "Removed the note." or "That note isn't there any more.")
+  end,
+  remember_note = function(u, cb)
+    local ok, err = require("azure-cli.chat.repo_notes").add(u.repo, u.note)
+    cb(ok ~= nil or err == "already noted", "The note is back.")
   end,
   description = function(u, cb)
     local pr = M.pr_record(u.pr_id)

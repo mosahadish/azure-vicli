@@ -7,6 +7,7 @@
 --                            there after a restart (the last 50 are kept)
 --   current                  the id of the conversation in the panel
 --   notes/<pr>.json          the agent's notes on a PR's lines (chat/notes.lua)
+--   repo-notes/<repo>.md     what agents noted on a repository (chat/repo_notes.lua)
 --   watched.json             the chat's PRs, watched for new comments (chat/watch.lua)
 --   allowed_skills.json      skills you allowed from /skills or a permission popup (chat/skills.lua)
 --   audit.json               every change the agent made through a tool

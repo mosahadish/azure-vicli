@@ -907,6 +907,7 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
 | `gp` | Its pull request in the reviewer - the one it opened, or the one it fixes (`gp` there comes back to its plan) |
+| `gn` | The notes agents keep on its repository (see [What the agent can do](#what-the-agent-can-do)), in a split |
 | `<C-c>` | Stop what it's doing |
 | `dd` | Discard its plan, any plan (an agent's too), and everything the agent left on this machine. It asks at once - **Discard** or **Cancel**, Discard first - listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). Discard deletes the plan's files and its conversation's, the row goes, and a queued agent for it is taken off the queue; then, in the background, its worktree is deleted (forced: uncommitted and unpushed changes go with it) along with the local branch it was on, and a toast says what went. The branch on the server is never touched. It can't be undone. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `]w` / `[w` | The next / previous thing waiting for you - on every screen, not only this one (below) |
@@ -1034,6 +1035,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `get_test_results` | The tests that failed in a PR's build: each one's name, error message and stack trace | - |
 | `list_work_items`, `get_work_item`, `list_sprints` | Your sprint's items (each with its iteration: the path on Azure; on GitHub the name, and `iteration_id` for `move_to_sprint`); one item in full; the team's sprints. These and the other work-item tools also work on GitHub issues (see [Issues on GitHub](#issues-on-github)) | - |
 | `open_in_ui` | Shows you a PR in the reviewer (at a file and line) or a work item | - |
+| `remember`, `forget` | A note on a repository - one short fact a later agent would need (its default branch, which files are CRLF, how its tests run) - every agent on that repository gets; dropping one that's outdated. Undoable | no |
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
 | `link_pr_to_work_item` | Links a PR and a work item | no (**yes** on GitHub, where it edits the PR's description) |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
@@ -1055,6 +1057,17 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `set_work_item_state`, `assign_work_item`, `comment_on_work_item` | A work item's state, assignee, discussion | **yes** (the comment is shown) |
 | `edit_work_item` | A work item's title, priority, tags, description and (Azure) hours: original estimate, remaining and completed work. Undoable, except the description | **yes**, showing the new values |
 | `set_work_item_parent` | Moves a work item under another parent, or off its own (`"none"`) - on GitHub, makes the issue a sub-issue of the parent. Undoable: the undo puts the old parent back | **yes** |
+
+**Notes on a repository.** What an agent saves with `remember` goes into
+`stdpath("data")/azure-cli-chat/repo-notes/<host>~[<org>~]<owner or
+project>~<repo>.md`, one `- ` line per note. The first message to an agent
+started for a PR or a GitHub issue in that repository (and any chat message
+sent from such a PR) carries them, as `Notes on <repo> from earlier
+agents:` - the last 40, at most about 4 KB - and so does `start_story`'s
+answer, for a work item whose repository only shows there; each agent
+process gets them once. `gn` on the Agents screen opens the row's file in
+a split, to read or edit by hand: lines that don't start with `- ` (or
+`* `) are left alone.
 
 When a tool asks, a popup comes up in the middle of the screen ("The agent
 wants to vote "Approve" on PR #101."), with the diff or text it would send
