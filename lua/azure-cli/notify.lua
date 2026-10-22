@@ -215,7 +215,9 @@ local function flash_reflow()
     local e = list[i]
     if e.win and vim.api.nvim_win_is_valid(e.win) then
       local ok, height = pcall(vim.api.nvim_win_get_height, e.win)
-      row = row - (ok and height or 1) - 1
+      -- Its text plus the border's top and bottom rows: one row less
+      -- and each flash covered the bottom border of the one above.
+      row = row - (ok and height or 1) - 2
       pcall(vim.api.nvim_win_set_config, e.win, {
         relative = "editor", row = math.max(0, row), col = math.max(0, vim.o.columns - FLASH_WIDTH - 2),
       })

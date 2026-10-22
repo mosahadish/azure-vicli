@@ -35,9 +35,10 @@ Two keys work on every screen: `?` lists that screen's keys, grouped by what
 they're for, with `↑` before the ones that change something on Azure DevOps
 (GitHub on the Issues tab): a vote, a comment, a link, a work item's state -
 a comment in batch mode only once `gS` sends it; and `g.` (the
-`palette` action) lists every action bound there by what it does, through
-`vim.ui.select` - so with Telescope's, fzf-lua's or another picker standing
-in for it, you can type "approve" or "unlink" instead of remembering the key.
+`palette` action) lists every action bound there by what it does, in a
+popup you type into - "approve" or "unlink" instead of remembering the key
+(Telescope's, fzf-lua's or another picker's, when one has taken over
+`vim.ui.select`).
 The action you pick runs where you were, cursor and all. Actions that only
 work on a visual selection aren't listed.
 
@@ -63,7 +64,9 @@ The same goes for work items (inside Work items), issues (inside Issues)
 and plans (inside Agents): `<CR>` on an Agents row whose plan is already
 open goes back to it as you left it - the older revision you were reading,
 the Changes file you were on - and `dd` on that row discards its plan,
-after asking (see [Several agents at once](chat.md#several-agents-at-once)). Plans
+after asking (see [Several agents at once](chat.md#several-agents-at-once)).
+`gp` goes between a PR (its dashboard row or its review) and its agent's
+plan or Agents row, both ways. Plans
 and changes only open when you open them: an agent finishing one never
 opens it for you. One opened from elsewhere (`gW` in a review, a plan
 opened from its change viewer) goes back there when you close it.
@@ -126,6 +129,7 @@ paste the output here after changing a default.
 
 | Action | Default key(s) |
 |---|---|
+| `add_reviewer` | `gR` |
 | `agent_chat` | `ga` |
 | `agents` | `A` |
 | `browser` | `o` |
@@ -139,6 +143,7 @@ paste the output here after changing a default.
 | `expand_all` | `zR` |
 | `filter` | `/` |
 | `first_pr` | `gg` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `issues` | `I` |
 | `last_pr` | `G` |
@@ -150,6 +155,7 @@ paste the output here after changing a default.
 | `plan_agents` | `gP` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `remove_reviewer` | `gX` |
 | `requeue_build` | `gr` |
 | `toasts` | `gN` |
 | `toggle_section` | `za` / `<Space>` |
@@ -162,6 +168,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `add_reviewer` | `gR` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -174,20 +181,24 @@ paste the output here after changing a default.
 | `config` | `gO` |
 | `filters` | `gF` |
 | `followup` | `gu` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
-| `next_file_with_comments` | `]C` |
+| `next_comment` | `]C` |
+| `next_hunk` | `]c` |
 | `next_unviewed` | `]m` |
 | `open` | `<CR>` |
 | `open_workitem` | `gW` |
 | `palette` | `g.` |
 | `plan_agents` | `gP` |
 | `pr_comment` | `gC` |
-| `prev_file_with_comments` | `[C` |
+| `prev_comment` | `[C` |
+| `prev_hunk` | `[c` |
 | `prev_unviewed` | `[m` |
 | `quit` | `q` |
 | `refresh` | `r` |
+| `remove_reviewer` | `gX` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `run_tests` | `gb` |
@@ -203,6 +214,7 @@ paste the output here after changing a default.
 |---|---|
 | `accept_hunk` | `gy` |
 | `active_filter` | `gA` |
+| `add_reviewer` | `gR` |
 | `ask` | `ga` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
@@ -241,6 +253,7 @@ paste the output here after changing a default.
 | `quit` | `q` |
 | `refresh` | `r` |
 | `reject_hunk` | `gn` |
+| `remove_reviewer` | `gX` |
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
@@ -259,6 +272,7 @@ paste the output here after changing a default.
 | Action | Default key(s) |
 |---|---|
 | `active_filter` | `gA` |
+| `add_reviewer` | `gR` |
 | `back` | `<BS>` |
 | `batch_queue` | `gQ` |
 | `batch_submit` | `gS` |
@@ -272,6 +286,7 @@ paste the output here after changing a default.
 | `edit_comment` | `e` |
 | `filters` | `gF` |
 | `followup` | `gu` |
+| `goto_plan` | `gp` |
 | `help` | `?` |
 | `ignore_ws` | `gw` |
 | `link_workitem` | `gl` |
@@ -283,6 +298,7 @@ paste the output here after changing a default.
 | `plan_agents` | `gP` |
 | `prev_comment` | `[C` |
 | `quit` | `q` |
+| `remove_reviewer` | `gX` |
 | `reply` | `R` |
 | `resize_less` | `<` |
 | `resize_more` | `>` |
@@ -427,6 +443,7 @@ paste the output here after changing a default.
 | `next_thread` | `]t` |
 | `open` | `<CR>` |
 | `open_file` | `gf` |
+| `open_pr` | `gp` |
 | `palette` | `g.` |
 | `prev_thread` | `[t` |
 | `quit` | `q` |
@@ -454,6 +471,7 @@ paste the output here after changing a default.
 | `issues` | `I` |
 | `last_row` | `G` |
 | `open` | `<CR>` |
+| `open_pr` | `gp` |
 | `palette` | `g.` |
 | `pr_list` | `P` |
 | `quit` | `q` |
@@ -469,5 +487,4 @@ paste the output here after changing a default.
 | `next` | `]r` |
 | `pick` | `g1` / `g2` / `g3` / `g4` / `g5` / `g6` / `g7` / `g8` / `g9` |
 | `prev` | `[r` |
-
 <!-- END GENERATED KEYS TABLE -->

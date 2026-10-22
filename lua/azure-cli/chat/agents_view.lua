@@ -131,6 +131,17 @@ function M.for_pr(map, pr)
   return map[tostring(require("azure-cli.hosts").key(pr))]
 end
 
+-- M.by_pr of every agent as it is now: the dashboard's agent column, ga,
+-- and gp on a PR.
+function M.by_pr_now()
+  local ok, map = pcall(function()
+    local CHAT = require("azure-cli.chat")
+    pcall(CHAT.restore_plans)
+    return M.by_pr(M.rows(CHAT.conversations(), {}, require("azure-cli.chat.plan").load, os.time(), "\u{22EF}"))
+  end)
+  return ok and map or {}
+end
+
 -- The screen's groups, in order: what needs you first.
 M.GROUPS = { "Needs you", "Working", "In progress", "Finished" }
 -- Finished agents older than this are hidden until gF shows them.
@@ -340,7 +351,17 @@ local function open_agent(r)
     return
   end
   if r.conv then return CHAT().popup(r.key) end
-  notify((r.label or "That row") .. " is waiting for an agent - nothing to show yet.")
+  notify((r.label or "That row") .. " is waiting for an agent.")
+end
+
+-- gp on a PR (the dashboard, the reviewer): its agent, as <CR> on its row
+-- here opens it - its plan, else its conversation. False when the PR (by
+-- hosts.lua's key) has no agent.
+function M.open_for_pr(key)
+  local r = M.by_pr_now()[tostring(key)]
+  if not r then return false end
+  open_agent(r)
+  return true
 end
 
 local HELP = {
@@ -349,10 +370,11 @@ local HELP = {
   "This agent",
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
+  { "open_pr", "its pull request in the reviewer (the one it opened, or the one it fixes)" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
-  { "discard", "discard its plan (asks first; not while it works; a worktree with changes is kept)" },
+  { "discard", "discard its plan, its worktree and local branch (asks first; not while it works)" },
   "Window",
   { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   { "pr_list", "the pull-request dashboard" }, { "workitems", "the work-items board" },
@@ -376,6 +398,13 @@ local function setup(buf)
     local r = row_here()
     if r then require("azure-cli.chat.plan").open_run_log(r.key) end
   end, { desc = "logs" })
+  -- gp: its PR in the reviewer, as gp in its plan (gp there comes back).
+  K.bind(buf, "agents", "open_pr", function()
+    local r = row_here()
+    if not r then return end
+    if not r.pr_key then return notify((r.label or "That agent") .. " has no pull request yet.") end
+    require("azure-cli.chat.plan_view").open_pr(r.pr_key, r.pr_id)
+  end, { desc = "its pull request" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "main chat" })

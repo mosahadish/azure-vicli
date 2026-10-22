@@ -11,7 +11,9 @@ Overview: title, description, commits, and PR-level comments.
 The Overview's filetype is `azurecli-overview`, not `markdown`: only the
 description and the comment bodies are highlighted as Markdown (with Vim's
 own markdown syntax, minus its `markdownError`), so an `_` in a branch name
-or a commit subject isn't flagged as an error. The commit list and a
+or a commit subject isn't flagged as an error. In a comment, a link reads
+as its text with its address under the comment, as in the `K` popup, and
+a bot's `[KEY]: value` lines are left out. The commit list and a
 commit's file list are `azurecli-commits`. A `FileType markdown` autocmd or
 a Markdown renderer (render-markdown.nvim, markview.nvim) no longer
 attaches to these buffers; hook `FileType azurecli-overview` instead if you
@@ -63,19 +65,23 @@ File list:
 | `<CR>` | Open and focus the file |
 | `C` | Comment on the whole file |
 | `gC` | New PR-level comment |
-| `]C` / `[C` | Next / previous file with comments |
+| `]C` / `[C` | Next / previous comment, landed on in the diff pane - from where the diff's cursor is, on into the next file, as in the diff itself |
+| `]c` / `[c` | Next / previous change, the same way |
 | `gA` | Show only active (unresolved) comments |
 | `gF` | Manage text filters that hide matching threads |
 | `gw` | Toggle ignoring whitespace in diffs |
 | `gi` | Toggle showing only changes since your last review |
 | `gv` / `gm` | Vote / complete (on GitHub: review verdict / merge - see [On GitHub](#on-github)) |
+| `gR` | Add a reviewer: a popup lists everyone who can review (on Azure the project's teams' members, on GitHub the repository's assignable people) and typing narrows it, best match first (fuzzy: `greg` finds "Stein, Gregory", `tal gross` finds "Gross, Tal"); a pause in typing also searches the host's directory for anyone outside those teams. `<C-n>`/`<C-p>` move, `<CR>` picks (on Azure, then optional or required). People already reviewing aren't offered - from the file list, a diff or the Overview |
+| `gX` | Remove a reviewer: pick one of the PR's reviewers (with their vote), confirm, and they're gone. On Azure DevOps any reviewer, except one a branch policy requires (the server says no); on GitHub only a review that's still requested, since GitHub keeps a submitted review |
+| `gp` | The plan of this PR's agent - the one fixing its comments, or the one whose plan opened it - as `<CR>` on its Agents row opens it; `gp` in the plan comes back here |
 | `gW` | Pop up the work items linked to this PR (`<CR>` opens one, `gs` changes its state, `gl`/`gL` link/unlink); on GitHub, the issues it closes |
 | `gl` / `gL` | Link a work item to this PR / unlink one (each a popup, mid-screen) |
 | `gc` | Open the PR's commit list |
 | `gB` | Toggle batch review for this PR |
-| `gQ` | Show the queued batch-review items |
+| `gQ` | Show the queued batch-review items (`s` on a reply: the status its thread gets when sent) |
 | `gS` | Submit the queued batch-review items, with a vote (on GitHub, as one review) |
-| `<` / `>` | Resize the list |
+| `<` / `>` | Resize the list (it keeps that width until you close the review) |
 | `<BS>` | Back to the PR list |
 | `q` | Close the reviewer |
 
@@ -89,7 +95,7 @@ Diff pane:
 | `]C` / `[C` | Next / previous comment thread; at the last/first one in the file, continues into the next/previous file that has comments |
 | `c` | Comment on the current line (on GitHub, only on or near a change) |
 | `c` (visual mode) | Comment on the selected range of lines |
-| `K` | View the comments on the current line in a popup; `R` and `s` work inside it, plus `e`/`dd` to edit/delete a comment of yours |
+| `K` | View the comments on the current line in a popup, sized to them; a link reads as its text, with its address under the comment (`gx` on it opens it). `R` and `s` work inside it, plus `e`/`dd` to edit/delete a comment of yours |
 | `R` | Reply to the thread on the current line |
 | `s` | Set the thread's status (on GitHub: resolve or unresolve) |
 | `]C` / `[C` | Next / previous thread |
@@ -186,8 +192,9 @@ selection), `C` (file comment), `gC`/`c` on the Overview (PR comment), `R`
 (reply, including from inside the K popup or the Overview, where the popup
 stays open behind it), `e` (edit) and the prompt a failed send reopens with -
 opens a small floating editor instead of a single-line command-line prompt,
-anchored just below the line/thread it's about (or centred for a PR-level
-comment/edit). It opens in insert mode, starts 3 lines tall and grows to 8
+anchored just below the line it's about (or centred for a PR-level
+comment/edit). A reply shows the thread centred with the editor right under
+it, as wide as the thread. It opens in insert mode, starts 3 lines tall and grows to 8
 as you type, with a rounded border and a title naming what it's for (e.g.
 "Comment · path:42", "Comment · path:42–48" for a range, "Reply · Jane
 Doe", "Edit comment", "PR comment"). The code line(s) being commented on (or
@@ -207,8 +214,11 @@ again for that same target starts from the draft, even after leaving and
 re-entering the PR within the same session (drafts are in-memory and don't
 survive a Neovim restart). A successful submit clears the draft.
 
-Typing `@` opens completion over the PR's reviewers; picking one inserts
-their display name as plain text. Azure DevOps only sends a notification for
+Typing `@` opens completion over the PR's reviewers, then everyone else
+seen this session (comment authors, people a search found); picking one
+inserts their display name as plain text. To tag someone who isn't there,
+press `<C-t>`: the same search-as-you-type picker as `gR`, and
+`@Their Name` goes in at the cursor as a real mention. Azure DevOps only sends a notification for
 an `@<GUID>` mention, never a plain-text one, so the editor translates every
 `@Display Name` it recognises to `@<their GUID>` right before submitting -
 azure-cli.py's `--list` carries each reviewer's id (an
@@ -216,6 +226,9 @@ azure-cli.py's `--list` carries each reviewer's id (an
 that's typed but isn't a recognised reviewer is sent as plain text and
 simply won't notify anyone. On GitHub the name is translated to the
 reviewer's `@login` instead, and an `@login` typed by hand notifies too.
+The other way round, an `@<GUID>` in a comment you're reading shows as
+`@Display Name` (the name of a comment author with that id, or yours), or
+`@someone` when nobody seen so far has that id.
 
 ### Per-commit diffs
 
@@ -275,8 +288,11 @@ instead turns on batch review for the rest of this PR: from then on, every
 new comment, file comment, PR comment and reply is queued instead of sent,
 shown at once the same way but tagged "(queued)" rather than "(sending…)",
 and the winbar grows a `[batch: N]` tag. `gQ` opens a float listing the
-queue (`kind`, location, text); `dd` on a line removes that item, `q`/`<Esc>`
-closes. `gS` prompts for a vote - the same choices `gv` offers, plus "No
+queue - each item where it goes (a reply by its file and line) over the
+start of its text; moving shows it in the diff, `<Tab>` goes there, `dd`
+removes it, and `s` on a reply picks the status its thread gets once the
+reply is sent (shown as `→ By design`; an agent's `draft_reply` can set it
+too), `q`/`<Esc>` closes. `gS` prompts for a vote - the same choices `gv` offers, plus "No
 vote" - then submits every queued item in order, each one flipping from
 "(queued)" to "(sending…)" to confirmed in turn; a failed item stays in the
 queue (still tagged) and the rest continue, then the vote (if you picked

@@ -12,7 +12,9 @@
 --   gs     change this item's state (a popup; can set its children too)
 --   ga     assign this work item
 --   gp     set this work item's priority
---   ge     edit this work item's title
+--   ge     edit this work item: every field that can change, in one popup
+--          (workitems/edit.lua) - title, state, assignee, priority, sprint,
+--          parent, tags, hours where its type has them
 --   gE     write or edit its description (GitHub issues only)
 --   gi     move this work item to another sprint
 --   gU     move this work item under another parent, or off its own (a picker)
@@ -24,10 +26,11 @@
 --   <BS>/q close and return to the dashboard
 --   ?      show this help
 --
--- M.open(board, ref) (re)builds this view - called by workitems/dashboard.lua's
+-- M.open(board, ref, opts) (re)builds this view - called by workitems/dashboard.lua's
 -- <CR> with its board (workitems/board.lua) and the item's ref (the id on
 -- Azure, owner~repo~n for a GitHub issue). With neither, it's an Azure work
 -- item read from AZVICLI_WI_ID, as pr_workitems.lua's gW opens it.
+-- opts.edit opens ge's form once the item has loaded (the dashboard's ge).
 local PROMPT = require("azure-cli.prompt")
 local KEYS = require("azure-cli.keys")
 local STATES = require("azure-cli.workitems.states")
@@ -38,7 +41,7 @@ local SHELL = require("azure-cli.shell")
 
 local M = {}
 
-function M.open(board, ref)
+function M.open(board, ref, opts)
 
 local env    = vim.env
 -- The board this item is on: its caches and hooks (S), provider calls
@@ -121,7 +124,7 @@ local wi_built = STATES.build(S.WI_SPRINTS_CACHE and S.WI_SPRINTS_CACHE.states)
 local KNOWN_LABEL = {
   Parent = true, Children = true, Assigned = true, Priority = true,
   Created = true, Changed = true, Reason = true, Area = true,
-  Iteration = true, Tags = true, URL = true, Repository = true,
+  Iteration = true, Tags = true, URL = true, Repository = true, Hours = true,
 }
 local ns = vim.api.nvim_create_namespace("azure_cli_workitem")
 -- A linked PR's status word, coloured like the work-item states it echoes.
@@ -217,6 +220,17 @@ local function render(data)
   lines[#lines + 1] = "───────"
   lines[#lines + 1] = "Assigned:  " .. (it.assignedTo or "")
   if type(it.priority) == "number" then lines[#lines + 1] = "Priority:  P" .. it.priority end
+  -- The hours its type has (a Task's, usually); "" is one not set.
+  if type(it.hours) == "table" and next(it.hours) then
+    local parts = {}
+    for _, h in ipairs(require("azure-cli.workitems.edit").HOURS) do
+      if it.hours[h.key] ~= nil then
+        local t = require("azure-cli.workitems.edit").hours_text(it.hours[h.key])
+        parts[#parts + 1] = h.label:match("^%a+"):lower() .. " " .. (t == "" and "\u{2014}" or (t .. " h"))
+      end
+    end
+    lines[#lines + 1] = "Hours:     " .. table.concat(parts, "  \u{00B7}  ")
+  end
   lines[#lines + 1] = "Created:   " .. (it.createdBy or "") .. "  " .. fmt_when(it.createdDate)
   lines[#lines + 1] = "Changed:   " .. fmt_when(it.changedDate)
   if it.reason and it.reason ~= "" then lines[#lines + 1] = "Reason:    " .. it.reason end
@@ -318,6 +332,11 @@ end
 
 local current_url = ""
 local current_data = {}
+-- ge's form while it's open (workitems/edit.lua), and whether to open it
+-- once the item has loaded.
+local edit_form = nil
+local pending_edit = opts and opts.edit or false
+local open_edit
 
 -- Detail cache shared with workitems/dashboard.lua's prefetch (same nvim session).
 S.WI_DETAIL_CACHE = S.WI_DETAIL_CACHE or {}
@@ -344,6 +363,12 @@ local function apply(body)
   current_data = data
   render(data)
   prefetch_state_meta()
+  if pending_edit then
+    pending_edit = false
+    vim.schedule(open_edit)
+  elseif edit_form and edit_form.valid() then
+    edit_form.refresh(current_item, data.parent)
+  end
   return true
 end
 
@@ -360,11 +385,17 @@ local function load(id, force, quiet)
   ID = tostring(id)
   -- Register a live-reload hook for this id so a state change committed from the
   -- dashboard refreshes this tab; drop the previous id's hook when navigating.
-  if prev_reg_id and prev_reg_id ~= ID then S.WI_VIEW_RELOAD[prev_reg_id] = nil end
+  S.WI_VIEW_EDIT = S.WI_VIEW_EDIT or {}
+  if prev_reg_id and prev_reg_id ~= ID then
+    S.WI_VIEW_RELOAD[prev_reg_id] = nil
+    S.WI_VIEW_EDIT[prev_reg_id] = nil
+  end
   prev_reg_id = ID
   S.WI_VIEW_RELOAD[ID] = function()
     if vim.api.nvim_buf_is_valid(buf) then load(ID, true) end
   end
+  -- ge on the dashboard while this item is already open here.
+  S.WI_VIEW_EDIT[ID] = function() open_edit() end
   if not force then
     local c = S.WI_DETAIL_CACHE[ID]
     if c and (os.time() - c.ts) < CACHE_TTL and apply(c.body) then
@@ -457,9 +488,9 @@ local function assign_item()
   -- The dashboard's team-member picker when it's been installed this
   -- session (it always is: a detail view is opened from the dashboard),
   -- else the plain typed prompt.
-  local function commit(new)
+  local function commit(new, name)
     apply_field("assignedTo", new, "Assigning", function()
-      if S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(ID, { assignedTo = new }) end
+      if S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(ID, { assignedTo = name or new }) end
     end)
   end
   if S.WI_PICK_ASSIGNEE then
@@ -487,19 +518,45 @@ local function set_priority()
   end)
 end
 
--- Edit the title of this work item, prefilled with the current one.
-local function edit_title()
+-- ge: the edit form (workitems/edit.lua) over this view - every field that
+-- can change; its saves come back here (a reload, and the dashboard's
+-- records patched). Before the item has loaded, it opens once it has.
+function open_edit()
   if ID == "" then return end
-  PROMPT.input({ prompt = "Title for #" .. shown() .. ":", default = current_item.title or "" }, function(new)
-    if new == nil then return end
-    if new == current_item.title then
-      notify("Title unchanged.")
-      return
-    end
-    apply_field("title", new, "Renaming", function()
-      if S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(ID, { title = new }) end
-    end)
-  end)
+  if not current_item.id then
+    pending_edit = true
+    return
+  end
+  if edit_form and edit_form.valid() then return edit_form.focus() end
+  local item_ref = ID
+  edit_form = require("azure-cli.workitems.edit").open({
+    board = B, id = ID, shown = shown(), item = current_item, parent = current_data.parent,
+    sprints = S.WI_SPRINTS_CACHE and S.WI_SPRINTS_CACHE.list or {},
+    pick_assignee = S.WI_PICK_ASSIGNEE,
+    state = function() set_state() end,
+    parent_pick = function()
+      local p = current_data and current_data.parent
+      require("azure-cli.workitems.parent").choose(B, { id = current_item.id or shown(), key = ID,
+        parentId = p and p.id or nil })
+    end,
+    saved = function(done)
+      local fields = {}
+      for _, c in ipairs(done) do
+        if c.key == "iteration" then
+          if S.WI_ITEM_MOVED then S.WI_ITEM_MOVED(item_ref, c.from, c.value) end
+        elseif c.key == "title" or c.key == "tags" then
+          fields[c.key] = c.value
+        elseif c.key == "assignedTo" then
+          fields.assignedTo = c.label or c.value
+        elseif c.key == "priority" then
+          fields.priority = tonumber(c.value)
+        end
+      end
+      if next(fields) and S.WI_ITEM_CHANGED then S.WI_ITEM_CHANGED(item_ref, fields) end
+      S.WI_DETAIL_CACHE[item_ref] = nil
+      if vim.api.nvim_buf_is_valid(buf) and ID == item_ref then load(ID, true, true) end
+    end,
+  })
 end
 
 -- Write or edit this item's description in the comment editor, prefilled
@@ -681,7 +738,7 @@ local WORKITEM_VIEW_HELP = {
   { "state", "change this " .. ITEM .. "'s state (a popup; can set its children too)" },
   { "assign", "assign this " .. ITEM },
   { "priority", "set this " .. ITEM .. "'s priority" },
-  { "edit_title", "edit this " .. ITEM .. "'s title" },
+  { "edit_title", "edit this " .. ITEM .. ": every field in one popup (title, state, hours\u{2026})" },
   { "description", "write or edit this " .. ITEM .. "'s description" },
   { "move_sprint", "move this " .. ITEM .. " to another " .. SPRINT },
   { "set_parent", "move this " .. ITEM .. " under another parent, or off its own (a picker)" },
@@ -711,6 +768,7 @@ end
 
 local function leave()
   if S.WI_VIEW_RELOAD then S.WI_VIEW_RELOAD[ID] = nil end
+  if S.WI_VIEW_EDIT then S.WI_VIEW_EDIT[ID] = nil end
   if #vim.api.nvim_list_tabpages() > 1 then
     -- An inner tab: back to the one before it (innertabs.lua).
     pcall(INNER.closing)
@@ -726,7 +784,7 @@ KEYS.bind(buf, "workitem_view", "open", open_linked, { desc = "open that " .. IT
 KEYS.bind(buf, "workitem_view", "state", set_state, { desc = "change the state of this " .. ITEM })
 KEYS.bind(buf, "workitem_view", "assign", assign_item, { desc = "assign this " .. ITEM })
 KEYS.bind(buf, "workitem_view", "priority", set_priority, { desc = "set this " .. ITEM .. "'s priority" })
-KEYS.bind(buf, "workitem_view", "edit_title", edit_title, { desc = "edit this " .. ITEM .. "'s title" })
+KEYS.bind(buf, "workitem_view", "edit_title", open_edit, { desc = "edit this " .. ITEM .. " (every field)" })
 if B.caps.description then
   KEYS.bind(buf, "workitem_view", "description", edit_description,
     { desc = "write or edit this " .. ITEM .. "'s description" })

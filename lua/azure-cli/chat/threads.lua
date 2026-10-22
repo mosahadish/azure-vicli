@@ -73,7 +73,7 @@ function M.virt_lines(th, opts)
       out[#out + 1] = { bar, { (i == 1 and "\u{21AA} you: " or "       ") .. l, "AzureCliStatusOk" } }
     end
     out[#out + 1] = { bar, { th.status == "sent" and "  sent to the agent"
-      or ("  not sent yet - " .. (opts.send or "gR") .. " sends it (approving does too)"), "AzureCliThreadMeta" } }
+      or ("  not sent yet - " .. (opts.send or "gR") .. " sends it"), "AzureCliThreadMeta" } }
     return out
   end
   if th.kind == "request" then
@@ -285,7 +285,7 @@ function M.ask(o)
     return require("azure-cli.shell").notify("No chat agent is configured (docs/chat.md).", vim.log.levels.WARN)
   end
   if CHAT.busy() then
-    return require("azure-cli.shell").notify("The agent is still answering - ask once it's done (or <C-c> in the chat).",
+    return require("azure-cli.shell").notify("The agent is still answering - ask once it's done.",
       vim.log.levels.WARN)
   end
   require("azure-cli.editor").open({

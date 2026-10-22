@@ -92,8 +92,7 @@ function M.set(B, it, value, done)
         local ok, res = pcall(vim.json.decode, table.concat(out, ""), { luanil = { object = true, array = true } })
         res = ok and type(res) == "table" and res or {}
         if res.unchanged then
-          SHELL.notify(shown .. (res.parent and (" is already under #" .. tostring(res.parent)) or " has no parent already")
-            .. " - nothing changed.")
+          SHELL.notify(shown .. (res.parent and (" is already under #" .. tostring(res.parent)) or " has no parent already") .. ".")
         else
           SHELL.notify(res.parent and ("Moved " .. shown .. " under #" .. tostring(res.parent) .. ".")
             or (shown .. " has no parent now."))
@@ -127,12 +126,11 @@ function M.choose(B, it, done)
         end
         local meta, recs = M.parse(out)
         if meta.subIssues == false then
-          SHELL.notify("This GitHub server has no sub-issues, so issues can't have a parent here.",
+          SHELL.notify("This GitHub server has no sub-issues.",
             vim.log.levels.WARN)
           return
         end
         local title = "Parent of " .. shown
-          .. ((meta.levels == false and B.host ~= "github") and " (backlog levels unknown: any other type)" or "")
         UI.pick_popup({ title = title, items = M.items(recs, it.parentId, B.host), action = "move" }, function(choice)
           if not choice.typed then return M.set(B, it, choice.value, done) end
           require("azure-cli.prompt").input({ prompt = "Parent of " .. shown .. " (id, or none):" }, function(t)

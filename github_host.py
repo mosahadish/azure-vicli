@@ -446,7 +446,7 @@ def ado_pr(node):
     author_login = author.get("login") or ""
     reviewers, by_login, pending = [], {}, set()
 
-    def put(login, name, vote, container=False):
+    def put(login, name, vote, container=False, requested=False):
         if not login or login == author_login:
             return
         r = by_login.get(login)
@@ -454,6 +454,8 @@ def ado_pr(node):
             r = {"id": login, "displayName": name or login, "vote": vote, "isContainer": container}
             by_login[login] = r
             reviewers.append(r)
+        if requested:
+            r["isRequested"] = True  # a review request: the only kind gX can take back
         elif vote and not r["vote"] and login not in pending:
             r["vote"] = vote
 
@@ -465,7 +467,7 @@ def ado_pr(node):
             put("team:" + (rr.get("slug") or ""), rr.get("name") or rr.get("slug"), 0, True)
         elif rr.get("login"):
             pending.add(rr["login"])
-            put(rr["login"], rr.get("name"), 0)
+            put(rr["login"], rr.get("name"), 0, requested=True)
     for key in ("latestOpinionatedReviews", "latestReviews"):
         for n in ((node.get(key) or {}).get("nodes") or []):
             a = (n or {}).get("author") or {}
@@ -810,6 +812,13 @@ REVIEWER_QUERY = """query ReviewerLookup($owner: String!, $name: String!, $numbe
     pullRequest(number: $number) { id author { login } }
     assignableUsers(query: $q, first: 10) { nodes { id login name } } }
 }"""
+# The reviewer picker's list before anything is typed: everyone the PR can
+# be assigned to, a page at a time.
+PEOPLE_QUERY = """query AssignablePeople($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { author { login } }
+    assignableUsers(first: 100, after: $after) { nodes { id login name } pageInfo { hasNextPage endCursor } } }
+}"""
 USER_QUERY = "query UserByLogin($login: String!) { user(login: $login) { id login name } }"
 TEAM_QUERY = """query TeamBySlug($org: String!, $slug: String!) {
   organization(login: $org) { team(slug: $slug) { id name slug } } }"""
@@ -1036,6 +1045,7 @@ REST_BUILDERS = {
     SUBMIT_REVIEW: ("submit_review",),
     DELETE_REVIEW: ("delete_review",),
     REVIEWER_QUERY: ("reviewer_lookup",),
+    PEOPLE_QUERY: ("assignable_people",),
     USER_QUERY: ("user",),
     TEAM_QUERY: ("team",),
     REQUEST_REVIEWS: ("request_reviews",),
@@ -1290,6 +1300,71 @@ class Actions(object):
         if str(required).lower() == "true":
             out["note"] = NO_REQUIRED_REVIEWERS
         print(json.dumps(out, ensure_ascii=False))
+        return 0
+
+    def remove_reviewer(self, who):
+        """--remove-reviewer: takes back the review request to `who` (a
+        login, or team:<slug>) - DELETE .../requested_reviewers, over REST
+        either way. GitHub can't take off someone who has already
+        reviewed; it answers that as a no-op, said here."""
+        import sys
+        who = (who or "").strip().lstrip("@")
+        if not who:
+            print("Remove whom?", file=sys.stderr)
+            return 1
+        body = {"team_reviewers": [who[5:]]} if who.startswith("team:") else {"reviewers": [who]}
+        path = "/repos/{0}/{1}/pulls/{2}/requested_reviewers".format(
+            urllib.parse.quote(self.owner, safe=""), urllib.parse.quote(self.repo, safe=""), int(self.pr))
+        out = self.client.rest("DELETE", path, body) or {}
+        still = [r.get("login") for r in out.get("requested_reviewers") or []] + \
+            ["team:" + (t.get("slug") or "") for t in out.get("requested_teams") or []]
+        if who.lower() in [str(x).lower() for x in still]:
+            print("GitHub kept {0}'s review request.".format(who), file=sys.stderr)
+            return 1
+        print(json.dumps({"removed": who}, ensure_ascii=False))
+        return 0
+
+    def find_people(self, query):
+        """--find-people: the repository's people `query` names (login or
+        name), else the user with that login, as a JSON list of {name, id,
+        login} - `id` is the login, what --add-reviewer and a mention take.
+        No query: everyone the PR can be assigned to (_assignable_people).
+        Never the PR's author: GitHub won't ask them to review their own."""
+        query = (query or "").strip().lstrip("@")
+        if not query:
+            return self._assignable_people()
+        data = self.client.graphql(REVIEWER_QUERY, dict(self._vars(), q=query))
+        author = ((((data.get("repository") or {}).get("pullRequest") or {}).get("author") or {}).get("login")
+                  or "").lower()
+        nodes = [p for p in (((data.get("repository") or {}).get("assignableUsers") or {}).get("nodes") or [])
+                 if p and p.get("login") and p["login"].lower() != author]
+        if not nodes and not re.search(r"\s", query):
+            try:
+                u = self.client.graphql(USER_QUERY, {"login": query}).get("user") or {}
+            except RuntimeError:  # NOT_FOUND comes as a GraphQL error
+                u = {}
+            if u.get("login") and u["login"].lower() != author:
+                nodes = [u]
+        print(json.dumps([{"name": p.get("name") or p["login"], "id": p["login"], "login": p["login"]}
+                          for p in nodes[:20]], ensure_ascii=False))
+        return 0
+
+    def _assignable_people(self):
+        """--find-people with no query: everyone the repository's PRs can be
+        assigned to (up to 500) but the PR's author, sorted by name."""
+        nodes, after, author = [], None, ""
+        for _ in range(5):
+            data = self.client.graphql(PEOPLE_QUERY, dict(self._vars(), after=after))
+            repo = data.get("repository") or {}
+            author = author or ((((repo.get("pullRequest") or {}).get("author") or {}).get("login")) or "").lower()
+            page = repo.get("assignableUsers") or {}
+            nodes.extend(p for p in page.get("nodes") or [] if p and p.get("login") and p["login"].lower() != author)
+            info = page.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+        people = [{"name": p.get("name") or p["login"], "id": p["login"], "login": p["login"]} for p in nodes]
+        print(json.dumps(sorted(people, key=lambda p: p["name"].lower()), ensure_ascii=False))
         return 0
 
     def _find_user(self, who, people):

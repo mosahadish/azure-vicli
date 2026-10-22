@@ -370,7 +370,7 @@ local function setup(ctx)
         commit_exists(sha, function(exists)
           if not exists then
             cb(nil, "Base commit " .. sha:sub(1, 7)
-              .. " isn't available locally (force-push or shallow fetch).", vim.log.levels.WARN)
+              .. " isn't available locally.", vim.log.levels.WARN)
             return
           end
           cb(sha, new_count, review_point)

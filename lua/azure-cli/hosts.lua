@@ -46,6 +46,8 @@ local AZURE = {
   auto_complete = true,
   -- The agent's add_reviewer / update_pr_description (chat/tools_pr.lua).
   add_reviewer = true,
+  -- gX: any reviewer (a policy's required ones are the server's to refuse).
+  remove_reviewer = true,
   set_description = true,
   -- "@<guid>": Azure DevOps only notifies for a mention by GUID.
   mention = function(id) return "@<" .. id .. ">" end,
@@ -82,6 +84,8 @@ local GITHUB = {
   -- Through GraphQL (requestReviews, updatePullRequest); a record's caps
   -- can turn either off.
   add_reviewer = true,
+  -- gX: only a review that's still requested (reviewer.requested).
+  remove_reviewer = true,
   set_description = true,
   -- gS sends the queue as one review (--submit-review), not comment by
   -- comment: one notification, and nothing lands half-sent.
@@ -153,17 +157,45 @@ function M.is_open(status)
   return status == nil or status == "active" or status == "pending"
 end
 
--- The "@" completion entries for the comment editor: each reviewer with
--- the text a mention of them becomes when the comment is sent.
-function M.mentions(pr)
-  local out = {}
-  local fmt = M.caps(pr).mention
-  for _, r in ipairs(type(pr) == "table" and type(pr.reviewers) == "table" and pr.reviewers or {}) do
-    if r.name and r.name ~= "" then
-      out[#out + 1] = { name = r.name, id = r.id,
-        token = (r.id and r.id ~= "" and fmt) and fmt(r.id) or nil }
-    end
+-- People seen this session, per host: lower-cased id -> { id, name } -
+-- comment authors (review/init.lua as threads load) and whoever a search
+-- found (people.lua). An Azure id is a GUID, a GitHub one a login.
+M.known = { azure = {}, github = {} }
+
+function M.remember(pr, id, name)
+  if id == nil or tostring(id) == "" or not name or name == "" or name == "?" then return end
+  local h = M.known[host_of(pr)]
+  h[tostring(id):lower()] = { id = tostring(id), name = name }
+end
+
+-- The name of the person with `id` on any host, or nil.
+function M.name_of(id)
+  id = tostring(id or ""):lower()
+  for _, h in pairs(M.known) do
+    if h[id] then return h[id].name end
   end
+end
+
+-- The "@" completion entries for the comment editor: each reviewer, then
+-- everyone else seen this session on the PR's host (M.known), with the text
+-- a mention of them becomes when the comment is sent.
+function M.mentions(pr)
+  local out, seen = {}, {}
+  local fmt = M.caps(pr).mention
+  local function add(name, id)
+    if not name or name == "" then return end
+    local k = (id and id ~= "") and tostring(id):lower() or ("name:" .. name)
+    if seen[k] then return end
+    seen[k] = true
+    out[#out + 1] = { name = name, id = id, token = (id and id ~= "" and fmt) and fmt(id) or nil }
+  end
+  for _, r in ipairs(type(pr) == "table" and type(pr.reviewers) == "table" and pr.reviewers or {}) do
+    add(r.name, r.id)
+  end
+  local others = {}
+  for _, e in pairs(M.known[host_of(pr)]) do others[#others + 1] = e end
+  table.sort(others, function(a, b) return a.name < b.name end)
+  for _, e in ipairs(others) do add(e.name, e.id) end
   return out
 end
 

@@ -541,7 +541,7 @@ class EditTests(Base):
             "GitHub GraphQL: Your token has not been granted the required scopes: ['read:project']")})
         code, _, err = run(c, "--wi-list", "sprints")
         self.assertEqual(code, 2)
-        self.assertIn("gh auth refresh -s project", err)
+        self.assertIn("gh auth refresh -h github.com -s project", err)
 
 
 REPO_REF_ANSWER = {"repository": {"id": "R_r", "ref": {"target": {"oid": "abc123"}}}}

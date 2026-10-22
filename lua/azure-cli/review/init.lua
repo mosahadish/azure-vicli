@@ -169,7 +169,7 @@ local function leave(force)
     return
   end
   local what = {}
-  if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") .. " (gS submits)" end
+  if queued > 0 then what[#what + 1] = queued .. " queued comment" .. (queued == 1 and "" or "s") end
   if drafts > 0 then what[#what + 1] = drafts .. " unsent draft" .. (drafts == 1 and "" or "s") end
   -- How this PR is named (merge.lua's pr_words): current_pr_record and
   -- EXT.pr_words come further down, so its cache lookup is done here.
@@ -471,6 +471,8 @@ local function resize_list(delta)
   if list_win and vim.api.nvim_win_is_valid(list_win) then
     local w = math.max(20, vim.api.nvim_win_get_width(list_win) + delta)
     pcall(vim.api.nvim_win_set_width, list_win, w)
+    -- Kept from now on: re-fitting the list (a refresh, K) leaves it.
+    EXT.list_width = vim.api.nvim_win_get_width(list_win)
   end
 end
 
@@ -507,6 +509,7 @@ local function parse_threads(json, by_key, file_by_path, general)
           authorId = c.author and c.author.id,
           content = c.content,
         }
+        if c.author then require("azure-cli.hosts").remember(EXT.pr_current, c.author.id, c.author.displayName) end
       end
     end
 
@@ -951,7 +954,9 @@ end
 -- lines render at - built by the same loop that builds `lines`, so a caller
 -- wanting "the comment under this line" always matches what's on screen
 -- exactly. Existing callers only use the first return, so this is additive.
-local function threads_to_lines(threads)
+-- `width` (optional): wrap each comment's text to that many cells
+-- (review/thread_text.lua, which also tidies its links).
+local function threads_to_lines(threads, width)
   local lines = {}
   local comment_map = {}
   for ti, t in ipairs(threads) do
@@ -966,8 +971,8 @@ local function threads_to_lines(threads)
     for _, c in ipairs(t.comments) do
       lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
       comment_map[#lines] = { thread = t, comment = c }
-      for _, cl in ipairs(vim.split(c.content, "\n", { plain = true })) do
-        lines[#lines + 1] = "│   " .. cl
+      for _, cl in ipairs(require("azure-cli.review.thread_text").comment_lines(c.content, "│   ", width)) do
+        lines[#lines + 1] = cl
       end
     end
   end
@@ -1104,7 +1109,7 @@ local function comment_here()
     title = EDITOR.format_title("line", { path = path, lineno = m.lineno }),
     context_lines = { (vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false))[1] or "" },
     anchor = { win = diff_win, row = lnum },
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "line", where),
     on_submit = function(text)
       post_new_thread({ "--post", path, m.side, tostring(m.lineno), text }, "line", where,
@@ -1126,7 +1131,7 @@ local function comment_on_file(path)
   EDITOR.open({
     title = EDITOR.format_title("file", { path = path }),
     anchor = "center",
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "file", path),
     on_submit = function(text)
       post_new_thread({ "--file-comment", path, text }, "file", path, path, nil, nil, text,
@@ -1142,7 +1147,7 @@ local function comment_on_pr()
   EDITOR.open({
     title = EDITOR.format_title("pr", {}),
     anchor = "center",
-    mentions = mentions,
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "pr", ""),
     on_submit = function(text)
       post_new_thread({ "--pr-comment", text }, "general", nil, nil, nil, nil, text,
@@ -1168,9 +1173,11 @@ end
 -- are declared much further down this chunk, so this function can't close
 -- over them; it goes through EXT.file_index / EXT.file_count /
 -- EXT.open_file_at, which the closing loader defines once they exist.
-local function jump_change(dir)
+-- `from_idx` (optional): start past file-list index `from_idx` instead of
+-- from the cursor (the file list's ]c with no file open yet).
+local function jump_change(dir, from_idx)
   local buf = vim.api.nvim_get_current_buf()
-  local i = require("azure-cli.diffbuf").next_change(maps_by_buf[buf], vim.api.nvim_win_get_cursor(0)[1], dir)
+  local i = not from_idx and require("azure-cli.diffbuf").next_change(maps_by_buf[buf], vim.api.nvim_win_get_cursor(0)[1], dir)
   if i then
     vim.api.nvim_win_set_cursor(0, { i, 0 })
     vim.cmd("normal! zz")
@@ -1180,7 +1187,7 @@ local function jump_change(dir)
   local function no_more()
     notify(dir > 0 and "No further changes." or "No previous changes.")
   end
-  local cur_idx = EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf])
+  local cur_idx = from_idx or (EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf]))
   if not cur_idx then
     no_more()
     return
@@ -1279,7 +1286,10 @@ local function decorate_comments(buf, path, map)
         -- line, as virtual lines, instead of a popup over the diff.
         if EXT.inline_open and EXT.inline_open[buf] and EXT.inline_open[buf][bl] then
           local virt = {}
-          local tl = threads_to_lines(threads)
+          -- Wrapped to the diff window's text width, past the indent.
+          local win = vim.fn.bufwinid(buf)
+          local info = win ~= -1 and vim.fn.getwininfo(win)[1]
+          local tl = threads_to_lines(threads, info and (info.width - info.textoff - 7) or nil)
           for _, l in ipairs(tl) do virt[#virt + 1] = { { "      " .. l, "AzureCliInline" } } end
           mark.virt_lines = virt
         end
@@ -1434,8 +1444,10 @@ local function reply_to_thread(target, on_success)
   -- the floating editor opens anchored just below it (see EDITOR.open's
   -- `anchor`), so a reply typed from the K popup never hides what's being
   -- replied to.
-  local thread_lines = threads_to_lines({ target })
-  local fwin = open_float(thread_lines, false)
+  local width = require("azure-cli.review.thread_text").popup_width()
+  local thread_lines = threads_to_lines({ target }, width)
+  local fwin = open_float(thread_lines, false, { center = true, min_width = math.min(60, width) })
+  if fwin then require("azure-cli.review.thread_text").paint(vim.api.nvim_win_get_buf(fwin)) end
   local function close_thread_float()
     if fwin and vim.api.nvim_win_is_valid(fwin) then
       pcall(vim.api.nvim_win_close, fwin, true)
@@ -1446,8 +1458,8 @@ local function reply_to_thread(target, on_success)
   local EDITOR = require("azure-cli.editor")
   EDITOR.open({
     title = EDITOR.format_title("reply", { author = target.comments[1] and target.comments[1].author }),
-    anchor = fwin and { win = fwin, row = #thread_lines + 1 } or "center",
-    mentions = mentions,
+    anchor = fwin and { below = fwin } or "center",
+    mentions = mentions, pr = current_pr_record(),
     draft_key = EDITOR.draft_key(KEY, "reply", tostring(target.id)),
     on_submit = function(text)
       close_thread_float()
@@ -1559,7 +1571,7 @@ local function apply_status_to_matches(matches, status, label, on_change)
           if failed == 0 then
             notify("Done: " .. total .. " comment(s) set to " .. status.label .. ".")
           else
-            notify(failed .. "/" .. total .. " failed to update (network/permission?); check them individually.",
+            notify(failed .. "/" .. total .. " failed to update.",
               vim.log.levels.WARN)
           end
         end)
@@ -1568,68 +1580,19 @@ local function apply_status_to_matches(matches, status, label, on_change)
   end
 end
 
--- Prompt for a status and apply it to the given thread. When `host` is given
--- (host.buf/host.win of an already-open float, e.g. the K popup, plus
--- host.restore() to redraw that float's normal content and host.close() to
--- close it), the picker is shown inline inside that same window instead of
--- nvim's cmdline inputlist, so you never leave the comment you're looking at.
--- Falls back to inputlist when there's no host float (e.g. `s` on the diff
--- line directly).
+-- Prompt for a status and apply it to the given thread: the numbered menu
+-- (prompt.select), over the K popup when `host` (that popup's host.win) is
+-- given - the popup keeps showing the thread, and gets the focus back.
 local function set_thread_status(target, on_success, host)
   if not target or not target.id then
     notify("Thread id unknown; cannot set status.", vim.log.levels.ERROR)
     return
   end
-
-  if host and host.buf and vim.api.nvim_buf_is_valid(host.buf)
-    and host.win and vim.api.nvim_win_is_valid(host.win) then
-    local numkeys = {}
-    local kopts = { buffer = host.buf, silent = true, nowait = true }
-    -- Restore whatever q/Esc normally do for this popup (close it), since we
-    -- temporarily repurpose them to cancel the status menu below. Without
-    -- this, q/Esc would be left unbound after picking a status, and there'd
-    -- be no way to close the popup from the keyboard.
-    local function rebind_close()
-      if host.close then
-        vim.keymap.set("n", "q", host.close, kopts)
-        vim.keymap.set("n", "<Esc>", host.close, kopts)
-      end
-    end
-    local function cleanup()
-      for _, k in ipairs(numkeys) do pcall(vim.keymap.del, "n", k, { buffer = host.buf }) end
-    end
-    local function finish(status)
-      cleanup()
-      rebind_close()
-      if status then
-        apply_status(target, status, on_success)
-      end
-      if host.restore then host.restore() end
-    end
-
-    local lines = { "Set thread " .. target.id .. " status:", "" }
-    for i, o in ipairs(status_options()) do
-      lines[#lines + 1] = string.format("  %d. %s%s", i, o.label,
-        (target.status == o.key) and "  (current)" or "")
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "(1-" .. #status_options() .. ": choose   q/Esc: cancel)"
-    vim.bo[host.buf].modifiable = true
-    pcall(vim.api.nvim_buf_set_lines, host.buf, 0, -1, false, lines)
-    vim.bo[host.buf].modifiable = false
-
-    for i, status in ipairs(status_options()) do
-      local key = tostring(i)
-      numkeys[#numkeys + 1] = key
-      vim.keymap.set("n", key, function() finish(status) end, kopts)
-    end
-    vim.keymap.set("n", "q", function() finish(nil) end, kopts)
-    vim.keymap.set("n", "<Esc>", function() finish(nil) end, kopts)
-    return
-  end
-
-  require("azure-cli.prompt").select({ prompt = "Set thread " .. target.id .. " status", items = status_options(),
+  require("azure-cli.prompt").select({ prompt = "Thread status" .. (((target.comments or {})[1] or {}).author and (" - " .. target.comments[1].author) or ""), items = status_options(),
     current = function(o) return target.status == o.key end }, function(o)
+    if host and host.win and vim.api.nvim_win_is_valid(host.win) then
+      pcall(vim.api.nvim_set_current_win, host.win)
+    end
     if o then apply_status(target, o, on_success) end
   end)
 end
@@ -1654,17 +1617,25 @@ local function show_comments_here()
     decorate_comments(buf, paths_by_buf[buf], maps_by_buf[buf])
   end
   refresh_file_rows()
-  local win = open_float(threads_to_lines(threads), true, { big = true })
+  -- Sized to the threads (not the big fixed size), centred, their text
+  -- wrapped under the gutter; an address wider than that wraps indented.
+  local TT = require("azure-cli.review.thread_text")
+  local width = TT.popup_width()
+  local win = open_float(threads_to_lines(threads, width), true, { center = true, min_width = math.min(60, width) })
   if not win then return end
   local fbuf = vim.api.nvim_win_get_buf(win)
+  vim.b[fbuf].azure_cli_thread_width = width
+  UI.wo(win, "breakindentopt", "shift:4")
+  TT.paint(fbuf)
 
   -- Redraw the popup with the current `threads` (used after a cancelled
   -- status change, and as the tail of refresh() below).
   local function show_threads()
     if not vim.api.nvim_buf_is_valid(fbuf) then return end
     vim.bo[fbuf].modifiable = true
-    pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, threads_to_lines(threads))
+    pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, threads_to_lines(threads, width))
     vim.bo[fbuf].modifiable = false
+    TT.paint(fbuf)
   end
   local function close()
     if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
@@ -1902,9 +1873,10 @@ end
 -- files - and only reports "no further comments" once no such file is
 -- left. File-list access goes through the EXT.file_* accessors the
 -- closing loader defines, since `files`/`open_file` are declared later.
-local function jump_comment(dir)
+-- `from_idx` (optional): as jump_change's.
+local function jump_comment(dir, from_idx)
   local buf = vim.api.nvim_get_current_buf()
-  local per_line = comments_by_buf[buf]
+  local per_line = not from_idx and comments_by_buf[buf]
   local total = vim.api.nvim_buf_line_count(buf)
   local i = vim.api.nvim_win_get_cursor(0)[1] + dir
   while per_line and i >= 1 and i <= total do
@@ -1919,7 +1891,7 @@ local function jump_comment(dir)
   local function no_more()
     notify(dir > 0 and "No further comments." or "No previous comments.")
   end
-  local cur_idx = EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf])
+  local cur_idx = from_idx or (EXT.file_index and paths_by_buf[buf] and EXT.file_index(paths_by_buf[buf]))
   if not cur_idx then
     no_more()
     return
@@ -2018,7 +1990,7 @@ local function build_overview()
   if overview_commits == nil then
     lines[#lines + 1] = "  (loading…)"
   elseif #overview_commits == 0 then
-    lines[#lines + 1] = "  (none found - branch may not be fetched yet)"
+    lines[#lines + 1] = "  (none found)"
   else
     for _, c in ipairs(overview_commits) do
       lines[#lines + 1] = "  " .. c
@@ -2047,8 +2019,10 @@ local function build_overview()
       for _, c in ipairs(t.comments) do
         lines[#lines + 1] = "│ " .. c.author .. ":" .. sending_tag(c)
         comment_map[#lines] = { thread = t, comment = c }
-        for _, cl in ipairs(vim.split(c.content, "\n", { plain = true })) do
-          lines[#lines + 1] = "│   " .. cl
+        -- Links and bots' reference lines as in the K popup (unwrapped:
+        -- the window wraps).
+        for _, cl in ipairs(require("azure-cli.review.thread_text").comment_lines(c.content, "│   ")) do
+          lines[#lines + 1] = cl
         end
       end
     end
@@ -2150,7 +2124,8 @@ HELP.overview_help = {
   { "status", "set the thread's status" },
   { "edit_comment", "edit a comment of yours" }, { "delete_comment", "delete a comment of yours" },
   "Review",
-  { "vote", "vote" }, { "complete", "complete" },
+  { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
+  { "remove_reviewer", "remove a reviewer (or take back a GitHub review request)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2185,6 +2160,12 @@ local function setup_overview_keymaps(buf)
   KEYS.bind(buf, "overview", "prev_comment", function() jump_comment(-1) end, { desc = "previous thread" })
   KEYS.bind(buf, "overview", "search", function() EXT.nav.search_files() end, { desc = "search text across the PR's changed files" })
   KEYS.bind(buf, "overview", "vote", cast_vote, { desc = "vote" })
+  KEYS.bind(buf, "overview", "add_reviewer", function()
+    require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
+  end, { desc = "add a reviewer" })
+  KEYS.bind(buf, "overview", "remove_reviewer", function()
+    require("azure-cli.people").remove_reviewer(current_pr_record(), render_overview)
+  end, { desc = "remove a reviewer" })
   KEYS.bind(buf, "overview", "complete", complete_pr, { desc = "complete" })
   KEYS.bind(buf, "overview", "active_filter", toggle_active_filter, { desc = "toggle active (unresolved) comments only" })
   KEYS.bind(buf, "overview", "filters", manage_ignore_texts, { desc = "manage text filters that hide matching threads" })
@@ -2258,7 +2239,8 @@ HELP.diff_help = {
   { "status", "set the thread's status" },
   "Review",
   { "toggle_viewed", "toggle this file's viewed mark" },
-  { "vote", "vote" }, { "complete", "complete" },
+  { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
+  { "remove_reviewer", "remove a reviewer (or take back a GitHub review request)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -2301,6 +2283,12 @@ local function setup_diff_keymaps(buf)
   KEYS.bind(buf, "diff", "prev_unviewed", function() EXT.jump_unviewed(-1) end, { desc = "previous file not yet viewed" })
   KEYS.bind(buf, "diff", "status", set_status_here, { desc = "set the thread's status" })
   KEYS.bind(buf, "diff", "vote", cast_vote, { desc = "vote" })
+  KEYS.bind(buf, "diff", "add_reviewer", function()
+    require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
+  end, { desc = "add a reviewer" })
+  KEYS.bind(buf, "diff", "remove_reviewer", function()
+    require("azure-cli.people").remove_reviewer(current_pr_record(), render_overview)
+  end, { desc = "remove a reviewer" })
   KEYS.bind(buf, "diff", "complete", complete_pr, { desc = "complete" })
   KEYS.bind(buf, "diff", "next_comment", function() jump_comment(1) end, { desc = "next thread" })
   KEYS.bind(buf, "diff", "prev_comment", function() jump_comment(-1) end, { desc = "previous thread" })
@@ -2708,7 +2696,7 @@ function fit_list_width()
     longest = math.max(longest, vim.fn.strdisplaywidth(line))
   end
   local cap = math.max(20, math.floor(vim.o.columns * 0.6))
-  local w = math.min(cap, math.max(20, longest + 5))
+  local w = math.min(cap, EXT.list_width or math.max(20, longest + 5))
   pcall(vim.api.nvim_win_set_width, list_win, w)
 end
 fit_list_width()
@@ -2824,9 +2812,9 @@ manage_ignore_texts = function(on_change)
   local row_idx = {}
   local function render()
     row_idx = {}
-    local lines = { "Comment text filters (hide threads whose first comment contains any of these):", "" }
+    local lines = { "Comment text filters", "" }
     if #ignore_texts == 0 then
-      lines[#lines + 1] = "  (none — press a to add one)"
+      lines[#lines + 1] = "  (none)"
     else
       for i, f in ipairs(ignore_texts) do
         lines[#lines + 1] = "  " .. i .. ". " .. (f.persistent and "[P] " or "") .. f.text
@@ -2868,7 +2856,7 @@ manage_ignore_texts = function(on_change)
         table.insert(ignore_texts, { text = input:lower(), persistent = false })
         refresh_after_filter_change()
         if on_change then on_change() end
-        notify("Added text filter: " .. input .. " (not persistent — press p on it to keep it across sessions).")
+        notify("Added text filter: " .. input .. ".")
       end
       draw()
     end)
@@ -2931,41 +2919,28 @@ manage_ignore_texts = function(on_change)
   vim.keymap.set("n", "<Esc>", close, kopts)
 end
 
--- Jump to the next (dir=1) / previous (dir=-1) file row that has at least
--- one comment thread once the gA active-only / gF text filters are applied -
--- same "filtered" total used for each row's "(closed/total)" suffix, so
--- this only stops on files whose badge is actually showing. Walks
--- EXT.filelist's own row numbering (directory headers included, skipped
--- over silently since they're never in row_to_file) rather than `files`
--- directly, since the grouped/sorted display order can now differ from it.
--- Cursor lines are offset by +1 versus model row numbers since the Overview
--- row is pinned at line 1.
-local function jump_file_with_comments(dir)
+-- ]C / [C and ]c / [c on the file list: the next / previous comment or
+-- change itself, landed on in the diff pane (focused) - from the diff's
+-- cursor, on into the next file, as the same keys there do. With no file
+-- in the diff yet (the Overview), from the file under the list's cursor.
+-- The list's own row numbers are one off the model's (the Overview row).
+local function jump_from_list(jump, dir)
+  local dbuf = diff_win and vim.api.nvim_win_is_valid(diff_win) and vim.api.nvim_win_get_buf(diff_win)
+  if dbuf and paths_by_buf[dbuf] then
+    vim.api.nvim_set_current_win(diff_win)
+    return jump(dir)
+  end
   local model = EXT.filelist
-  if not model or #model.ordered_files == 0 then
-    notify("No files in this PR.")
-    return
-  end
-  local i = (vim.api.nvim_win_get_cursor(0)[1] - 1) + dir
-  while i >= 1 and i <= #model.lines do
-    local path = model.row_to_file[i]
-    if path then
-      local _, total = file_thread_count(path)
-      if total > 0 then
-        vim.api.nvim_win_set_cursor(0, { i + 1, 0 })
-        vim.cmd("normal! zz")
-        return
-      end
-    end
-    i = i + dir
-  end
-  notify(dir > 0 and "No further files with comments." or "No previous files with comments.")
+  local path = model and model.row_to_file[vim.api.nvim_win_get_cursor(0)[1] - 1]
+  local idx = path and EXT.file_index and EXT.file_index(path)
+  jump(dir, idx and (idx - dir) or (dir > 0 and 0 or EXT.file_count() + 1))
 end
 
 HELP.list_help = {
   "Navigate",
   { "open", "open and focus the file" },
-  { "next_file_with_comments", "next file with comments" }, { "prev_file_with_comments", "previous file with comments" },
+  { "next_comment", "next comment, in the diff (on into the next file)" }, { "prev_comment", "previous comment" },
+  { "next_hunk", "next change, in the diff (on into the next file)" }, { "prev_hunk", "previous change" },
   { "next_unviewed", "next file not yet viewed" },
   { "prev_unviewed", "previous file not yet viewed" },
   { "search", "search text across the PR's changed files" },
@@ -2974,7 +2949,8 @@ HELP.list_help = {
   { "pr_comment", "new PR-level comment" },
   "Review",
   { "toggle_viewed", "toggle the file's viewed mark" },
-  { "vote", "vote" }, { "complete", "complete" },
+  { "vote", "vote" }, { "complete", "complete" }, { "add_reviewer", "add a reviewer (search by name, account or email)" },
+  { "remove_reviewer", "remove a reviewer (or take back a GitHub review request)" },
   "Modes",
   { "active_filter", "toggle active (unresolved) comments only" },
   { "filters", "manage text filters that hide matching threads" },
@@ -3034,9 +3010,17 @@ KEYS.bind(list_buf, "list", "filters", manage_ignore_texts, { desc = "manage tex
 KEYS.bind(list_buf, "list", "ignore_ws", toggle_ignore_ws, { desc = "toggle ignoring whitespace in diffs" })
 KEYS.bind(list_buf, "list", "config", open_config_file, { desc = "open a config file" })
 KEYS.bind(list_buf, "list", "vote", cast_vote, { desc = "vote" })
+KEYS.bind(list_buf, "list", "add_reviewer", function()
+  require("azure-cli.people").add_reviewer(current_pr_record(), render_overview)
+end, { desc = "add a reviewer" })
+KEYS.bind(list_buf, "list", "remove_reviewer", function()
+  require("azure-cli.people").remove_reviewer(current_pr_record(), render_overview)
+end, { desc = "remove a reviewer" })
 KEYS.bind(list_buf, "list", "complete", complete_pr, { desc = "complete" })
-KEYS.bind(list_buf, "list", "next_file_with_comments", function() jump_file_with_comments(1) end, { desc = "next file with comments" })
-KEYS.bind(list_buf, "list", "prev_file_with_comments", function() jump_file_with_comments(-1) end, { desc = "previous file with comments" })
+KEYS.bind(list_buf, "list", "next_comment", function() jump_from_list(jump_comment, 1) end, { desc = "next comment" })
+KEYS.bind(list_buf, "list", "prev_comment", function() jump_from_list(jump_comment, -1) end, { desc = "previous comment" })
+KEYS.bind(list_buf, "list", "next_hunk", function() jump_from_list(jump_change, 1) end, { desc = "next change" })
+KEYS.bind(list_buf, "list", "prev_hunk", function() jump_from_list(jump_change, -1) end, { desc = "previous change" })
 KEYS.bind(list_buf, "list", "resize_less", function() resize_list(-5) end, { desc = "shrink the list" })
 KEYS.bind(list_buf, "list", "resize_more", function() resize_list(5) end, { desc = "grow the list" })
 KEYS.bind(list_buf, "list", "comment_file", function()
@@ -3182,8 +3166,11 @@ local function apply_files(list, status)
   EXT.refresh_file_list()
   set_list_winbar()
   prefetch_all_diffs()
-  notify(EXT.pr_words().name .. ": " .. #files
-    .. " files. j/k move, <CR> open, c comment, K view, R reply. Overview is the first row.")
+  -- Once per PR: the list loads twice on open (cache, then the fetch).
+  if EXT.files_hint_for ~= KEY then
+    EXT.files_hint_for = KEY
+    notify(EXT.pr_words().name .. ": " .. #files .. " files.")
+  end
 end
 -- `git diff --name-status` (not just --name-only) so the file list can show
 -- each file's A/M/D/R status letter (review/filelist.lua) - status is part

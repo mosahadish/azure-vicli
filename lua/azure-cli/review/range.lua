@@ -125,7 +125,7 @@ local function setup(ctx)
       title = EDITOR.format_title("range", { path = path, lineno = start, end_lineno = stop }),
       context_lines = context_lines,
       anchor = { win = ctx.diff_win(), row = top_line },
-      mentions = mentions,
+      mentions = mentions, pr = ctx.current_pr_record(),
       draft_key = EDITOR.draft_key(ctx.KEY, "line", where),
       on_submit = function(text)
         local args = M.post_args(path, side, start, stop, text)

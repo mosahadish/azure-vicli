@@ -63,5 +63,18 @@ check("github: two statuses", #H.caps(gh).thread_statuses == 2)
 check("github: the repo's merge methods", #H.caps(gh).merge_methods == 1)
 check("github: mention by login", H.mentions(gh)[1].token == "@bob")
 
+-- People seen this session join "@" completion after the reviewers, on
+-- their own host only, once each.
+H.remember(nil, "G-2", "Carol Chen")
+H.remember(nil, "g-1", "Jane again")
+H.remember(gh, "carol", "Carol")
+H.remember(nil, "", "Nobody")
+local az = H.mentions({ reviewers = { { name = "Doe, Jane", id = "g-1" } } })
+check("mentions: reviewers first, then people seen", #az == 2 and az[1].name == "Doe, Jane" and az[2].name == "Carol Chen")
+check("mentions: a seen person mentions by id", az[2].token == "@<G-2>")
+local g2 = H.mentions(gh)
+check("mentions: github's people stay on github", #g2 == 2 and g2[2].token == "@carol")
+check("name_of: any case", H.name_of("g-2") == "Carol Chen")
+
 if fails > 0 then print(fails .. " failed"); os.exit(1) end
 print("all ok")

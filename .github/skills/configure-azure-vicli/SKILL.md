@@ -101,7 +101,8 @@ accounts:
       team: My Team
 ```
 
-The PAT needs Code (read & write) and Work Items (read & write). Prefer
+The PAT needs Code (read & write), Work Items (read & write), Project and
+Team (read) and Identity (read). Prefer
 `pat_file`, kept outside any git checkout. Every field:
 [docs/configuration.md](../../../docs/configuration.md#configuration).
 
@@ -129,7 +130,7 @@ accounts:
   `repo` (optional: where new issues go, `name` or `owner/name`; needed
   when the project links several repositories), `scope` (`mine`, the
   default, or `all`). The token then also needs the `project` scope: with
-  gh, `gh auth refresh -s project`.
+  gh, `gh auth refresh -h github.com -s project`.
 - **Not on a GitHub account:** `project_name`, `org_url`, `work_items:`
   (`work_items:` there is an error, as is `issues:` on an Azure account).
   There's no `token:` field - an unknown field in the yml is silently

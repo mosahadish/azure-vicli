@@ -319,9 +319,18 @@ function M.open_float(lines, opts)
       width = math.max(width, vim.fn.strdisplaywidth(l))
     end
     width = math.min(width, math.max(20, vim.o.columns - 6), 110)
-    height = math.min(math.max(#lines, opts.min_height or 1), math.max(5, screen_h))
   end
-  local scrolls = #lines > height
+  -- The screen rows the lines take once wrapped (a continuation row can
+  -- be up to 4 cells narrower, with breakindent), so a long one isn't cut.
+  local rows = 0
+  for _, l in ipairs(lines) do
+    local w = vim.fn.strdisplaywidth(l)
+    rows = rows + (w <= width and 1 or 1 + math.ceil((w - width) / math.max(1, width - 4)))
+  end
+  if not opts.big then
+    height = math.min(math.max(rows, opts.min_height or 1), math.max(5, screen_h))
+  end
+  local scrolls = rows > height
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -369,6 +378,10 @@ function M.open_float(lines, opts)
   M.wo(win, "wrap", true)
   M.wo(win, "linebreak", true)
   M.wo(win, "breakindent", true)
+  -- A help line ("  key   what it does", "↑ key ...") that wraps continues
+  -- under its description, not under the key.
+  vim.bo[buf].formatlistpat = "^[\u{2191} ] \\S.\\{-}\\s\\{2,}"
+  M.wo(win, "breakindentopt", "list:-1")
   M.wo(win, "cursorline", false)
   M.float_hl(win)
   if focus then

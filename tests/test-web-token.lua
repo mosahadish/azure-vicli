@@ -68,7 +68,7 @@ end
 -- Restarts keep the URL.
 local first = start()
 check("start shows a URL with a token", first and #first == 43, last_float())
-check("the float says the token is stored", (last_float() or ""):find("stored in", 1, true) ~= nil, last_float())
+check("the float doesn't explain where the token lives", not (last_float() or ""):find("token is", 1, true), last_float())
 stop()
 local second = start()
 check("a restart keeps the token (same URL)", second == first, tostring(first) .. " vs " .. tostring(second))

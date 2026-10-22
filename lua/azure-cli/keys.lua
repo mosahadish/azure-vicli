@@ -165,12 +165,12 @@ end
 -- one of these on one screen and something harmless on another. A
 -- comment in batch mode only queues - it's still marked, gS posts it.
 M.WRITES = {
-  dashboard = { complete = true, link_workitem = true, unlink_workitem = true, requeue_build = true, vote = true },
-  list = { batch_submit = true, comment_file = true, pr_comment = true, complete = true, link_workitem = true,
+  dashboard = { add_reviewer = true, remove_reviewer = true, complete = true, link_workitem = true, unlink_workitem = true, requeue_build = true, vote = true },
+  list = { add_reviewer = true, remove_reviewer = true, batch_submit = true, comment_file = true, pr_comment = true, complete = true, link_workitem = true,
     unlink_workitem = true, vote = true },
-  diff = { comment = true, comment_range = true, comment_file = true, reply = true, status = true, vote = true,
+  diff = { add_reviewer = true, remove_reviewer = true, comment = true, comment_range = true, comment_file = true, reply = true, status = true, vote = true,
     complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
-  overview = { comment = true, reply = true, status = true, edit_comment = true, delete_comment = true, vote = true,
+  overview = { add_reviewer = true, remove_reviewer = true, comment = true, reply = true, status = true, edit_comment = true, delete_comment = true, vote = true,
     complete = true, batch_submit = true, link_workitem = true, unlink_workitem = true },
   workitems = { assign = true, edit_title = true, link_pr = true, unlink_pr = true, move_sprint = true, new = true,
     priority = true, state = true, set_parent = true },

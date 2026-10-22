@@ -39,10 +39,11 @@ azure-vicli ships no agent configuration; you choose the agent and model
 it opens the panel, or jumps into it if it's already showing, and puts you
 in its input box, typing - keeping whatever you had typed there. The
 screens are read-only views, so `i` there has nothing else to do. `q`
-inside the panel hides it, and `<BS>` goes back to the screen next to it
-while leaving it open. Once shown, the panel appears in every azure-vicli
-tab you visit (dashboard, reviewer, work items) until you hide it. The
-conversation is the same in every tab. (`gq` did this before; it's gone -
+inside the panel hides it - in every tab, so it doesn't greet you again in
+the next one - and `<BS>` goes back to the screen next to it while leaving
+it open. Once shown, the panel appears in every azure-vicli tab you visit
+(dashboard, reviewer, work items, issues, Agents, plans) until you hide it,
+at the size you last gave it. The conversation is the same in every tab. (`gq` did this before; it's gone -
 a `gq` left in your `setup()` is skipped, with a warning when you had
 changed it.) `chat.allowed_skills` is gone too: `setup()` stops with an
 error until you remove it, and you allow a skill from `/skills` instead
@@ -66,9 +67,9 @@ error until you remove it, and you allow a skill from `/skills` instead
 | `gn` | Start a new conversation (the current one stays in `gh`) |
 | `gM` / `gm` | Choose the agent / the model |
 | `<C-c>` | Stop the agent's answer - its session stays for your next message (what you queued is held until you send it) |
-| `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab) |
+| `<` / `>` | Make the panel smaller / bigger (kept for the session, in every tab - so is a size you drag it to or set with `<C-w>`) |
 | `<BS>` | Back to the screen next to the panel |
-| `q` | Hide the panel (`i` on a screen brings you back to it) |
+| `q` | Hide the panel, in every tab (`i` on a screen brings it back) |
 | `?` | These keys |
 
 Every message is sent together with a description of what you're looking at:
@@ -130,6 +131,8 @@ launcher sets them in its own palette.
 **Saved prompts.** `/triage`, `/review`, `/explain`, `/build`, `/plan` and `/standup`
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
+`/triage` only sorts a PR's open threads (fix, push back, question,
+already done) and says why - it drafts no replies; ask for those after.
 They run against what's on screen like any message. (`/skills` isn't a
 prompt: it opens a popup of the agent's skills, without asking the agent -
 see [Permissions](#github-copilot-cli).) Add your own, replace
@@ -412,8 +415,7 @@ idle timeout above your longest build.
 on the Agents screen, or a timeout) only stops that turn: Claude Code is
 sent a stream-json interrupt (`control_request`), Copilot a
 `session/cancel`. The process, its session and the worktree it was in stay,
-and your next message continues it - `· interrupted - the session stays,
-your next message continues it`. If the turn hasn't ended
+and your next message continues it - `· interrupted`. If the turn hasn't ended
 `interrupt_grace_seconds` later (or you press `<C-c>` again meanwhile), the
 process is killed instead: the status says so - `timed out (idle 10m,
 killed)`, `stopped (killed)` - and so does a line under it, and your next
@@ -612,9 +614,10 @@ their line when the text around them changes.
 | `gr` | Answer the open question under the cursor (its Open questions section) - `gR` sends your answers, and approving does too |
 | `dd` | Drop the change queued under this line (asks first), or forget the question there; a change already sent stays |
 | `cc` | Edit the change queued under this line |
-| `gD` | Discard this plan, as `dd` on the Agents screen: the question appears at once (with Discard all too), refused while its agent works; the files move to `plans/discarded/` and the plan's tab closes, then its worktree is checked in the background - removed if clean, kept if it has changes |
+| `gD` | Discard this plan and everything its agent left, as `dd` on the Agents screen: the question (Discard / Cancel, Discard first) appears at once, refused while its agent works; the files are deleted and the plan's tab closes, then its worktree and local branch are deleted in the background |
 | `gi` | A bar beside the lines this revision changed against the one before (on by default; toggles); on an older revision: back to the current one, marked against that one |
 | `gh` | Open an older revision, read-only (on one: back to the current one) |
+| `gp` | Its pull request in the reviewer - the one its agent opened, or the one it fixes (looked up on the server when the dashboard doesn't list it); `gp` there comes back to the plan |
 | `ga` | Ask about this line (in visual mode: these lines) |
 | `<Tab>` / `K` | Unfold the answer under this line / show it in a popup |
 | `]t` / `[t` | Next / previous question |
@@ -778,8 +781,8 @@ changes to agents rather than doing them itself:
   conversation was pruned - gets an idle agent conversation of its own when
   the plans are restored, so the Agents screen lists it. Approve it (`gA`)
   to hand it to that agent, or discard it: `dd` on its row, `gD` in the
-  plan itself, or ask the main chat to `discard_plan` it (all ask first;
-  the files move to `plans/discarded/`).
+  plan itself (both ask first, and delete it), or ask the main chat to
+  `discard_plan` it (its files move to `plans/discarded/`).
 - **Approving stays yours** - `gA` on the Agents screen or in the plan's
   tab. The main chat can't approve a plan, and an agent can't start or
   message other agents.
@@ -830,8 +833,9 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gd` | Its change, file by file |
 | `gA` | Approve its plan (in visual mode: every selected row's) - one question for all, each approval goes to that plan's own agent |
 | `gH` | Its run log |
+| `gp` | Its pull request in the reviewer - the one it opened, or the one it fixes (`gp` there comes back to its plan) |
 | `<C-c>` | Stop what it's doing |
-| `dd` | Discard its plan, any plan (an agent's too). It asks at once, listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). The plan's files and its conversation move to `plans/discarded/<key>-<time>.*` (move them back by hand to undo), the conversation and the row go, and a queued agent for it is taken off the queue. Its worktree is looked at only after you answer, in the background: removed when there's nothing in it, kept when it has uncommitted or unpushed changes (or git can't tell), and a toast says which. The question also offers **Discard all**: it asks once more with the count and the names, then discards every plan the screen lists whose agent isn't working (finished ones hidden after 7 days are left out), keeping worktrees with changes, with one toast for all. The main chat's `discard_plan` still only discards a plan no agent worked on |
+| `dd` | Discard its plan, any plan (an agent's too), and everything the agent left on this machine. It asks at once - **Discard** or **Cancel**, Discard first - listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). Discard deletes the plan's files and its conversation's, the row goes, and a queued agent for it is taken off the queue; then, in the background, its worktree is deleted (forced: uncommitted and unpushed changes go with it) along with the local branch it was on, and a toast says what went. The branch on the server is never touched. It can't be undone. The main chat's `discard_plan` still only discards a plan no agent worked on |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `i` | The main chat (its input box), whatever row you're on |
 | `gg` / `G` | First / last row (with a count, that row) |
@@ -854,7 +858,9 @@ to that PR - `gP`, or the main chat passing your question on - its plan
 is a new revision of the work item's, never a plan of the PR's own that
 no agent's row would show; `gh` in it opens the original. On the PR dashboard, the agent
 column shows each PR's agent and what it's doing, and `ga` there opens
-its conversation in a popup ([dashboard](dashboard.md)).
+its conversation in a popup ([dashboard](dashboard.md)). `gp` on that row,
+or anywhere in the PR's reviewer, opens the agent's plan; `gp` in the plan,
+or on its Agents row, goes back to its PR.
 
 Every plan you open gets an inner tab of its own under Agents, and so does
 every change - opening another doesn't replace the one you were reading,
@@ -945,7 +951,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `annotate_code`, `clear_annotations` | Notes on lines of a PR's diff, shown under them in the reviewer (only to you) and kept across restarts until cleared; a note whose line has changed since (a later push) says "may have moved" | - |
 | `link_pr_to_work_item` | Links a PR and a work item | no (**yes** on GitHub, where it edits the PR's description) |
 | `create_branch` | Creates a branch from another one's tip on the server, links it to a work item (its Development section), optionally checks it out in your clone | no |
-| `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it | no |
+| `draft_reply`, `draft_comment` | Drafts a reply or a new comment (line, file or PR). **Not posted**: it goes into that PR's [batch-review](reviewer.md) queue, and `gS` in the reviewer sends it. A reply can carry the status its thread gets once it's sent (`bydesign` for a false positive it explains); `s` in `gQ` changes it | no |
 | `create_child_task`, `move_to_sprint` | A task under a work item; a work item into a sprint | no |
 | `create_work_item` | A new top-level work item (title, body, type, sprint), assigned to you | **yes** |
 | `requeue_build` | Queues the PR's build again | no |

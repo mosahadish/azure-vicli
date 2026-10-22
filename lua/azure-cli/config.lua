@@ -16,25 +16,26 @@ local M = {}
 local DEFAULT_KEYS = {
   dashboard = {
     open = "<CR>", description = "gd", copy_link = "gy", browser = "o",
-    filter = "/", vote = "gv", complete = "gm",
+    filter = "/", vote = "gv", complete = "gm", add_reviewer = "gR", remove_reviewer = "gX",
     requeue_build = "gr", open_build = "gb", config = "gO", refresh = "r",
     workitems = "W", issues = "I", toasts = "gN", help = "?", palette = "g.", quit = "q",
     toggle_section = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", agents = "A", plan_agents = "gP",
-    agent_chat = "ga", chat_input = "i", chat_selection = "<CR>",
+    agent_chat = "ga", goto_plan = "gp", chat_input = "i", chat_selection = "<CR>",
   },
   -- Reviewer file list.
   list = {
     open = "<CR>", back = "<BS>", quit = "q", pr_comment = "gC",
     search = "g/", active_filter = "gA", filters = "gF", ignore_ws = "gw",
-    config = "gO", vote = "gv", complete = "gm",
-    next_file_with_comments = "]C", prev_file_with_comments = "[C",
+    config = "gO", vote = "gv", complete = "gm", add_reviewer = "gR", remove_reviewer = "gX",
+    -- The comment / change itself, in the diff pane.
+    next_comment = "]C", prev_comment = "[C", next_hunk = "]c", prev_hunk = "[c",
     resize_less = "<", resize_more = ">", comment_file = "C", help = "?", palette = "g.",
     commits = "gc", batch_toggle = "gB", batch_queue = "gQ", batch_submit = "gS",
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
-    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP",
+    toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP", goto_plan = "gp",
     chat_input = "i", chat_selection = "<CR>",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
@@ -45,7 +46,7 @@ local DEFAULT_KEYS = {
     -- so a two-key `cf` could never complete in the diff pane.
     comment = "c", comment_range = "c", comment_file = "C",
     next_hunk = "]c", prev_hunk = "[c", view_comments = "K", reply = "R",
-    status = "s", vote = "gv", complete = "gm", next_comment = "]C",
+    status = "s", vote = "gv", complete = "gm", add_reviewer = "gR", remove_reviewer = "gX", next_comment = "]C",
     prev_comment = "[C", next_note = "]a", prev_note = "[a", active_filter = "gA", filters = "gF",
     ignore_ws = "gw", config = "gO", goto_definition = "gd",
     find_references = "gr", open_file = "gf", search = "g/",
@@ -59,7 +60,8 @@ local DEFAULT_KEYS = {
     toggle_fold = { "za", "<Space>" },
     refresh = "r",  -- the chat's change viewer only
     ask = "ga",     -- the chat's change viewer only: ask the agent about this line
-    goto_plan = "gp",  -- the chat's change viewer only: the plan line this code carries out
+    -- The plan of the PR's agent; in the chat's change viewer, the plan line this code carries out.
+    goto_plan = "gp",
     delete_thread = "dd",  -- the chat's change viewer only: forget the question / queued change here
     accept_hunk = "gy", reject_hunk = "gn",  -- the chat's change viewer only: per hunk
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
@@ -67,13 +69,13 @@ local DEFAULT_KEYS = {
   -- Reviewer Overview page.
   overview = {
     comment = "c", reply = "R", status = "s", next_comment = "]C",
-    prev_comment = "[C", search = "g/", vote = "gv", complete = "gm",
+    prev_comment = "[C", search = "g/", vote = "gv", complete = "gm", add_reviewer = "gR", remove_reviewer = "gX",
     active_filter = "gA", filters = "gF", ignore_ws = "gw", config = "gO",
     resize_less = "<", resize_more = ">", back = "<BS>", help = "?", palette = "g.",
     quit = "q", edit_comment = "e", delete_comment = "dd",
     open_commit = "<CR>", open_image = { "<CR>", "gx" }, batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
-    link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP",
+    link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP", goto_plan = "gp",
     chat_input = "i", chat_selection = "<CR>",
   },
   -- Code-navigation peek/revision buffers.
@@ -120,7 +122,7 @@ local DEFAULT_KEYS = {
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
-    show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G",
+    show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G", open_pr = "gp",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -131,6 +133,7 @@ local DEFAULT_KEYS = {
     edit_request = "cc",
     revisions = "gh",
     discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
+    open_pr = "gp",  -- the PR its agent opened, or the one it fixes
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to
@@ -149,6 +152,8 @@ local REMOVED_KEYS = {
   ["dashboard.auto_complete"] = { default = "ga", why = "auto-complete is a checkbox in gm's dialog now" },
   ["chat.toggle"] = { default = "gq", why = "q hides the chat" },
   ["agents.chat"] = { default = "gq", why = "Enter (keys.agents.open) opens the row's agent" },
+  ["list.next_file_with_comments"] = { default = "]C", why = "]C on the file list goes to the next comment itself (keys.list.next_comment)" },
+  ["list.prev_file_with_comments"] = { default = "[C", why = "[C on the file list goes to the previous comment itself (keys.list.prev_comment)" },
 }
 -- gq (issue #118): i opens the chat on every screen now.
 for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "plan" }) do

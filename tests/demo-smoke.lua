@@ -596,6 +596,167 @@ if not ok then return fail("gA again didn't bring my thread back\n" .. tostring(
 smoke_ok("FOLLOWUP")
 end)
 
+-- ]C on the file list goes to the comment itself, in the diff pane (the
+-- focus with it), not just to the row of a file that has one; ]c the same
+-- for a change.
+section("LISTJUMP", function()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  ensure_review()
+  local lw = vim.fn.bufwinid(files)
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { 1, 0 })
+  local ns = vim.api.nvim_get_namespaces()["azure_cli_comments"]
+  local function on_comment()
+    local w = vim.api.nvim_get_current_win()
+    if w == lw or vim.api.nvim_win_get_config(w).relative ~= "" then return false end
+    local row = vim.api.nvim_win_get_cursor(w)[1] - 1
+    local b = vim.api.nvim_win_get_buf(w)
+    return #vim.api.nvim_buf_get_extmarks(b, ns, { row, 0 }, { row, -1 }, {}) > 0
+  end
+  feed("]C")
+  if not vim.wait(15000, on_comment, 50) then
+    return fail("]C on the file list didn't land on a comment in the diff pane: "
+      .. vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()) .. " line " .. vim.api.nvim_win_get_cursor(0)[1])
+  end
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { 1, 0 })
+  local before = vim.api.nvim_win_get_buf(vim.api.nvim_get_current_win())
+  feed("]c")
+  local landed = vim.wait(15000, function()
+    local w = vim.api.nvim_get_current_win()
+    if w == lw then return false end
+    local m = (require("azure-cli.review.pane").entry(vim.api.nvim_win_get_buf(w)) or {}).map
+    local at = m and m[vim.api.nvim_win_get_cursor(w)[1]]
+    return at ~= nil and (at.kind == "add" or at.kind == "del")
+  end, 50)
+  if not landed or before == nil then return fail("]c on the file list didn't land on a change in the diff pane") end
+  smoke_ok("LISTJUMP")
+end)
+
+-- gR adds a reviewer found by name (the fake's --find-people, then
+-- --add-reviewer with their id), and <C-t> in the comment editor tags
+-- someone who isn't on the PR: "@Bob Brown" in the text, the "@<GUID>" a
+-- mention is in what's sent. Both type into the search-as-you-type picker;
+-- "brown, bob" finds "Bob Brown" (each word searched, ranked fuzzily).
+section("PEOPLE", function()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  ensure_review()
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  local PROMPT = require("azure-cli.prompt")
+  local real_sel = PROMPT.select
+  local asked = {}
+  PROMPT.select = function(o, cb) asked[#asked + 1] = o.prompt; cb(o.items[1]) end
+  local function restore() PROMPT.select = real_sel end
+  -- The people picker's search line and its list, once it's open.
+  local function picker()
+    local ib, lines
+    vim.wait(5000, function()
+      for _, b in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(b) and vim.bo[b].filetype == "azure-cli-people" then ib = b return true end
+      end
+    end, 20)
+    return ib, function()
+      for _, w in ipairs(vim.api.nvim_list_wins()) do
+        local b = vim.api.nvim_win_get_buf(w)
+        if vim.bo[b].filetype == "azure-cli-people-list" then
+          lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+        end
+      end
+      return table.concat(lines or {}, "\n")
+    end
+  end
+  -- Types `q` into the people picker, waits for `expect` at the top of its
+  -- list and presses <CR>; an error string if that never happens.
+  local function answer(q, expect)
+    local ib, list = picker()
+    if not ib then return "the picker didn't open" end
+    vim.api.nvim_buf_set_lines(ib, 0, -1, false, { q })
+    local top
+    if not vim.wait(10000, function()
+      top = vim.split(list(), "\n")[1]
+      return top and top:find(expect, 1, true) ~= nil
+    end, 20) then return "\"" .. q .. "\" didn't list " .. expect .. " first (top: " .. tostring(top) .. ")" end
+    -- nvim_buf_get_keymap, not maparg: 0.9's maparg can't hand back a Lua callback.
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib, "i")) do
+      if m.lhs == "<CR>" then return m.callback() end
+    end
+    return "the picker has no <CR>"
+  end
+  local function rec101()
+    for _, p in ipairs((require("azure-cli.state").PR_LIST_CACHE or {}).prs or {}) do
+      if tostring(p.id) == "101" then return p end
+    end
+  end
+  local function has(pr, name)
+    for _, r in ipairs(pr and pr.reviewers or {}) do if r.name == name then return true end end
+  end
+  feed("gR")
+  -- Before anything is typed it lists everyone who can review, less the
+  -- PR's reviewers (Bob Brown is one).
+  local _, list = picker()
+  if not vim.wait(10000, function() return list():find("Carol Chen", 1, true) ~= nil end, 20)
+    or not list():find("Alice Andersson", 1, true) or list():find("Bob Brown", 1, true) then
+    restore()
+    return fail("gR's list before typing: " .. list())
+  end
+  local err = answer("carol", "Carol Chen")
+  if err then restore() return fail("gR: " .. err) end
+  if not vim.wait(15000, function() return has(rec101(), "Carol Chen") end, 50) then
+    restore()
+    return fail("gR didn't add Carol Chen to !101 (asked: " .. table.concat(asked, " | ") .. ")")
+  end
+  -- The dashboard's row counts her straight away, without waiting for a poll.
+  local function row101()
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+      if l:find("#101 ", 1, true) then return l end
+    end
+  end
+  if not vim.wait(5000, function() return (row101() or ""):find("0 / 3", 1, true) ~= nil end, 50) then
+    restore()
+    return fail("the dashboard's !101 row didn't show the new reviewer: " .. tostring(row101()), dash)
+  end
+  local sent
+  require("azure-cli.editor").open({ title = "PR comment", anchor = "center", pr = rec101(),
+    mentions = require("azure-cli.hosts").mentions(rec101()), on_submit = function(t) sent = t end })
+  local ebuf = vim.api.nvim_get_current_buf()
+  feed("<C-t>")
+  err = answer("brown, bob", "Bob Brown")
+  if err then restore() return fail("<C-t>: " .. err) end
+  local tagged = vim.wait(15000, function()
+    return vim.api.nvim_buf_is_valid(ebuf) and table.concat(vim.api.nvim_buf_get_lines(ebuf, 0, -1, false)):find("@Bob Brown", 1, true) ~= nil
+  end, 50)
+  if not tagged then restore() return fail("<C-t> didn't put \"@Bob Brown\" in the editor") end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(ebuf))
+  feed("<C-s>")
+  restore()
+  if not (sent and sent:find("@<bbbbbbbb-0000-0000-0000-000000000002>", 1, true)) then
+    return fail("the tag wasn't sent as a mention: " .. tostring(sent))
+  end
+  -- gX takes Carol off again: picked from the reviewers, confirmed, gone
+  -- from the record and the dashboard's count.
+  local real_confirm = PROMPT.confirm
+  local offered
+  PROMPT.select = function(o, cb)
+    offered = o.items
+    for _, r in ipairs(o.items) do if r.name == "Carol Chen" then return cb(r) end end
+    cb(nil)
+  end
+  PROMPT.confirm = function(_, cb) cb(true) end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(files))
+  feed("gX")
+  ok = vim.wait(15000, function() return not has(rec101(), "Carol Chen") end, 50)
+  PROMPT.select, PROMPT.confirm = real_sel, real_confirm
+  if not ok then return fail("gX didn't take Carol Chen off !101 (offered: " .. vim.inspect(offered) .. ")") end
+  if not vim.wait(5000, function() return (row101() or ""):find("0 / 2", 1, true) ~= nil end, 50) then
+    return fail("the dashboard's !101 row still counts the removed reviewer: " .. tostring(row101()), dash)
+  end
+  smoke_ok("PEOPLE")
+end)
+
 -- Remembered folds (#131) and toggle_fold. PR #101 appends a section to
 -- README.md, so its first four unchanged lines fold away. <Space> opens
 -- that fold; it stays open when you go to another file and back, when the
@@ -1694,6 +1855,9 @@ section("CHAT", function()
   end
   feed("q")
   if st.visible or st.wins[vim.api.nvim_get_current_tabpage()] then return fail("q inside the chat didn't hide it") end
+  for _, w in pairs(st.wins) do
+    if w.log and vim.api.nvim_win_is_valid(w.log) then return fail("q inside the chat left it open in another tab") end
+  end
   vim.ui.select = real_select
   smoke_ok("CHAT")
 end)
@@ -3861,7 +4025,7 @@ section("INNERTABS-PLAN", function()
   -- dd on #3101's row while its tab is open: the tab closes, the list stays.
   vim.api.nvim_set_current_tabpage(atab)
   vim.api.nvim_set_current_win(av.win)
-  -- (dd's question is Discard / Discard all / Cancel since #122: Discard)
+  -- (dd's question is Discard / Cancel: Discard)
   local choose = UI.choose
   UI.choose = function(_, cb) cb(1) end
   for i, l in ipairs(vim.api.nvim_buf_get_lines(av.buf, 0, -1, false)) do
@@ -4668,5 +4832,109 @@ section({ "REWARM", "REWARM-GH", "REWARM-REVIEW" }, function()
   if #calls ~= 1 then return fail("the queued callback ran " .. #calls .. " times") end
   smoke_ok("REWARM-REVIEW")
 end)
+-- ga's popup lists the team; typing also searches the directory
+-- (--wi-list people), so "greg" finds "Stein, Gregory", who isn't on the
+-- team, and <CR> assigns #3001 to his account.
+section("WIASSIGN", function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+goto_row(3001)
+feed("ga")
+local ib, lb
+ok = vim.wait(10000, function()
+  ib, lb = shown_buf("azure-cli-pick"), shown_buf("azure-cli-pick-list")
+  return ib ~= nil and lb ~= nil and text(lb):find("Carol Chen", 1, true) ~= nil
+end, 50)
+if not ok then return fail("ga's popup didn't list the team", lb) end
+if text(lb):find("Stein", 1, true) then return fail("ga listed the directory before anything was typed", lb) end
+vim.api.nvim_buf_set_lines(ib, 0, -1, false, { "greg" })
+ok = vim.wait(10000, function() return vim.split(text(lb), "\n")[1]:find("Stein, Gregory", 1, true) ~= nil end, 50)
+if not ok then return fail("typing \"greg\" into ga didn't find Stein, Gregory first", lb) end
+for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib, "i")) do
+  if m.lhs == "<CR>" then m.callback() break end
+end
+local function assignee()
+  local st = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, w in ipairs(st.workitems) do if w.id == 3001 then return w.assignedTo end end
+end
+ok = vim.wait(15000, function() return assignee() == "DEMO\\gstein" end, 100)
+if not ok then return fail("ga didn't assign #3001 to Gregory Stein's account: " .. tostring(assignee())) end
+smoke_ok("WIASSIGN")
+end)
+
+-- ge (last, as it leaves #3011's tab open): on the board it opens the item
+-- with the edit form over it; <CR> on a field holds a change (marked, with the old value), <C-s>
+-- saves them all - here a Task's title, priority and remaining hours - and
+-- the item's view reloads showing them (its Hours line included).
+section("WIEDIT", { needs = { "TREE" } }, function()
+ensure_workitems()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(wis))
+if not require("azure-cli.state").wi_tree then feed("T") end
+local function wi(id)
+  local st = vim.json.decode(table.concat(vim.fn.readfile(vim.env.AZVICLI_FAKE_WS .. "/state.json"), "\n"))
+  for _, w in ipairs(st.workitems) do if w.id == id then return w end end
+end
+ok = vim.wait(15000, function() return text(wis):find("#3011 ", 1, true) ~= nil end, 100)
+if not ok then return fail("the tree doesn't list #3011", wis) end
+goto_row(3011)
+feed("ge")
+local form
+ok = vim.wait(15000, function()
+  form = shown_buf("azure-cli-wi-edit")
+  return form ~= nil and text(form):find("Remaining work", 1, true) ~= nil
+end, 50)
+if not ok then return fail("ge on #3011 didn't open its edit form with its hours") end
+local view = nil
+for _, b in ipairs(vim.api.nvim_list_bufs()) do
+  if vim.api.nvim_buf_is_valid(b) and text(b):find("^#3011  Task") then view = b end
+end
+if not (view and text(view):find("Hours:     original 8 h", 1, true)) then
+  return fail("#3011's view doesn't show its hours", view)
+end
+local PROMPT = require("azure-cli.prompt")
+local real_in, real_sel = PROMPT.input, PROMPT.select
+PROMPT.input = function(o, cb)
+  if o.prompt:find("^Title") then return cb("Count failed logins per user") end
+  if o.prompt:find("^Remaining") then return cb("1") end
+  cb(nil)
+end
+PROMPT.select = function(o, cb) cb(o.items[1]) end
+local function press(row_label, lhs)
+  local w = vim.fn.bufwinid(form)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(form, 0, -1, false)) do
+    if row_label and l:find("^ . " .. row_label) then vim.api.nvim_win_set_cursor(w, { i, 0 }) end
+  end
+  vim.api.nvim_set_current_win(w)
+  -- Neovim lists <C-s> as "<C-S>".
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(form, "n")) do
+    if m.lhs:lower() == lhs:lower() then return m.callback() end
+  end
+end
+press("Title", "<CR>")
+press("Priority", "<CR>")
+press("Remaining work", "<CR>")
+PROMPT.input, PROMPT.select = real_in, real_sel
+ok = vim.wait(5000, function()
+  local t = text(form)
+  local _, held = t:gsub("\u{25CF}", "")
+  return held == 3 and t:find("\u{25CF} Remaining work    1 h   (was 3 h)", 1, true)
+end, 50)
+if not ok then return fail("the form didn't hold the three changes", form) end
+press(nil, "<C-s>")
+ok = vim.wait(15000, function()
+  local w = wi(3011)
+  return w.title == "Count failed logins per user" and w.priority == 1 and w.remainingWork == 1
+    and not vim.api.nvim_buf_is_valid(form)
+end, 100)
+if not ok then return fail("<C-s> didn't save the form's changes: " .. vim.inspect(wi(3011))) end
+ok = vim.wait(10000, function()
+  local t = text(view)
+  return t:find("remaining 1 h", 1, true) and t:find("Priority:  P1", 1, true)
+    and t:find("Count failed logins per user", 1, true)
+end, 100)
+if not ok then return fail("#3011's view didn't reload with the saved changes", view) end
+smoke_ok("WIEDIT")
+end)
+
 print("SMOKE-DONE")
 vim.cmd("qa!")

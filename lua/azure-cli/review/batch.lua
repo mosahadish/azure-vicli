@@ -41,7 +41,9 @@
 -- it hung off are themselves rebuilt from scratch on reopen). Each item is
 -- either { kind = "thread", args, bucket, where, path, side, lineno,
 -- end_lineno, text, label, pending = <ctx.add_pending_thread's return> } or
--- { kind = "reply", thread_id, text, comment, thread }; `pending`/`comment`/
+-- { kind = "reply", thread_id, text, status, comment, thread } (`status`, a
+-- thread status key, is set on the thread once the reply is sent - the
+-- agent's draft_reply, or s in gQ); `pending`/`comment`/
 -- `thread` are this-session-only bookkeeping, rebuilt by rehydrate() rather
 -- than persisted verbatim.
 --
@@ -87,7 +89,8 @@ end
 -- retagged queued/sending/confirmed in place, without hunting through the
 -- thread's comments again to find it.
 function M.queue_reply(state, info)
-  local item = { kind = "reply", thread_id = info.thread_id, text = info.text, comment = info.comment }
+  local item = { kind = "reply", thread_id = info.thread_id, text = info.text, status = info.status,
+    comment = info.comment }
   table.insert(state.items, item)
   return item
 end
@@ -115,6 +118,13 @@ function M.item_args(item)
   return item.args
 end
 
+-- The --status argv a reply item sets on its thread once it's sent, or nil.
+function M.status_args(item)
+  if item.kind == "reply" and item.status and item.status ~= "" then
+    return { "--status", tostring(item.thread_id), item.status }
+  end
+end
+
 -- Sends every queued item and the vote (when `vote`, a { key, label }
 -- pair, is non-nil) at once, through `run_write(args, on_ok, on_fail)` -
 -- nothing waits on anything else, except that replies to the same thread
@@ -123,7 +133,9 @@ end
 -- as it settles (a confirmed item is removed from state.items first).
 -- hooks.done(results, vote_err) runs once, after everything settled, with
 -- results = { {item = item, ok = bool, err = msg-or-nil}, ... } in queue
--- order and vote_err = nil when there was no vote or it went through.
+-- order and vote_err = nil when there was no vote or it went through. A
+-- reply with a status sets it once the reply is in; if that fails the
+-- reply still counts as sent, with status_err on its result.
 -- state.submitting is true from the first send until done().
 function M.submit(state, run_write, vote, hooks)
   hooks = hooks or {}
@@ -168,9 +180,17 @@ function M.submit(state, run_write, vote, hooks)
     run_write(M.item_args(item), function()
       M.remove_item(state, item)
       results[n] = { item = item, ok = true }
-      after(item, true)
-      run_chain(chain, at + 1)
-      settle()
+      local function next_one()
+        after(item, true)
+        run_chain(chain, at + 1)
+        settle()
+      end
+      local status = M.status_args(item)
+      if not status then return next_one() end
+      run_write(status, next_one, function(msg)
+        results[n].status_err = msg
+        next_one()
+      end)
     end, function(msg)
       results[n] = { item = item, ok = false, err = msg }
       after(item, false, msg)
@@ -212,7 +232,8 @@ end
 -- through run_write, with M.submit's hooks: before() for every item first,
 -- then - the review landed whole or not at all - after(item, ok, err) for
 -- each and done(results, nil) once (a failed verdict fails the review, so
--- there's no separate vote error).
+-- there's no separate vote error). The replies' statuses are set after the
+-- review lands, before done().
 function M.submit_native(state, run_write, args, hooks)
   hooks = hooks or {}
   local before = hooks.before or function() end
@@ -223,14 +244,27 @@ function M.submit_native(state, run_write, args, hooks)
   state.submitting = true
   for _, item in ipairs(items) do before(item) end
   local function finish(ok, msg)
-    state.submitting = nil
     local results = {}
     for _, item in ipairs(items) do
       if ok then M.remove_item(state, item) end
       results[#results + 1] = { item = item, ok = ok, err = (not ok) and msg or nil }
       after(item, ok, (not ok) and msg or nil)
     end
-    done(results, nil)
+    local left = 1
+    local function settle()
+      left = left - 1
+      if left > 0 then return end
+      state.submitting = nil
+      done(results, nil)
+    end
+    for _, r in ipairs(ok and results or {}) do
+      local status = M.status_args(r.item)
+      if status then
+        left = left + 1
+        run_write(status, settle, function(err) r.status_err = err; settle() end)
+      end
+    end
+    settle()
   end
   run_write(args, function() finish(true) end, function(msg) finish(false, msg) end)
 end
@@ -238,34 +272,48 @@ end
 -- ---------------------------------------------------------------------------
 -- ctx wiring.
 
--- Display line for one queued item in the gQ float: "kind  location  text".
+-- Where a queued item goes, for the gQ float: a reply's thread by its
+-- file and line when known.
 local function item_location(item)
   if item.kind == "reply" then
-    return "reply -> thread " .. tostring(item.thread_id)
+    local t = item.thread
+    if t and t.path and t.lineno then
+      return "Reply on " .. tostring(t.path):match("[^/]*$") .. ":" .. t.lineno
+    end
+    return "Reply on a PR comment"
   end
   if item.bucket == "general" then
     return "PR comment"
   end
+  local file = tostring(item.path):match("[^/]*$")
   if item.bucket == "file" then
-    return item.path .. " (file)"
+    return "Comment on " .. file
   end
-  local loc = tostring(item.path) .. " " .. tostring(item.side) .. ":" .. tostring(item.lineno)
+  local loc = "Comment on " .. file .. ":" .. tostring(item.lineno)
   if item.end_lineno and item.lineno and item.end_lineno > item.lineno then
     loc = loc .. "-" .. item.end_lineno
   end
-  return loc
+  return loc .. (item.side == "L" and " (old side)" or "")
 end
 
-local function render_queue(state)
-  local lines = { string.format("%-6s  %-32s  %s", "kind", "location", "text"), "" }
-  for _, item in ipairs(state.items) do
+-- The gQ float's lines - two per item: where it goes (and the status a
+-- reply sets), then the start of its text - and which item each line is.
+-- `label_of(key)` names a status.
+local function render_queue(state, width, label_of)
+  local lines, at = {}, {}
+  for i, item in ipairs(state.items) do
+    local head = string.format("%2d. ", i) .. item_location(item)
+    if item.status then head = head .. "  \u{2192} " .. label_of(item.status) end
     local text = (item.text or ""):gsub("%s+", " ")
-    if #text > 60 then text = text:sub(1, 57) .. "..." end
-    lines[#lines + 1] = string.format("%-6s  %-32s  %s", item.kind, item_location(item), text)
+    if vim.fn.strdisplaywidth(text) > width - 4 then
+      text = vim.fn.strcharpart(text, 0, width - 5) .. "\u{2026}"
+    end
+    lines[#lines + 1] = head
+    at[#lines] = item
+    lines[#lines + 1] = "    " .. text
+    at[#lines] = item
   end
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "(moving shows it in the diff   <Tab>: go there   dd: remove   q/<Esc>: close)"
-  return lines
+  return lines, at
 end
 
 local function setup(ctx)
@@ -498,27 +546,46 @@ local function setup(ctx)
   local function open_queue()
     local s = state()
     if #s.items == 0 then
-      ctx.notify("No queued comments (gB to turn batch mode on, then comment as usual).")
+      ctx.notify("No queued comments.")
       return
     end
-    local win = ctx.open_float(render_queue(s), true, { min_width = 60 })
+    local statuses = require("azure-cli.hosts").caps(ctx.current_pr_record and ctx.current_pr_record()).thread_statuses
+    local function label_of(key)
+      for _, o in ipairs(statuses) do if o.key == key then return o.label end end
+      return tostring(key)
+    end
+    local width = math.min(100, math.max(40, vim.o.columns - 10))
+    local lines, at = render_queue(s, width, label_of)
+    local win = ctx.open_float(lines, true, { center = true, min_width = math.min(70, width),
+      title = "Queued (" .. #s.items .. ") - gS sends them",
+      footer = "<Tab> go there \u{00B7} s status \u{00B7} dd remove" })
     if not win then return end
     local fbuf = vim.api.nvim_win_get_buf(win)
     local kopts = { buffer = fbuf, silent = true, nowait = true }
+    local ns = vim.api.nvim_create_namespace("azure_cli_batch_queue")
+    local function paint()
+      vim.api.nvim_buf_clear_namespace(fbuf, ns, 0, -1)
+      for i, l in ipairs(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)) do
+        pcall(vim.api.nvim_buf_set_extmark, fbuf, ns, i - 1, 0,
+          { end_col = #l, hl_group = i % 2 == 1 and "AzureCliAccent" or "AzureCliMuted" })
+      end
+    end
+    paint()
     local function redraw_float()
       if not vim.api.nvim_buf_is_valid(fbuf) then return end
       if #s.items == 0 then
         pcall(vim.api.nvim_win_close, win, true)
         return
       end
+      lines, at = render_queue(s, width, label_of)
       vim.bo[fbuf].modifiable = true
-      pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, render_queue(s))
+      pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, lines)
       vim.bo[fbuf].modifiable = false
+      paint()
     end
-    -- Two header lines (title + blank) before the first item row.
     local function item_at_cursor()
       if not vim.api.nvim_win_is_valid(win) then return nil end
-      return s.items[vim.api.nvim_win_get_cursor(win)[1] - 2]
+      return at[vim.api.nvim_win_get_cursor(win)[1]]
     end
     local shown
     vim.api.nvim_create_autocmd("CursorMoved", {
@@ -540,8 +607,35 @@ local function setup(ctx)
       pcall(vim.api.nvim_win_close, win, true)
       show_item(item, true)
     end, kopts)
+    -- j / k: a whole item (two lines) at a time.
+    for key, dir in pairs({ j = 1, k = -1 }) do
+      vim.keymap.set("n", key, function()
+        local cur = vim.api.nvim_win_get_cursor(win)[1]
+        local head = cur - (cur - 1) % 2 + dir * 2 * vim.v.count1
+        head = math.max(1, math.min(head, #lines - 1))
+        pcall(vim.api.nvim_win_set_cursor, win, { head, 0 })
+      end, kopts)
+    end
+    -- s: the status a reply sets on its thread once it's sent.
+    vim.keymap.set("n", "s", function()
+      local item = item_at_cursor()
+      if not (item and item.kind == "reply") then
+        ctx.notify("Only a reply sets a thread's status.", vim.log.levels.WARN)
+        return
+      end
+      local items = { { label = "Leave it as it is", none = true } }
+      for _, o in ipairs(statuses) do items[#items + 1] = o end
+      require("azure-cli.prompt").select({ prompt = "Thread " .. tostring(item.thread_id) .. " once the reply is sent",
+        items = items, current = function(o) return o.key == item.status or (o.none and not item.status) end },
+        function(o)
+          if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_set_current_win, win) end
+          if not o then return end
+          item.status = (not o.none) and o.key or nil
+          redraw_float()
+        end)
+    end, kopts)
     -- Start on the first item, already shown.
-    pcall(vim.api.nvim_win_set_cursor, win, { 3, 0 })
+    pcall(vim.api.nvim_win_set_cursor, win, { 1, 0 })
     shown = s.items[1]
     show_item(shown, false)
     vim.keymap.set("n", "dd", function()
@@ -563,7 +657,7 @@ local function setup(ctx)
   local function submit_batch()
     local s = state()
     if s.submitting then
-      ctx.notify("Still sending the last gS - the queue's left for after it.", vim.log.levels.WARN)
+      ctx.notify("Still sending the last gS.", vim.log.levels.WARN)
       return
     end
     if #s.items == 0 then
@@ -620,9 +714,10 @@ local function setup(ctx)
         redraw()
       end,
       done = function(results, vote_err)
-        local ok_n, fail_n = 0, 0
+        local ok_n, fail_n, status_fail = 0, 0, 0
         for _, r in ipairs(results) do
           if r.ok then ok_n = ok_n + 1 else fail_n = fail_n + 1 end
+          if r.status_err then status_fail = status_fail + 1 end
         end
         if fail_n == 0 then s.on = false end
         pcall(ctx.refresh_threads)
@@ -637,7 +732,11 @@ local function setup(ctx)
         if fail_n > 0 then
           msg = msg .. "; " .. fail_n .. " failed and stayed queued"
         end
-        ctx.notify(msg .. ".", fail_n > 0 and vim.log.levels.WARN or vim.log.levels.INFO)
+        if status_fail > 0 then
+          msg = msg .. "; " .. status_fail .. " thread status" .. (status_fail == 1 and "" or "es")
+            .. " couldn't be set (s on the thread)"
+        end
+        ctx.notify(msg .. ".", (fail_n + status_fail) > 0 and vim.log.levels.WARN or vim.log.levels.INFO)
         redraw()
       end,
     }

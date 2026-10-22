@@ -72,17 +72,14 @@ do
   check("select: predicate current", last_select.opts.format_item("P2") == "P2  (current)")
 end
 
--- select: cancel -> cb(nil) plus a "Cancelled." flash (unless silent).
+-- select: cancel -> cb(nil), quietly.
 do
   flashes = {}
   select_answer = nil
   local called, got = false, "unset"
   P.select({ items = { "a" } }, function(c) called, got = true, c end)
   check("select: cancel calls cb(nil)", called and got == nil)
-  check("select: cancel flashes", flashes[1] == "Cancelled.")
-  flashes = {}
-  P.select({ items = { "a" }, silent = true }, function() end)
-  check("select: silent cancel is quiet", #flashes == 0)
+  check("select: cancel is quiet", #flashes == 0)
 end
 
 -- select: no items at all is an immediate cancel with a warning.

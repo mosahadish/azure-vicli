@@ -212,6 +212,67 @@ class ChatPrActionTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("2 people match 'B': Bob, Bea", err)
 
+    def test_find_people_lists_people_not_groups(self):
+        ident = "https://vssps.dev.azure.com/org/_apis/identities?searchFilter=General&filterValue=bo&queryMembership=None"
+        rc, out, _, _ = self.run_action("find_people", "bo", responses={ident: {"value": [
+            {"id": "1", "providerDisplayName": "Bob", "properties": {"Mail": {"$type": "System.String", "$value": "bob@x.com"}}},
+            {"id": "2", "providerDisplayName": "Bea", "properties": {"Account": {"$value": "bea"}}},
+            {"id": "g", "providerDisplayName": "[x]\\Team", "isContainer": True}]}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), [{"name": "Bob", "id": "1", "account": "bob@x.com"},
+                                           {"name": "Bea", "id": "2", "account": "bea"}])
+
+    def test_find_people_with_no_query_lists_every_teams_people(self):
+        teams = "https://dev.azure.com/org/_apis/projects/proj/teams"
+        rc, out, _, _ = self.run_action("find_people", " ", responses={
+            teams + "?$top=200": {"value": [{"id": "t1"}, {"id": "t2"}]},
+            teams + "/t1/members?$top=1000": {"value": [
+                {"identity": {"id": "2", "displayName": "Stein, Gregory", "uniqueName": "DOM\\gstein"}},
+                {"identity": {"id": "g", "displayName": "[proj]\\Admins", "isContainer": True}}]},
+            teams + "/t2/members?$top=1000": {"value": [
+                {"identity": {"id": "1", "displayName": "Gross, Tal", "uniqueName": "tal@x.com"}},
+                {"identity": {"id": "2", "displayName": "Stein, Gregory", "uniqueName": "DOM\\gstein"}}]}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), [{"name": "Gross, Tal", "id": "1", "account": "tal@x.com"},
+                                           {"name": "Stein, Gregory", "id": "2", "account": "DOM\\gstein"}])
+
+    def test_find_people_searches_each_word_too(self):
+        def ident(q):
+            return ("https://vssps.dev.azure.com/org/_apis/identities?searchFilter=General&filterValue="
+                    + q + "&queryMembership=None")
+        tal = {"id": "1", "providerDisplayName": "Gross, Tal"}
+        rc, out, _, _ = self.run_action("find_people", "tal gross", responses={
+            ident("tal%20gross"): {"value": []},
+            ident("tal"): {"value": [{"id": "3", "providerDisplayName": "Tal, Ron"}, tal]},
+            ident("gross"): {"value": [{"id": "4", "providerDisplayName": "Grossman, Avi"}, tal]}})
+        self.assertEqual(rc, 0)
+        self.assertEqual([p["name"] for p in json.loads(out)], ["Gross, Tal", "Tal, Ron", "Grossman, Avi"])
+
+    def test_remove_reviewer_deletes_them(self):
+        gid = "12345678-90ab-cdef-1234-567890abcdef"
+        rc, out, _, fetch = self.run_action("remove_reviewer", gid)
+        self.assertEqual((rc, json.loads(out)), (0, {"removed": gid}))
+        self.assertEqual([(c["method"], c["url"], c["api_version"]) for c in fetch.calls],
+                         [("DELETE", self.PR + "/reviewers/" + gid, "6.0")])
+
+    def test_remove_reviewer_reports_the_servers_refusal(self):
+        url = self.PR + "/reviewers/req"
+        rc, _, err, _ = self.run_action("remove_reviewer", "req", raise_for={
+            url: tpa.ac.AdoHttpError(400, url, b"required by policy")})
+        self.assertEqual(rc, 1)
+        self.assertIn("HTTP 400", err)
+
+    def test_remove_reviewer_needs_someone(self):
+        self.assertEqual(self.run_action("remove_reviewer", " ")[0], 1)
+
+    def test_add_reviewer_by_id_skips_the_search(self):
+        gid = "12345678-90ab-cdef-1234-567890abcdef"
+        rc, out, _, fetch = self.run_action("add_reviewer", gid, "false", responses={
+            self.PR + "/reviewers/" + gid: {"id": gid, "displayName": "Carol Chen"}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), {"added": "Carol Chen", "id": gid})
+        self.assertEqual([(c["method"], c["url"]) for c in fetch.calls], [("PUT", self.PR + "/reviewers/" + gid)])
+
     def test_set_description(self):
         rc, _, _, fetch = self.run_action("set_description", "New text")
         self.assertEqual(rc, 0)

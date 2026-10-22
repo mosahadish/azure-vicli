@@ -450,8 +450,8 @@ do
     for i, l in ipairs(e and e.tools or {}) do if l:find(s, 1, true) then return i end end
   end
   local function pid_of(e) return e and e.text:match("pid (%d+)") end
-  local KEPT = "interrupted - the session stays, your next message continues it"
-  local KILLED = "so it was killed - your next message starts it again and replays the conversation"
+  local KEPT = "\u{00B7} interrupted"
+  local KILLED = "so it was killed"
 
   -- Idle timeout, interrupt honoured.
   agent(1, 30)

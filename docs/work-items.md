@@ -22,9 +22,9 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `<CR>` | Open the item: parent, children, description |
 | `gs` | Change the item's state in a popup, optionally for its children too (see below) |
 | `n` | New work item: type, title, and parent (if the cursor is on one) |
-| `ga` | Assign the item under the cursor (empty input = assign to me) |
+| `ga` | Assign the item under the cursor: a popup with "(me)" and the team; typing narrows it and also searches everyone the server knows (on Azure DevOps the identity directory, on GitHub the repository's assignable people), so someone outside the team turns up too. "(type a name…)" takes any name (empty = me) |
 | `gp` | Set the item's priority (1-4) |
-| `ge` | Edit the item's title |
+| `ge` | Edit the item: opens it with every field that can change in one popup - title, state, assignee, priority, sprint, parent, tags, hours (see [Editing an item](#editing-an-item)) |
 | `gi` | Move the item to another sprint of the quarter |
 | `gU` | Move the item under another parent, or off its own (see below) |
 | `gl` | Link a pull request to the item under the cursor |
@@ -47,7 +47,7 @@ N items   ?: help`; the detail view's is `#123 · type · state   ?: help`.
 | `gP` | Start an agent that plans the item under the cursor (in visual mode: one per selected row) - see [Several agents at once](chat.md#several-agents-at-once) |
 | `q` | Quit |
 
-Press `?` for a popup with these keys. `ga`, `gp`, `ge` and `gi` apply to the
+Press `?` for a popup with these keys. `ga`, `gp` and `gi` apply to the
 row immediately and are reverted with an error if the call fails, the same
 optimistic pattern the PR dashboard uses for votes and completion. `n` has no
 id to show until the server answers, so it notifies and reloads the active
@@ -187,12 +187,30 @@ PR's details. Otherwise, for example a completed PR or one you're not on, it
 opens in the browser. A PR the server won't return (deleted, or no access)
 is still listed, by its id alone.
 
+### Editing an item
+
+`ge` - on the list or in the item - opens the item (or goes to its tab)
+with a popup over it titled **✎ Editing Task #3011**, its border in the
+warning colour, listing everything that can change: title, state, assigned
+to, priority, sprint, parent, tags, the hours its type has (Original
+estimate, Remaining work, Completed work - a Task's, usually) and, on
+GitHub, the description. `<CR>` on a field changes it - text in a one-line
+popup, a choice from a list - but only holds the change: it's marked `●`
+with its old value beside it. `<C-s>` saves them all; a change that fails stays held, marked
+`✖`. `u` takes back the one under the cursor, and `q`/`<Esc>` closes,
+asking first while anything is held. State and parent are their own
+popups (`gs`'s and `gU`'s), which save at once.
+
+The item's view shows its hours under Priority ("original 8 h · remaining
+3 h · completed 5 h", `—` for one not set). An empty hours value clears
+that field; `1,5` and `1.5` are both an hour and a half.
+
 Linking works from either side, each through a popup picker (`<CR>` picks, `q` closes): `gl`/`gL` here link and unlink a PR on the item, and `gl`/`gL` on the PR dashboard or in the reviewer link and unlink a work item on the PR. Either way both dashboards, and an open detail view, show the change straight away.
 
 In the detail view `<CR>` on a parent or child opens it, `gs` changes state,
 `gU` changes the parent (see above),
-`ga`/`gp`/`ge`/`gi` edit assignee/priority/title/sprint (re-rendering the
-detail on success), `o` opens the browser, `<BS>` returns to the list, and
+`ga`/`gp`/`gi` edit assignee/priority/sprint (re-rendering the
+detail on success), `ge` opens the edit form (below), `o` opens the browser, `<BS>` returns to the list, and
 `?` shows its keys. It also shows the item's discussion and linked pull
 requests (above): `gc` posts a comment (shown at once, tagged "(sending…)" until the
 server confirms), `gl` links a pull request by id - resolving its org,
@@ -218,7 +236,8 @@ Sections (and the `n` type picker) follow `work_items.types:` - configure
 `types: [Task, Feature]` and you get Tasks and Features sections instead
 of the default User Stories and Bugs. `/` filters by id, title, state or
 assignee as you type (`<Esc>` clears). `ga` picks from the team's members
-(plus "(me)" and typing a name), `gl` picks from the PR dashboard's cached
+(plus "(me)" and typing a name) and, as you type, anyone the server's
+directory finds, `gl` picks from the PR dashboard's cached
 list (or takes an id), and `gL` unlinks from the dashboard as well as the
 detail view. An empty description shows `(none)`.
 
@@ -297,8 +316,9 @@ What's different on GitHub:
   unchanged) writes nothing. Work items on `W` don't have `gE` yet: Azure
   DevOps descriptions are HTML, and the detail view shows them flattened
   to text, so writing that back would lose their formatting.
-- **`ga`, `gp`, `ge`, `gi`** set the assignees (GitHub logins), the
-  project's Priority field (when it has one), the title and the iteration.
+- **`ga`, `gp`, `gi`** set the assignees (GitHub logins), the
+  project's Priority field (when it has one) and the iteration; `ge`'s
+  form sets those, the title and the labels (as Tags).
 - **Linked pull requests** are the ones GitHub lists as closing the issue,
   shown as `repo#7`. `gR` opens one.
 - **`gl`/`gL`** link and unlink a GitHub pull request. GitHub has no other

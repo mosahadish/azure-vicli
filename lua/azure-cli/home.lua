@@ -133,9 +133,18 @@ function M.open_all()
     fresh = true
     vim.schedule(M.order)
   end })
+  -- Every switch of view clears the screen and redraws it (<C-l>), once a
+  -- burst of switches settles, so nothing the last view drew is left on it.
+  local clearing = false
   vim.api.nvim_create_autocmd("TabEnter", { group = group, callback = function()
     if fresh and leaving then opened_from[vim.api.nvim_get_current_tabpage()] = leaving end
     fresh = false
+    if clearing then return end
+    clearing = true
+    vim.schedule(function()
+      clearing = false
+      vim.cmd("redraw!")
+    end)
   end })
   vim.api.nvim_create_autocmd("TabClosed", { group = group, callback = function()
     local back

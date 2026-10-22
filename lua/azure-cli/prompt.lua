@@ -8,15 +8,16 @@
 -- back to Neovim's built-in ones otherwise.
 --
 -- Both are asynchronous: the answer arrives in `cb`, never as a return
--- value. cb(nil) means cancelled (Esc, q, an empty pick) - and unless
--- opts.silent is set, a cancel is also announced with a "Cancelled."
--- flash, since that used to be every call site's own first line.
+-- value. cb(nil) means cancelled (Esc, q, an empty pick), quietly.
 --
 -- With ui.confirm = "popup" (the default) a yes/no question and a short
 -- menu are ui.lua's popup instead (M.choose): buttons in the middle of the
 -- screen, a menu's entries numbered. Long lists, and ones a caller marks
--- `search` (a picker's fuzzy search is the point), stay vim.ui.select, as
--- does everything with ui.confirm = "select".
+-- `search`, are picker.lua's filter-as-you-type popup, and a text prompt
+-- its one-line popup - but only while vim.ui.select / vim.ui.input are
+-- Neovim's own (a command-line prompt or numbered list): a picker plugin
+-- that has taken them over (telescope, fzf-lua, dressing, snacks) still
+-- draws them. With ui.confirm = "select" everything is vim.ui.*.
 local M = {}
 
 -- Up to this many entries a menu is a popup; more go to vim.ui.select.
@@ -29,6 +30,12 @@ end
 
 local notify = require("azure-cli.shell").notify
 
+-- Whether vim.ui.<name> is still Neovim's built-in one (runtime/lua/vim/ui.lua).
+local function builtin(name)
+  local ok, info = pcall(debug.getinfo, vim.ui[name], "S")
+  return ok and info and (info.source or ""):find("vim[/\\]ui%.lua$") ~= nil
+end
+
 -- M.select(opts, cb): a menu.
 --   opts.prompt   the title ("Vote on PR #123")
 --   opts.items    a list; each entry is a string, or a table with a
@@ -38,7 +45,7 @@ local notify = require("azure-cli.shell").notify
 --                 present value - it's shown with a "(current)" suffix so
 --                 the user can tell "change" from "set" at a glance
 --   opts.format   optional item -> string, instead of `label`/tostring
---   opts.silent   don't flash "Cancelled." on a cancel
+--   opts.silent   no "Nothing to choose from." warning on an empty list
 --   opts.search   always vim.ui.select (a list worth searching), never the
 --                 popup
 -- cb(item, index) with the chosen entry (the caller's own table/string),
@@ -81,10 +88,21 @@ function M.select(opts, cb)
       default = focused, keys = keys, cancel = false, stack = true,
       hint = "1-" .. #items .. " or Enter picks \u{00B7} j / k move \u{00B7} Esc cancels" }, function(i)
       if not i then
-        if not opts.silent then notify("Cancelled.") end
         return cb(nil)
       end
       cb(items[i], i)
+    end)
+    return
+  end
+  if popup_style() and builtin("select") then
+    require("azure-cli.picker").open({ title = (opts.prompt or "Choose"):gsub("[:%s]+$", ""), items = items,
+      format = opts.format or function(item)
+        return type(item) == "table" and tostring(item.label or item.name or item[1] or "?") or tostring(item)
+      end, current = opts.current and is_current or nil }, function(choice, idx)
+      if choice == nil then
+        return cb(nil)
+      end
+      cb(choice, idx)
     end)
     return
   end
@@ -93,7 +111,6 @@ function M.select(opts, cb)
   vim.ui.select(items, { prompt = prompt, format_item = format, kind = opts.kind or "azure-cli" },
     function(choice, idx)
       if choice == nil then
-        if not opts.silent then notify("Cancelled.") end
         cb(nil)
         return
       end
@@ -104,22 +121,20 @@ end
 -- M.input(opts, cb): a one-line text prompt.
 --   opts.prompt, opts.default, opts.completion (vim.ui.input's own fields)
 --   opts.allow_empty  pass "" through instead of treating it as a cancel
---   opts.silent       don't flash "Cancelled." on a cancel
 -- cb(text) with the (whitespace-trimmed) text, or cb(nil) on cancel /
 -- empty. Multi-line text belongs in lua/azure-cli/editor.lua, not here.
 function M.input(opts, cb)
   opts = opts or {}
   local prompt = opts.prompt or "> "
   if not prompt:match("%s$") then prompt = prompt .. " " end
-  vim.ui.input({ prompt = prompt, default = opts.default, completion = opts.completion }, function(text)
+  local ask = (popup_style() and builtin("input")) and require("azure-cli.picker").input or vim.ui.input
+  ask({ prompt = prompt, default = opts.default, completion = opts.completion }, function(text)
     if text == nil then
-      if not opts.silent then notify("Cancelled.") end
       cb(nil)
       return
     end
     text = vim.trim(text)
     if text == "" and not opts.allow_empty then
-      if not opts.silent then notify("Cancelled.") end
       cb(nil)
       return
     end

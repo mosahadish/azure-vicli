@@ -554,8 +554,6 @@ function M.ask_approval(keys, cb)
   local plain, with_push = "Approve", has_cmd and "Approve, and let it push and open the PR once the tests pass"
     or "Approve, and let it push and open the PR without asking"
   require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
-      "The agent goes ahead with it. Letting it push skips the questions before its push and its pull request"
-        .. (has_cmd and ", once the plan's tests pass on its change." or "."),
       -- #57: p on a plan that works on an existing branch opens no PR.
       "On an existing branch it pushes straight to it - no PR.",
     }, buttons = { plain, with_push, "Cancel" }, keys = { a = 1, p = 2 }, cancel = 3,
@@ -609,8 +607,8 @@ function M.approve(key, allow_push)
     for _, th in ipairs(rec.threads) do if th.kind == "answer" then th.status = "sent" end end
     VIEW().changed(rec)
   else
-    notify("Approved " .. M.target_label(rec.target) .. " - its agent is still answering; tell it once it's done "
-      .. "(it can read the plan with get_plan).", vim.log.levels.WARN)
+    notify("Approved " .. M.target_label(rec.target) .. " - its agent is still answering; tell it once it's done.",
+      vim.log.levels.WARN)
   end
   return true
 end
@@ -817,7 +815,7 @@ function M.tools(T)
         -- No agent pulls you into its plan, not even the one in the
         -- foreground (#120): it says it's ready, and a view of the plan
         -- that's already open shows the new revision where it is.
-        notify("The plan for " .. M.target_label(target) .. " is ready for you - the Agents screen opens it.")
+        notify("The plan for " .. M.target_label(target) .. " is ready on the Agents screen.")
         pcall(function() require("azure-cli.chat").alert("azure-vicli: plan " .. M.target_label(target) .. " is ready",
           tostring(args.title or "") .. " - waiting for your review") end)
         VIEW().show(key, rec)

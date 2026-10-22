@@ -15,7 +15,8 @@
 --   n      new work item: type, title, and parent (if the cursor is on one)
 --   ga     assign the item under the cursor
 --   gp     set the item's priority
---   ge     edit the item's title
+--   ge     edit the item: opens it (or goes to its tab) with ge's form over
+--          it - every field that can change (workitems/edit.lua)
 --   gi     move the item to another sprint of the quarter
 --   gU     move the item under another parent, or off its own (a picker)
 --   gl     link a pull request to the item under the cursor
@@ -1096,16 +1097,56 @@ local function fetch_members(cb)
 end
 
 -- Runs the assignee picker for `current` (a display name or "") and
--- calls cb(new_name) - "" meaning "me". Shared with the detail view
--- through S.WI_PICK_ASSIGNEE. Team members are listed when the call
--- works; "(me)" and "(type a name…)" are always there.
+-- calls cb(value, name) - value "" meaning "me"; `name` is who that is,
+-- to show until the host's answer comes back. Shared with the detail view
+-- and ge's form through S.WI_PICK_ASSIGNEE. A popup listing "(me)" and
+-- the team (when the call works); typing narrows it, and each pause in
+-- typing also searches the directory (--wi-list people: anyone the host
+-- knows, not only the team) and adds who it finds. "(type a name…)" is
+-- always there.
 local function pick_assignee(current, cb)
   fetch_members(function(members)
-    local items = { { label = "(me)", value = "" } }
-    for _, m in ipairs(members) do items[#items + 1] = { label = m.name, value = m.name } end
+    local items, by_name = { { label = "(me)", value = "" } }, {}
+    for _, m in ipairs(members) do
+      items[#items + 1] = { label = m.name, value = m.name, name = m.name }
+      by_name[m.name:lower()] = items[#items]
+    end
     items[#items + 1] = { label = "(type a name\u{2026})", typed = true }
-    PROMPT.select({ prompt = "Assign to", items = items, search = true,
-      current = function(x) return x.value ~= nil and x.value ~= "" and x.value == current end }, function(choice)
+    local asked = {}
+    require("azure-cli.picker").open({ title = "Assign to", items = items, height = 12,
+      current = function(x) return x.value ~= nil and x.value ~= "" and x.value == current end,
+      on_query = function(q, api)
+        if #q < 2 or asked[q:lower()] then return end
+        asked[q:lower()] = true
+        api.status("searching\u{2026}")
+        local out = {}
+        B.run({ "--wi-list", "people", q }, {
+          stdout_buffered = true,
+          on_stdout = function(_, d) if d then vim.list_extend(out, d) end end,
+          on_exit = function(_, code)
+            vim.schedule(function()
+              if api.done() then return end
+              api.status(code == 0 and "" or "search failed")
+              local new, all = {}, {}
+              for _, line in ipairs(out) do
+                local ok, rec = pcall(vim.json.decode, line)
+                if ok and type(rec) == "table" and rec.name then
+                  local have = by_name[rec.name:lower()]
+                  if not have then
+                    have = { label = rec.name .. ((rec.email or "") ~= "" and ("  " .. rec.email) or ""),
+                      value = rec.assign or rec.name, name = rec.name }
+                    by_name[rec.name:lower()] = have
+                    new[#new + 1] = have
+                  end
+                  all[#all + 1] = have
+                end
+              end
+              api.add(new)
+              api.keep(q, all)
+            end)
+          end,
+        })
+      end }, function(choice)
       if not choice then return end
       if choice.typed then
         PROMPT.input({ prompt = "Assign to (empty = me):", default = current or "", allow_empty = true }, function(new)
@@ -1113,7 +1154,7 @@ local function pick_assignee(current, cb)
         end)
         return
       end
-      cb(choice.value)
+      cb(choice.value, choice.name)
     end)
   end)
 end
@@ -1122,10 +1163,10 @@ S.WI_PICK_ASSIGNEE = pick_assignee
 local function assign_item()
   local it = current_item()
   if not it then return end
-  pick_assignee(it.assignedTo or "", function(new)
+  pick_assignee(it.assignedTo or "", function(new, name)
     run_edit(it, { "set", ref(it), "assignedTo", new }, "Assigning", function(rec)
       local prev = rec.assignedTo
-      rec.assignedTo = new
+      rec.assignedTo = name or new
       return function() rec.assignedTo = prev end
     end, function() nudge_detail(ref(it)) end)
   end)
@@ -1149,22 +1190,20 @@ local function set_priority()
   end)
 end
 
--- Edit the title of the item under the cursor, prefilled with the current one.
-local function edit_title()
+-- ge: open the item under the cursor (as <CR> does) with its edit form
+-- over it; when it's open already, go there and open the form.
+local function edit_item()
   local it = current_item()
   if not it then return end
-  PROMPT.input({ prompt = "Title for #" .. it.id .. ":", default = it.title or "" }, function(new)
-    if new == nil then return end
-    if new == it.title then
-      notify("Title unchanged.")
-      return
-    end
-    run_edit(it, { "set", ref(it), "title", new }, "Renaming", function(rec)
-      local prev = rec.title
-      rec.title = new
-      return function() rec.title = prev end
-    end, function() nudge_detail(ref(it)) end)
-  end)
+  local INNER = require("azure-cli.innertabs")
+  local built = false
+  INNER.open(INNER.item_home(B.host), INNER.item_key(B.host, ref(it)),
+    "#" .. tostring(it.id) .. " " .. tostring(it.title or ""), function()
+      built = true
+      require("azure-cli.workitems.view").open(B, ref(it), { edit = true })
+    end)
+  local open_form = not built and S.WI_VIEW_EDIT and S.WI_VIEW_EDIT[ref(it)]
+  if open_form then open_form() end
 end
 
 -- Move the item under the cursor to another sprint of the quarter, offered
@@ -1319,7 +1358,7 @@ local function set_wi_filter()
     render()
   end
   UI.filter_prompt({
-    win = win, prompt = "Filter " .. WORDS.items .. " (id, title, state, assignee)", default = wi_filter,
+    win = win, prompt = "Filter " .. WORDS.items, default = wi_filter,
     on_change = apply, on_submit = apply,
     on_cancel = function() apply("") end,
   })
@@ -1697,7 +1736,7 @@ local WORKITEMS_HELP = {
   { "state", "change the " .. WORDS.item .. "'s state (a popup; can set its children too; on a visual selection: all of them)" },
   { "assign", "assign the " .. WORDS.item .. " under the cursor" },
   { "priority", "set the " .. WORDS.item .. "'s priority" },
-  { "edit_title", "edit the " .. WORDS.item .. "'s title" },
+  { "edit_title", "edit the " .. WORDS.item .. ": opens it with every field in one popup" },
   { "move_sprint", "move the " .. WORDS.item .. " to another " .. SPRINT .. " of the " .. QUARTER },
   { "set_parent", "move the " .. WORDS.item .. " under another parent, or off its own (a picker)" },
   { "link_pr", "link a pull request to the " .. WORDS.item .. " under the cursor" },
@@ -1757,7 +1796,7 @@ KEYS.bind(buf, "workitems", "state", set_state_selection, { mode = "x", desc = "
 KEYS.bind(buf, "workitems", "new", new_item, { desc = "new " .. WORDS.item })
 KEYS.bind(buf, "workitems", "assign", assign_item, { desc = "assign the " .. WORDS.item .. " under the cursor" })
 KEYS.bind(buf, "workitems", "priority", set_priority, { desc = "set the " .. WORDS.item .. "'s priority" })
-KEYS.bind(buf, "workitems", "edit_title", edit_title, { desc = "edit the " .. WORDS.item .. "'s title" })
+KEYS.bind(buf, "workitems", "edit_title", edit_item, { desc = "edit the " .. WORDS.item .. " (every field)" })
 KEYS.bind(buf, "workitems", "move_sprint", move_sprint_item, { desc = "move the " .. WORDS.item .. " to another " .. SPRINT })
 KEYS.bind(buf, "workitems", "set_parent", set_parent_item, { desc = "move the " .. WORDS.item .. " under another parent" })
 if B.caps.links then

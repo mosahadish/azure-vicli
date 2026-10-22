@@ -868,7 +868,7 @@ do
   check("watch: new ones wait for a quiet poll", #notes == 0)
   W.poll()
   check("watch: then the chat says so (suggest)", #notes == 1 and notes[1]:find("1 new comment", 1, true) ~= nil
-    and notes[1]:find("/triage", 1, true) ~= nil and #started == 0, vim.inspect(notes))
+    and #started == 0, vim.inspect(notes))
   comment(1, 2, "me")
   W.poll(); W.poll()
   check("watch: my own comments don't count", #notes == 1, vim.inspect(notes))
@@ -989,6 +989,20 @@ do
   check("#109 agent column / ga: each #7 to its own agent",
     (AV.for_pr(by, a7) or {}).key == "pr-github-o~a~7" and (AV.for_pr(by, b7) or {}).key == "pr-github-o~b~7"
     and AV.for_pr(by, { id = 7 }) == nil)
+  -- gp on a PR (the dashboard, the reviewer): its agent's plan, by key.
+  local opened
+  PL.open = function(k) opened = k end
+  check("#109 gp: b's #7 opens b's agent's plan", AV.open_for_pr("o~b~7") == true and opened == "pr-github-o~b~7",
+    tostring(opened))
+  opened = nil
+  check("gp: a PR with no agent opens nothing", AV.open_for_pr("o~c~7") == false and opened == nil)
+  PL.open = function() end
+  -- gp in a plan or on an Agents row: that PR, by key, in the reviewer.
+  local had_dash, got = package.loaded["azure-cli.dashboard"], nil
+  package.loaded["azure-cli.dashboard"] = { open_pr_by_record = function(p) got = p end }
+  PV.open_pr("o~b~7", 7)
+  package.loaded["azure-cli.dashboard"] = had_dash
+  check("#109 gp in a plan / on an Agents row: b's #7 in the reviewer", got == b7, vim.inspect(got))
   -- Linked and closed by key: closing a's #7 leaves b's.
   PL.save({ key = "wi-95", target = { work_item_id = 95 }, status = "done", revisions = {}, threads = {} })
   PL.link_pr({ 95 }, nil, a7)

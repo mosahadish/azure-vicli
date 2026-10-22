@@ -717,9 +717,7 @@ local function enqueue(st, text, opts)
   while #st.sent > 100 do table.remove(st.sent, 1) end
   st.sent_pos = nil
   render()
-  local KEYS = require("azure-cli.keys")
-  notify("Queued - it goes to the agent when this answer is done (" .. KEYS.name("chat", "queue_drop")
-    .. " on it in the chat cancels it, " .. KEYS.name("chat", "queue_edit") .. " edits it).")
+  notify("Queued - it goes when this answer is done.")
 end
 
 -- Sending from the input box with a queued message in it (cc put it
@@ -740,7 +738,7 @@ local function requeue(st, text)
   end
   q.text, q.display, q.held = text, nil, nil
   render()
-  if st.running then return notify("Changed the queued message - it goes when this answer is done.") end
+  if st.running then return notify("Changed the queued message.") end
   M.drain(st)
 end
 
@@ -917,7 +915,7 @@ send = function(text, opts)
       -- go on, unless it had to be killed.
       if entry.text == "" then entry.text = "_(stopped before it answered)_" end
       if not turn.killed then
-        table.insert(entry.tools, "\u{00B7} interrupted - the session stays, your next message continues it")
+        table.insert(entry.tools, "\u{00B7} interrupted")
       end
     elseif reader.is_error and entry.text == "" then
       entry.text = "(the agent reported an error)"
@@ -1022,7 +1020,7 @@ send = function(text, opts)
     if turn.done then return end
     if not turn.interrupt_id then return pcall(vim.fn.jobstop, job) end
     turn.killed = true
-    table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(why)) .. " - your next message starts it again and replays the conversation")
+    table.insert(entry.tools, CORE.tool_line("\u{2717} " .. tostring(why)))
     render_soon()
     stop_tree(job)
   end

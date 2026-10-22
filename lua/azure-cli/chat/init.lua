@@ -260,7 +260,7 @@ function M.restore_plans()
   if #adopted > 0 then
     table.sort(adopted)
     notify("Plan" .. (#adopted == 1 and " " or "s ") .. table.concat(adopted, ", ") .. " had no agent - "
-      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now: approve to hand on, or dd there to discard.")
+      .. (#adopted == 1 and "it's" or "they're") .. " on the Agents screen now.")
   end
 end
 
@@ -644,6 +644,7 @@ end
 local PLUGIN_FT = {
   ["azurecli-dashboard"] = true, ["azurecli-files"] = true, ["azurecli-workitems"] = true, ["azurecli-workitem"] = true,
   ["azurecli-changes"] = true, ["azurecli-plan"] = true, ["azurecli-agents"] = true,
+  ["azurecli-issues"] = true, ["azurecli-issue"] = true,
 }
 local function plugin_tab(tab)
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
@@ -854,6 +855,15 @@ function M.hide()
   STATE().visible = false
   local main = M.main_win()
   close_here()
+  -- Hidden everywhere, not just here: a panel left open in another tab
+  -- would greet you there, as if it had opened by itself.
+  for tab, w in pairs(STATE().wins) do
+    for _, win in ipairs({ w.input, w.log }) do
+      if win and vim.api.nvim_win_is_valid(win) and #vim.api.nvim_tabpage_list_wins(tab) > 1 then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end
+  end
   if main and vim.api.nvim_win_is_valid(main) then pcall(vim.api.nvim_set_current_win, main) end
 end
 
@@ -920,8 +930,35 @@ vim.api.nvim_create_autocmd({ "TabEnter", "BufWinEnter" }, {
         local st = STATE()
         local tab = vim.api.nvim_get_current_tabpage()
         if st.visible and not panel_open_in(tab) and plugin_tab(tab) then open_here(false) end
+        -- Already open here: at the size it was last given in any tab.
+        local w = st.wins[tab]
+        if st.size and w and w.log and vim.api.nvim_win_is_valid(w.log) then
+          local pos = config().position or "right"
+          if pos == "right" or pos == "left" then
+            if vim.api.nvim_win_get_width(w.log) ~= st.size then pcall(vim.api.nvim_win_set_width, w.log, st.size) end
+          elseif vim.api.nvim_win_get_height(w.log) ~= st.size then
+            pcall(vim.api.nvim_win_set_height, w.log, st.size)
+          end
+        end
       end)
     end)
+  end,
+})
+-- Resized by hand (the mouse, <C-w> < >): that size sticks for the
+-- session, in every tab the panel follows into, as its own < / > do.
+pcall(vim.api.nvim_create_autocmd, "WinResized", {
+  group = group,
+  callback = function()
+    local st = STATE()
+    local w = st.wins[vim.api.nvim_get_current_tabpage()]
+    if not (w and w.log and vim.api.nvim_win_is_valid(w.log)) then return end
+    for _, id in ipairs((vim.v.event or {}).windows or {}) do
+      if id == w.log then
+        local pos = config().position or "right"
+        st.size = (pos == "right" or pos == "left") and vim.api.nvim_win_get_width(w.log)
+          or vim.api.nvim_win_get_height(w.log)
+      end
+    end
   end,
 })
 vim.api.nvim_create_autocmd("WinClosed", {
@@ -934,8 +971,9 @@ vim.api.nvim_create_autocmd("WinClosed", {
           for _, win in ipairs({ w.log, w.input }) do
             if win ~= closed and win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
           end
-          -- Closed by hand while its tab lives on: that's hiding it.
-          if vim.api.nvim_tabpage_is_valid(tab) then STATE().visible = false end
+          -- Closed by hand while its tab lives on: that's hiding it, in
+          -- every tab (M.hide).
+          if vim.api.nvim_tabpage_is_valid(tab) and STATE().visible then M.hide() end
         end)
         STATE().wins[tab] = nil
       end
@@ -979,7 +1017,7 @@ local function one_at_a_time(question, ask)
     return
   end
   asking = true
-  notify(question .. " (answer in the prompt)")
+  notify(question)
   M.alert("azure-vicli: a question for you", question)
   MAIN().question = question
   M.set_winbars()
@@ -1051,7 +1089,6 @@ function M.ask_questions(conv, questions, cb)
       if done_i then buttons[done_i] = "Done" end
       buttons[#buttons + 1] = "Cancel"
       local cancel = #buttons
-      if multi then lines[#lines + 1] = "(Pick any number of them.)" end
       local checks
       if multi then
         checks = {}
@@ -1093,7 +1130,7 @@ function M.ask_questions(conv, questions, cb)
         -- Done: what's ticked (nothing ticked asks again).
         local p = ticked(ch)
         if #p == 0 then
-          notify("Tick at least one, or pick Other\u{2026} - Esc declines.")
+          notify("Tick at least one, or pick Other\u{2026}")
           return ask(n, ch)
         end
         picks[n] = p
@@ -1238,7 +1275,7 @@ function M.on_new_comments(pr, count)
   -- The chat's own PRs: chat/watch.lua says it (or plans the fix) itself.
   if require("azure-cli.chat.watch").watched(pr) then return end
   M.note("!" .. tostring(pr.id) .. " \"" .. tostring(pr.title or "") .. "\" got " .. tostring(count)
-    .. " new comment" .. (count == 1 and "" or "s") .. " - open it and send /triage, or ask here.")
+    .. " new comment" .. (count == 1 and "" or "s") .. ".")
 end
 
 -- The PR dashboard loaded: once a day (chat.daily_summary), run /standup
@@ -1255,7 +1292,7 @@ function M.on_dashboard_loaded(dash_win)
   pcall(vim.fn.writefile, { today }, stamp)
   new_chat(true)
   send("/standup", { view_win = dash_win, on_done = function()
-    notify("Your daily summary is ready in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input") .. ").")
+    notify("Your daily summary is ready in the chat.")
   end })
 end
 

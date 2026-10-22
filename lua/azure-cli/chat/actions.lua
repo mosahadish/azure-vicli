@@ -165,7 +165,7 @@ use_as_reply = function()
     if st.entries[i].role == "you" then view = st.entries[i].view break end
   end
   local pr = view and view.pr
-  if not pr then return notify("That answer wasn't about a pull request - nothing to reply on.", vim.log.levels.WARN) end
+  if not pr then return notify("That answer wasn't about a pull request.", vim.log.levels.WARN) end
   local thread = view.thread
   local TOOLS = require("azure-cli.chat.tools")
   local EDITOR = require("azure-cli.editor")
@@ -176,9 +176,7 @@ use_as_reply = function()
       local item = thread and { kind = "reply", thread_id = thread.id, text = text }
         or { kind = "thread", args = { "--pr-comment", text }, bucket = "general", text = text, label = "PR comment" }
       TOOLS.queue_draft(pr.id, item)
-      local KEYS = require("azure-cli.keys")
-      notify("Queued as a draft on PR !" .. pr.id .. " (" .. KEYS.name("list", "batch_queue") .. " in the reviewer lists it, "
-        .. KEYS.name("list", "batch_submit") .. " sends it).")
+      notify("Queued as a draft on PR !" .. pr.id .. ".")
     end,
   })
 end
@@ -270,7 +268,7 @@ pick_agent = function()
     st.session_id = nil
     st.model, st.model_agent = nil, nil
     CHAT().set_winbars()
-    notify("Chat agent: " .. (agents[choice].label or choice) .. " - it gets the conversation so far with your next message.")
+    notify("Chat agent: " .. (agents[choice].label or choice) .. ".")
   end)
 end
 

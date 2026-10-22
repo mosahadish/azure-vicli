@@ -138,7 +138,11 @@ end
 -- Option callbacks (evaluated with the window's buffer current). ---------
 
 function M.statuscolumn()
-  local entry = by_buf[vim.api.nvim_get_current_buf()]
+  -- The window being drawn, not the current one: with a float focused (K)
+  -- the current buffer is the float's, and the diff's numbers went blank.
+  local win = vim.g.statusline_winid
+  local ok, buf = pcall(vim.api.nvim_win_get_buf, win or 0)
+  local entry = by_buf[ok and buf or vim.api.nvim_get_current_buf()]
   local lnum = vim.v.lnum
   if not entry then return "%s%l " end
   if vim.v.virtnum and vim.v.virtnum ~= 0 then

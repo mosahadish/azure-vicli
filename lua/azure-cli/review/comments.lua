@@ -201,10 +201,8 @@ local function do_delete(ctx, t, c, on_change)
     ctx.notify("Still sending; try again once it's confirmed.", vim.log.levels.WARN)
     return
   end
-  require("azure-cli.prompt").confirm({ title = "Delete comment",
-    prompt = "Are you sure?" }, function(yes)
+  require("azure-cli.prompt").confirm({ title = "Delete this comment?" }, function(yes)
     if not yes then
-      ctx.notify("Cancelled.")
       return
     end
     local bucket = (#t.comments == 1) and locate_bucket(ctx, t) or nil
@@ -288,8 +286,10 @@ local function setup(ctx)
         return
       end
       vim.bo[fbuf].modifiable = true
-      pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, (ctx.threads_to_lines(threads)))
+      pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false,
+        (ctx.threads_to_lines(threads, vim.b[fbuf].azure_cli_thread_width)))
       vim.bo[fbuf].modifiable = false
+      require("azure-cli.review.thread_text").paint(fbuf)
     end
 
     vim.keymap.set("n", "e", function()

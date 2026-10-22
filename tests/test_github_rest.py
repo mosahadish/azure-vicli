@@ -178,6 +178,8 @@ class ListTests(Base):
         self.assertEqual(ado["mergeStatus"], "conflicts")
         self.assertEqual(ado["createdBy"], {"id": "alice", "displayName": "Alice Person"})
         self.assertEqual(node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"], "SUCCESS")
+        # Only a review that's still requested can be taken back (gX).
+        self.assertEqual({r["id"] for r in ado["reviewers"] if r.get("isRequested")}, {"bob"})
         self.assertEqual(gh.merge_methods(node["repository"])[-1]["key"], "merge")
 
     def test_a_gone_branch_has_no_head_ref_but_a_fork_is_left_alone(self):
@@ -364,6 +366,42 @@ class ReviewTests(Base):
 
 
 class WriteTests(Base):
+    def test_remove_reviewer_takes_back_the_request(self):
+        c = RestClient(base_routes({
+            ("DELETE", r"/repos/o/r/pulls/7/requested_reviewers"): {"requested_reviewers": [{"login": "carol"}]},
+        }))
+        code, out, _ = run(gh.Actions(None, env(), c).remove_reviewer, "@bob")
+        self.assertEqual((code, json.loads(out)), (0, {"removed": "bob"}))
+        self.assertEqual(c.sent("DELETE", r"/repos/o/r/pulls/7/requested_reviewers"), [{"reviewers": ["bob"]}])
+
+    def test_remove_reviewer_says_when_github_keeps_the_request(self):
+        c = RestClient(base_routes({
+            ("DELETE", r"/repos/o/r/pulls/7/requested_reviewers"): {"requested_reviewers": [{"login": "bob"}]},
+        }))
+        code, _, err = run(gh.Actions(None, env(), c).remove_reviewer, "bob")
+        self.assertEqual((code, err.strip()), (1, "GitHub kept bob's review request."))
+
+    def test_remove_a_team_reviewer(self):
+        c = RestClient(base_routes({("DELETE", r"/repos/o/r/pulls/7/requested_reviewers"): {}}))
+        self.assertEqual(run(gh.Actions(None, env(), c).remove_reviewer, "team:core")[0], 0)
+        self.assertEqual(c.sent("DELETE", r"/repos/o/r/pulls/7/requested_reviewers"), [{"team_reviewers": ["core"]}])
+
+    def test_find_people_lists_the_assignees_but_the_author(self):
+        c = RestClient(base_routes({
+            ("GET", r"/repos/o/r/assignees"): [{"login": "alice"}, {"login": "bob"}],
+        }))
+        code, out, _ = run(gh.Actions(None, env(), c).find_people, "")
+        self.assertEqual(code, 0)
+        self.assertEqual([p["login"] for p in json.loads(out)], ["bob"])
+
+    def test_an_organization_is_no_user(self):
+        c = RestClient(base_routes({
+            ("GET", r"/repos/o/r/assignees"): [],
+            ("GET", r"/users/(\w+)"): lambda m, d: {"login": m.group(1), "name": "Acme Inc", "type": "Organization"},
+        }))
+        code, out, _ = run(gh.Actions(None, env(), c).find_people, "acme")
+        self.assertEqual((code, json.loads(out)), (0, []))
+
     def test_add_reviewer_requests_by_login(self):
         routes = base_routes({
             ("GET", r"/repos/o/r/assignees"): [{"login": "bob"}, {"login": "carol"}],

@@ -772,7 +772,11 @@ local function open_picker(ctx, kind, new_iterations, review_point, anchored, un
   vim.keymap.set("n", "K", function()
     local row = selected()
     if not (row and row.thread) then return end
-    ctx.open_float(ctx.threads_to_lines({ ctx.find_thread(row.thread.id) or row.thread }), true, { big = true })
+    local TT = require("azure-cli.review.thread_text")
+    local width = TT.popup_width()
+    local win = ctx.open_float(ctx.threads_to_lines({ ctx.find_thread(row.thread.id) or row.thread }, width), true,
+      { center = true, min_width = math.min(60, width) })
+    if win then TT.paint(vim.api.nvim_win_get_buf(win)) end
   end, kopts)
   vim.keymap.set("n", "R", function()
     local row = selected()
@@ -788,7 +792,7 @@ local function open_picker(ctx, kind, new_iterations, review_point, anchored, un
     local row = selected()
     if not (row and row.thread) then return end
     local target = ctx.find_thread(row.thread.id) or row.thread
-    require("azure-cli.prompt").select({ prompt = "Set thread " .. tostring(target.id) .. " status",
+    require("azure-cli.prompt").select({ prompt = "Thread status" .. (((target.comments or {})[1] or {}).author and (" - " .. target.comments[1].author) or ""),
       items = ctx.status_options(),
       current = function(o) return target.status == o.key end }, function(o)
       if not o then return end

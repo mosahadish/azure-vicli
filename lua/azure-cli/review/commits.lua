@@ -417,7 +417,7 @@ local function render_commit_list(ctx, buf)
   if commits == nil then
     lines[#lines + 1] = "  (loading\u{2026})"
   elseif #commits == 0 then
-    lines[#lines + 1] = "  (none found - branch may not be fetched yet)"
+    lines[#lines + 1] = "  (none found)"
   else
     for _, c in ipairs(commits) do
       lines[#lines + 1] = "  " .. c

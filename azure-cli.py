@@ -564,7 +564,8 @@ class Config:
             for name in missing:
                 hint = ""
                 if name == "pat":
-                    hint = (" (a personal access token with Code and Work Items read/write scopes, "
+                    hint = (" (a personal access token with Code and Work Items read/write and Project and Team "
+                            "and Identity read scopes, "
                             "or pat_file: a file holding just the token)")
                 elif name == "org_url":
                     hint = " (e.g. https://dev.azure.com/my-org)"
@@ -934,7 +935,14 @@ def reviewer_info_list(pr):
     for r in pr.get("reviewers") or []:
         if not r or r.get("isContainer"):
             continue
-        out.append({"name": r.get("displayName") or "", "id": r.get("id") or "", "vote": r.get("vote") or 0})
+        entry = {"name": r.get("displayName") or "", "id": r.get("id") or "", "vote": r.get("vote") or 0}
+        # gX's list: who's required (Azure), whose review is still only
+        # requested (GitHub - the only ones it can take off).
+        if r.get("isRequired"):
+            entry["isRequired"] = True
+        if r.get("isRequested"):
+            entry["requested"] = True
+        out.append(entry)
     return out
 
 
@@ -1209,10 +1217,12 @@ def _auth_hint(status):
     named too."""
     if status in (401, 203):
         return ("the PAT was rejected - expired, revoked, or for a different organization? "
-                "Create one with Code (read & write) and Work Items (read & write) scopes and put it in azure-cli.yml.")
+                "Create one with Code (read & write), Work Items (read & write), Project and Team (read) and "
+                "Identity (read) scopes and put it in azure-cli.yml.")
     if status == 403:
         return ("the PAT is valid but lacks permission for this - check its scopes "
-                "(Code read & write, Work Items read & write) and that it covers this organization.")
+                "(Code read & write, Work Items read & write, Project and Team read, Identity read) "
+                "and that it covers this organization.")
     return None
 
 
@@ -2385,7 +2395,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
-    "--submit-review", "--fetch-image",
+    "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -2404,6 +2414,58 @@ def _is_uint(s):
     `-n "${x//[0-9]/}"` id-validity checks (thread/comment ids, line numbers).
     """
     return bool(s) and s.isdigit()
+
+
+def identities_base(org):
+    """Identity search lives on vssps.dev.azure.com for Azure DevOps
+    Services, and on the collection itself on Azure DevOps Server."""
+    org = (org or "").rstrip("/")
+    m = re.match(r"^https://dev\.azure\.com/([^/]+)", org)
+    if m:
+        return "https://vssps.dev.azure.com/" + m.group(1)
+    return org
+
+
+def search_identities(get, base, query):
+    """The people (not groups) Identities - Read Identities finds for
+    `query` (display name, account or email; searchFilter=General) under
+    `base` (identities_base), as [{name, id, mail, accountName}], at most
+    20 - `get(url)` fetches. Raises the full query's AdoHttpError.
+
+    Several words ("Tal Gross", "Gross, Tal") are also searched one by one,
+    since a directory matches the start of a name and "Last, First" names
+    don't start with the first name: whoever matches the most words comes
+    first."""
+    query = (query or "").strip()
+    words = [w for w in re.split(r"[\s,;]+", query) if w]
+
+    def one(q):
+        url = "{0}/_apis/identities?searchFilter=General&filterValue={1}&queryMembership=None".format(
+            base, urllib.parse.quote(q))
+        return [i for i in (get(url) or {}).get("value") or [] if not i.get("isContainer")]
+    found = one(query)
+    if len(words) > 1:
+        for w in words[:4]:
+            try:
+                found.extend(one(w))
+            except AdoHttpError:
+                pass  # the full query's answer stands
+
+    def prop(i, key):
+        v = (i.get("properties") or {}).get(key)
+        return (v.get("$value") if isinstance(v, dict) else v) or ""
+    seen, people = set(), []
+    for i in found:
+        if i.get("id") and i["id"] not in seen:
+            seen.add(i["id"])
+            people.append({"name": i.get("providerDisplayName") or i.get("customDisplayName") or "?",
+                           "id": i["id"], "mail": prop(i, "Mail"), "accountName": prop(i, "Account")})
+
+    def hits(p):
+        text = " ".join((p["name"], p["mail"], p["accountName"])).lower()
+        return sum(1 for w in words if w.lower() in text)
+    people.sort(key=lambda p: -hits(p))
+    return people[:20]
 
 
 def _is_blank(s):
@@ -2947,30 +3009,109 @@ class PrActions:
         return 0
 
     def _identities_base(self):
-        """Identity search lives on vssps.dev.azure.com for Azure DevOps
-        Services, and on the collection itself on Azure DevOps Server."""
-        org = (self.org or "").rstrip("/")
-        m = re.match(r"^https://dev\.azure\.com/([^/]+)", org)
-        if m:
-            return "https://vssps.dev.azure.com/" + m.group(1)
-        return org
+        return identities_base(self.org)
 
-    def add_reviewer(self, who, required="false"):
-        """Finds `who` (display name, account or email - Identities - Read
-        Identities, searchFilter=General) and adds them to the PR as a
-        reviewer (PUT .../reviewers/{id}, vote 0). Ambiguous or unknown
-        names are an error listing the matches."""
-        if _is_blank(who):
-            print("Who should review?", file=sys.stderr)
-            return 1
+    def _search_people(self, who):
+        """The people (not groups) Identities - Read Identities finds for
+        `who` (display name, account or email; searchFilter=General), or
+        None after printing why the search failed."""
         url = "{0}/_apis/identities?searchFilter=General&filterValue={1}&queryMembership=None".format(
             self._identities_base(), urllib.parse.quote(who))
         try:
             found = self.fetch(url, pat=self.pat, api_version="6.0")
         except AdoHttpError as e:
             print("REST identity search failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return None
+        return [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
+
+    def _team_people(self):
+        """Everyone in any of the project's teams (Teams - Get Teams, then
+        each team's members; groups left out), as --find-people's {name,
+        id, account} sorted by name: who the reviewer picker lists before
+        anything is typed. None after printing why the teams couldn't be
+        read."""
+        base = "{0}/_apis/projects/{1}/teams".format(self.org, urllib.parse.quote(self.project, safe=""))
+        try:
+            teams = (self.fetch(base + "?$top=200", pat=self.pat, api_version="6.0") or {}).get("value") or []
+        except AdoHttpError as e:
+            print("REST teams failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return None
+
+        def members(team):
+            try:
+                url = "{0}/{1}/members?$top=1000".format(base, team.get("id"))
+                return (self.fetch(url, pat=self.pat, api_version="6.0") or {}).get("value") or []
+            except AdoHttpError:
+                return []  # one unreadable team shouldn't hide the others
+        people = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for got in pool.map(members, [t for t in teams if t.get("id")][:100]):
+                for m in got:
+                    i = m.get("identity") or m
+                    if i.get("id") and not i.get("isContainer") and i.get("displayName"):
+                        people[i["id"]] = {"name": i["displayName"], "id": i["id"],
+                                           "account": i.get("uniqueName") or ""}
+        return sorted(people.values(), key=lambda p: p["name"].lower())
+
+    def find_people(self, query):
+        """--find-people: who `query` names, as a JSON list of {name, id,
+        account} - the reviewer picker's and the comment editor's tag
+        search (search_identities). No query: everyone in the project's
+        teams (_team_people), all of them."""
+        if _is_blank(query):
+            people = self._team_people()
+            if people is None:
+                return 1
+            print(json.dumps(people, ensure_ascii=False))
+            return 0
+        try:
+            people = search_identities(lambda url: self.fetch(url, pat=self.pat, api_version="6.0"),
+                                       self._identities_base(), query)
+        except AdoHttpError as e:
+            print("REST identity search failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
             return 1
-        people = [i for i in (found or {}).get("value") or [] if not i.get("isContainer")]
+        print(json.dumps([{"name": p["name"], "id": p["id"], "account": p["mail"] or p["accountName"]}
+                          for p in people], ensure_ascii=False))
+        return 0
+
+    def remove_reviewer(self, reviewer_id):
+        """--remove-reviewer: takes reviewer `reviewer_id` (their identity
+        id) off the PR - Pull Request Reviewers - Delete. A reviewer a
+        branch policy requires comes back as the server's own refusal."""
+        if _is_blank(reviewer_id):
+            print("Remove whom?", file=sys.stderr)
+            return 1
+        try:
+            self.fetch(self._pr_url("/reviewers/{0}".format(urllib.parse.quote(reviewer_id.strip(), safe=""))),
+                       method="DELETE", pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST remove-reviewer failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        print(json.dumps({"removed": reviewer_id.strip()}, ensure_ascii=False))
+        return 0
+
+    def add_reviewer(self, who, required="false"):
+        """Finds `who` (display name, account or email - Identities - Read
+        Identities, searchFilter=General) and adds them to the PR as a
+        reviewer (PUT .../reviewers/{id}, vote 0). Ambiguous or unknown
+        names are an error listing the matches. An identity id (a GUID,
+        what --find-people gives) is added as it is, no search."""
+        if _is_blank(who):
+            print("Who should review?", file=sys.stderr)
+            return 1
+        if re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", who.strip()):
+            try:
+                r = self.fetch(self._pr_url("/reviewers/{0}".format(who.strip())), method="PUT",
+                               data={"vote": 0, "isRequired": _to_bool(required)}, pat=self.pat, api_version="6.0")
+            except AdoHttpError as e:
+                print("REST add-reviewer failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+                return 1
+            print(json.dumps({"added": (r or {}).get("displayName") or who.strip(), "id": who.strip()},
+                             ensure_ascii=False))
+            return 0
+        people = self._search_people(who)
+        if people is None:
+            return 1
         if len(people) != 1:
             names = ", ".join(i.get("providerDisplayName") or "?" for i in people[:8])
             print("{0} people match '{1}'{2}".format(len(people), who, (": " + names) if names else ""), file=sys.stderr)
@@ -3204,6 +3345,10 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.test_results(arg(0))
     if flag == "--add-reviewer":
         return actions.add_reviewer(arg(0), arg(1, "false"))
+    if flag == "--find-people":
+        return actions.find_people(arg(0))
+    if flag == "--remove-reviewer":
+        return actions.remove_reviewer(arg(0))
     if flag == "--set-description":
         return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":
@@ -3569,7 +3714,18 @@ class WorkItemActions:
         "iteration": ("System.IterationPath", str),
         "tags": ("System.Tags", str),
         "description": ("System.Description", str),
+        "originalEstimate": ("Microsoft.VSTS.Scheduling.OriginalEstimate", float),
+        "remainingWork": ("Microsoft.VSTS.Scheduling.RemainingWork", float),
+        "completedWork": ("Microsoft.VSTS.Scheduling.CompletedWork", float),
     }
+    # The hours a work item can carry (usually a Task's), as the detail's
+    # item.hours keys.
+    _HOURS = (("originalEstimate", "Microsoft.VSTS.Scheduling.OriginalEstimate"),
+              ("remainingWork", "Microsoft.VSTS.Scheduling.RemainingWork"),
+              ("completedWork", "Microsoft.VSTS.Scheduling.CompletedWork"))
+    # (collection, project, type) -> the type's field reference names, or
+    # None when they couldn't be read; types don't change in a session.
+    _type_fields = {}
 
     def __init__(self, config, env=None):
         env = os.environ if env is None else env
@@ -3771,8 +3927,8 @@ class WorkItemActions:
         return out
 
     def cmd_wi_list(self, select, item_path=""):
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'"
                   .format(select), file=sys.stderr)
             return 1
         if select == "items" and not item_path:
@@ -3789,6 +3945,8 @@ class WorkItemActions:
             return self._wi_list_sprints()
         if select == "members":
             return self._wi_list_members()
+        if select == "people":
+            return self._wi_list_people(item_path)
 
         if select == "items":
             sprint_path = item_path
@@ -4115,6 +4273,24 @@ class WorkItemActions:
             print(json.dumps({"name": name, "email": ident.get("uniqueName") or ""}, ensure_ascii=False))
         return 0
 
+    def _wi_list_people(self, query):
+        """--wi-list people <query>: who the directory finds for `query`
+        (search_identities - anyone, not only the team), as NDJSON {name,
+        email, assign} for the assignee picker's search; `assign` is what
+        `set assignedTo` takes: the account, else the email, else the name."""
+        if _is_blank(query):
+            print("ERROR: 'people' needs a name, account or email", file=sys.stderr)
+            return 1
+        try:
+            people = search_identities(lambda url: self._get(url, api_version="6.0"),
+                                       identities_base(self.collection), query)
+        except AdoHttpError as e:
+            return self._list_style_error(e, "GET")
+        for p in people:
+            print(json.dumps({"name": p["name"], "email": p["mail"] or p["accountName"],
+                              "assign": p["accountName"] or p["mail"] or p["name"]}, ensure_ascii=False))
+        return 0
+
     # -- detail (wi-detail.sh) -----------------------------------------------
 
     def cmd_wi_detail(self, wid):
@@ -4170,6 +4346,9 @@ class WorkItemActions:
             "url": "{0}/{1}/_workitems/edit/{2}".format(self.collection, self.project, full.get("id")),
             "pullRequests": self._wi_linked_prs(full.get("relations")),
         }
+        hours = self._wi_hours(item["type"], f)
+        if hours:
+            item["hours"] = hours
 
         try:
             comments, comments_unsupported = self._fetch_comments(wid)
@@ -4185,6 +4364,25 @@ class WorkItemActions:
         }
         print(json.dumps(out, ensure_ascii=False))
         return 0
+
+    def _wi_hours(self, wtype, fields):
+        """The item's hours ({originalEstimate, remainingWork,
+        completedWork}, "" where unset) - the ones its type has (Work
+        Item Types Field - List), so a Task shows empty hours to fill in and
+        a Bug without them shows none. When the type's fields can't be
+        read, the hours the item has set."""
+        key = (self.collection, self.project, wtype)
+        if key not in self._type_fields:
+            url = "{0}/{1}/_apis/wit/workitemtypes/{2}/fields".format(
+                self.collection, urllib.parse.quote(self.project, safe=""), urllib.parse.quote(wtype, safe=""))
+            try:
+                got = self._get(url, api_version="6.0")
+                self._type_fields[key] = {x.get("referenceName") for x in (got or {}).get("value") or []}
+            except AdoHttpError:
+                self._type_fields[key] = None
+        known = self._type_fields[key]
+        return {name: ("" if fields.get(ref) is None else fields.get(ref)) for name, ref in self._HOURS
+                if (ref in known if known is not None else ref in fields)}
 
     def _wi_linked_prs(self, relations):
         """The item's linked PRs with their title/status/branches, one GET
@@ -4578,14 +4776,18 @@ class WorkItemActions:
                   + ", ".join(sorted(self._FIELD_MAP)), file=sys.stderr)
             return 1
         ado_field, caster = mapping
-        try:
-            cast_value = caster(value)
-        except (TypeError, ValueError):
-            print("ERROR: invalid value for {0}: {1!r}".format(field, value), file=sys.stderr)
-            return 1
-
         url = "{0}/_apis/wit/workitems/{1}".format(self.collection, wid)
-        patch = [{"op": "add", "path": "/fields/{0}".format(ado_field), "value": cast_value}]
+        if caster is float and _is_blank(value):
+            # Hours left empty: cleared, not zero.
+            cast_value = None
+            patch = [{"op": "remove", "path": "/fields/{0}".format(ado_field)}]
+        else:
+            try:
+                cast_value = caster(str(value).replace(",", ".") if caster is float else value)
+            except (TypeError, ValueError):
+                print("ERROR: invalid value for {0}: {1!r}".format(field, value), file=sys.stderr)
+                return 1
+            patch = [{"op": "add", "path": "/fields/{0}".format(ado_field), "value": cast_value}]
         try:
             d = self._patch(url, patch, content_type="application/json-patch+json")
         except AdoHttpError as e:
@@ -5123,6 +5325,8 @@ _GITHUB_ACTIONS = {
     # #110: through GraphQL (requestReviews, updatePullRequest).
     "--add-reviewer": lambda a, arg: a.add_reviewer(arg(0), arg(1, "false")),
     "--set-description": lambda a, arg: a.set_description(arg(0), arg(1)),
+    "--find-people": lambda a, arg: a.find_people(arg(0)),
+    "--remove-reviewer": lambda a, arg: a.remove_reviewer(arg(0)),
     # #111: CI, through the head's GitHub Actions runs. --requeue comes from
     # cmd_requeue, not PR_ACTION_FLAGS.
     "--requeue": lambda a, arg: a.requeue(),

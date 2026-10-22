@@ -346,7 +346,7 @@ local function bind_diff(v, buf, path, map)
     if not th then return notify("Nothing under this line.") end
     if kind == "sent" then return notify("That change was sent to the agent already - it stays as history.") end
     if kind == "thread" then return remove(th) end
-    require("azure-cli.prompt").confirm({ title = "Drop this queued change?", prompt = "It won't be sent to the agent.",
+    require("azure-cli.prompt").confirm({ title = "Drop this queued change?",
       details = th.question }, function(yes)
       if valid_win(v.plan_win) then pcall(vim.api.nvim_set_current_win, v.plan_win) end
       if yes then remove(th) end

@@ -68,6 +68,19 @@ function M.iso_epoch(iso)
   return guess + utc_offset(guess)
 end
 
+-- Recomputes `pr`'s voteRatio / reviewerSummary from its reviewers, the
+-- way azure-cli.py builds them - after a vote, or a reviewer added (gR).
+function M.recompute(pr)
+  local signed, parts = 0, {}
+  for _, r in ipairs(pr.reviewers or {}) do
+    local o = HOSTS.vote(pr, r.vote)
+    if o and o.signed then signed = signed + 1 end
+    parts[#parts + 1] = M.vote_glyph(r.vote, pr) .. M.surname(r.name)
+  end
+  pr.voteRatio = signed .. " / " .. #(pr.reviewers or {})
+  pr.reviewerSummary = table.concat(parts, " ")
+end
+
 -- Records `vote` (an option key) as mine on `pr` and recomputes the derived
 -- voteRatio / reviewerSummary the way azure-cli.py builds them. Returns an
 -- undo function that restores the previous values (for a failed call).
@@ -83,14 +96,7 @@ function M.apply_my_vote(pr, vote)
     table.insert(pr.reviewers, mine)
   end
   mine.vote = vote
-  local signed, parts = 0, {}
-  for _, r in ipairs(pr.reviewers) do
-    local o = HOSTS.vote(pr, r.vote)
-    if o and o.signed then signed = signed + 1 end
-    parts[#parts + 1] = M.vote_glyph(r.vote, pr) .. M.surname(r.name)
-  end
-  pr.voteRatio = signed .. " / " .. #pr.reviewers
-  pr.reviewerSummary = table.concat(parts, " ")
+  M.recompute(pr)
   return function()
     pr.voteRatio, pr.reviewerSummary, pr.reviewers = snap.voteRatio, snap.reviewerSummary, snap.reviewers
   end

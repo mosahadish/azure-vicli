@@ -63,7 +63,7 @@ GH_OWNER = "demo-gh"
 GH_ACTIONS = ("--threads", "--iterations", "--get-pr", "--post", "--file-comment", "--pr-comment", "--reply",
               "--status", "--edit-comment", "--delete-comment", "--vote", "--submit-review", "--work-items",
               "--create-pr", "--complete", "--auto-complete", "--add-reviewer", "--set-description",
-              "--requeue", "--build-log", "--test-results", "--fetch-image")
+              "--find-people", "--remove-reviewer", "--requeue", "--build-log", "--test-results", "--fetch-image")
 TEAM = "Demo Team"
 
 PEOPLE = {
@@ -82,7 +82,15 @@ MERGE_STRATEGIES = ("squash", "noFastForward", "rebase", "rebaseMerge")
 WI_FIELDS = {
     "title": ("title", str), "assignedTo": ("assignedTo", str), "priority": ("priority", int),
     "iteration": ("iterationPath", str), "tags": ("tags", str), "description": ("description", str),
+    "originalEstimate": ("originalEstimate", float), "remainingWork": ("remainingWork", float),
+    "completedWork": ("completedWork", float),
 }
+# The directory beyond the team: who --wi-list people finds besides the
+# members (a "Last, First" name, as on-prem TFS has them).
+DIRECTORY = [{"name": "Stein, Gregory", "account": "DEMO\\gstein", "mail": "gregory.stein@example.com"},
+             {"name": "Gross, Tal", "account": "DEMO\\tgross", "mail": "tal.gross@example.com"}]
+# Tasks carry hours, like Azure's Agile/Scrum Task; other types don't.
+WI_HOURS = ("originalEstimate", "remainingWork", "completedWork")
 WI_TRANSITIONS = {
     "New": ["Active", "Removed"],
     "Active": ["Implemented", "Resolved", "New", "Removed"],
@@ -349,6 +357,7 @@ WI_FIXTURES = [
     # under a story usually do (the dashboard lists stories and bugs).
     {"id": 3011, "type": "Task", "state": "In Progress", "title": "Count failed logins per account",
      "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
+     "originalEstimate": 8, "remainingWork": 3, "completedWork": 5,
      "description": "", "prs": [], "comments": []},
     {"id": 3012, "type": "Task", "state": "To Do", "title": "Tests for the lockout window",
      "assignedTo": "alice", "priority": 2, "tags": "", "parentId": 3001, "sprint": 1,
@@ -1107,7 +1116,7 @@ class Fake:
         if not self.need_pr():
             return 1
         who = (rest[0] if rest else "").lower()
-        people = [p for p in PEOPLE.values() if who and who in p["displayName"].lower()]
+        people = [p for p in PEOPLE.values() if who and (who in p["displayName"].lower() or who == p["id"])]
         if len(people) != 1:
             print("{0} people match '{1}'".format(len(people), who), file=sys.stderr)
             return 1
@@ -1116,6 +1125,32 @@ class Fake:
             pr["reviewers"].append({"name": people[0]["displayName"], "id": people[0]["id"], "vote": 0})
             self.ws.save(self.state)
         print(json.dumps({"added": people[0]["displayName"], "id": people[0]["id"]}))
+        return 0
+
+    def cmd_remove_reviewer(self, rest):
+        if not self.need_pr():
+            return 1
+        who = (rest[0] if rest else "").lower()
+        pr = self.pr()
+        keep = [r for r in pr["reviewers"] if r["id"].lower() != who]
+        if len(keep) == len(pr["reviewers"]):
+            print("REST remove-reviewer failed: HTTP 404: no reviewer {0}".format(who), file=sys.stderr)
+            return 1
+        pr["reviewers"] = keep
+        self.ws.save(self.state)
+        print(json.dumps({"removed": who}))
+        return 0
+
+    def cmd_find_people(self, rest):
+        if not self.need_pr():
+            return 1
+        # Like a directory: any of the query's words found in the name; no
+        # query is everyone (the project's teams).
+        words = [w for w in re.split(r"[\s,;]+", (rest[0] if rest else "").lower()) if w]
+        print(json.dumps([{"name": p["displayName"], "id": p["id"],
+                           "account": p["displayName"].split()[0].lower() + "@example.com"}
+                          for p in PEOPLE.values()
+                          if not words or any(w in p["displayName"].lower() for w in words)]))
         return 0
 
     def cmd_set_description(self, rest):
@@ -1368,8 +1403,8 @@ class Fake:
     def cmd_wi_list(self, rest):
         select = rest[0] if rest else "current"
         item_path = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            print("ERROR: selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'".format(select), file=sys.stderr)
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            print("ERROR: selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'".format(select), file=sys.stderr)
             return 1
         if select == "parents":
             # Like the real one: open items on a higher backlog level.
@@ -1423,6 +1458,18 @@ class Fake:
             for name in self.state["members"]:
                 print(json.dumps({"name": name, "email": name.lower().replace(" ", ".") + "@example.com"}))
             return 0
+        if select == "people":
+            # Like a directory: any of the query's words in the name or account.
+            words = [w for w in re.split(r"[\s,;]+", item_path.lower()) if w]
+            if not words:
+                print("ERROR: 'people' needs a name, account or email", file=sys.stderr)
+                return 1
+            team = [{"name": n, "account": "DEMO\\" + n.split()[0].lower(),
+                     "mail": n.lower().replace(" ", ".") + "@example.com"} for n in self.state["members"]]
+            for p in team + DIRECTORY:
+                if any(w in (p["name"] + " " + p["account"]).lower() for w in words):
+                    print(json.dumps({"name": p["name"], "email": p["mail"], "assign": p["account"]}, ensure_ascii=False))
+            return 0
         if select == "items":
             if not item_path:
                 print("ERROR: 'items' needs an iteration path", file=sys.stderr)
@@ -1458,6 +1505,8 @@ class Fake:
                                           "description", "acceptanceCriteria", "reproSteps")}
         item["url"] = "{0}/{1}/_workitems/edit/{2}".format(ORG, PROJECT, w["id"])
         item["pullRequests"] = [self.linked_pr(p) for p in w.get("prs", [])]
+        if w.get("type") == "Task":
+            item["hours"] = {k: ("" if w.get(k) is None else w.get(k)) for k in WI_HOURS}
         parent = self.wi(w["parentId"]) if w.get("parentId") else None
         children = [x for x in self.state["workitems"] if x.get("parentId") == w["id"]]
         print(json.dumps({"item": item, "parent": summary(parent) if parent else None,
@@ -1582,7 +1631,7 @@ class Fake:
             if a3 == "iteration" and value == "-":
                 value = BACKLOG
             try:
-                value = caster(value)
+                value = None if (caster is float and not value) else caster(value)
             except (TypeError, ValueError):
                 print("ERROR: invalid value for {0}: {1!r}".format(a3, a4), file=sys.stderr)
                 return 1
@@ -1717,8 +1766,8 @@ class Fake:
     def gh_wi_list(self, rest):
         select = rest[0] if rest else "current"
         arg = rest[1] if len(rest) > 1 else ""
-        if select not in ("current", "next", "sprints", "items", "members", "ids", "tree", "parents"):
-            raise ValueError("selector must be current|next|sprints|items|members|ids|tree|parents, got '{0}'"
+        if select not in ("current", "next", "sprints", "items", "members", "people", "ids", "tree", "parents"):
+            raise ValueError("selector must be current|next|sprints|items|members|people|ids|tree|parents, got '{0}'"
                              .format(select))
         states = GH_STATUS + ["Closed"]
         if select == "parents":
@@ -1748,6 +1797,11 @@ class Fake:
         if select == "members":
             for login in ("demo-user", "alice", "bob"):
                 print(json.dumps({"name": login, "email": ""}))
+            return 0
+        if select == "people":
+            for login in ("demo-user", "alice", "bob"):
+                if arg.strip().lower() in login:
+                    print(json.dumps({"name": login, "email": login, "assign": login}))
             return 0
         if select in ("ids", "tree"):
             refs = [x.strip() for x in arg.split(",") if x.strip()]
@@ -2052,7 +2106,7 @@ class Fake:
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
                    "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
                    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
-                   "--get-pr", "--submit-review", "--fetch-image")
+                   "--get-pr", "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer")
 
 
 def dispatch(ws, argv, env):
@@ -2101,6 +2155,8 @@ def dispatch(ws, argv, env):
         "--test-results": lambda: f.cmd_test_results(rest),
         "--add-reviewer": lambda: f.cmd_add_reviewer(rest),
         "--set-description": lambda: f.cmd_set_description(rest),
+        "--find-people": lambda: f.cmd_find_people(rest),
+        "--remove-reviewer": lambda: f.cmd_remove_reviewer(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
         "--submit-review": lambda: f.cmd_submit_review(rest),

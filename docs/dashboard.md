@@ -61,6 +61,8 @@ solves the widths; see its own header comment for the exact rules).
 | `gb` | Open the PR's build in the browser |
 | `/` | Filter by title, repo or author |
 | `gv` | Vote |
+| `gR` | Add a reviewer: a popup lists everyone who can review (on Azure the project's teams' members, on GitHub the repository's assignable people) and typing narrows it, best match first (fuzzy: `greg` finds "Stein, Gregory", `tal gross` finds "Gross, Tal"); a pause in typing also searches the host's directory for anyone outside those teams. `<C-n>`/`<C-p>` move, `<CR>` picks (on Azure, then optional or required). People already reviewing aren't offered |
+| `gX` | Remove a reviewer: pick one of the PR's reviewers (with their vote), confirm, and they're gone. On Azure DevOps any reviewer, except one a branch policy requires (the server says no); on GitHub only a review that's still requested, since GitHub keeps a submitted review |
 | `gm` | Complete (merge) or set/cancel auto-complete - the same dialog as the reviewer's `gm`: merge type, whether to complete the linked work items, delete the source branch or auto-complete instead of completing now, and the build/threads/votes summary |
 | `gr` | Re-queue build validation (asks first, in a popup: `y` / `<CR>` re-queues, `n` / `<Esc>` doesn't). On a GitHub PR: re-runs the failed jobs of its failed GitHub Actions runs |
 | `za` / `<Space>` | Toggle collapse on the section header under the cursor |
@@ -73,6 +75,7 @@ solves the widths; see its own header comment for the exact rules).
 | `gl` / `gL` | Link a work item to the PR (a popup of your sprint's items, or type an id) / unlink one (a popup of its linked items). Both dashboards update straight away |
 | `i` | Type in the [chat panel](chat.md) (opening it if it's hidden); the agent knows which PR is under the cursor. `<CR>` on a visual selection sends it along |
 | `ga` | The conversation of the PR's agent (see the agent column below) in a popup over the dashboard: `i` types to it, `<CR>` sends, `q` (or leaving it) closes |
+| `gp` | The plan of the PR's agent, as `<CR>` on its row on the Agents screen opens it (`gp` in the plan comes back to the PR) |
 | `gP` | Start an agent that plans the fix of the PR's open comments (on selected rows: one per PR) - see [Several agents at once](chat.md#several-agents-at-once) |
 | `[r` / `]r`, `g1`-`g9` | Previous / next inner tab, or the n-th (`g1` is this list) - see above |
 | `W` | Switch to the work-items dashboard |
@@ -125,9 +128,12 @@ column is highlighted, so "have I voted on this one?" needs no scanning for
 your surname, and `gd` lists the branches, author, an absolute timestamp,
 every reviewer's vote (you marked) and the PR's URL above the description.
 
-Every menu this tool shows (votes, work-item states, ...) goes through
-`vim.ui.select`, so a picker plugin such as telescope, fzf-lua or
-dressing.nvim draws it when installed; the current value is marked
+Every menu and text prompt this tool shows is a popup in the middle of
+the screen: a short menu numbered, a longer one with a search line that
+narrows it as you type (`<C-n>`/`<C-p>` move, `<CR>` picks), a text prompt
+one line to type in. Where a picker plugin such as telescope, fzf-lua or
+dressing.nvim has taken over `vim.ui.select` / `vim.ui.input`, it draws the
+long menus and the prompts instead; the current value is marked
 `(current)`. Completing a PR opens a small dialog instead (see
 [Reviewer](reviewer.md#reviewer)'s `gm`): the merge type, whether the linked
 work items are completed and the source branch deleted (both on by

@@ -622,6 +622,16 @@ class VoteAndFormattingTests(unittest.TestCase):
         infos = ac.reviewer_info_list(pr)
         self.assertEqual(infos, [{"name": "A", "id": "a", "vote": 10}])
 
+    def test_reviewer_info_list_marks_required_and_requested(self):
+        pr = make_pr(reviewers=[
+            {"id": "a", "displayName": "A", "vote": 0, "isRequired": True},
+            {"id": "b", "displayName": "B", "vote": 0, "isRequested": True},
+            {"id": "c", "displayName": "C", "vote": 10}])
+        self.assertEqual(ac.reviewer_info_list(pr), [
+            {"name": "A", "id": "a", "vote": 0, "isRequired": True},
+            {"name": "B", "id": "b", "vote": 0, "requested": True},
+            {"name": "C", "id": "c", "vote": 10}])
+
     def test_surname_forms(self):
         self.assertEqual(ac._surname("Cohen, Dana"), "Cohen")
         self.assertEqual(ac._surname("Dana Cohen"), "Cohen")
