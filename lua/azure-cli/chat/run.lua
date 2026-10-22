@@ -489,9 +489,9 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     if entry.text == "" then entry.text = "_(no answer)_" end
     render()
     save(st)
-    if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
+    if not opts.quiet and not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
       .. " shows it).")) end
-    if st.plan_key and STATE() ~= st then
+    if st.plan_key and STATE() ~= st and not opts.quiet then
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
@@ -751,7 +751,8 @@ end
 -- window "current view" describes; opts.display is what the conversation
 -- shows as your message (default: `text`); opts.on_done(entry) runs once
 -- the answer is complete, and opts.done_note replaces the "answered in the
--- chat" note shown while the panel is hidden. Returns the answer's entry
+-- chat" note shown while the panel is hidden (opts.quiet: neither that
+-- nor the desktop alert). Returns the answer's entry
 -- (its status "running" while the agent works), or nil when nothing was
 -- sent - the agent busy, or none configured.
 send = function(text, opts)
@@ -963,9 +964,9 @@ send = function(text, opts)
     end
     render()
     save(st)
-    if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
+    if not opts.quiet and not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
       .. " shows it).")) end
-    if st.plan_key and STATE() ~= st then
+    if st.plan_key and STATE() ~= st and not opts.quiet then
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end

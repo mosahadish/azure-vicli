@@ -339,14 +339,14 @@ local CHAT_FIELDS = {
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
   plan_revisions = "number",
   test_cmd = "any", toasts = "any", on_new_comments = "string", on_failed_build = "string", watch_seconds = "number",
-  skill_dirs = "table",
+  skill_dirs = "table", self_review = "boolean",
 }
 -- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
   idle_timeout_seconds = "number", max_turn_seconds = "number", interrupt_grace_seconds = "number",
   models = "table", strip = "table", acp = "boolean", premium_requests = "table",
-  planner_model = "string", implementer_model = "string",
+  planner_model = "string", implementer_model = "string", reviewer_model = "string",
 }
 -- Fields from when every message started a fresh process: the agent now
 -- stays running for the whole conversation, so there's nothing to resume.
@@ -935,7 +935,7 @@ function M.render_options()
   w("    --   cmd = { \"copilot\", \"--acp\", \"--add-dir\", \"{fix_root}\", \"--allow-tool\", \"azure-vicli\" },")
   w("    --   resume_cmd = { \"copilot\", \"--resume\", \"{session_id}\" },  -- go on the Agents screen: its session in a terminal")
   w("    --   premium_requests = { default = 1 },")
-  w("    --   planner_model = \"gpt-5.5\", implementer_model = \"claude-sonnet-5\",")
+  w("    --   planner_model = \"gpt-5.5\", implementer_model = \"claude-sonnet-5\", reviewer_model = \"gpt-5-mini\",")
   w("    -- },")
   w("    -- agents = { copilot = { ... }, claude = { ... } }, default_agent = \"copilot\",  -- instead of agent; gM switches")
   w("    -- permissions = {              -- \"allow\" / \"ask\" / \"deny\": a tool's name, else its group, else all")
@@ -950,6 +950,7 @@ function M.render_options()
   w("    -- plan_revisions = 3,          -- revisions kept per plan (and the approved one)")
   w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
   w("    -- max_agents = 3,              -- agents working at once")
+  w("    -- self_review = false,         -- a second agent reviews a plan agent's change before you do")
   w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")
   w("    -- on_failed_build = \"suggest\", -- or \"plan\", \"off\": what a failed build on the agent's PRs does")
   w("    -- suggest_on_new_comments = true,")

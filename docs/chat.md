@@ -409,6 +409,7 @@ copilot = {...} }` and optionally `default_agent = "claude"`; `gM` switches.
 | `stdin` | What each message writes to its stdin, as one line (default: Claude Code's stream-json user message, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":{message_json}}]}}`). Unused with `acp`. |
 | `models` / `model` | The models `gm` offers (strings, or `{ label, value }`) and the default. Reaches the agent through `{model}` (`acp`: `session/set_config_option`). |
 | `planner_model` / `implementer_model` | A plan's own agent (`gP`, `/plan`, `start_agents`) plans on `planner_model`, and once you approve its plan, implements on `implementer_model`; the main chat stays on `model`. Either missing: that stage uses `model`. An ACP agent switches in its session; another starts again on the new model and gets the conversation. `gm` picks a model for the conversation you're in only, over all of these. |
+| `reviewer_model` | The model of the agent that reviews a plan agent's change with `chat.self_review` ([below](#several-agents-at-once)); missing: `model`. |
 | `resume_cmd` | The agent's own CLI on one of its sessions, `{session_id}` expanded (a list, or a string run through `'shell'`): `go` on the Agents screen opens it in a terminal split - see below. |
 | `label` | The agent's name in the panel. |
 | `strip` | Lua patterns: output lines matching any are dropped (a CLI's own log of its tool calls). Unused with `acp`. |
@@ -473,8 +474,8 @@ The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `skill_dirs` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
 (`"suggest"` or `"plan"`), `on_failed_build` (`"suggest"`, `"plan"` or `"off"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
-(default true), `plan_template` and `plan_revisions` (default 3) ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
-[below](#several-agents-at-once)).
+(default true), `plan_template` and `plan_revisions` (default 3) ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3) and `self_review` (default false)
+([below](#several-agents-at-once)).
 
 The agent runs in the local clone of the PR you're looking at, when there is
 one, so a repository's own agent instructions and skills apply. A skill
@@ -781,6 +782,19 @@ waiting for you, and `<CR>` (the plan) or `gd` (the change) on the
 Agents screen opens it. A plan or change viewer you already have open is
 redrawn in place when the agent submits a new revision, runs the tests
 or changes the code, without taking the focus.
+
+**A second agent reviews the change first** with `chat.self_review =
+true` (off by default: it's another agent run). The first `show_fix`
+under an approved plan revision doesn't tell you the change is ready: a
+read-only reviewer reads the plan and the worktree's `git diff HEAD`, looks
+for bugs, missing tests and what the plan promised but the change doesn't
+do, and its findings go to the implementing agent as a message in its own
+chat. That agent fixes what it agrees with and calls `show_fix` again,
+which tells you as usual - once per approved revision. A reviewer that
+fails or times out doesn't hold the change: you're told then, and so is
+the agent. Meanwhile its row on the Agents screen says `in review`; the
+reviewer has no row of its own. `agent.reviewer_model` runs it on another
+model.
 
 ### The main chat coordinates
 

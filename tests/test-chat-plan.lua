@@ -1789,6 +1789,112 @@ do
   pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
 end
 
+-- --- chat.self_review: a reviewer agent sees the change before the user ----------------------
+do
+  local CHAT = require("azure-cli.chat")
+  local SHELL = require("azure-cli.shell")
+  local TOOLS = require("azure-cli.chat.tools")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local PC = require("azure-cli.chat.plan_changes")
+  local AV = require("azure-cli.chat.agents_view")
+  local CONFIG = require("azure-cli.config")
+  local function call(name, args, env)
+    local res, err, finished
+    TOOLS.by_name[name].run(args, env, function(r, e) res, err, finished = r, e, true end)
+    vim.wait(5000, function() return finished end, 10)
+    return res, err
+  end
+  CONFIG.setup({ chat = { self_review = true } })
+  local notified, alerted, sent = {}, {}, {}
+  local real = { notify = SHELL.notify, alert = CHAT.alert, poke = PC.poke, send = CHAT.send, last = FIX.last }
+  SHELL.notify = function(m) notified[#notified + 1] = m end
+  CHAT.alert = function(t) alerted[#alerted + 1] = t end
+  PC.poke = function() end
+  CHAT.send = function(text, o) sent[#sent + 1] = { text = text, opts = o } return {} end
+  local key = "wi-9121"
+  local conv = CHAT.conversation(key, { target = { work_item_id = 9121 }, label = "#9121" })
+  local env = { conv = conv, background = function() return true end, log = function() end }
+  local function approve(n)
+    call("submit_plan", { work_item_id = 9121, title = "Reviewed", markdown = "# R" .. n .. "\n\n## Goal\nrev " .. n
+      .. "\n\n## Files\n- `a.lua` - x" }, env)
+    local rec = PLAN.load(key)
+    rec.status, rec.approved_rev = "approved", PLAN.rev_count(rec)
+    PLAN.save(rec)
+  end
+  approve(1)
+  local wt = FIX.root() .. "/azure-vicli-wi9121"
+  vim.fn.delete(wt, "rf")
+  vim.fn.mkdir(wt, "p")
+  vim.fn.writefile({ "feature/9121-x", "main" }, wt .. ".branch")
+  local function sh(args) return vim.fn.system(vim.list_extend({ "git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t" }, args)) end
+  sh({ "init", "-q" })
+  vim.fn.writefile({ "return 1" }, wt .. "/a.lua")
+  sh({ "add", "-A" })
+  sh({ "commit", "-q", "-m", "base" })
+  vim.fn.writefile({ "return 2" }, wt .. "/a.lua")
+  notified, alerted, sent = {}, {}, {}
+
+  -- The first show_fix: to the reviewer, not the user.
+  local res, err = call("show_fix", { work_item_id = 9121 }, env)
+  local reviewer = CHAT.find_conversation("review-" .. key)
+  check("self_review: the first show_fix isn't announced", res and #notified == 0 and #alerted == 0,
+    vim.inspect({ res, err, notified, alerted }))
+  check("self_review: it tells the agent the change is in review", res and res.in_review == true
+    and tostring(res.note):find("reviewer", 1, true) ~= nil, vim.inspect(res))
+  check("self_review: a read-only reviewer starts on the worktree's diff and the plan",
+    #sent == 1 and reviewer ~= nil and sent[1].opts.conv == reviewer and PLAN.task_read_only(reviewer)
+      and sent[1].text:find("git -C " .. wt .. " diff HEAD", 1, true) ~= nil and sent[1].text:find("rev 1", 1, true) ~= nil
+      and sent[1].text:find("No findings.", 1, true) ~= nil and sent[1].opts.quiet == true,
+    vim.inspect(sent[1] and sent[1].text))
+  check("self_review: once per approved revision, on the plan", PLAN.load(key).reviewed_rev == 1)
+  check("self_review: the reviewer runs on reviewer_model, else model (not planner_model)",
+    CHAT.current_model({ model = "m", planner_model = "p", reviewer_model = "r" }, reviewer) == "r"
+      and CHAT.current_model({ model = "m", planner_model = "p", implementer_model = "i" }, reviewer) == "m")
+  -- While it reviews: the implementer's row says so, the reviewer has none.
+  reviewer.running = {}
+  local rows = AV.rows({ conv, reviewer }, {}, PLAN.load, os.time())
+  check("self_review: the Agents screen shows the implementer in review, no reviewer row",
+    #rows == 1 and rows[1].key == key and rows[1].state == "* in review" and rows[1].group == 2, vim.inspect(rows))
+  res = call("show_fix", { work_item_id = 9121 }, env)
+  check("self_review: show_fix again mid-review: still held", res and res.in_review and #notified == 0 and #sent == 1,
+    vim.inspect({ res, notified }))
+  reviewer.running = nil
+
+  -- Its findings go back to the implementer.
+  sent[1].opts.on_done({ status = "done", text = "- a.lua:1 returns 2, the plan says 3" })
+  check("self_review: the findings reach the implementer",
+    #sent == 2 and sent[2].opts.conv == conv and sent[2].text:find("A reviewer looked at your change: - a.lua:1", 1, true) ~= nil
+      and sent[2].text:find("then call show_fix again", 1, true) ~= nil and #notified == 0,
+    vim.inspect(sent[2]))
+  vim.wait(500, function() return CHAT.find_conversation("review-" .. key) == nil end, 10)
+  check("self_review: the reviewer's conversation is gone", CHAT.find_conversation("review-" .. key) == nil)
+
+  -- The second show_fix: announced as usual, no second review.
+  res = call("show_fix", { work_item_id = 9121 }, env)
+  check("self_review: the next show_fix announces the change", res and not res.in_review and #notified == 1
+    and #alerted == 1 and #sent == 2, vim.inspect({ res, notified, sent }))
+
+  -- A new approved revision is reviewed again; a review that fails doesn't hold the change up.
+  approve(2)
+  notified, alerted, sent = {}, {}, {}
+  res = call("show_fix", { work_item_id = 9121 }, env)
+  check("self_review: a new approved revision goes to review again", res and res.in_review and #sent == 1 and #notified == 0,
+    vim.inspect({ res, notified }))
+  sent[1].opts.on_done({ status = "timed out (idle 300s)", text = "" })
+  check("self_review: a failed review announces the change and tells the implementer",
+    #notified == 1 and #alerted == 1 and #sent == 2 and sent[2].opts.conv == conv
+      and sent[2].text:find("The review didn't happen", 1, true) ~= nil, vim.inspect({ notified, sent[2] }))
+
+  CHAT.drop_conversation(key)
+  FIX.last = real.last
+  SHELL.notify, CHAT.alert, PC.poke, CHAT.send = real.notify, real.alert, real.poke, real.send
+  CONFIG.setup({})
+  vim.fn.delete(wt, "rf")
+  vim.fn.delete(wt .. ".branch")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
+end
+
 -- --- the azure-vicli palette in plugin mode ----------------------------------------------------
 do
   require("azure-cli").setup({ ui = { palette = "azure-vicli" } })

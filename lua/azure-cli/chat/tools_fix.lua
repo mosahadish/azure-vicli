@@ -610,10 +610,15 @@ setmetatable(M, { __call = function(_, T)
           -- foreground (#120): it says it's ready (gd opens M.last), and an
           -- open plan view's Changes section picks the change up.
           M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
-          require("azure-cli.shell").notify(t.label .. "'s change is ready on the Agents screen.")
-          pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
-            "Waiting for your review on the Agents screen") end)
-          pcall(function() require("azure-cli.chat.plan_changes").poke() end)
+          local function announce()
+            require("azure-cli.shell").notify(t.label .. "'s change is ready on the Agents screen.")
+            pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
+              "Waiting for your review on the Agents screen") end)
+            pcall(function() require("azure-cli.chat.plan_changes").poke() end)
+          end
+          -- chat.self_review: the first under an approved revision goes to
+          -- a reviewer agent instead (chat/review.lua), announced after.
+          local review_note, in_review = require("azure-cli.chat.review").on_show(target, t.dir, env, announce)
           -- Its change viewer, when it's open, redrawn where it is (#126).
           pcall(require("azure-cli.chat.changes").refresh, t.dir, { quiet = true })
           -- Against the plan: what it changed that the plan doesn't list,
@@ -639,9 +644,9 @@ setmetatable(M, { __call = function(_, T)
               .. t.dir .. " for one file's."
           end
           done({ stat = stat, diff = diff, diff_note = diff_note, plan_check = plan_check, steps_linked = linked,
-            shown = false, ci = M.ci(args.pr_id, t.branch),
-            note = "The change isn't on screen: it waits for the user on the Agents screen - say it's ready, not "
-              .. "that you opened it." })
+            shown = false, ci = M.ci(args.pr_id, t.branch), in_review = in_review or nil,
+            note = in_review and review_note or ((review_note and (review_note .. " ") or "") .. "The change isn't "
+              .. "on screen: it waits for the user on the Agents screen - say it's ready, not that you opened it.") })
         end, T.git)
       end,
     },

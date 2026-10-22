@@ -48,8 +48,15 @@ end
 -- (M.GROUPS) and `at` (when it last did something). Pure.
 function M.rows(convs, queued, plan_of, now, frame)
   local rows, seen = {}, {}
+  -- A change's reviewer (chat/review.lua) has no row: its implementer's
+  -- says it's in review.
+  local reviewers = {}
   for _, c in ipairs(convs) do
-    if c.plan_key then
+    if type(c.target) == "table" and c.target.review_of then reviewers[c.target.review_of] = c end
+  end
+  for _, c in ipairs(convs) do
+    local reviewer = reviewers[c.plan_key or ""]
+    if c.plan_key and not (type(c.target) == "table" and c.target.review_of) then
       seen[c.plan_key] = true
       local rec = plan_of(c.plan_key)
       local last = c.entries[#c.entries]
@@ -59,6 +66,12 @@ function M.rows(convs, queued, plan_of, now, frame)
         group = 2
         state, hl = (frame or "*") .. " working", "AzureCliAccent"
         local tools = last and last.tools or {}
+        detail = tools[#tools] or ""
+      elseif reviewer and reviewer.running then
+        group = 2
+        state, hl = (frame or "*") .. " in review", "AzureCliAccent"
+        local rlast = reviewer.entries[#reviewer.entries]
+        local tools = rlast and rlast.tools or {}
         detail = tools[#tools] or ""
       elseif rec and rec.pr_state == "completed" then
         state, hl = "\u{2713} merged (PR !" .. tostring(rec.pr and rec.pr.id or c.target and c.target.pr_id or "?") .. ")",
