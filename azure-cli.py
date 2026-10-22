@@ -1177,6 +1177,9 @@ def to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
         # updatedIso it moves on every push, and the list call already
         # returns it - the dashboard keys its branch warm on it (#124).
         "sourceCommit": ((pr.get("lastMergeSourceCommit") or {}).get("commitId")) or "",
+        # And the target's: the chat's watch tells a merge conflict apart
+        # by the pair, so a later one counts again.
+        "targetCommit": ((pr.get("lastMergeTargetCommit") or {}).get("commitId")) or "",
         "isDraft": bool(pr.get("isDraft") or False),
         "state": state,
         "autoComplete": pr.get("autoCompleteSetBy") is not None,

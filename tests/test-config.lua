@@ -510,6 +510,11 @@ do
     check("chat: on_failed_build = " .. v, pcall(config.setup, { chat = { on_failed_build = v } })
       and config.get().chat.on_failed_build == v)
   end
+  rejects("a bad on_conflict", { on_conflict = "plan" }, "chat.on_conflict")
+  for _, v in ipairs({ "suggest", "rebase", "off" }) do
+    check("chat: on_conflict = " .. v, pcall(config.setup, { chat = { on_conflict = v } })
+      and config.get().chat.on_conflict == v)
+  end
   -- resume_cmd (#142): a list or a shell string, like cmd.
   config.setup({ chat = { agent = { cmd = { "claude" }, resume_cmd = { "claude", "--resume", "{session_id}" } } } })
   check("chat: resume_cmd as a list", config.get().chat.agent.resume_cmd[2] == "--resume")

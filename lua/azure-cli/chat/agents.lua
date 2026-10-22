@@ -18,7 +18,9 @@
 --                             agent, as a new revision of its plan
 --   M.start_for_build(pr)     queues PR `pr`: its agent plans the fix of its
 --                             failed build (the same agent as its comments')
---     (all three return what they did, as a sentence, and the labels started)
+--   M.start_for_conflict(pr)  the same for its merge conflict: a rebase
+--                             onto its target
+--     (all four return what they did, as a sentence, and the labels started)
 --   M.start_for_task(text, title, extra)  queues a task agent (#143): a
 --                             free-form task, no work item or PR - it only
 --                             reads until a plan of its own is approved,
@@ -179,8 +181,44 @@ function M.build_prompt(pr, wi)
     .. "(pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
 end
 
--- `build`: for the PR's failed build rather than its review comments.
-local function job_for_pr(pr, threads, extra, build)
+-- The first message of an agent started for a PR that conflicts with its
+-- target: a plan for rebasing onto it, then the rebase and a force push.
+-- `wi` as in build_prompt. Pure.
+function M.conflict_prompt(pr, wi)
+  local named = pr.target and pr.target ~= ""
+  local target = named and pr.target or "its target branch"
+  local onto = named and ("origin/" .. pr.target) or "origin/<its target branch>"
+  local title = pr.title and (" \"" .. pr.title .. "\"") or ""
+  local head, where, submit, push
+  if wi then
+    head = "/plan PR !" .. tostring(pr.id) .. title .. ", which you opened for #" .. tostring(wi)
+      .. ", conflicts with " .. target .. ". "
+    where = "your story's worktree (start_story for #" .. tostring(wi) .. " reuses it)"
+    submit = "the plan for this round with submit_plan (work_item_id " .. tostring(wi) .. ") - a new revision of "
+      .. "your plan"
+    push = "commit_and_push_fix (work_item_id " .. tostring(wi) .. ", rebased = true)"
+  else
+    local repo = pr.key and tostring(pr.key):match("^(.-~.-)~%d+$")
+    head = "/plan PR !" .. tostring(pr.id) .. (repo and (" in " .. repo:gsub("~", "/")) or "") .. title
+      .. ": it conflicts with " .. target .. ". "
+    where = "the PR's worktree (start_fix, pr_id " .. tostring(pr.id) .. ")"
+    submit = "one plan for it with submit_plan (pr_id " .. tostring(pr.id) .. ")"
+    push = "commit_and_push_fix (pr_id " .. tostring(pr.id) .. ", rebased = true)"
+  end
+  return head .. "Plan rebasing it onto " .. onto .. ": find what conflicts (git fetch origin, then e.g. git "
+    .. "merge-tree --write-tree " .. onto .. " HEAD, and what each side changed in those files), then write "
+    .. submit .. ", naming each conflict and how you'll resolve it keeping both sides' intent. If one can't be "
+    .. "resolved with confidence, don't guess: say in the plan what conflicts and why. Once it's approved, in "
+    .. where .. " run git fetch origin and git rebase " .. onto .. ", resolve the conflicts as planned, run the "
+    .. "plan's tests (run_tests), then push with " .. push .. ": that force-pushes the rewritten branch, and the "
+    .. "user is asked first. If the rebase hits a conflict you can't resolve with confidence, git rebase --abort "
+    .. "and stop: say what conflicts and why instead of guessing."
+    .. (wi and "" or " You were started for this PR only.")
+end
+
+-- `kind`: "build" for the PR's failed build, "conflict" for its merge
+-- conflict, nil for its review comments.
+local function job_for_pr(pr, threads, extra, kind)
   -- A PR one of the agents opened goes back to that agent, with its plan
   -- and its conversation.
   local PLAN = require("azure-cli.chat.plan")
@@ -188,21 +226,25 @@ local function job_for_pr(pr, threads, extra, build)
   local wi = owner and owner.target and owner.target.work_item_id
   local which = (threads and #threads > 0)
     and (" (thread " .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""
+  local build, conflict = kind == "build", kind == "conflict"
   if wi then
     return { key = owner.key, label = PLAN.target_label(owner.target), title = owner.title or pr.title, target = owner.target,
-      prompt = with_extra(build and M.build_prompt(pr, wi) or M.pr_followup_prompt(pr, threads, wi), extra),
-      display = "/plan PR !" .. tostring(pr.id) .. (build and "'s build" or ("'s comments" .. which)),
-      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. (build and "'s build failed)"
-        or " got review comments)"), pr = pr } }
+      prompt = with_extra(conflict and M.conflict_prompt(pr, wi) or build and M.build_prompt(pr, wi)
+        or M.pr_followup_prompt(pr, threads, wi), extra),
+      display = "/plan PR !" .. tostring(pr.id) .. (conflict and "'s conflict" or build and "'s build"
+        or ("'s comments" .. which)),
+      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. (conflict
+        and " conflicts with its target)" or build and "'s build failed)" or " got review comments)"), pr = pr } }
   end
   -- Keyed by the PR's key, not its number (#109): two GitHub #7s in
   -- different repos are two agents.
   local target = PLAN.pr_target(pr)
   return { key = PLAN.key(target), label = PLAN.target_label(target), title = pr.title,
-    target = target, prompt = with_extra(build and M.build_prompt(pr) or M.pr_prompt(pr, threads), extra),
-    display = "/plan PR !" .. tostring(pr.id) .. (build and "'s build" or which),
-    snap = { screen = "pull request (this agent was started for one PR's " .. (build and "failed build)"
-      or "review comments)"), pr = pr } }
+    target = target, prompt = with_extra(conflict and M.conflict_prompt(pr) or build and M.build_prompt(pr)
+      or M.pr_prompt(pr, threads), extra),
+    display = "/plan PR !" .. tostring(pr.id) .. (conflict and "'s conflict" or build and "'s build" or which),
+    snap = { screen = "pull request (this agent was started for one PR's " .. (conflict and "merge conflict)"
+      or build and "failed build)" or "review comments)"), pr = pr } }
 end
 
 -- Neovim is quitting: start nothing more (stopping an agent finishes its
@@ -280,7 +322,13 @@ end
 -- Queues PR `pr`, its agent planning the fix of its failed build (#141).
 function M.start_for_build(pr)
   if type(pr) ~= "table" or not pr.id then return enqueue({}, "No pull request.") end
-  return enqueue({ job_for_pr(pr, nil, nil, true) }, "No pull request.")
+  return enqueue({ job_for_pr(pr, nil, nil, "build") }, "No pull request.")
+end
+
+-- Queues PR `pr`, its agent planning the rebase onto its target.
+function M.start_for_conflict(pr)
+  if type(pr) ~= "table" or not pr.id then return enqueue({}, "No pull request.") end
+  return enqueue({ job_for_pr(pr, nil, nil, "conflict") }, "No pull request.")
 end
 
 -- A task agent's first message (#143): task `n`, `text` as the main chat

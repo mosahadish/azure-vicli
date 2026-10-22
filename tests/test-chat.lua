@@ -1117,6 +1117,103 @@ do
   require("azure-cli.config").setup({})
 end
 
+-- --- chat/watch.lua: the chat's PRs, watched for merge conflicts ----------------------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local AG = require("azure-cli.chat.agents")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    start = AG.start_for_conflict }
+  local notes, started, busy = {}, {}, false
+  local conflict, src, tgt = true, "s1", "t1"
+  CH.current_agent = function() return { name = "x" } end
+  CH.note = function(t) notes[#notes + 1] = t end
+  CH.alert = function() end
+  T.provider = function(argv, _, cb)
+    if argv[1] == "--get-pr" then
+      return cb(true, vim.json.encode({ id = 503, title = "T", state = "active", org = "o", project = "p", repo = "r",
+        target = "main", buildStatus = "succeeded", mergeConflict = conflict, sourceCommit = src, targetCommit = tgt }), "")
+    end
+    cb(true, vim.json.encode({ value = {} }), "")
+  end
+  AG.start_for_conflict = function(pr)
+    if busy then return "busy", {} end
+    started[#started + 1] = pr.id
+    return "ok", { "PR !503" }
+  end
+  ST.whoami = { ["o|p"] = { id = "me" } }
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  require("azure-cli.config").setup({})
+  check("conflict: by its commits; nil without one",
+    W.conflict({ mergeConflict = true, sourceCommit = "a", targetCommit = "b" }) == "a:b"
+    and W.conflict({ mergeConflict = false, sourceCommit = "a" }) == nil and W.conflict(nil) == nil)
+  W.add({ id = 503, org = "o", project = "p", repo = "r" })
+  W.poll()
+  check("watch conflict: one already there isn't new", #notes == 0, vim.inspect(notes))
+  tgt = "t2"
+  W.poll()
+  check("watch conflict: nor the target moving on while it conflicts", #notes == 0, vim.inspect(notes))
+  conflict = false
+  W.poll()
+  conflict, tgt = true, "t3"
+  W.poll()
+  check("watch conflict: a new one - the note says just that (suggest)",
+    #notes == 1 and notes[1] == "!503 \"T\" conflicts with main.", vim.inspect(notes))
+  W.poll()
+  check("watch conflict: the same one again says nothing", #notes == 1, vim.inspect(notes))
+  src = "s2"
+  W.poll()
+  check("watch conflict: a push that still conflicts, another note", #notes == 2, vim.inspect(notes))
+  conflict = false
+  W.poll()
+  conflict = true
+  W.poll()
+  check("watch conflict: the same pair again isn't told twice", #notes == 2, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_conflict = "off" } })
+  conflict = false
+  W.poll()
+  conflict, tgt = true, "t4"
+  W.poll()
+  check("watch conflict: off says nothing", #notes == 2 and #started == 0, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_conflict = "rebase" } })
+  conflict = false
+  W.poll()
+  conflict, tgt = true, "t5"
+  busy = true
+  W.poll(); W.poll()
+  check("watch conflict: rebase - its agent busy, it waits", #started == 0 and #notes == 2, vim.inspect(notes))
+  W._reset()  -- a restart in between: what's pending is kept
+  busy = false
+  W.poll()
+  check("watch conflict: rebase - its agent plans the rebase", vim.deep_equal(started, { 503 })
+    and notes[3] == "!503 \"T\" conflicts with main - an agent is planning the rebase.", vim.inspect({ started, notes }))
+  W.poll()
+  check("watch conflict: rebase - once", #started == 1, vim.inspect(started))
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  CH.current_agent, CH.note, CH.alert, T.provider = orig.agent, orig.note, orig.alert, orig.provider
+  AG.start_for_conflict = orig.start
+  require("azure-cli.config").setup({})
+end
+
+-- --- agents.lua: an agent for a PR's merge conflict ----------------------------------
+do
+  local AG = require("azure-cli.chat.agents")
+  local p = AG.conflict_prompt({ id = 504, title = "Fix", key = "own~repo~504", target = "main" })
+  check("conflict_prompt: a PR's", p:find("^/plan PR !504 in own/repo \"Fix\": it conflicts with main%.") ~= nil
+    and p:find("git rebase origin/main", 1, true) ~= nil and p:find("submit_plan (pr_id 504)", 1, true) ~= nil
+    and p:find("commit_and_push_fix (pr_id 504, rebased = true)", 1, true) ~= nil
+    and p:find("instead of guessing", 1, true) ~= nil, p)
+  p = AG.conflict_prompt({ id = 504, title = "Fix", target = "main" }, 92)
+  check("conflict_prompt: the work item's agent that opened it",
+    p:find("which you opened for #92, conflicts with main", 1, true) ~= nil
+    and p:find("start_story for #92 reuses it", 1, true) ~= nil
+    and p:find("commit_and_push_fix (work_item_id 92, rebased = true)", 1, true) ~= nil, p)
+end
+
 -- --- agents.lua: an agent for a PR's failed build (#141) ------------------------------
 do
   local AG = require("azure-cli.chat.agents")

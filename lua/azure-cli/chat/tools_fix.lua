@@ -333,6 +333,23 @@ setmetatable(M, { __call = function(_, T)
     return t.target
   end
 
+  -- The branch located change `t` goes into: its PR's target, else the
+  -- one its story started from; nil when that's its own branch.
+  local function onto_of(t)
+    local onto
+    if not (t.wi or t.task) then
+      local pr = T.pr_record(t.target.pr_key or t.target.pr_id)
+      onto = pr and pr.target
+    else
+      local PLAN = require("azure-cli.chat.plan")
+      local rec = PLAN.load(PLAN.key(t.target))
+      local pr = rec and type(rec.pr) == "table" and T.pr_record(rec.pr.key or rec.pr.id)
+      onto = pr and pr.target or select(3, M.find_story(t.target))
+    end
+    if type(onto) ~= "string" or onto == "" or onto == t.branch then return nil end
+    return onto
+  end
+
   local target_schema = { type = "object", properties = {
     pr_id = { type = "integer", description = "for a start_fix change" },
     work_item_id = { type = "integer", description = "for a start_story change" },
@@ -652,15 +669,27 @@ setmetatable(M, { __call = function(_, T)
         .. "user first, showing the diff. If the change is already committed (nothing to commit, HEAD ahead of the "
         .. "branch), it pushes those commits. It only fast-forwards: if the branch has moved, it says so and you "
         .. "rebase onto origin/<branch> and call it again. Never git reset --soft onto a branch HEAD isn't directly "
-        .. "on: that silently reverts the commits it doesn't have.",
+        .. "on: that silently reverts the commits it doesn't have. After rebasing the branch onto its target (the "
+        .. "PR's target branch, or the one the story started from), pass rebased = true: HEAD must contain "
+        .. "origin/<target>'s current tip, and it force-pushes with a lease on the commit the branch was at - "
+        .. "refused if anyone pushed to it since. That always asks the user.",
       schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
-        work_item_id = target_schema.properties.work_item_id, message = { type = "string" } }, required = { "message" } },
+        work_item_id = target_schema.properties.work_item_id, message = { type = "string" },
+        rebased = { type = "boolean", description = "the branch was rebased onto its target: force-push it" } },
+        required = { "message" } },
       risk = "ask",
+      -- A force push rewrites the branch: never without asking.
+      always_ask = function(a) return a.rebased == true end,
       confirm = function(a, env)
         local t = locate(a, env)
-        return "commit \"" .. tostring(a.message) .. "\" and push it to "
-          .. (t and t.branch or (a.work_item_id and ("#" .. tostring(a.work_item_id))
-            or a.pr_id and ("PR !" .. tostring(a.pr_id)) or "the task's branch"))
+        local branch = t and t.branch or (a.work_item_id and ("#" .. tostring(a.work_item_id))
+          or a.pr_id and ("PR !" .. tostring(a.pr_id)) or "the task's branch")
+        if a.rebased == true then
+          local onto = t and onto_of(t)
+          return "commit \"" .. tostring(a.message) .. "\" and force-push it to " .. branch
+            .. ", rewriting the branch" .. (onto and (" (rebased onto " .. onto .. ")") or "")
+        end
+        return "commit \"" .. tostring(a.message) .. "\" and push it to " .. branch
       end,
       details = function(a, cb, env)
         local t = locate(a, env)
@@ -685,7 +714,7 @@ setmetatable(M, { __call = function(_, T)
       end,
       preapproved = function(a, cb, env)
         local t = locate(a, env)
-        if not t then return cb(false) end
+        if not t or a.rebased == true then return cb(false) end
         local target = target_of_change(t)
         require("azure-cli.chat.plan").push_allowed(target, t.dir, function(ok, why)
           cb(ok, ok and "the approved plan (pushing allowed, tests passed)" or why)
@@ -729,12 +758,60 @@ setmetatable(M, { __call = function(_, T)
             end)
           end)
         end
+        -- rebased = true: HEAD must have origin/<onto>'s tip, fetched fresh,
+        -- and the push replaces the branch only while it's still at the
+        -- commit this worktree last saw (`seen`). cb(seen) to push.
+        local function check_rebased(committed, cb)
+          local onto = onto_of(t)
+          if not onto then return done(nil, "rebased: can't tell which branch " .. t.branch .. " goes into") end
+          T.git({ "git", "-C", wt, "rev-parse", "-q", "--verify", remote }, function(sok, seen)
+            seen = vim.trim(seen or "")
+            if not sok or seen == "" then
+              return done(nil, "origin/" .. t.branch .. " isn't known here: run git fetch origin first")
+            end
+            local tref = "refs/remotes/origin/" .. onto
+            T.git({ "git", "-C", wt, "fetch", "-q", "origin", "+refs/heads/" .. onto .. ":" .. tref }, function(fok, _, ferr)
+              if not fok then return done(nil, "fetching " .. onto .. " failed: " .. vim.trim(ferr or "")) end
+              T.git({ "git", "-C", wt, "merge-base", "--is-ancestor", tref, "HEAD" }, function(on)
+                T.git({ "git", "-C", wt, "rev-parse", "--short", tref }, function(_, tip)
+                  if not on then
+                    return done(nil, "not rebased: HEAD doesn't contain origin/" .. onto .. " (" .. vim.trim(tip or "")
+                      .. "). Run git fetch origin and git rebase origin/" .. onto .. ", then call commit_and_push_fix "
+                      .. "again.")
+                  end
+                  T.git({ "git", "-C", wt, "rev-parse", "HEAD" }, function(_, head)
+                    if not committed and vim.trim(head or "") == seen then
+                      return done(nil, "nothing to push: HEAD is already at origin/" .. t.branch)
+                    end
+                    cb(seen)
+                  end)
+                end)
+              end)
+            end)
+          end)
+        end
+        local function checked(committed, cb)
+          if args.rebased == true then return check_rebased(committed, cb) end
+          check_target(committed, cb)
+        end
         T.git({ "git", "-C", wt, "add", "-A" }, function()
           commit(function(committed)
-          check_target(committed, function()
-            env.log("git push " .. t.branch)
-            T.git({ "git", "-C", wt, "push", "-q", "origin", "HEAD:refs/heads/" .. t.branch }, function(pok, _, perr)
+          checked(committed, function(seen)
+            local argv = { "git", "-C", wt, "push", "-q", "origin", "HEAD:refs/heads/" .. t.branch }
+            if seen then
+              -- Never a plain --force: someone else's push since is kept.
+              table.insert(argv, 5, "--force-with-lease=" .. t.branch .. ":" .. seen)
+              env.log("git push --force-with-lease " .. t.branch)
+            else
+              env.log("git push " .. t.branch)
+            end
+            T.git(argv, function(pok, _, perr)
               if not pok then
+                if seen then
+                  return done(nil, "force push refused: " .. t.branch .. " on origin isn't at " .. seen:sub(1, 7)
+                    .. " any more (someone pushed to it) - fetch it, rebase onto it and the target again, then call "
+                    .. "commit_and_push_fix again: " .. vim.trim(perr or ""):gsub("%s*\n%s*", " "))
+                end
                 return done(nil, "push failed (the branch may have moved since): " .. vim.trim(perr or ""):gsub("%s*\n%s*", " "))
               end
               -- The plan behind it is done: the next change needs its own.
@@ -772,7 +849,8 @@ setmetatable(M, { __call = function(_, T)
                   .. " (it was " .. ci.build .. " before this push): it isn't done until that passes - check "
                   .. "get_pull_request, and get_build_log if it fails, before calling it done.")
                   or " If this branch has a pull request, its CI now runs on it: check it passes before calling it done."
-                done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")." .. ci_step .. next_step)
+                done((seen and "Force-pushed " or "Pushed ") .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label
+                  .. ")." .. ci_step .. next_step)
               end)
             end)
           end)

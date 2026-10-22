@@ -18,10 +18,17 @@
 -- needs a requeue (gr), not a fix. Nor does one that had failed already
 -- when the PR started being watched.
 --
+-- It conflicting with its target is chat.on_conflict's: "suggest"
+-- (default) a note, "rebase" its agent plans the rebase onto the target
+-- (then rebases and force-pushes), "off" nothing. Once per conflict: a
+-- new one is the PR going into conflict again, or a push that still
+-- conflicts - never the same source/target commit pair twice, so the
+-- target moving on while it conflicts doesn't count again.
+--
 -- A PR that's completed or abandoned stops being watched, and the plans
 -- behind it are finished (plan.pr_closed). Kept in
 -- stdpath("data")/azure-cli-chat/watched.json: per PR, where it is and the
--- comments already seen, its failed build.
+-- comments already seen, its failed build, its merge conflict.
 --
 --   M.add(pr)       starts watching PR `pr` (id, org, project, repo, title,
 --                   and key/host on GitHub)
@@ -33,6 +40,8 @@
 --   M.failed_build(pr)  pure: what tells PR record `pr`'s failed build
 --                   apart (its buildUrl, else "failed"); nil if it hasn't
 --                   failed (an expired build hasn't)
+--   M.conflict(pr)  pure: what tells PR record `pr`'s merge conflict apart
+--                   ("<sourceCommit>:<targetCommit>"); nil if it has none
 --
 -- Keyed by the PR's key (hosts.lua's): its id on Azure, owner~repo~n on
 -- GitHub, where a number repeats across repos (#113). An entry from before
@@ -52,7 +61,8 @@ local function file() return require("azure-cli.chat.store").root() .. "/watched
 
 local poll_one  -- below
 local list  -- key (string) -> { id, key, host, org, project, repo, title, seen = { "tid:cid" = true }, pending,
-            --   build_seen, failed_build, build_pending }
+            --   build_seen, failed_build, build_pending, conflict_seen, conflict, conflict_told,
+            --   conflict_pending }
 local function load()
   if not list then
     list = SHELL().read_json(file(), {}, { validate = function(t) return type(t) == "table" end })
@@ -86,6 +96,11 @@ end
 function M.failed_build(pr)
   if type(pr) ~= "table" or pr.buildStatus ~= "failed" then return nil end
   return (type(pr.buildUrl) == "string" and pr.buildUrl ~= "") and pr.buildUrl or "failed"
+end
+
+function M.conflict(pr)
+  if type(pr) ~= "table" or pr.mergeConflict ~= true then return nil end
+  return tostring(pr.sourceCommit or "") .. ":" .. tostring(pr.targetCommit or "")
 end
 
 -- The list's key of watched PR record `rec`.
@@ -195,6 +210,49 @@ local function check_build(rec, fresh, pr)
   if rec.build_pending and act_build(rec, pr) then rec.build_pending = nil end
 end
 
+-- chat.on_conflict: "suggest" (default), "rebase" or "off".
+local function on_conflict() return config().on_conflict or "suggest" end
+
+-- PR `pr` conflicts with branch `target`: says so, or has its agent plan
+-- the rebase. False when that agent's busy (try again at the next poll).
+local function act_conflict(rec, pr, target)
+  local ref = HOSTS().ref(pr or rec)
+  local what = ref .. " \"" .. tostring(rec.title or "") .. "\" conflicts with "
+    .. ((target and target ~= "") and target or "its target")
+  pcall(function() CHAT().alert("azure-vicli: PR " .. ref, what) end)
+  if on_conflict() == "rebase" then
+    local _, added = require("azure-cli.chat.agents").start_for_conflict(pr)
+    if not added or #added == 0 then return false end
+    CHAT().note(what .. " - an agent is planning the rebase.")
+  else
+    CHAT().note(what .. ".")
+  end
+  return true
+end
+
+local function source_of(key) return key and key:match("^(.-):") end
+
+-- Watched `rec`'s merge state as `fresh` has it, as check_build. A new
+-- conflict: it wasn't conflicting, or its source moved (a push that still
+-- conflicts); the pair last told about isn't told again.
+local function check_conflict(rec, fresh, pr)
+  if on_conflict() == "off" then return end
+  local key = M.conflict(fresh)
+  local first = not rec.conflict_seen
+  rec.conflict_seen = true
+  if not key then
+    rec.conflict, rec.conflict_pending = nil, nil
+    return
+  end
+  local new = (rec.conflict == nil or source_of(rec.conflict) ~= source_of(key)) and key ~= rec.conflict_told
+  rec.conflict = key
+  if new then
+    rec.conflict_told = key
+    if not first then rec.conflict_pending = true end
+  end
+  if rec.conflict_pending and act_conflict(rec, pr, fresh.target) then rec.conflict_pending = nil end
+end
+
 -- Watched `rec` (under `was` in the list) is GitHub PR `pr`, whose key
 -- it didn't have yet (an entry from before #113): moves it there, taking
 -- in what was seen if the key has an entry already.
@@ -237,6 +295,7 @@ poll_one = function(rec, done)
     rec.title, rec.repo = pr.title or rec.title, pr.repo or rec.repo
     -- The build as --get-pr reads it now: the dashboard's row may be old.
     check_build(rec, pr, TOOLS().pr_record(key) or pr)
+    check_conflict(rec, pr, TOOLS().pr_record(key) or pr)
     save()
     whoami(rec.org or "", rec.project or "", function(me)
       if not me then return done() end  -- can't tell whose they are: wait

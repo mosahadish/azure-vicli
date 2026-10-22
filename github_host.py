@@ -349,7 +349,7 @@ ACTOR = "login ... on User { name }"
 PR_FIELDS = """
 fragment PR on PullRequest {
   number title url body isDraft createdAt updatedAt state
-  headRefName baseRefName headRefOid isCrossRepository
+  headRefName baseRefName headRefOid baseRefOid isCrossRepository
   headRef { name }
   repository { name url owner { login }
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed deleteBranchOnMerge }
@@ -487,6 +487,7 @@ def ado_pr(node):
         "targetRefName": "refs/heads/" + (node.get("baseRefName") or ""),
         "creationDate": node.get("createdAt"),
         "lastMergeSourceCommit": {"commitId": node.get("headRefOid") or ""},
+        "lastMergeTargetCommit": {"commitId": node.get("baseRefOid") or ""},
         "reviewers": reviewers,
         "autoCompleteSetBy": {"displayName": _name((auto or {}).get("enabledBy"))} if auto else None,
         "mergeStatus": "conflicts" if node.get("mergeable") == "CONFLICTING" else "succeeded",
@@ -1557,6 +1558,8 @@ class Actions(object):
         state = _safe(lambda: self.merge_state(retry=False))
         if state is not None:
             rec["mergeability"] = mergeability(*state)
+            # The list's `mergeable` alone misses a DIRTY merge state.
+            rec["mergeConflict"] = bool(rec.get("mergeConflict") or rec["mergeability"]["conflict"])
         print(json.dumps(rec, ensure_ascii=False))
         return 0
 

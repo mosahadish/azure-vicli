@@ -168,6 +168,78 @@ do
   check("#57 from = name, no such branch: refused", res == nil and tostring(err):find("no branch nope", 1, true), err)
 end
 
+-- rebased = true (chat.on_conflict's rebase): only onto the target's
+-- current tip, a force push with a lease on the commit last seen, and it
+-- always asks.
+do
+  local res, err = call("start_story", { work_item_id = 21, repo = "o/repo", from = "main", name = "feature/21", board = "github" })
+  check("rebased: a story from main", res and res.directory, err)
+  local wt = res and res.directory or ""
+  vim.fn.writefile({ "r" }, wt .. "/r.txt")
+  local out, perr = call("commit_and_push_fix", { work_item_id = 21, message = "r" })
+  check("rebased: the first push", type(out) == "string" and out:find("^Pushed"), perr)
+  local pushed = sh({ "git", "-C", origin, "rev-parse", "feature/21" })
+  sh({ "git", "-C", seed, "fetch", "-q" })
+  sh({ "git", "-C", seed, "checkout", "-q", "-B", "main", "origin/main" })
+  vim.fn.writefile({ "m" }, seed .. "/m.txt")
+  sh({ "git", "-C", seed, "add", "-A" })
+  sh({ "git", "-C", seed, "commit", "-q", "-m", "main moved" })
+  sh({ "git", "-C", seed, "push", "-q", "origin", "main" })
+
+  out, perr = call("commit_and_push_fix", { work_item_id = 21, message = "r", rebased = true })
+  check("rebased: refused when HEAD isn't on origin/main's tip", out == nil
+    and tostring(perr):find("not rebased: HEAD doesn't contain origin/main", 1, true)
+    and sh({ "git", "-C", origin, "rev-parse", "feature/21" }) == pushed, perr)
+
+  sh({ "git", "-C", wt, "fetch", "-q", "origin" })
+  sh({ "git", "-C", wt, "rebase", "-q", "origin/main" })
+  out, perr = call("commit_and_push_fix", { work_item_id = 21, message = "r", rebased = true })
+  check("rebased: force-pushed", type(out) == "string" and out:find("^Force%-pushed")
+    and sh({ "git", "-C", origin, "rev-parse", "feature/21" }) == sh({ "git", "-C", wt, "rev-parse", "HEAD" })
+    and sh({ "git", "-C", origin, "rev-parse", "feature/21" }) ~= pushed
+    and sh({ "git", "-C", origin, "rev-parse", "feature/21^" }) == sh({ "git", "-C", origin, "rev-parse", "main" }), perr)
+
+  -- Someone pushes to the branch after this worktree last fetched it: the
+  -- lease refuses, their commit stays.
+  sh({ "git", "-C", seed, "fetch", "-q" })
+  sh({ "git", "-C", seed, "checkout", "-q", "-B", "feature/21", "origin/feature/21" })
+  vim.fn.writefile({ "theirs" }, seed .. "/t.txt")
+  sh({ "git", "-C", seed, "add", "-A" })
+  sh({ "git", "-C", seed, "commit", "-q", "-m", "theirs" })
+  sh({ "git", "-C", seed, "push", "-q", "origin", "feature/21" })
+  local theirs = sh({ "git", "-C", origin, "rev-parse", "feature/21" })
+  sh({ "git", "-C", wt, "commit", "-q", "--amend", "-m", "r again" })
+  out, perr = call("commit_and_push_fix", { work_item_id = 21, message = "r", rebased = true })
+  check("rebased: the lease refuses a branch someone pushed to since", out == nil
+    and tostring(perr):find("force push refused", 1, true)
+    and sh({ "git", "-C", origin, "rev-parse", "feature/21" }) == theirs, perr)
+
+  -- Always asked, saying it rewrites the branch: past a plan that allows
+  -- pushing, and past chat.permissions' allow.
+  PLAN.save({ key = "wi-21", target = { work_item_id = 21 }, status = "approved", allow_push = true, revisions = {},
+    threads = {} })
+  local tool = T.by_name.commit_and_push_fix
+  local pre
+  tool.preapproved({ work_item_id = 21, message = "r", rebased = true }, function(ok) pre = ok end, env)
+  check("rebased: never preapproved", pre == false)
+  local function asked_with(perms)
+    require("azure-cli.config").setup({ chat = { plan_first = false, permissions = perms } })
+    local q, answered
+    local cenv = vim.tbl_extend("force", env, { confirm = function(text, cb) q = text; cb(false) end })
+    T.call("commit_and_push_fix", { work_item_id = 21, message = "r", rebased = true }, cenv, function() answered = true end)
+    vim.wait(5000, function() return answered end, 10)
+    return q
+  end
+  local q = asked_with(nil)
+  check("rebased: asks, saying it rewrites the branch", q and q:find("force-push it to feature/21, rewriting the branch "
+    .. "(rebased onto main)", 1, true), q)
+  q = asked_with({ commit_and_push_fix = "allow" })
+  check("rebased: asks even when chat.permissions allows the tool", q ~= nil, q)
+  check("rebased: declined, nothing pushed", sh({ "git", "-C", origin, "rev-parse", "feature/21" }) == theirs)
+  require("azure-cli.config").setup({ chat = { plan_first = false } })
+  pcall(vim.fn.delete, PLAN.root() .. "/wi-21.json")
+end
+
 -- #71: before its plan is approved, start_story gives a read-only worktree
 -- of the branch to plan in - detached, nothing made on the server, no
 -- story started; approved, the same directory becomes the story's.
