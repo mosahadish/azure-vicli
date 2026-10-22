@@ -501,9 +501,12 @@ end
 local function approve()
   local rec = view and view.rec
   if not rec then return end
+  if #PLAN().waiting_on(rec) > 0 then return PLAN().ask_start_now(rec.key) end
   if rec.status == "approved" then return notify("Already approved.") end
   if rec.status == "done" then return notify("This plan was implemented already.") end
-  PLAN().ask_approval({ rec.key }, function(allow_push) PLAN().approve(rec.key, allow_push) end)
+  PLAN().ask_approval({ rec.key }, function(allow_push, wait_for)
+    PLAN().approve(rec.key, allow_push, wait_for and wait_for[rec.key])
+  end)
 end
 
 -- gR: ask for changes - what you write here, plus every change queued on

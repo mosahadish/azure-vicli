@@ -1789,6 +1789,158 @@ do
   pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
 end
 
+-- --- two plans changing the same files: the overlap, approving after the other --------
+do
+  check("in_flight: approved, done, a PR still open; not draft, nor a closed PR",
+    PLAN.in_flight({ status = "approved" }) and PLAN.in_flight({ status = "done" })
+      and PLAN.in_flight({ status = "draft", pr = { id = 1 } }) and not PLAN.in_flight({ status = "draft" })
+      and not PLAN.in_flight({ status = "done", pr = { id = 1 }, pr_state = "completed" }) and not PLAN.in_flight(nil))
+  local mine = { key = "wi-1", repo = "cli", files = { "lua/azure-cli/chat/agents.lua", "docs/chat.md", "x.lua" } }
+  local found = PLAN.overlaps(mine, {
+    { key = "wi-1", label = "#1", repo = "cli", files = { "x.lua" } },
+    { key = "wi-2", label = "#2", repo = "cli", files = { "chat/agents.lua", "docs/chat.md", "y.lua" } },
+    { key = "wi-3", label = "#3", repo = "other", files = { "x.lua" } },
+    { key = "wi-4", label = "#4", files = { "x.lua" } },
+    { key = "wi-5", label = "#5", repo = "cli", files = { "agents.lua.bak", "ox.lua" } },
+  })
+  check("overlaps: shared files by suffix, not itself, not another repo, an unknown repo compared",
+    #found == 2 and found[1].key == "wi-2" and table.concat(found[1].files, "|") == "lua/azure-cli/chat/agents.lua|docs/chat.md"
+      and found[2].key == "wi-4" and table.concat(found[2].files, "|") == "x.lua", vim.inspect(found))
+  local lines = PLAN.overlap_lines({ "wi-1" }, { ["wi-1"] = found }, function() return "#1" end)
+  check("overlap_lines: one plan", lines[1] == "#2 also changes: lua/azure-cli/chat/agents.lua, docs/chat.md"
+    and lines[2] == "#4 also changes: x.lua", vim.inspect(lines))
+  lines = PLAN.overlap_lines({ "wi-0", "wi-1" }, { ["wi-1"] = { found[2] } }, function() return "#1" end)
+  check("overlap_lines: several plans", #lines == 1 and lines[1] == "#1 and #4 both change: x.lua", vim.inspect(lines))
+  local held = { status = "approved", target = { work_item_id = 1 },
+    wait_for = { { key = "wi-2", label = "#2", done = true }, { key = "wi-4", label = "#4" } } }
+  check("waiting_on: the ones not finished, only while approved", table.concat(PLAN.waiting_on(held), ",") == "#4"
+    and #PLAN.waiting_on({ status = "draft", wait_for = held.wait_for }) == 0)
+  local ok, why = PLAN.gate_check(held, true, held.target)
+  check("gate: a held plan's change doesn't start", not ok and tostring(why):find("once #4 is finished", 1, true) ~= nil, why)
+  check("status_label: waits for", (PLAN.status_label(held)):find("waits for #4", 1, true) ~= nil)
+end
+
+do
+  local CHAT = require("azure-cli.chat")
+  local UI = require("azure-cli.ui")
+  local AV = require("azure-cli.chat.agents_view")
+  local send, find, choose = CHAT.send, CHAT.find_conversation, UI.choose
+  local sent, asked = {}, nil
+  CHAT.send = function(text, o) sent[#sent + 1] = { text = text, display = o and o.display } return {} end
+  CHAT.find_conversation = function() return nil end
+  UI.choose = function(opts, cb) asked = { opts = opts, cb = cb } end
+  local function md(files)
+    local l = { "# P", "", "## Files" }
+    for _, f in ipairs(files) do l[#l + 1] = "- `" .. f .. "` - x" end
+    return table.concat(l, "\n")
+  end
+  local function put(key, target, status, files, extra)
+    local rec = { key = key, target = target, title = key, status = status, threads = {},
+      revisions = { { n = 1, by = "agent", markdown = md(files) } }, approved_rev = status ~= "draft" and 1 or nil }
+    for k, v in pairs(extra or {}) do rec[k] = v end
+    PLAN.save(rec)
+  end
+  local made = { "wi-9701", "wi-9702", "pr-github-o~other~3", "wi-github-o~cli~9703", "wi-9704", "wi-9705", "wi-9706" }
+  put("wi-9701", { work_item_id = 9701 }, "approved", { "src/ovl_a.lua", "docs/ovl.md" })
+  put("wi-9702", { work_item_id = 9702 }, "done", { "src/ovl_b.lua" }, { pr = { id = 97002 } })
+  put("pr-github-o~other~3", { pr_id = 3, pr_key = "o~other~3" }, "approved", { "src/ovl_a.lua" })
+  put("wi-github-o~cli~9703", { work_item_id = 9703, item_key = "o~cli~9703" }, "draft",
+    { "lua/src/ovl_a.lua", "docs/ovl.md", "src/ovl_b.lua", "src/ovl_c.lua" })
+  local key = "wi-github-o~cli~9703"
+  check("repo_of: a GitHub key's repo", PLAN.repo_of(PLAN.load(key)) == "cli" and PLAN.repo_of(PLAN.load("wi-9701")) == nil)
+  local found = PLAN.overlapping(key)
+  check("overlapping: the plans in flight it shares files with, not another repo's",
+    #found == 2 and vim.deep_equal({ found[1].label, found[2].label }, { "#9701", "#9702" })
+      and table.concat(found[1].files, "|") == "lua/src/ovl_a.lua|docs/ovl.md", vim.inspect(found))
+
+  -- gA: the popup says so, and "after" holds the approval back.
+  local picked
+  PLAN.ask_approval({ key }, function(allow, wait_for) picked = { allow = allow, wait_for = wait_for } end)
+  local o = asked and asked.opts or {}
+  check("ask_approval: the overlaps in the details, one more button",
+    vim.deep_equal(o.details, { "#9701 also changes: lua/src/ovl_a.lua, docs/ovl.md", "#9702 also changes: src/ovl_b.lua" })
+      and o.buttons[3] == "Approve after #9701, #9702" and o.keys.w == 3 and o.cancel == 4, vim.inspect(o))
+  asked.cb(3)
+  local wf = picked and picked.wait_for and picked.wait_for[key]
+  check("ask_approval: after - which to wait for", picked and picked.allow == false and wf and #wf == 2
+    and wf[1].key == "wi-9701", vim.inspect(picked))
+  PLAN.approve(key, false, wf)
+  local rec = PLAN.load(key)
+  check("approve after: approved, nothing sent, the hold kept", rec.status == "approved" and #sent == 0
+    and table.concat(PLAN.waiting_on(rec), ",") == "#9701,#9702", vim.inspect(sent))
+  check("approve after: the gate holds its change", not PLAN.gate(rec.target))
+  local rows = AV.rows({ { plan_key = key, entries = {}, label = "o#9703", target = rec.target } }, {}, PLAN.load, os.time())
+  check("Agents screen: waits for, In progress", rows[1].state:find("waits for #9701, #9702", 1, true) ~= nil
+    and rows[1].group == 3, rows[1].state)
+
+  -- One finishes: still waiting for the other; its PR merged: it starts.
+  PLAN.pr_closed(97002, "completed")
+  rec = PLAN.load(key)
+  check("one finished: still waits for the other", #sent == 0 and table.concat(PLAN.waiting_on(rec), ",") == "#9701",
+    vim.inspect(rec.wait_for))
+  PLAN.release_waiting()  -- as a restart does: nothing changed, nothing sent
+  check("release with nothing finished: nothing sent", #sent == 0)
+  local a = PLAN.load("wi-9701")
+  a.pr = { id = 97001 }
+  PLAN.save(a)
+  PLAN.pr_closed(97001, "abandoned")
+  rec = PLAN.load(key)
+  local msg = sent[1] and sent[1].text or ""
+  check("all finished: the go-ahead, saying to start from the target branch as it is now", #sent == 1
+    and msg:find("#9701, #9702 (changing some of the same files) is finished", 1, true) == 1
+    and msg:find("start from the target branch as it is now", 1, true) ~= nil and msg:find("I approve the plan", 1, true) ~= nil
+    and rec.wait_for == nil and PLAN.gate(rec.target), msg)
+  check("all finished: the chat says after which", tostring(sent[1] and sent[1].display):find("(after #9701, #9702)", 1, true) ~= nil,
+    sent[1] and sent[1].display)
+
+  -- Approving several at once: a later one overlaps an earlier one.
+  put("wi-9704", { work_item_id = 9704 }, "draft", { "src/ovl_d.lua" })
+  put("wi-9705", { work_item_id = 9705 }, "draft", { "src/ovl_d.lua", "src/ovl_e.lua" })
+  asked, picked = nil, nil
+  PLAN.ask_approval({ "wi-9704", "wi-9705" }, function(allow, wait_for) picked = { allow = allow, wait_for = wait_for } end)
+  o = asked and asked.opts or {}
+  check("several: a later one overlapping an earlier one", vim.deep_equal(o.details, { "#9705 and #9704 both change: src/ovl_d.lua" }),
+    vim.inspect(o.details))
+  asked.cb(3)
+  sent = {}
+  for _, k in ipairs({ "wi-9704", "wi-9705" }) do PLAN.approve(k, picked.allow, picked.wait_for[k]) end
+  check("several, after: the first starts, the second waits for it", #sent == 1
+    and table.concat(PLAN.waiting_on(PLAN.load("wi-9705")), ",") == "#9704", vim.inspect(sent))
+
+  -- The other discarded: it starts.
+  sent = {}
+  for _, ext in ipairs({ ".json", ".md" }) do pcall(vim.fn.delete, PLAN.root() .. "/wi-9704" .. ext) end
+  PLAN.forget("wi-9704")
+  vim.wait(200, function() return #sent > 0 end, 10)
+  check("the other discarded: it starts", #sent == 1 and PLAN.load("wi-9705").wait_for == nil, vim.inspect(sent))
+
+  -- Plain approval with an overlap: no hold. A new revision drops a hold.
+  put("wi-9706", { work_item_id = 9706 }, "draft", { "src/ovl_e.lua" })
+  asked, picked = nil, nil
+  PLAN.ask_approval({ "wi-9706" }, function(allow, wait_for) picked = { allow = allow, wait_for = wait_for } end)
+  asked.cb(1)
+  check("plain approve: no wait_for", picked and picked.allow == false and picked.wait_for == nil)
+  rec = PLAN.load("wi-9706")
+  rec.status, rec.wait_for = "approved", { { key = "wi-9705", label = "#9705" } }
+  PLAN.add_revision(rec, md({ "src/ovl_e.lua" }), "agent")
+  check("a new revision drops the hold", rec.wait_for == nil and rec.status == "draft")
+  -- Start now: gA on a waiting plan asks, then sends without the note.
+  rec.status, rec.approved_rev, rec.wait_for = "approved", 2, { { key = "wi-9705", label = "#9705" } }
+  PLAN.save(rec)
+  sent, asked = {}, nil
+  PLAN.ask_start_now("wi-9706")
+  check("start now: asks", asked and asked.opts.title:find("without waiting for #9705", 1, true) ~= nil)
+  asked.cb(1)
+  check("start now: sent, no note", #sent == 1 and sent[1].text:find("I approve the plan", 1, true) == 1
+    and PLAN.load("wi-9706").wait_for == nil, vim.inspect(sent))
+
+  CHAT.send, CHAT.find_conversation, UI.choose = send, find, choose
+  for _, k in ipairs(made) do
+    for _, ext in ipairs({ ".json", ".md" }) do pcall(vim.fn.delete, PLAN.root() .. "/" .. k .. ext) end
+    PLAN.forget(k)
+  end
+end
+
 -- --- the azure-vicli palette in plugin mode ----------------------------------------------------
 do
   require("azure-cli").setup({ ui = { palette = "azure-vicli" } })
