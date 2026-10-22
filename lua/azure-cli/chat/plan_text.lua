@@ -155,6 +155,30 @@ function M.planned_files(lines)
   return out
 end
 
+-- The test files the plan's Test plan section names (`tests/test-x.lua`,
+-- test_chat.py - a file name with "test" or "spec" in it): changing them
+-- is part of the plan too, though it doesn't list them under Files. Pure.
+function M.test_plan_files(lines)
+  local out, seen, inside, fenced = {}, {}, false, false
+  for _, l in ipairs(lines or {}) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("test", 1, true) ~= nil
+    elseif inside then
+      for word in l:gmatch("[%w_%-%./]+%.%w+") do
+        local name = (word:match("([^/]+)$") or ""):lower()
+        if (name:find("test", 1, true) or name:find("spec", 1, true)) and not word:find("..", 1, true)
+            and not word:match("^/") and not seen[word] then
+          seen[word] = true
+          out[#out + 1] = word
+        end
+      end
+    end
+  end
+  return out
+end
+
 local function same_path(a, b)
   a, b = a:gsub("\\", "/"), b:gsub("\\", "/")
   return a == b or a:sub(-#b - 1) == "/" .. b or b:sub(-#a - 1) == "/" .. a
@@ -432,20 +456,48 @@ local COMPANIONS = {
 -- same tool's build/restore (COMPANIONS) - optionally piped into commands
 -- that only look (`| tail -50`, `| Select-Object -Last 50`) and with
 -- 2>&1; a leading cd / Set-Location / pushd into a directory is dropped.
+-- A step may start with `timeout N` and PATH=<dirs>[:$PATH]. Also one of
+-- the test files the plan's command lives with (TEST_RUNNERS run on a path
+-- under its directory - `nvim -l tests/test-chat.lua` for `tests/run.sh`),
+-- and `python -m pytest` / `-m unittest`.
 -- Nothing else - no redirect into a file, no $(...), no other program.
 -- Pure.
+local TEST_RUNNERS = { nvim = true, python = true, python3 = true, py = true, pytest = true, node = true,
+  bash = true, sh = true, lua = true, luajit = true }
 function M.is_test_command(cmd, test_cmd)
   if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
   if type(cmd) ~= "string" or not test_cmd then return false end
   local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
-  local lines = {}
+  local lines, dirs = {}, {}
   for part in (test_cmd .. " && "):gmatch("(.-) && ") do
     if norm(part) ~= "" then lines[#lines + 1] = norm(part) end
+    for word in part:gmatch("%S+") do
+      local dir = word:gsub("^%./", ""):match("^([%w_%-%.]+)/[^/]+$")
+      if dir and dir ~= "." and dir ~= ".." then dirs[dir] = true end
+    end
   end
   local function extra_ok(rest)
     return rest == "" or (rest:sub(1, 1) == " " and not rest:find("[|&;<>`$(){}]"))
   end
+  -- A test file next to the plan's command, or Python's own test runners.
+  local function runs_test_file(step)
+    local prog, rest = step:match("^(%S+)(.*)$")
+    if not (prog and TEST_RUNNERS[prog] and extra_ok(rest)) then return false end
+    if prog:match("^py") and (rest:match("^ %-m pytest") or rest:match("^ %-m unittest")) then return true end
+    for word in rest:gmatch("%S+") do
+      local dir = word:gsub("^[\"']", ""):gsub("^%./", ""):match("^([%w_%-%.]+)/")
+      if dir and dirs[dir] and not word:find("..", 1, true) then return true end
+    end
+    return false
+  end
   local function runs_tests(step)
+    -- `timeout 300`, PATH=dir[:$PATH] and $PWD in front change nothing it runs.
+    for _ = 1, 2 do
+      step = step:gsub("^timeout %d+ ", "")
+      step = step:gsub("^PATH=[%w%._/~:%-]*%$PATH ", ""):gsub("^PATH=[%w%._/~:%-]+ ", "")
+    end
+    step = step:gsub('"set rtp%+=%$PWD"', '"set rtp+=."')
+    if runs_test_file(step) then return true end
     for _, l in ipairs(lines) do
       if step == l then return true end
       if (l:find(" ", 1, true) or ONE_WORD[l]) and step:sub(1, #l) == l and extra_ok(step:sub(#l + 1)) then

@@ -321,7 +321,8 @@ picks goes through `session/set_config_option`.
   `find -exec`, `rg --pre`, any other program - still asks. While a
   `/plan` message runs, editing, deleting or moving a file is refused
   without asking (a plan changes no code). Once you've approved the plan, changing a file it lists under
-  Files, inside its change's worktree, doesn't ask either. A file the plan
+  Files, or a test file its Test plan names (`tests/test-chat.lua`), inside
+  its change's worktree, doesn't ask either. A file the plan
   doesn't list asks, saying so and giving the agent's reason (the last
   thing it wrote before asking); allow it once and it's part of the plan
   from then on - later edits to it don't ask, and `show_fix`'s check
@@ -331,8 +332,11 @@ picks goes through `session/set_config_option`.
   shell - with more arguments too (`dotnet test --no-build --filter …`),
   after a `cd` / `Set-Location` into a directory, with the same tool's
   build and restore steps (`dotnet build`, `npm ci`, `cargo check`, …),
-  and piped into a command that only looks (`2>&1 | Select-Object -Last
-  50`). A redirect into a file, `$(...)` or any other program asks. `--allow-tool azure-vicli` saves Copilot
+  after `timeout N` or `PATH=<dir>:$PATH`, and piped into a command that
+  only looks (`2>&1 | Select-Object -Last 50`). So does one test file in
+  the same folder as the plan's command, run by `nvim`, `python`,
+  `pytest`, `node`, `bash` or `lua` (`nvim -l tests/test-chat.lua` for
+  `tests/run.sh`), and `python -m pytest` / `-m unittest`. A redirect into a file, `$(...)` or any other program asks. `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this

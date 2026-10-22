@@ -933,6 +933,27 @@ do
   check("is_test_command: anything else isn't", not PLAN.is_test_command("dotnet test; rm -rf /", tc)
     and not PLAN.is_test_command("dotnet", tc) and not PLAN.is_test_command("", tc)
     and not PLAN.is_test_command("dotnet build", nil))
+  -- #1 of the dogfood run: one test file next to the plan's command, and
+  -- timeout / PATH= in front, don't ask.
+  check("test_plan_files: the Test plan's test files, nothing else",
+    vim.deep_equal(PLAN.test_plan_files({ "## Files", "- `lua/x.lua`", "## Test plan",
+      "- `tests/test-chat.lua` and test_github.py: new cases", "- by hand: open lua/azure-cli/init.lua",
+      "```sh", "tests/run.sh", "```", "- not ../tests/test-evil.lua nor /etc/test.conf", "## Risks", "- tests/test-other.lua" }),
+      { "tests/test-chat.lua", "test_github.py" }),
+    vim.inspect(PLAN.test_plan_files({ "## Test plan", "- `tests/test-chat.lua` and test_github.py: new cases",
+      "- not ../tests/test-evil.lua nor /etc/test.conf" })))
+  local rs = "bash tests/run.sh"
+  local function rsy(c) return PLAN.is_test_command(c, rs) end
+  check("is_test_command: a test file next to the plan's command",
+    rsy('nvim -u NONE --headless --cmd "set rtp+=." -l tests/test-chat.lua 2>&1 | tail -20')
+      and rsy('PATH=/home/linuxbrew/.linuxbrew/bin:$PATH timeout 300 nvim -u NONE --headless --cmd "set rtp+=$PWD" -l tests/test-chat-acp.lua 2>&1 | grep -v "^ok " | tail -40')
+      and rsy("cd tests && python3 -m unittest test_chat_provider -k get_pr 2>&1 | tail -15")
+      and rsy("python3 -m pytest -q tests/test_github.py") and rsy("PATH=/opt/nvim/bin:$PATH bash tests/run.sh"))
+  check("is_test_command: not outside its directory, nor another program or a write",
+    not rsy("nvim -l lua/azure-cli/init.lua") and not rsy("nvim -l tests/../evil.lua")
+      and not rsy("rm tests/test-chat.lua") and not rsy("nvim -l tests/x.lua > out.txt")
+      and not rsy("nvim -l tests/x.lua $(rm -rf ~)") and not rsy("LD_PRELOAD=x.so nvim -l tests/x.lua")
+      and not rsy("PATH=$HOME/x:$PATH; nvim -l tests/x.lua"))
   local function yes(c) return PLAN.is_test_command(c, tc) end
   check("is_test_command: more arguments", yes("dotnet test --no-build --filter FullyQualifiedName~Throttle")
     and yes("dotnet build -c Release"))

@@ -409,7 +409,7 @@ end
 -- The plan's Files check for a change: `changed` = its paths.
 function M.check_change(rec, changed)
   if not rec then return nil end
-  return M.check_files(M.files_section(rec), changed, M.allowed_paths(rec))
+  return M.check_files(M.files_section(rec), changed, vim.list_extend(vim.list_slice(M.allowed_paths(rec)), M.test_files(rec)))
 end
 
 -- The paths the plan's Files section lists: the approved revision's, so
@@ -427,9 +427,17 @@ function M.allowed_paths(rec)
   return rec.allowed_files
 end
 
--- The files a plan covers: its Files section, plus the ones you allowed.
+-- The test files its Test plan names (test_plan_files), in the approved
+-- revision as files_section reads it.
+function M.test_files(rec)
+  local rev = M.revision(rec, rec.approved_rev)
+  return M.test_plan_files(rev and vim.split(rev.markdown or "", "\n", { plain = true }) or current_lines(rec))
+end
+
+-- The files a plan covers: its Files section, the test files its Test plan
+-- names, and the ones you allowed.
 function M.planned_paths(rec)
-  return vim.list_extend(M.files_section(rec), M.allowed_paths(rec))
+  return vim.list_extend(vim.list_extend(M.files_section(rec), M.test_files(rec)), M.allowed_paths(rec))
 end
 
 -- The agent's permission request to change `paths` (absolute) against
