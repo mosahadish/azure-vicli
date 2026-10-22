@@ -80,6 +80,8 @@ function M.for_worktree(dir)
   if name:find("~", 1, true) and (name:match("^pr%-github%-.") or name:match("^wi%-github%-.")) then
     return M.load(name)
   end
+  local task = name:match("%-task(%d+)$")
+  if task then return M.load("task-" .. task) end
   local wi = name:match("%-wi(%d+)$")
   if wi then return M.load("wi-" .. wi) end
   local pr = name:match("%-(%d+)$")
@@ -97,6 +99,51 @@ function M.for_worktree(dir)
     end
   end
   return M.load("pr-" .. pr)
+end
+
+-- ---------------------------------------------------------------------------
+-- Task agents (#143): an agent the main chat started on a free-form task,
+-- keyed task-<n>, its target { task_id = n }. Read-only until a plan of
+-- its own is approved.
+
+-- The calling agent's own task target ({ task_id }), or nil when `env`'s
+-- conversation isn't a task agent's.
+function M.task_target_for(env)
+  local own = env and env.conv and env.conv.target
+  if type(own) == "table" and own.task_id then return { task_id = own.task_id } end
+  return nil
+end
+
+-- Whether conversation `conv` is a task agent without an approved plan:
+-- then it changes no files and runs only M.TASK_TOOLS of the write tools.
+function M.task_read_only(conv)
+  if not (conv and type(conv.target) == "table" and conv.target.task_id) then return false end
+  local rec = M.load(conv.plan_key or M.key(conv.target))
+  return not (rec and (rec.status == "approved" or rec.status == "done"))
+end
+
+-- The tools beyond the read ones a read-only task agent may call: writing
+-- its plan, drafts (queued for the user, never posted), and start_story /
+-- start_fix, which only give a read-only worktree before approval.
+M.TASK_TOOLS = { submit_plan = true, draft_reply = true, draft_comment = true, start_story = true, start_fix = true }
+
+-- nil, or why tool `tool` ({ name, risk }) refuses a call from `conv`.
+function M.task_refusal(conv, tool)
+  if tool.risk == "read" or M.TASK_TOOLS[tool.name] or not M.task_read_only(conv) then return nil end
+  return "a task agent is read-only until the user approves a plan: " .. tool.name .. " isn't available. If the "
+    .. "user asked for a change, write a plan with submit_plan and wait for their approval."
+end
+
+-- The next task number: one more than any used before, kept in
+-- plans/tasks.json so a key never repeats across restarts.
+function M.next_task_id()
+  local path = M.root() .. "/tasks.json"
+  local ok, lines = pcall(vim.fn.readfile, path)
+  local okd, d = pcall(vim.json.decode, ok and table.concat(lines, "\n") or "")
+  local n = (okd and type(d) == "table" and tonumber(d.last) or 0) + 1
+  vim.fn.mkdir(M.root(), "p")
+  pcall(vim.fn.writefile, { vim.json.encode({ last = n }) }, path)
+  return n
 end
 
 -- The target of PR `pr_id` as a tool call means it: the calling agent's
@@ -260,16 +307,18 @@ end
 
 -- The approved (or done) plan behind a pull request: the first of
 -- `work_item_ids` with one (as `env`'s agent means them; on GitHub
--- issues of `repo`), else the story whose branch is `source`.
+-- issues of `repo`), else the story or task (#143) whose branch is `source`.
 function M.for_pull_request(work_item_ids, source, env, repo)
   local function usable(rec) return rec and (rec.status == "approved" or rec.status == "done") end
   for _, id in ipairs(work_item_ids or {}) do
     local rec = M.load(M.key(M.item_target_for(id, env, repo)))
     if usable(rec) then return rec end
   end
-  for _, f in ipairs(vim.fn.glob(M.root() .. "/wi-*.json", false, true)) do
+  local files = vim.fn.glob(M.root() .. "/wi-*.json", false, true)
+  vim.list_extend(files, vim.fn.glob(M.root() .. "/task-*.json", false, true))
+  for _, f in ipairs(files) do
     local rec = M.load(vim.fn.fnamemodify(f, ":t:r"))
-    if usable(rec) and type(rec.target) == "table" and rec.target.work_item_id then
+    if usable(rec) and type(rec.target) == "table" and (rec.target.work_item_id or rec.target.task_id) then
       local _, branch = require("azure-cli.chat.tools_fix").find_story(rec.target)
       if branch and branch == source then return rec end
     end
@@ -593,7 +642,7 @@ function M.approve(key, allow_push)
   local conv = CHAT.find_conversation(key)
   local text = M.approval_message(rec, current_lines(rec))
   -- An orphan plan's agent (#86) starts with this: it knows nothing yet.
-  if conv and untouched(conv) then
+  if conv and untouched(conv) and not rec.target.task_id then
     text = "This plan was written before it had an agent; it's yours now - read it with get_plan ("
       .. (rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id)))
       .. ") and its " .. (rec.target.work_item_id and "work item" or "pull request") .. " first.\n\n" .. text
@@ -656,13 +705,15 @@ end
 -- plan allowed it but this isn't quite it.
 function M.pr_allowed(a, cb)
   local rec = M.for_pull_request(a.work_item_ids, a.source, nil, a.repo)
-  if not (rec and rec.allow_push and rec.target and rec.target.work_item_id) then return cb(false) end
+  if not (rec and rec.allow_push and rec.target and (rec.target.work_item_id or rec.target.task_id)) then return cb(false) end
   local wi = rec.target.work_item_id
+  local label = M.target_label(rec.target)
   local _, branch, base, existing = require("azure-cli.chat.tools_fix").find_story(rec.target)
-  if existing then return cb(false, "the story for #" .. wi .. " works on the existing branch " .. branch .. " - no PR") end
-  local linked = false
+  if existing then return cb(false, "the story for " .. label .. " works on the existing branch " .. branch .. " - no PR") end
+  -- A task's PR (#143) has no work item to link.
+  local linked = wi == nil
   for _, id in ipairs(a.work_item_ids or {}) do if tostring(id) == tostring(wi) then linked = true end end
-  if type(rec.pr) == "table" then return cb(false, "the plan for #" .. wi .. " already opened PR !" .. tostring(rec.pr.id)) end
+  if type(rec.pr) == "table" then return cb(false, "the plan for " .. label .. " already opened PR !" .. tostring(rec.pr.id)) end
   if rec.status ~= "done" then return cb(false, "the plan's change isn't pushed yet") end
   if branch and a.source ~= branch then return cb(false, "it isn't from the story's branch (" .. branch .. ")") end
   if base and a.target ~= base then return cb(false, "it targets " .. tostring(a.target) .. ", not " .. base .. ", which the story started from") end
@@ -777,9 +828,26 @@ function M.tools(T)
     repo = { type = "string", description = "GitHub only: the PR's or issue's repository (owner/repo), when two "
       .. "share the number" },
   }
+  -- Without work_item_id or pr_id, a task agent's own task (#143).
   local function target_of(args, env)
     if args.work_item_id then return M.item_target_for(args.work_item_id, env, args.repo) end
     if args.pr_id then return M.plan_target_for(args.pr_id, env, args.repo) end
+    return M.task_target_for(env)
+  end
+  -- A task agent (#143) planning for a work item or PR becomes that
+  -- plan's agent: its conversation moves to the plan's key, so approving
+  -- it reaches this agent. Nil, or why it can't.
+  local function adopt(env, target)
+    local conv = env and env.conv
+    if not (conv and type(conv.target) == "table" and conv.target.task_id) or target.task_id then return nil end
+    local key = M.key(target)
+    local CHAT = require("azure-cli.chat")
+    local other = CHAT.find_conversation(key)
+    if other and other ~= conv then
+      return M.target_label(target) .. " already has an agent of its own - ask the user to have the main chat "
+        .. "message_agent it instead"
+    end
+    CHAT.rekey_conversation(conv.plan_key, key, { target = target, label = M.target_label(target) })
     return nil
   end
   return {
@@ -790,7 +858,8 @@ function M.tools(T)
         .. "following this template (keep its ## headings; say why for each choice, the user can ask about any line):\n\n"
         .. M.template() .. "\n\nCalling it again for the same work item / PR replaces the plan with a new revision "
         .. "(it then needs approving again). After calling it, STOP and wait: the user will approve it or ask for "
-        .. "changes in the chat.",
+        .. "changes in the chat. A task agent leaves both out for a plan of its task's own; giving one makes it "
+        .. "that work item's or PR's agent.",
       schema = { type = "object", properties = {
         work_item_id = target_props.work_item_id, pr_id = target_props.pr_id,
         title = { type = "string", description = "a few words" },
@@ -803,6 +872,8 @@ function M.tools(T)
         if refused then return done(nil, refused) end
         if not target then return done(nil, "give work_item_id or pr_id") end
         if type(args.markdown) ~= "string" or vim.trim(args.markdown) == "" then return done(nil, "the plan is empty") end
+        local not_adopted = adopt(env, target)
+        if not_adopted then return done(nil, not_adopted) end
         local key = M.key(target)
         local rec = M.load(key) or { key = key, target = target, revisions = {}, threads = {}, created = os.time() }
         -- A plan already carried out starts its next round without the old

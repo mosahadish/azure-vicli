@@ -787,6 +787,12 @@ function M.call(name, args, env, cb)
   args = type(args) == "table" and args or {}
   local perm = M.permission(tool, perms())
   if perm == "deny" then return cb("The user doesn't allow " .. name .. ".", true) end
+  -- A task agent without an approved plan only looks (#143).
+  local ro = require("azure-cli.chat.plan").task_refusal(env and env.conv, tool)
+  if ro then
+    if env.log then env.log("\u{2717} " .. name .. ": read-only task agent") end
+    return cb(ro, true)
+  end
   -- What the PR's host can't do ends here, before anyone is asked.
   local nope = tool.unsupported and tool.unsupported(args)
   if nope then
@@ -817,7 +823,7 @@ function M.call(name, args, env, cb)
     if not ok then finish(nil, err) end
   end
   if perm == "ask" then
-    local what = tool.confirm and tool.confirm(args) or name
+    local what = tool.confirm and tool.confirm(args, env) or name
     local because  -- why a question the plan would have skipped is asked after all
     local function ask(details)
       env.confirm("The agent wants to " .. what .. "." .. (because and (" Asking because " .. because .. ".") or ""), function(yes)
@@ -829,7 +835,7 @@ function M.call(name, args, env, cb)
         end
       end, details)
     end
-    local function asking() if tool.details then tool.details(args, ask) else ask(nil) end end
+    local function asking() if tool.details then tool.details(args, ask, env) else ask(nil) end end
     -- A tool can skip the question when you've already said yes some other
     -- way (commit_and_push_fix and create_pull_request under a plan you
     -- approved with pushing allowed) - never when chat.permissions says
@@ -845,7 +851,7 @@ function M.call(name, args, env, cb)
           because = why
           asking()
         end
-      end)
+      end, env)
     end
     asking()
   else

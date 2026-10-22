@@ -82,6 +82,9 @@ function M.rows(convs, queued, plan_of, now, frame)
         state, hl, group = "\u{2713} pushed", "AzureCliStatusDone", 3
       elseif last and last.status and last.status ~= "done" then
         state, hl, group = "\u{2717} " .. last.status, "AzureCliStatusBad", 1
+      elseif not rec and type(c.target) == "table" and c.target.task_id and last and last.role == "agent" then
+        -- A task agent (#143) that answered, its answer gone to the main chat.
+        state, hl, group = "\u{2713} answered", "AzureCliStatusOk", 3
       else
         state, hl, group = "idle", "AzureCliMuted", 3
       end

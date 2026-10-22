@@ -1149,7 +1149,7 @@ end
 -- The main chat's part (compose's opts.orchestrator): it coordinates the
 -- agents rather than planning and changing code itself: submit_plan,
 -- start_story and start_fix refuse its calls (#86).
-M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing code - implementing a work item, fixing a pull request's review comments - is done by agents of its own, one per work item or PR, each in its own conversation, and the user approves each plan. So for that, start agents with start_agents: submit_plan, start_story and start_fix don't work here, even when the user asks you to plan or change code yourself - say an agent does it, and start one (their words go in its instructions). list_agents shows what each agent is doing and whose plan waits for the user; get_plan reads a plan; message_agent passes the user's instructions on to an agent. Approving a plan is the user's, never yours.]]
+M.ORCHESTRATOR = [[This is the main chat: you coordinate. Planning and changing code - implementing a work item, fixing a pull request's review comments - is done by agents of its own, one per work item or PR, each in its own conversation, and the user approves each plan. So for that, start agents with start_agents: submit_plan, start_story and start_fix don't work here, even when the user asks you to plan or change code yourself - say an agent does it, and start one (their words go in its instructions). list_agents shows what each agent is doing and whose plan waits for the user; get_plan reads a plan; message_agent passes the user's instructions on to an agent. Approving a plan is the user's, never yours. For research or a question that needs digging through code (no work item or PR), start a task agent: start_agents with `task` - it only reads, shows on the Agents screen, and its answer comes back to you with a later message.]]
 
 -- The text one message sends: the preamble (first message, or every
 -- replayed one), the earlier conversation (replay only), the current view,
@@ -1173,6 +1173,15 @@ function M.compose(message, view_text, opts)
   end
   parts[#parts + 1] = "## Current view\n" .. (view_text or "(unknown)")
   if opts.refs and opts.refs ~= "" then parts[#parts + 1] = "## Referenced in the message\n" .. opts.refs end
+  -- The main chat's task agents' answers since its last message (#143).
+  if opts.task_results and #opts.task_results > 0 then
+    local lines = { "## Results from task agents since your last message" }
+    for _, r in ipairs(opts.task_results) do
+      lines[#lines + 1] = "### " .. r.label .. (r.title and r.title ~= "" and (" (" .. r.title .. ")") or "")
+        .. "\n" .. r.text
+    end
+    parts[#parts + 1] = table.concat(lines, "\n\n")
+  end
   parts[#parts + 1] = "## Message\n" .. message
   return table.concat(parts, "\n\n")
 end
