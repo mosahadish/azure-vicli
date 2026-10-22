@@ -316,6 +316,23 @@ class ChatPrActionTests(unittest.TestCase):
                          (42, "other-repo", "feature/x", "develop", "Bob", "active"))
         self.assertEqual((rec["org"], rec["project"]), ("https://dev.azure.com/org", "proj"))
 
+    def test_get_pr_has_the_build_as_the_dashboard_works_it_out(self):
+        url = "https://dev.azure.com/org/proj/_apis/git/pullrequests/42"
+        evals = ("https://dev.azure.com/org/proj/_apis/policy/evaluations?artifactId="
+                 "vstfs%3A%2F%2F%2FCodeReview%2FCodeReviewId%2Fproj-guid%2F42")
+        pr = {"pullRequestId": 42, "title": "Fix it", "status": "active",
+              "repository": {"name": "r", "project": {"id": "proj-guid"}}}
+        build = {"configuration": {"type": {"id": ac.BUILD_POLICY_TYPE_ID, "displayName": "Build"}},
+                 "status": "rejected", "context": {"buildId": 77}}
+        rc, out, _, _ = self.run_action("get_pr", responses={url: pr, evals: {"value": [build]}})
+        rec = json.loads(out)
+        self.assertEqual((rc, rec["buildStatus"]), (0, "failed"))
+        self.assertIn("buildId=77", rec["buildUrl"])
+        # The evaluations failing: no build, not a failed --get-pr.
+        rc, out, _, _ = self.run_action("get_pr", responses={url: pr},
+                                        raise_for={evals: ac.AdoHttpError(500, evals, b"down")})
+        self.assertEqual((rc, json.loads(out)["buildStatus"]), (0, "none"))
+
     def test_get_pr_failure(self):
         url = "https://dev.azure.com/org/proj/_apis/git/pullrequests/42"
         rc, _, err, _ = self.run_action("get_pr", raise_for={url: ac.AdoHttpError(404, url, b"not found")})

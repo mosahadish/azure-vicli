@@ -337,7 +337,8 @@ local CHAT_FIELDS = {
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
   plan_revisions = "number",
-  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
+  test_cmd = "any", toasts = "any", on_new_comments = "string", on_failed_build = "string", watch_seconds = "number",
+  skill_dirs = "table",
 }
 -- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
@@ -396,6 +397,10 @@ local function validate_chat(chat)
   end
   if out.on_new_comments ~= nil and out.on_new_comments ~= "suggest" and out.on_new_comments ~= "plan" then
     error("azure-cli.setup: chat.on_new_comments must be \"suggest\" or \"plan\"")
+  end
+  if out.on_failed_build ~= nil and out.on_failed_build ~= "suggest" and out.on_failed_build ~= "plan"
+      and out.on_failed_build ~= "off" then
+    error("azure-cli.setup: chat.on_failed_build must be \"suggest\", \"plan\" or \"off\"")
   end
   if out.watch_seconds ~= nil and out.watch_seconds < 30 then
     error("azure-cli.setup: chat.watch_seconds must be at least 30")
@@ -938,6 +943,7 @@ function M.render_options()
   w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
   w("    -- max_agents = 3,              -- agents working at once")
   w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")
+  w("    -- on_failed_build = \"suggest\", -- or \"plan\", \"off\": what a failed build on the agent's PRs does")
   w("    -- suggest_on_new_comments = true,")
   w("    -- watch_seconds = 120,         -- how often the agent's PRs are checked")
   w("    -- daily_summary = false,       -- /standup the first time the dashboard opens each day")
