@@ -192,7 +192,13 @@ happens - `"suggest"` (default) puts a note in the chat (and a desktop
 notification), `"plan"` has an agent plan the fix of just those
 threads, as `gP` does - the agent that opened the PR, when it was one of
 them; its plan waits for you on the Agents screen, and
-nothing changes until you approve it. A PR stops being watched once it's
+nothing changes until you approve it. Its build is checked too: once per
+failed build, `chat.on_failed_build` says what happens - `"suggest"`
+(default) puts a note in the chat, `"plan"` has the PR's agent plan the fix
+from the build's log and failed tests (`get_build_log`,
+`get_test_results`), `"off"` does nothing. An expired build (Azure) doesn't
+count - it needs a requeue (`gr`), not a fix - nor does one that had failed
+already when the PR started being watched. A PR stops being watched once it's
 completed or abandoned, and the agents behind it show as finished on the
 Agents screen. Comments that arrived while azure-vicli was closed
 are picked up at the first check after it starts. The list is kept in
@@ -443,7 +449,7 @@ to one conversation with one agent and model.
 The rest of `chat`: `position`, `size`, `input_height`, `agent` / `agents` /
 `default_agent`, `prompts` (above), `permissions` (below), `daily_summary`
 (default false), `skill_dirs` ([above](#github-copilot-cli)), `suggest_on_new_comments` (default true), `on_new_comments`
-(`"suggest"` or `"plan"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
+(`"suggest"` or `"plan"`), `on_failed_build` (`"suggest"`, `"plan"` or `"off"`) and `watch_seconds` ([above](#conversations-agents-and-models)), `plan_first`
 (default true), `plan_template` and `plan_revisions` (default 3) ([below](#plans-and-asking-why)), `test_cmd` ([below](#plans-and-asking-why)), `toasts`, `max_agents` (default 3,
 [below](#several-agents-at-once)).
 

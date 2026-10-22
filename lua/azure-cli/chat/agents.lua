@@ -16,7 +16,9 @@
 --                             active one); a PR an agent opened for a work
 --                             item (plan.owner_of_pr) goes back to that
 --                             agent, as a new revision of its plan
---     (both return what they did, as a sentence, and the labels started)
+--   M.start_for_build(pr)     queues PR `pr`: its agent plans the fix of its
+--                             failed build (the same agent as its comments')
+--     (all three return what they did, as a sentence, and the labels started)
 --   M.start_for(text, snap)   the main chat's /plan: the work items and PRs
 --                             `text` names, else the one in view `snap`
 --   M.pump()                  starts queued ones while there's room
@@ -151,28 +153,50 @@ function M.pr_followup_prompt(pr, threads, wi)
     .. "push it with commit_and_push_fix (work_item_id " .. tostring(wi) .. "): the PR picks it up."
 end
 
-local function job_for_pr(pr, threads, extra)
+-- The first message of an agent started for a PR's failed build (#141):
+-- `wi` = the work item whose plan opened the PR, which then plans the fix
+-- as a new revision of that plan. Pure.
+function M.build_prompt(pr, wi)
+  local read = "read why with get_build_log and get_test_results (pr_id " .. tostring(pr.id)
+    .. ") and look at the code they point at"
+  local title = pr.title and (" \"" .. pr.title .. "\"") or ""
+  if wi then
+    return "/plan The build of PR !" .. tostring(pr.id) .. title .. ", which you opened for #" .. tostring(wi)
+      .. ", failed. Plan how to fix it: " .. read .. ", then write the plan for this round with submit_plan "
+      .. "(work_item_id " .. tostring(wi) .. ") - a new revision of your plan. Once it's approved, make the change "
+      .. "in your story's worktree (start_story for #" .. tostring(wi) .. " reuses it) and push it with "
+      .. "commit_and_push_fix (work_item_id " .. tostring(wi) .. "): the PR picks it up."
+  end
+  local repo = pr.key and tostring(pr.key):match("^(.-~.-)~%d+$")
+  return "/plan PR !" .. tostring(pr.id) .. (repo and (" in " .. repo:gsub("~", "/")) or "") .. title
+    .. ": its build failed. Plan how to fix it: " .. read .. ", then write one plan for the fix with submit_plan "
+    .. "(pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
+end
+
+-- `build`: for the PR's failed build rather than its review comments.
+local function job_for_pr(pr, threads, extra, build)
   -- A PR one of the agents opened goes back to that agent, with its plan
   -- and its conversation.
   local PLAN = require("azure-cli.chat.plan")
   local owner = PLAN.owner_of_pr(pr, pr.source)
   local wi = owner and owner.target and owner.target.work_item_id
+  local which = (threads and #threads > 0)
+    and (" (thread " .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""
   if wi then
     return { key = owner.key, label = PLAN.target_label(owner.target), title = owner.title or pr.title, target = owner.target,
-      prompt = with_extra(M.pr_followup_prompt(pr, threads, wi), extra),
-      display = "/plan PR !" .. tostring(pr.id) .. "'s comments" .. ((threads and #threads > 0) and (" (thread "
-        .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
-      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. " got review comments)",
-        pr = pr } }
+      prompt = with_extra(build and M.build_prompt(pr, wi) or M.pr_followup_prompt(pr, threads, wi), extra),
+      display = "/plan PR !" .. tostring(pr.id) .. (build and "'s build" or ("'s comments" .. which)),
+      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. (build and "'s build failed)"
+        or " got review comments)"), pr = pr } }
   end
   -- Keyed by the PR's key, not its number (#109): two GitHub #7s in
   -- different repos are two agents.
   local target = PLAN.pr_target(pr)
   return { key = PLAN.key(target), label = PLAN.target_label(target), title = pr.title,
-    target = target, prompt = with_extra(M.pr_prompt(pr, threads), extra),
-    display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "
-      .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
-    snap = { screen = "pull request (this agent was started for one PR's review comments)", pr = pr } }
+    target = target, prompt = with_extra(build and M.build_prompt(pr) or M.pr_prompt(pr, threads), extra),
+    display = "/plan PR !" .. tostring(pr.id) .. (build and "'s build" or which),
+    snap = { screen = "pull request (this agent was started for one PR's " .. (build and "failed build)"
+      or "review comments)"), pr = pr } }
 end
 
 -- Neovim is quitting: start nothing more (stopping an agent finishes its
@@ -244,6 +268,12 @@ function M.start_for_prs(prs, threads_of, extra)
     if type(pr) == "table" and pr.id then jobs[#jobs + 1] = job_for_pr(pr, (threads_of or {})[pr.id], extra) end
   end
   return enqueue(jobs, "Put the cursor on a pull request (or select some rows).")
+end
+
+-- Queues PR `pr`, its agent planning the fix of its failed build (#141).
+function M.start_for_build(pr)
+  if type(pr) ~= "table" or not pr.id then return enqueue({}, "No pull request.") end
+  return enqueue({ job_for_pr(pr, nil, nil, true) }, "No pull request.")
 end
 
 -- The main chat's /plan (chat/run.lua): an agent for each work item and PR

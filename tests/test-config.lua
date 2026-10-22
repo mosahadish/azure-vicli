@@ -505,6 +505,11 @@ do
   rejects("a bad plan_first", { plan_first = "sometimes" }, "chat.plan_first")
   rejects("a bad test_cmd", { test_cmd = { widgets = 3 } }, "chat.test_cmd")
   rejects("a bad max_agents", { max_agents = 0 }, "chat.max_agents")
+  rejects("a bad on_failed_build", { on_failed_build = "expired" }, "chat.on_failed_build")
+  for _, v in ipairs({ "suggest", "plan", "off" }) do
+    check("chat: on_failed_build = " .. v, pcall(config.setup, { chat = { on_failed_build = v } })
+      and config.get().chat.on_failed_build == v)
+  end
   config.setup({})
 end
 
