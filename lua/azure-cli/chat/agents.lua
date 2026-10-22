@@ -17,6 +17,11 @@
 --                             item (plan.owner_of_pr) goes back to that
 --                             agent, as a new revision of its plan
 --     (both return what they did, as a sentence, and the labels started)
+--   M.start_for_task(text, title, extra)  queues a task agent (#143): a
+--                             free-form task, no work item or PR - it only
+--                             reads until a plan of its own is approved,
+--                             and its answers go back to the main chat
+--                             (M.task_answered, from chat/run.lua)
 --   M.start_for(text, snap)   the main chat's /plan: the work items and PRs
 --                             `text` names, else the one in view `snap`
 --   M.pump()                  starts queued ones while there's room
@@ -25,6 +30,7 @@
 --   M.unqueue(key)            takes one out (its plan discarded)
 --   M.max()                   chat.max_agents
 --   M.plan_prompt(item)       the first message (pure)
+--   M.task_prompt(n, text)    a task agent's first message (pure)
 local M = {}
 
 local queue = {}  -- { { key, item } } in order
@@ -190,8 +196,9 @@ end
 
 -- Queues `jobs` (ones already queued or working are skipped), then starts
 -- as many as there's room for. Says what it did (a toast), and returns it:
--- the sentence, and the labels it started or queued.
-local function enqueue(jobs, nothing)
+-- the sentence, and the labels it started or queued. `verb`: "Planning"
+-- unless said otherwise.
+local function enqueue(jobs, nothing, verb)
   local function say(msg, level)
     notify(msg, level)
     return msg, {}
@@ -215,7 +222,7 @@ local function enqueue(jobs, nothing)
   end
   M.pump()
   local waiting = #queue
-  local msg = "Planning " .. table.concat(added, ", ")
+  local msg = (verb or "Planning") .. " " .. table.concat(added, ", ")
     .. (waiting > 0 and (", " .. waiting .. " waiting for an agent (chat.max_agents = " .. M.max() .. ")") or "")
     .. (#skipped > 0 and ("; already working on " .. table.concat(skipped, ", ")) or "")
     .. "."
@@ -244,6 +251,58 @@ function M.start_for_prs(prs, threads_of, extra)
     if type(pr) == "table" and pr.id then jobs[#jobs + 1] = job_for_pr(pr, (threads_of or {})[pr.id], extra) end
   end
   return enqueue(jobs, "Put the cursor on a pull request (or select some rows).")
+end
+
+-- A task agent's first message (#143): task `n`, `text` as the main chat
+-- put it. Pure.
+function M.task_prompt(n, text)
+  return "Task " .. tostring(n) .. ", from the main chat: " .. text .. "\n\n"
+    .. "You were started for this task only, and you are read-only: research it - read work items, pull requests "
+    .. "and code with your tools (to read a repository's code, call start_story without work_item_id for its "
+    .. "repository and branch: before approval it gives you a read-only worktree of that branch to read with "
+    .. "Read/Grep) - and answer. Don't edit files, push, or change anything on the server; drafts (draft_reply, "
+    .. "draft_comment) are fine, they wait for the user. Your answer goes back to the main chat, so make it "
+    .. "complete on its own. Only if the user tells you to, write a plan with submit_plan - without work_item_id "
+    .. "or pr_id for this task's own, or with the work item or PR it's for - and wait for their approval."
+end
+
+-- Queues a task agent (#143) for free-form `text`, shown as `title` (by
+-- default the start of the text); `extra` is passed on as with items.
+-- Returns what it did, as a sentence, and the label.
+function M.start_for_task(text, title, extra)
+  text = vim.trim(text or "")
+  if text == "" then return "Give the task to start an agent on.", {} end
+  local PLAN = require("azure-cli.chat.plan")
+  local target = { task_id = PLAN.next_task_id() }
+  title = vim.trim(title or "")
+  if title == "" then
+    title = text:gsub("%s+", " ")
+    if #title > 60 then title = title:sub(1, 57) .. "..." end
+  end
+  return enqueue({ { key = PLAN.key(target), label = PLAN.target_label(target), title = title, target = target,
+    prompt = with_extra(M.task_prompt(target.task_id, text), extra), display = "/task " .. title,
+    snap = { screen = "task (this agent was started for one task from the main chat)" } } }, "", "Started")
+end
+
+-- How much of a task agent's answer goes back to the main chat.
+M.TASK_ANSWER_MAX = 4000
+
+-- Conversation `st`'s turn `entry` ended: a task agent's answer (#143)
+-- goes back to the main chat - a note there now, and in its next message
+-- (chat/run.lua) - without starting a turn of its own.
+function M.task_answered(st, entry)
+  if not (st and type(st.target) == "table" and st.target.task_id and entry) then return end
+  if entry.status == "running" then return end
+  local text = vim.trim(entry.text or "")
+  if #text > M.TASK_ANSWER_MAX then
+    text = text:sub(1, M.TASK_ANSWER_MAX) .. "\n... (cut off - the rest is in its own chat on the Agents screen)"
+  end
+  local status = entry.status ~= "done" and entry.status or nil
+  local label = (st.label or "A task") .. "'s agent" .. (status and (" (" .. status .. ")") or "")
+  local main = CHAT().main_conversation()
+  main.task_results = main.task_results or {}
+  table.insert(main.task_results, { label = label, title = st.title, text = text })
+  CHAT().note(label .. (st.title and st.title ~= "" and (" - " .. st.title) or "") .. ":\n\n" .. text, { main = true })
 end
 
 -- The main chat's /plan (chat/run.lua): an agent for each work item and PR

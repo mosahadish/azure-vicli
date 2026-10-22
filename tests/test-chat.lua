@@ -70,6 +70,40 @@ do
   end
 end
 
+-- #143: task agents - their target, key and label, gated as stories, the
+-- first message, and their row on the Agents screen.
+do
+  local PLAN = require("azure-cli.chat.plan")
+  local AGENTS = require("azure-cli.chat.agents")
+  check("#143 key: task-<n>", PLAN.key({ task_id = 4 }) == "task-4")
+  check("#143 target_label: Task <n>", PLAN.target_label({ task_id = 4 }) == "Task 4")
+  check("#143 gate_check: no plan, gated", PLAN.gate_check(nil, true, { task_id = 4 }) == false
+    and PLAN.gate_check(nil, "stories", { task_id = 4 }) == false)
+  check("#143 gate_check: plan_first = false lets it through", PLAN.gate_check(nil, false, { task_id = 4 }) == true)
+  check("#143 gate_check: approved goes", PLAN.gate_check({ status = "approved" }, true, { task_id = 4 }) == true)
+  local p = AGENTS.task_prompt(4, "find the parser")
+  check("#143 task_prompt: the task, read-only, answer goes back, plan only when told",
+    p:find("Task 4, from the main chat: find the parser", 1, true) and p:find("you are read-only", 1, true)
+      and p:find("goes back to the main chat", 1, true) and p:find("Only if the user tells you to", 1, true)
+      and p:find("start_story without work_item_id", 1, true), p)
+  check("#143 task_read_only: only a task agent's conversation", PLAN.task_read_only({ target = { task_id = 4 },
+    plan_key = "task-4" }) and not PLAN.task_read_only({ target = { work_item_id = 4 }, plan_key = "wi-4" })
+    and not PLAN.task_read_only(nil))
+  check("#143 task_refusal: reads, drafts and the plan's tools pass",
+    not PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "get_work_item", risk = "read" })
+    and not PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "draft_reply", risk = "write" })
+    and not PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "submit_plan", risk = "write" }))
+  check("#143 task_refusal: other writes don't",
+    (PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "vote", risk = "ask" }) or "")
+      :find("read-only", 1, true) ~= nil)
+  local now = os.time()
+  local conv = { plan_key = "task-4", label = "Task 4", title = "Find the parser", target = { task_id = 4 }, created = now,
+    entries = { { role = "you", text = "/task Find the parser" }, { role = "agent", status = "done", text = "here", started = now } } }
+  local rows = require("azure-cli.chat.agents_view").rows({ conv }, {}, function() return nil end, now)
+  check("#143 rows: a task agent that answered", rows[1] and rows[1].label == "Task 4" and rows[1].title == "Find the parser"
+    and rows[1].state:find("answered", 1, true) ~= nil and rows[1].group == 3, vim.inspect(rows[1]))
+end
+
 -- --- parse_answer / expand ---------------------------------------
 do
   local text, sid = CHAT.parse_answer('{"type":"result","result":"  Hello\\n","session_id":"s-1"}', "", vim.json.decode)

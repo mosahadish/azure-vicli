@@ -773,6 +773,23 @@ changes to agents rather than doing them itself:
   `start_agents` takes `board` like the other work-item tools, and each
   agent reads its item from that board; without it, the board a list showed
   the item on, else the one you're looking at.
+- **Task agents** - for something that isn't a work item or PR ("find
+  where we parse the config and explain it", "which PRs touch the login
+  flow?"), the main chat starts a task agent: `start_agents` with `task`
+  (and a short `title`). It shows on the Agents screen as `Task <n>`, under
+  `chat.max_agents` like the others, and is **read-only**: its edits are
+  refused on every turn, and of azure-vicli's write tools it may only
+  draft (`draft_reply`, `draft_comment`, queued for you as always) and
+  plan; shell commands that do more than look still ask you. When it
+  answers, the answer is added to the main chat as a note and goes to the
+  main chat's agent with your next message - it doesn't start a turn
+  there. Tell it (in its own chat, or through the main chat's
+  `message_agent` with `task_id`) to plan a change and it writes one with
+  `submit_plan`: without `work_item_id`/`pr_id` the plan is its task's own
+  (approved, it works in a `<repo>-task<n>` worktree on a branch linked to
+  nothing, and pushes and opens its PR like a story); with a work item or
+  PR, it becomes that item's agent. Task numbers never repeat
+  (`plans/tasks.json`), and a task agent comes back after a restart.
 - It's a lock, not a default: `submit_plan`, `start_story` and `start_fix`
   refuse the main chat's calls and tell it to `start_agents` instead, even
   when you ask it to do the work itself. To work hands-on, talk to the
@@ -937,7 +954,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 
 | Tool | What it does | Asks you first? |
 |---|---|---|
-| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item (on `board`) or for a PR's review comments; lists the agents and what each is doing; passes a message on to one | - |
+| `start_agents`, `list_agents`, `message_agent` | The main chat only: starts an agent per work item (on `board`) or for a PR's review comments, or a read-only task agent for a free-form `task`; lists the agents and what each is doing; passes a message on to one (`work_item_id`, `pr_id` or `task_id`) | - |
 | `submit_plan`, `get_plan` | Hands you its plan for a PR or work item - you're told it's ready, nothing opens (a new call is a new revision); reads the plan as it is now (your edits included), its status and your questions. `submit_plan` (like `start_fix` and `start_story`) is a plan agent's only: the main chat's call is refused | - |
 | `discard_plan` | The main chat only: discards a plan no agent has worked on (one the main chat wrote itself); its files move to `plans/discarded/` | yes |
 | `current_view` | What you're looking at when you sent the message (see above) | - |

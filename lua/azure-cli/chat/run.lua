@@ -495,6 +495,8 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
+    -- A task agent's answer goes back to the main chat (#143), whoever sent its message.
+    pcall(function() require("azure-cli.chat.agents").task_answered(st, entry) end)
     -- Free again: what you sent meanwhile goes next, then the next plan
     -- waiting for an agent starts.
     vim.schedule(function() M.drain(st) end)
@@ -851,8 +853,10 @@ send = function(text, opts)
   if st.persistent_job and not reuse then stop_persistent(st) end
   local replay = not first and not reuse
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
+  -- A task agent without an approved plan changes no files, on any turn (#143).
+  local read_only = prompt_name == "plan" or require("azure-cli.chat.plan").task_read_only(st.plan_key and st or nil)
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
-    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil,
+    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = read_only or nil,
     requests = CORE.request_multiplier(agent, model), model = model }
   table.insert(st.entries, entry)
   -- The agent's skills where it runs, and the one this message asks for
@@ -870,9 +874,15 @@ send = function(text, opts)
   end
   render()
 
+  -- The main chat's message takes its task agents' answers since its last
+  -- one (#143), each once.
+  local task_results
+  if not st.plan_key and st.task_results and #st.task_results > 0 then
+    task_results, st.task_results = st.task_results, nil
+  end
   local message = CORE.compose(expanded, view_text, {
     first = first, history = replay and history or nil, orchestrator = not st.plan_key,
-    refs = require("azure-cli.chat.refs").describe(expanded),
+    refs = require("azure-cli.chat.refs").describe(expanded), task_results = task_results,
   })
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,
@@ -956,6 +966,8 @@ send = function(text, opts)
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
+    -- A task agent's answer goes back to the main chat (#143), whoever sent its message.
+    pcall(function() require("azure-cli.chat.agents").task_answered(st, entry) end)
     -- Free again: what you sent meanwhile goes next, then the next plan
     -- waiting for an agent starts.
     vim.schedule(function() M.drain(st) end)
