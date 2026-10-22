@@ -336,7 +336,14 @@ picks goes through `session/set_config_option`.
   only looks (`2>&1 | Select-Object -Last 50`). So does one test file in
   the same folder as the plan's command, run by `nvim`, `python`,
   `pytest`, `node`, `bash` or `lua` (`nvim -l tests/test-chat.lua` for
-  `tests/run.sh`), and `python -m pytest` / `-m unittest`. A redirect into a file, `$(...)` or any other program asks. `--allow-tool azure-vicli` saves Copilot
+  `tests/run.sh`), and `python -m pytest` / `-m unittest`. A redirect into a file, `$(...)` or any other program asks. A
+  command's popup in an approved plan's conversation also has **Allow like
+  this for #141**: from then on, until the plan is approved again, a
+  command whose every step starts like one of that command's (its
+  program, the flags after it and a subcommand: `git fetch`,
+  `python3 -m unittest`, `luajit -bl`) doesn't ask, under the same rules
+  as the tests - never `rm`, `mv`, `curl`, `sudo`, `git push` or inline
+  code (`bash -c`, `node -e`). `--allow-tool azure-vicli` saves Copilot
   asking before each of azure-vicli's tools - the ones that change
   something visible still ask you on azure-vicli's side.
 - **`--add-dir {fix_root}`** is for "fix this comment" and "implement this

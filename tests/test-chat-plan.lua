@@ -981,6 +981,63 @@ do
       and tcmd("## Test plan\n`python` and `dotnet test | tee x`") == nil)
 end
 
+-- --- allowed for the plan: command_patterns / command_like ------------------------------------
+do
+  local function pats(c) return table.concat(PLAN.command_patterns(c) or { "nil" }, "|") end
+  check("command_patterns: the program, its flags and a subcommand",
+    pats("python3 -m unittest discover -s tests") == "python3 -m unittest" and pats("git fetch origin x") == "git fetch"
+      and pats("luajit -bl lua/a.lua") == "luajit -bl" and pats("make") == "make",
+    pats("python3 -m unittest discover -s tests") .. " " .. pats("luajit -bl lua/a.lua"))
+  check("command_patterns: one per step, as is_test_command splits it",
+    pats("cd /w/x && timeout 60 PATH=/o/bin:$PATH nvim -l tests/a.lua 2>&1 | tail -20; git status") == "nvim -l|git status",
+    pats("cd /w/x && timeout 60 PATH=/o/bin:$PATH nvim -l tests/a.lua 2>&1 | tail -20; git status"))
+  local none = { "make > out.txt", "make $(rm x)", "make `rm x`", "make || rm x", "make | sh", "make & calc",
+    "rm -rf build", "git push origin x", "git -C w push", "bash -c 'make'", "node -e 1", "FOO=1 make",
+    "sudo make", "make\nrm -rf x", "" }
+  local got = {}
+  for _, c in ipairs(none) do if PLAN.command_patterns(c) then got[#got + 1] = c end end
+  check("command_patterns: none for what the tests' rules refuse", #got == 0, vim.inspect(got))
+  local p = { "python3 -m unittest", "git fetch" }
+  local function like(c) return PLAN.command_like(c, p) end
+  check("command_like: more arguments, after a cd, piped into a look",
+    like("python3 -m unittest tests.test_x") and like("cd /w && git fetch upstream && python3 -m unittest | tail -5")
+      and like("git fetch"))
+  check("command_like: not another subcommand, step or write",
+    not like("python3 -m pip install x") and not like("git fetchall") and not like("git fetch; make")
+      and not like("git fetch > x") and not like("git fetch\nrm -rf x") and not like("python3 -m unittest -c x")
+      and not PLAN.command_like("git fetch", {}) and not PLAN.command_like("git fetch", nil))
+  check("is_test_command: a new line is another command",
+    not PLAN.is_test_command("dotnet test\nrm -rf x", "dotnet test")
+      and PLAN.is_test_command("dotnet build\ndotnet test", "dotnet test"))
+end
+
+-- --- allowed for the plan: kept on the record for its approved revision ------------------------
+do
+  local key = "wi-test-allow-cmd"
+  PLAN.save({ key = key, target = { work_item_id = 77001 }, status = "approved", approved_rev = 1, threads = {},
+    revisions = { { by = "agent", markdown = "## Files\n- `a.lua` - x" } } })
+  PLAN.allow_commands(PLAN.load(key), "git fetch origin && python3 -m unittest discover")
+  PLAN.allow_commands(PLAN.load(key), "git fetch")
+  local rec = PLAN.load(key)
+  check("allow_commands: saved once each, for the approved revision",
+    vim.deep_equal(PLAN.allowed_commands(rec), { "git fetch", "python3 -m unittest" }) and rec.allowed_commands_rev == 1,
+    vim.inspect(rec.allowed_commands))
+  check("command_allowed: like one of them", PLAN.command_allowed(key, "git fetch upstream")
+    and not PLAN.command_allowed(key, "git pull"))
+  PLAN.allow_commands(rec, "rm -rf x")
+  check("allow_commands: nothing for a command without patterns", #PLAN.allowed_commands(PLAN.load(key)) == 2)
+  rec = PLAN.load(key)
+  rec.approved_rev = 2
+  check("allowed_commands: none from an earlier approved revision", #PLAN.allowed_commands(rec) == 0)
+  rec = PLAN.load(key)
+  PLAN.add_revision(rec, "## Files\n- `b.lua` - y", "you")
+  rec.status, rec.approved_rev = "approved", 2
+  PLAN.save(rec)
+  check("command_allowed: a new approval asks again", rec.allowed_commands == nil
+    and not PLAN.command_allowed(key, "git fetch upstream"))
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+end
+
 -- --- look_only_command -------------------------------------------------------------------------
 do
   local C = require("azure-cli.chat.core")

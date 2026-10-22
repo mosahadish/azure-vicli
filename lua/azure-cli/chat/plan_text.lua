@@ -450,6 +450,16 @@ local COMPANIONS = {
   gradle = { "build", "test" }, ["./gradlew"] = { "build", "test" }, ["gradlew"] = { "build", "test" },
 }
 
+-- `timeout 300`, PATH=dir[:$PATH] and $PWD in front change nothing a
+-- step runs.
+local function unprefixed(step)
+  for _ = 1, 2 do
+    step = step:gsub("^timeout %d+ ", "")
+    step = step:gsub("^PATH=[%w%._/~:%-]*%$PATH ", ""):gsub("^PATH=[%w%._/~:%-]+ ", "")
+  end
+  return (step:gsub('"set rtp%+=%$PWD"', '"set rtp+=."'))
+end
+
 -- Whether shell command `cmd` runs the plan's tests (`test_cmd`,
 -- test_command's " && "-joined lines). Each step of `cmd` (split on &&
 -- and ;) has to be one of its lines - or one with more arguments, or the
@@ -491,12 +501,7 @@ function M.is_test_command(cmd, test_cmd)
     return false
   end
   local function runs_tests(step)
-    -- `timeout 300`, PATH=dir[:$PATH] and $PWD in front change nothing it runs.
-    for _ = 1, 2 do
-      step = step:gsub("^timeout %d+ ", "")
-      step = step:gsub("^PATH=[%w%._/~:%-]*%$PATH ", ""):gsub("^PATH=[%w%._/~:%-]+ ", "")
-    end
-    step = step:gsub('"set rtp%+=%$PWD"', '"set rtp+=."')
+    step = unprefixed(step)
     if runs_test_file(step) then return true end
     for _, l in ipairs(lines) do
       if step == l then return true end
@@ -511,7 +516,8 @@ function M.is_test_command(cmd, test_cmd)
     end
     return false
   end
-  cmd = norm(cmd):gsub(" 2>&1", "")
+  -- A new line runs another command, like ;.
+  cmd = norm((cmd:gsub("\r?\n", ";"))):gsub(" 2>&1", "")
   if cmd == "" or cmd:find("||", 1, true) then return false end
   local steps = {}
   for step in (cmd:gsub(" ?&& ?", ";") .. ";"):gmatch("(.-);") do
@@ -530,6 +536,99 @@ function M.is_test_command(cmd, test_cmd)
       if not runs_tests(norm(first)) then return false end
       if piped and not CORE.look_only_command(piped) then return false end
     end
+  end
+  return true
+end
+
+-- The steps of shell command `cmd` as is_test_command splits it (&&, ;
+-- and new lines, a cd before the last dropped), each unprefixed and
+-- without what it's piped into when that only looks - nil when any of it
+-- could do more than run its program: ||, a redirect, $(...), backticks,
+-- &, a pipe into anything else.
+local function plain_steps(cmd)
+  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
+  if type(cmd) ~= "string" then return nil end
+  local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
+  cmd = norm((cmd:gsub("\r?\n", ";"))):gsub(" 2>&1", "")
+  if cmd:find("||", 1, true) then return nil end
+  local parts = {}
+  for step in (cmd:gsub(" ?&& ?", ";") .. ";"):gmatch("(.-);") do
+    step = norm(step)
+    if step ~= "" then parts[#parts + 1] = step end
+  end
+  local CORE = require("azure-cli.chat.core")
+  local steps = {}
+  for i, step in ipairs(parts) do
+    local lower = step:lower()
+    local dir_change = i < #parts and (lower:match("^cd ") or lower:match("^set%-location ") or lower:match("^sl ")
+      or lower:match("^pushd ")) and not step:find("[|&<>`$(){}]")
+    if not dir_change then
+      local first, piped = step:match("^([^|]-) ?| ?(.+)$")
+      if piped and not CORE.look_only_command(piped) then return nil end
+      first = unprefixed(norm(first or step))
+      if first == "" or first:find("[|&;<>`$(){}]") then return nil end
+      steps[#steps + 1] = first
+    end
+  end
+  return #steps > 0 and steps or nil
+end
+
+-- Programs no pattern covers (deleting, moving, downloading, running as
+-- someone else) and flags that run code given inline (`bash -c`, `node -e`).
+local NEVER_LIKE = { rm = true, rmdir = true, mv = true, dd = true, sudo = true, su = true, doas = true,
+  chmod = true, chown = true, curl = true, wget = true, ssh = true, scp = true, rsync = true, eval = true,
+  exec = true, xargs = true, env = true, kill = true, pkill = true, killall = true, iex = true,
+  ["Remove-Item"] = true, ["Invoke-Expression"] = true }
+local INLINE_CODE = { ["-c"] = true, ["-e"] = true, ["-lc"] = true, ["-ic"] = true, ["--command"] = true,
+  ["--eval"] = true, ["-Command"] = true, ["-EncodedCommand"] = true }
+
+-- One step's pattern: its program, the flags right after it, and the
+-- argument after those when it's a word (a subcommand, a module) rather
+-- than a path: `python3 -m unittest discover` -> "python3 -m unittest",
+-- `git fetch origin x` -> "git fetch", `luajit -bl a.lua` -> "luajit -bl".
+-- None for NEVER_LIKE, inline code or git push (the plan's own gate).
+local function step_pattern(step)
+  local words = vim.split(step, " ", { plain = true })
+  local prog = words[1]
+  local name = prog:match("[^/]+$") or prog
+  if not prog:match("^[%w%._/~%-]+$") or NEVER_LIKE[name] then return nil end
+  for _, w in ipairs(words) do
+    if INLINE_CODE[w] or (name == "git" and w == "push") then return nil end
+  end
+  local out, i = { prog }, 2
+  while words[i] and words[i]:match("^%-") do out[#out + 1] = words[i]; i = i + 1 end
+  if words[i] and words[i]:match("^%a[%w_%-]*$") then out[#out + 1] = words[i] end
+  return table.concat(out, " ")
+end
+
+-- What allowing shell command `cmd` "and commands like it" stores: a
+-- pattern per step (step_pattern), or nil when a step has none or `cmd`
+-- fails plain_steps - then there's nothing to allow it by. Pure.
+function M.command_patterns(cmd)
+  local steps = plain_steps(cmd)
+  if not steps then return nil end
+  local out, seen = {}, {}
+  for _, step in ipairs(steps) do
+    local p = step_pattern(step)
+    if not p then return nil end
+    if not seen[p] then seen[p] = true; out[#out + 1] = p end
+  end
+  return out
+end
+
+-- Whether each step of shell command `cmd` is like one of `patterns`
+-- (starts with it, word for word) and would get a pattern itself. Pure.
+function M.command_like(cmd, patterns)
+  if type(patterns) ~= "table" or #patterns == 0 then return false end
+  local steps = plain_steps(cmd)
+  if not steps then return false end
+  for _, step in ipairs(steps) do
+    if not step_pattern(step) then return false end
+    local like = false
+    for _, p in ipairs(patterns) do
+      if step == p or step:sub(1, #p + 1) == p .. " " then like = true; break end
+    end
+    if not like then return false end
   end
   return true
 end

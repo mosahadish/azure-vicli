@@ -468,6 +468,33 @@ function M.test_command_allowed(key, cmd)
   return rec ~= nil and rec.status == "approved" and M.is_test_command(cmd, M.test_command(current_lines(rec)))
 end
 
+-- The commands you allowed for the rest of the approved revision
+-- (M.allow_commands): command_patterns' patterns - none from an earlier one.
+function M.allowed_commands(rec)
+  if not rec.allowed_commands or rec.allowed_commands_rev ~= rec.approved_rev then return {} end
+  return rec.allowed_commands
+end
+
+-- Whether plan `key` is approved and shell command `cmd` is like one you
+-- allowed for it (command_like).
+function M.command_allowed(key, cmd)
+  local rec = M.load(key)
+  return rec ~= nil and rec.status == "approved" and M.command_like(cmd, M.allowed_commands(rec))
+end
+
+-- You allowed `cmd` and commands like it for the rest of the plan.
+function M.allow_commands(rec, cmd)
+  local patterns = M.command_patterns(cmd)
+  if not patterns then return end
+  rec = M.load(rec.key) or rec
+  local have = vim.list_slice(M.allowed_commands(rec))
+  for _, p in ipairs(patterns) do
+    if not vim.tbl_contains(have, p) then have[#have + 1] = p end
+  end
+  rec.allowed_commands, rec.allowed_commands_rev = have, rec.approved_rev
+  M.save(rec)
+end
+
 -- You allowed changing `rels` once: from now on they're part of the plan.
 function M.allow_files(rec, rels)
   rec = M.load(rec.key) or rec
@@ -507,6 +534,7 @@ function M.add_revision(rec, markdown, by)
   rec.approved_rev = nil
   rec.allow_push = nil
   rec.allowed_files, rec.allowed_rev = nil, nil
+  rec.allowed_commands, rec.allowed_commands_rev = nil, nil
 end
 
 -- The labels of the plans waiting for your review (submitted, not yet
@@ -643,6 +671,8 @@ function M.approve(key, allow_push)
   rec.last_approved_rev = rec.approved_rev
   rec.approved_at = os.time()
   rec.allow_push = allow_push or nil
+  -- Commands allowed for the plan last time are asked about again.
+  rec.allowed_commands, rec.allowed_commands_rev = nil, nil
   M.add_event(rec, "approved", "Approved revision " .. rec.approved_rev
     .. (rec.allow_push and " - pushing allowed once the tests pass" or ""))
   VIEW().changed(rec)

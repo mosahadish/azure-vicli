@@ -197,6 +197,27 @@ UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons;
 send_and_wait("no skill here EXEC=kubectl_apply")
 check("without the skill it asks as before, with two buttons", #asked == 1 and #buttons == 2, vim.inspect(buttons))
 SK.available = orig_avail
+-- A command in an approved plan's conversation: the third button allows
+-- it and ones like it for the rest of the plan.
+STATE.chat.plan_key = "wi-3001"
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(3) end
+asked = {}
+local l1 = send_and_wait("EXEC=make_lint_src")
+check("a plan's command offers to allow ones like it", buttons and buttons[3] == "Allow like this for #3001"
+  and l1 and l1.text:find("exec[make lint src]=yes", 1, true) ~= nil, vim.inspect({ buttons, l1 and l1.text }))
+asked = {}
+local l2 = send_and_wait("EXEC=make_lint_tests EXEC=make_clean")
+check("then one like it doesn't ask, another does", #asked == 1 and asked[1]:find("make clean", 1, true) ~= nil
+  and table.concat(l2 and l2.tools or {}, "\n"):find("$ make lint tests  (allowed: allowed for the plan)", 1, true) ~= nil,
+  vim.inspect({ asked, l2 and l2.tools }))
+asked = {}
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(2) end
+send_and_wait("EXEC=rm_-rf_build")
+check("not for a command it can't be allowed by", #asked == 1 and #buttons == 2, vim.inspect(buttons))
+STATE.chat.plan_key = nil
+local lrec = PLAN.load("wi-3001")
+lrec.allowed_commands = nil
+PLAN.save(lrec)
 -- chat.permissions' "agent-commands": the agent's commands don't ask.
 require("azure-cli.config").get().chat.permissions = { ["agent-commands"] = "allow" }
 asked = {}

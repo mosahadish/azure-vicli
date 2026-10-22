@@ -191,6 +191,10 @@ local function decide_permission(st, entry, tool, answer, w)
   if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
     return allow_quietly("the plan's tests")
   end
+  -- Like a command you allowed for the rest of the plan.
+  if tool.kind == "execute" and st.plan_key and PLAN.command_allowed(st.plan_key, cmd) then
+    return allow_quietly("allowed for the plan")
+  end
   -- Searching and listing through the shell (grep, git log, ...).
   if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
   -- A skill you've allowed: whatever it does through the agent's tools.
@@ -199,9 +203,18 @@ local function decide_permission(st, entry, tool, answer, w)
     log_cmd("allowed: skill " .. entry.skill, true)
     return answer(true)
   end
-  -- Otherwise a third button allows that skill from now on.
-  local extra = entry.skill and ("Allow all of skill " .. entry.skill) or nil
-  local function remember(always) if always and entry.skill then SKILLS.allow(entry.skill) end end
+  -- Otherwise a third button allows that skill from now on - or, for a
+  -- command in an approved plan's conversation, it and ones like it for
+  -- the rest of the plan (when it has patterns to allow it by).
+  local like = not entry.skill and tool.kind == "execute" and st.plan_key and PLAN.command_patterns(cmd)
+    and PLAN.load(st.plan_key) or nil
+  if like and like.status ~= "approved" then like = nil end
+  local extra = entry.skill and ("Allow all of skill " .. entry.skill)
+    or (like and ("Allow like this for " .. PLAN.target_label(like.target))) or nil
+  local function remember(always)
+    if always and entry.skill then SKILLS.allow(entry.skill)
+    elseif always and like then PLAN.allow_commands(like, cmd) end
+  end
   if verdict == "unplanned" then
     local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
       .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
@@ -214,7 +227,8 @@ local function decide_permission(st, entry, tool, answer, w)
   confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
     .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
     remember(always)
-    log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
+    log_cmd(always and (entry.skill and ("you allowed skill " .. entry.skill) or "you allowed it for the plan")
+      or (yes and "you allowed it" or "you denied it"))
     answer(yes)
   end, details, extra, full)
 end
