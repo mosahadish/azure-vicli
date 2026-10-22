@@ -123,6 +123,7 @@ local DEFAULT_KEYS = {
     open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G", open_pr = "gp",
+    open_session = "go",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -351,14 +352,16 @@ local CHAT_AGENT_FIELDS = {
 local CHAT_AGENT_REMOVED = {
   followup = true, session_pattern = true, persistent = true,
 }
-local function check_chat_cmd(v, where)
+-- `field`: which of the agent's commands (default "cmd").
+local function check_chat_cmd(v, where, field)
+  local name = where .. "." .. (field or "cmd")
   if type(v) == "table" then
-    if #v == 0 then error("azure-cli.setup: " .. where .. ".cmd is an empty list") end
+    if #v == 0 then error("azure-cli.setup: " .. name .. " is an empty list") end
     for _, part in ipairs(v) do
-      if type(part) ~= "string" then error("azure-cli.setup: " .. where .. ".cmd must be a list of strings") end
+      if type(part) ~= "string" then error("azure-cli.setup: " .. name .. " must be a list of strings") end
     end
   elseif type(v) ~= "string" or v == "" then
-    error("azure-cli.setup: " .. where .. ".cmd must be a list of strings or a shell command string")
+    error("azure-cli.setup: " .. name .. " must be a list of strings or a shell command string")
   end
 end
 local function validate_chat(chat)
@@ -414,6 +417,10 @@ local function validate_chat(chat)
     for k, v in pairs(a) do
       if k == "cmd" then
         check_chat_cmd(v, where)
+      elseif k == "resume_cmd" then
+        -- The agent's CLI on a session, {session_id} expanded: go on the
+        -- Agents screen opens it in a terminal (#142).
+        check_chat_cmd(v, where, "resume_cmd")
       elseif CHAT_AGENT_REMOVED[k] then
         error("azure-cli.setup: " .. where .. "." .. k .. " is gone - the agent now stays running for the whole "
           .. "conversation instead of starting per message; remove it (docs/chat.md has the new examples)")
@@ -921,6 +928,7 @@ function M.render_options()
   w("    --   label = \"Copilot\", acp = true,")
   w("    --   models = { \"claude-sonnet-5\", \"gpt-5.5\" },  -- the names `copilot --help` lists")
   w("    --   cmd = { \"copilot\", \"--acp\", \"--add-dir\", \"{fix_root}\", \"--allow-tool\", \"azure-vicli\" },")
+  w("    --   resume_cmd = { \"copilot\", \"--resume\", \"{session_id}\" },  -- go on the Agents screen: its session in a terminal")
   w("    --   premium_requests = { default = 1 },")
   w("    --   planner_model = \"gpt-5.5\", implementer_model = \"claude-sonnet-5\",")
   w("    -- },")

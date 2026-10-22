@@ -364,6 +364,60 @@ function M.open_for_pr(key)
   return true
 end
 
+-- go's command for conversation `conv` run by `agent` (its spec): the
+-- agent's resume_cmd with {session_id} expanded (a list, or a shell
+-- string), and where to run it - where its session ran, else `fallback`
+-- (conversations saved before that was kept). nil and why it can't. Pure.
+function M.resume_command(agent, conv, fallback)
+  if not conv then return nil, "That row has no agent yet." end
+  if conv.running then return nil, "That agent is still working - stop it first (<C-c>)." end
+  if not conv.session_id or conv.session_id == "" then return nil, "That agent hasn't started a session yet." end
+  if not (agent and agent.resume_cmd) then
+    return nil, "That agent has no resume_cmd - set chat.agent.resume_cmd (docs/chat.md)."
+  end
+  local cwd = conv.agent_cwd or fallback
+  if not cwd or cwd == "" then return nil, "Don't know where that agent's session ran." end
+  local CORE = require("azure-cli.chat.core")
+  local vars = { session_id = conv.session_id, fix_root = require("azure-cli.chat.tools_fix").root() }
+  local cmd
+  if type(agent.resume_cmd) == "table" then
+    cmd = {}
+    for i, a in ipairs(agent.resume_cmd) do cmd[i] = CORE.expand(a, vars) end
+  else
+    cmd = CORE.expand(agent.resume_cmd, vars, vim.fn.shellescape)
+  end
+  return cmd, cwd
+end
+
+-- go: the row's agent's session in a terminal split, in the directory it
+-- ran in (#142). Its idle process lets go of the session first; the next
+-- message starts a new one, replaying the conversation.
+local function open_session(r)
+  if not r then return end
+  local c = r.conv
+  local agents = CHAT().agents()
+  local name = c and (c.session_agent or c.agent_name)
+  local agent = (name and agents[name]) or select(2, CHAT().current_agent())
+  local fallback = r.target and require("azure-cli.chat.tools_fix").dir_for(r.target) or nil
+  local cmd, cwd = M.resume_command(agent, c, fallback)
+  if not cmd then return notify(cwd) end
+  if vim.fn.isdirectory(cwd) == 0 then return notify(cwd .. " isn't there any more.") end
+  if c.persistent_job then require("azure-cli.chat.run").stop_persistent(c) end
+  vim.cmd("botright split")
+  vim.cmd("enew")
+  local ok, job
+  if vim.fn.has("nvim-0.11") == 1 then
+    ok, job = pcall(vim.fn.jobstart, cmd, { term = true, cwd = cwd })
+  else
+    ok, job = pcall(vim.fn.termopen, cmd, { cwd = cwd })
+  end
+  if not ok or job <= 0 then
+    pcall(vim.cmd, "close")
+    return notify("Couldn't start " .. (type(cmd) == "table" and cmd[1] or cmd) .. ": " .. tostring(job))
+  end
+  vim.cmd("startinsert")
+end
+
 local HELP = {
   "Move",
   { "first_row", "the first agent (a count: that row)" }, { "last_row", "the last agent (a count: that row)" },
@@ -371,6 +425,7 @@ local HELP = {
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
   { "open_pr", "its pull request in the reviewer (the one it opened, or the one it fixes)" },
+  { "open_session", "its session in a terminal, in its directory (the agent's resume_cmd; not while it works)" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
@@ -405,6 +460,8 @@ local function setup(buf)
     if not r.pr_key then return notify((r.label or "That agent") .. " has no pull request yet.") end
     require("azure-cli.chat.plan_view").open_pr(r.pr_key, r.pr_id)
   end, { desc = "its pull request" })
+  K.bind(buf, "agents", "open_session", function() open_session(row_here()) end,
+    { desc = "its session in a terminal" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "main chat" })

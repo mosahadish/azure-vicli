@@ -50,6 +50,7 @@ local CONV_FIELDS = {
   entries = true, session_id = true, conv_id = true, created = true, running = true, persistent_job = true,
   plan_key = true, agent_id = true, label = true, bridge_entry = true, mcp_path = true, target = true, title = true,
   model = true, model_agent = true, queue = true, queue_editing = true,
+  agent_cwd = true, session_agent = true,  -- where and by which agent session_id runs (#142)
 }
 
 local function MAIN()
@@ -200,13 +201,14 @@ local function save(st)
   st.created = st.created or os.time()
   pcall(require("azure-cli.chat.store").save, { id = st.conv_id, created = st.created, entries = st.entries,
     session_id = st.session_id, agent = (M.current_agent()), model = M.current_model(select(2, M.current_agent()), st),
-    plan = st.plan_key })
+    plan = st.plan_key, agent_cwd = st.agent_cwd, session_agent = st.session_agent })
 end
 
 local function load_conversation(rec, st)
   st = st or STATE()
   st.entries = rec.entries or {}
   st.session_id = rec.session_id
+  st.agent_cwd, st.session_agent = rec.agent_cwd, rec.session_agent
   st.conv_id = rec.id
   st.created = rec.created
   if rec.agent and M.agents()[rec.agent] then st.agent_name = rec.agent end
@@ -231,6 +233,7 @@ function M.restore_plans()
       if rec then
         local c = M.conversation(s.plan, { label = PLAN.target_label(plan.target), target = plan.target, title = plan.title })
         c.entries, c.conv_id, c.created, c.session_id = rec.entries or {}, rec.id, rec.created, rec.session_id
+        c.agent_cwd, c.session_agent = rec.agent_cwd, rec.session_agent
       end
     end
   end

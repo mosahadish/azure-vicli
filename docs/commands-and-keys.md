@@ -472,6 +472,7 @@ paste the output here after changing a default.
 | `last_row` | `G` |
 | `open` | `<CR>` |
 | `open_pr` | `gp` |
+| `open_session` | `go` |
 | `palette` | `g.` |
 | `pr_list` | `P` |
 | `quit` | `q` |

@@ -505,6 +505,13 @@ do
   rejects("a bad plan_first", { plan_first = "sometimes" }, "chat.plan_first")
   rejects("a bad test_cmd", { test_cmd = { widgets = 3 } }, "chat.test_cmd")
   rejects("a bad max_agents", { max_agents = 0 }, "chat.max_agents")
+  -- resume_cmd (#142): a list or a shell string, like cmd.
+  config.setup({ chat = { agent = { cmd = { "claude" }, resume_cmd = { "claude", "--resume", "{session_id}" } } } })
+  check("chat: resume_cmd as a list", config.get().chat.agent.resume_cmd[2] == "--resume")
+  config.setup({ chat = { agents = { c = { cmd = { "copilot", "--acp" }, acp = true, resume_cmd = "copilot --resume {session_id}" } } } })
+  check("chat: resume_cmd as a string, on an agents entry", config.get().chat.agents.c.resume_cmd == "copilot --resume {session_id}")
+  rejects("an empty resume_cmd", { agent = { cmd = { "a" }, resume_cmd = {} } }, "chat.agent.resume_cmd is an empty list")
+  rejects("a numeric resume_cmd", { agent = { cmd = { "a" }, resume_cmd = 3 } }, "chat.agent.resume_cmd must be")
   config.setup({})
 end
 
