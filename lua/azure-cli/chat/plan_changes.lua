@@ -452,7 +452,11 @@ function M.show(v, path, focus)
   M.winbar(v)
   draw_threads(v, buf)
   vim.schedule(function() if valid_buf(buf) and M.showing(v) == path then draw_threads(v, buf) end end)
-  if focus then vim.api.nvim_set_current_win(v.plan_win) end
+  if focus then
+    vim.api.nvim_set_current_win(v.plan_win)
+    -- Looked at here, as in the change viewer: it no longer waits for you (]w).
+    vim.schedule(function() pcall(require("azure-cli.chat.plan").change_seen, v.rec) end)
+  end
   return true
 end
 

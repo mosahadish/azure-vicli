@@ -82,7 +82,8 @@ lua/azure-cli/
                   skills.lua (the agent's SKILL.md skills, the /skills popup; an allowed one's prompts don't ask),
                   tools_agents.lua (the main chat's start_agents / list_agents / message_agent,
                   task agents included),
-                  plan_changes.lua (the plan view's Changes section), plan_discard.lua (dd / gD: discarding a plan)
+                  plan_changes.lua (the plan view's Changes section), plan_discard.lua (dd / gD: discarding a plan),
+                  waiting.lua (]w / [w on every screen: the next question, approval or change waiting for you)
   rpc.lua         shared azure-cli.py --serve daemon client
   dashboard.lua   PR dashboard
   review/

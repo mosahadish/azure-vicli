@@ -23,6 +23,7 @@ local DEFAULT_KEYS = {
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", agents = "A", plan_agents = "gP",
     agent_chat = "ga", goto_plan = "gp", chat_input = "i", chat_selection = "<CR>",
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- Reviewer file list.
   list = {
@@ -36,7 +37,7 @@ local DEFAULT_KEYS = {
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP", goto_plan = "gp",
-    chat_input = "i", chat_selection = "<CR>",
+    chat_input = "i", chat_selection = "<CR>", next_waiting = "]w", prev_waiting = "[w",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
@@ -55,7 +56,7 @@ local DEFAULT_KEYS = {
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
-    plan_agents = "gP", chat_input = "i", chat_selection = "<CR>",
+    plan_agents = "gP", chat_input = "i", chat_selection = "<CR>", next_waiting = "]w", prev_waiting = "[w",
     -- The "· N unchanged lines ·" fold under the cursor; zR / zM do them all.
     toggle_fold = { "za", "<Space>" },
     refresh = "r",  -- the chat's change viewer only
@@ -76,13 +77,14 @@ local DEFAULT_KEYS = {
     open_commit = "<CR>", open_image = { "<CR>", "gx" }, batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP", goto_plan = "gp",
-    chat_input = "i", chat_selection = "<CR>",
+    chat_input = "i", chat_selection = "<CR>", next_waiting = "]w", prev_waiting = "[w",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
     goto_definition = "gd", find_references = "gr", search = "g/",
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
     resize_more = ">", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- Work-items dashboard - and the issues dashboard (I), the same screen
   -- on a GitHub account's project. workitems (W) is bound on the issues
@@ -97,7 +99,7 @@ local DEFAULT_KEYS = {
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     plan_agents = "gP", agents = "A", chat_input = "i", chat_selection = "<CR>",
-    first_row = "gg", last_row = "G",
+    first_row = "gg", last_row = "G", next_waiting = "]w", prev_waiting = "[w",
   },
   -- Work-item detail view.
   workitem_view = {
@@ -105,6 +107,7 @@ local DEFAULT_KEYS = {
     edit_title = "ge", description = "gE", move_sprint = "gi", set_parent = "gU", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- The chat panel (both its conversation and its input box).
   chat = {
@@ -117,13 +120,15 @@ local DEFAULT_KEYS = {
     changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
     -- On a message queued while the agent answers (conversation only).
     queue_drop = "dd", queue_edit = "cc",
+    -- The conversation only, as agents.
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G", open_pr = "gp",
-    open_session = "go",
+    open_session = "go", next_waiting = "]w", prev_waiting = "[w",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -135,6 +140,7 @@ local DEFAULT_KEYS = {
     revisions = "gh",
     discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
     open_pr = "gp",  -- the PR its agent opened, or the one it fixes
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to

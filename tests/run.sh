@@ -618,6 +618,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-agents-enter-mode.lua (headless nvim, real input)" "$out"
   fi
 
+  # ]w / [w: a waiting plan's questions, its approval, the next plan.
+  out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-next-waiting.lua" 2>&1)"
+  if [[ "$out" == *NEXT-WAITING-OK* ]]; then
+    pass "test-next-waiting.lua (headless nvim, real input)"
+  else
+    fail "test-next-waiting.lua (headless nvim, real input)" "$out"
+  fi
+
   # The chat bridge over a real socket: the token, and the request size cap.
   out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-bridge.lua" 2>&1)"
   if [ $? -eq 0 ] && [[ "$out" == *"all bridge tests passed"* ]]; then

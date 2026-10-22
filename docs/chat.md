@@ -882,11 +882,23 @@ latest step). The chat's winbar shows the same for the conversation in it
 | `gp` | Its pull request in the reviewer - the one it opened, or the one it fixes (`gp` there comes back to its plan) |
 | `<C-c>` | Stop what it's doing |
 | `dd` | Discard its plan, any plan (an agent's too), and everything the agent left on this machine. It asks at once - **Discard** or **Cancel**, Discard first - listing what goes and what stays; it refuses while the agent is working (`<C-c>` first). Discard deletes the plan's files and its conversation's, the row goes, and a queued agent for it is taken off the queue; then, in the background, its worktree is deleted (forced: uncommitted and unpushed changes go with it) along with the local branch it was on, and a toast says what went. The branch on the server is never touched. It can't be undone. The main chat's `discard_plan` still only discards a plan no agent worked on |
+| `]w` / `[w` | The next / previous thing waiting for you - on every screen, not only this one (below) |
 | `gF` | Show (or hide again) the agents finished over 7 days ago |
 | `i` | The main chat (its input box), whatever row you're on |
 | `gg` / `G` | First / last row (with a count, that row) |
 | `P` / `W` / `I` | The Pull requests / Work items / Issues tab |
 | `r` / `q` / `?` | Redraw / close / keys |
+
+**What waits for you, one key away.** `]w` on any azure-vicli screen -
+the dashboards, the reviewer, the boards, this one, a plan, a change -
+goes to the next thing an agent waits on you for, in this screen's order:
+a waiting plan's open questions you haven't answered, one by one (its plan
+at the question, for `gr`), then its approval (the plan as you left it, for
+`gA`), then the next plan's; and a change `show_fix` made ready that you
+haven't opened yet (as `gd` on its row; opening it, here or in the plan's
+Changes section, takes it off). Pressed in a plan, it goes on from the
+cursor. `[w` goes back the same way; both wrap around, and when nothing
+waits they say so.
 
 **For review comments, too.** `gP` in the reviewer, on a comment
 thread, starts an agent that plans the fix of that comment (anywhere

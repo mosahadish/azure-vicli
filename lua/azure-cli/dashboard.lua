@@ -196,6 +196,8 @@ local DASHBOARD_ACTIONS = {
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "issues", "issues (GitHub)" },
   { "agents", "every plan's agent (the Agents screen)" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
 }
@@ -1997,6 +1999,8 @@ KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 -- it's hidden, and what it's told this screen shows - the PR under the
 -- cursor (chat/view.lua).
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
+-- ]w / [w: the next / previous thing that waits for you (chat/waiting.lua).
+require("azure-cli.chat.waiting").bind(buf, "dashboard")
 KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
 -- ga: the agent working on the PR under the cursor, its conversation in a

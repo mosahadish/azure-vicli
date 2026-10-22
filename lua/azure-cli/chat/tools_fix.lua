@@ -610,6 +610,7 @@ setmetatable(M, { __call = function(_, T)
           -- foreground (#120): it says it's ready (gd opens M.last), and an
           -- open plan view's Changes section picks the change up.
           M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
+          pcall(require("azure-cli.chat.plan").change_shown, t.dir)
           require("azure-cli.shell").notify(t.label .. "'s change is ready on the Agents screen.")
           pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
             "Waiting for your review on the Agents screen") end)

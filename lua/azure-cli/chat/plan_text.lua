@@ -660,6 +660,14 @@ function M.unsent_answers(lines, threads)
   return n
 end
 
+-- Whether plan `rec`'s change waits for your review: show_fix showed it
+-- (change_shown) since you last opened it (change_seen), and it isn't
+-- pushed yet (pushing makes the plan done). Pure.
+function M.change_waits(rec)
+  if type(rec) ~= "table" or rec.status ~= "approved" or not rec.change_shown then return false end
+  return (rec.change_seen or 0) < rec.change_shown
+end
+
 -- Where ]t / [t stop in the plan (`lines`): every open question, answered
 -- or not, and every thread's line, sorted, each once; a thread past the
 -- end is left out. Pure.

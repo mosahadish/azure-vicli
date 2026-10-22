@@ -96,7 +96,8 @@ function M.rows(convs, queued, plan_of, now, frame)
         pr_key = (rec and type(rec.pr) == "table" and (rec.pr.key or rec.pr.id))
           or (c.target and (c.target.pr_key or c.target.pr_id)) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
         requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
-        waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
+        waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil,
+        review = rec and require("azure-cli.chat.plan_text").change_waits(rec) or nil }
     end
   end
   for _, q in ipairs(queued) do
@@ -424,6 +425,8 @@ end
 local HELP = {
   "Move",
   { "first_row", "the first agent (a count: that row)" }, { "last_row", "the last agent (a count: that row)" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   "This agent",
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
@@ -523,6 +526,7 @@ local function setup(buf)
     render()
   end, { desc = "show the older finished agents" })
   K.bind(buf, "agents", "refresh", render, { desc = "redraw" })
+  require("azure-cli.chat.waiting").bind(buf, "agents")
   K.bind(buf, "agents", "quit", function()
     if view and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then
       pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(view.tab))

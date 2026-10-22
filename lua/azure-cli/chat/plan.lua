@@ -729,6 +729,21 @@ function M.pr_allowed(a, cb)
   cb(true, "the approved plan (pushing and its PR allowed)")
 end
 
+-- show_fix made the change in worktree `dir` ready for you (M.change_waits).
+function M.change_shown(dir)
+  local rec = M.for_worktree(dir)
+  if not rec then return end
+  rec.change_shown = os.time()
+  VIEW().changed(rec)
+end
+
+-- You opened plan `rec`'s change: it no longer waits for you (]w).
+function M.change_seen(rec)
+  if not M.change_waits(rec) then return end
+  rec.change_seen = os.time()
+  VIEW().changed(rec)
+end
+
 -- commit_and_push_fix pushed the change: its plan is done.
 function M.mark_done(target)
   local rec = M.load(M.key(target))
