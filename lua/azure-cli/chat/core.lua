@@ -133,6 +133,9 @@ M.DEFAULT_PROMPTS = {
     .. "I'll ask for replies if I want them.",
   review = "Review this pull request's change for correctness bugs, missing tests and risky spots. "
     .. "Leave notes on the lines that matter with annotate_code, and summarise here.",
+  reviewers = "Suggest reviewers for this pull request: who knows the code it changes - git log and git blame on "
+    .. "its files in the PR's clone, and CODEOWNERS if the repository has one. Leave out its author and current "
+    .. "reviewers. Then call suggest_reviewers with each of them and why, in a few words.",
   explain = "Explain what this code or comment is about, and what the change does around it.",
   plan = "Make a plan for this - the work item, or the review comment, in view - with submit_plan, following its "
     .. "template. Read what you need first (get_work_item, get_pr_threads, the code - for a work item, in the "

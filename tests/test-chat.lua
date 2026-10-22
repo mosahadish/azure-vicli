@@ -770,6 +770,32 @@ do
     check("edit_work_item: GitHub issues have no hours", got[2] == true and #calls == 0, vim.inspect(got))
     call("edit_work_item", { id = 3011 })
     check("edit_work_item: nothing to change", got[2] == true and #calls == 0)
+
+    -- suggest_reviewers: each one looked up, reviewers left out, then gR's popup with them first.
+    local PEOPLE = require("azure-cli.people")
+    local real_add, real_open = PEOPLE.add_reviewer, require("azure-cli.picker").open
+    local shown
+    PEOPLE.add_reviewer = function(pr, _, list) shown = { pr = pr, list = list } end
+    TOOLS.provider = function(argv, _, cb)
+      if argv[2] == "tal" then return cb(true, '[{"name": "Tal Gross", "id": "t1"}]', "") end
+      if argv[2] == "bob" then return cb(true, '[{"name": "Bob Brown", "id": "b1"}]', "") end
+      cb(true, "[]", "")
+    end
+    call("suggest_reviewers", { pr_id = 101, people = { { who = "tal", why = "wrote auth.py" }, { who = "bob" },
+      { who = "nobody" } } })
+    check("suggest_reviewers: found ones go to gR's popup, the rest are said", got[2] == false and shown
+      and #shown.list == 1 and shown.list[1].id == "t1" and shown.list[1].why == "wrote auth.py"
+      and got[1]:find("bob: already a reviewer", 1, true) and got[1]:find("nobody: not found", 1, true), vim.inspect(got))
+    PEOPLE.add_reviewer = real_add
+    local opened
+    require("azure-cli.picker").open = function(o) opened = o; return { add = function() end, status = function() end,
+      done = function() return true end, keep = function() end } end
+    PEOPLE.everyone = {}
+    PEOPLE.pick(S.PR_LIST_CACHE.prs[1], "Add", function() end,
+      { skip_reviewers = true, suggested = { { name = "Tal Gross", id = "t1", why = "wrote auth.py" }, { name = "Bob Brown", id = "b1" } } })
+    check("pick: suggestions come first with why, reviewers still left out", opened and #opened.items == 1
+      and opened.format(opened.items[1]) == "Tal Gross  \u{2605} wrote auth.py", vim.inspect(opened and opened.items))
+    require("azure-cli.picker").open = real_open
     TOOLS.provider, S.PR_LIST_CACHE, AZ.state.WI_LIST_CACHE = real_provider, saved, saved_list
   end
   do

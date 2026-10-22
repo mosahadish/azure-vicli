@@ -128,11 +128,14 @@ launcher sets them in its own palette.
 
 ## Saved prompts, references and selections
 
-**Saved prompts.** `/triage`, `/review`, `/explain`, `/build`, `/plan` and `/standup`
+**Saved prompts.** `/triage`, `/review`, `/reviewers`, `/explain`, `/build`, `/plan` and `/standup`
 come built in; type one in the input box (anything after it is added to
 the prompt, e.g. `/review focus on error handling`) or pick one with `gp`.
 `/triage` only sorts a PR's open threads (fix, push back, question,
 already done) and says why - it drafts no replies; ask for those after.
+`/reviewers` looks at who knows the changed code (git log and blame, and
+CODEOWNERS) and opens `gR`'s popup with them first, each with why; nobody
+is added until you pick them.
 They run against what's on screen like any message. (`/skills` isn't a
 prompt: it opens a popup of the agent's skills, without asking the agent -
 see [Permissions](#github-copilot-cli).) Add your own, replace
@@ -963,6 +966,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `commit_and_push_fix` | Commits the change and pushes it to the PR's (or the story's) branch | **yes**, showing the diff |
 | `set_thread_status` | Resolves (or reopens, ...) a comment thread | **yes** |
 | `add_reviewer`, `update_pr_description` | A reviewer by name or email; the description, and the title when one is given | **yes** (the description, and any new title, is shown) |
+| `suggest_reviewers` | Opens `gR`'s popup with the people it suggests first, each with why; you pick who's added | - |
 | `remove_reviewer` | Takes a reviewer off a PR (on GitHub, only a review request still waiting). Undoable: the undo adds them back | **yes** |
 | `create_pull_request`, `complete_pull_request` | Opens a PR (linking work items; its description from the approved plan unless it writes one); merges one | **yes** |
 | `vote` | Votes on a PR | **yes** |

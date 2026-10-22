@@ -62,7 +62,8 @@ end
 -- also searches the host's directory and adds whoever else that finds -
 -- only people the host itself returns, nobody from anywhere else.
 -- cb(person) once one is picked, nothing on a cancel.
--- opts.skip_reviewers leaves out the PR's reviewers (gR).
+-- opts.skip_reviewers leaves out the PR's reviewers (gR); opts.suggested
+-- (people with a `why`) come first, each with its why.
 function M.pick(pr, title, cb, opts)
   opts = opts or {}
   local skip = opts.skip_reviewers and reviewer_ids(pr) or {}
@@ -84,7 +85,9 @@ function M.pick(pr, title, cb, opts)
     return new, all
   end
   local api = require("azure-cli.picker").open({
-    title = title, items = {}, format = M.label,
+    title = title, items = (sort(opts.suggested)), format = function(p)
+      return M.label(p) .. (p.why and ("  \u{2605} " .. p.why) or "")
+    end,
     width = 70, height = M.MAX_ROWS, ft = "azure-cli-people", empty = "Nobody to list",
     on_query = function(q, api)
       if #q < M.MIN_CHARS or asked[q:lower()] then return end
@@ -114,8 +117,10 @@ end
 
 -- gR: adds a reviewer to `pr`, then on_done(person) once the host has
 -- them (the record's reviewers list has them too, and the PR dashboard is
--- redrawn and refetched).
-function M.add_reviewer(pr, on_done)
+-- redrawn and refetched). `suggested` (the chat's suggest_reviewers):
+-- people listed first with why; the popup comes back for the rest of them
+-- after each one added.
+function M.add_reviewer(pr, on_done, suggested)
   if not pr then return notify("No PR here.", vim.log.levels.WARN) end
   if not HOSTS().caps(pr).add_reviewer then
     return notify("Adding reviewers isn't available for this PR.", vim.log.levels.WARN)
@@ -146,6 +151,9 @@ function M.add_reviewer(pr, on_done)
           if STATE.PR_DASHBOARD_RENDER then STATE.PR_DASHBOARD_RENDER() end
           if STATE.PR_DASHBOARD_RELOAD then STATE.PR_DASHBOARD_RELOAD() end
           if on_done then on_done(p) end
+          local rest = vim.tbl_filter(function(x) return tostring(x.id):lower() ~= tostring(p.id):lower() end,
+            suggested or {})
+          if #rest > 0 then vim.schedule(function() M.add_reviewer(pr, on_done, rest) end) end
         end)
     end
     if HOSTS().host(pr) == "azure" then
@@ -156,7 +164,7 @@ function M.add_reviewer(pr, on_done)
     else
       go(false)
     end
-  end, { skip_reviewers = true })
+  end, { skip_reviewers = true, suggested = suggested })
 end
 
 -- What the PR dashboard and reviewer redraw after a reviewer change: the

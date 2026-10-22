@@ -189,6 +189,56 @@ return function(T)
       end,
     },
     {
+      name = "suggest_reviewers",
+      description = "Suggests reviewers for a pull request: opens the user's add-a-reviewer popup with these "
+        .. "people first, each with why (\"wrote most of auth.py\"). Nobody is added until the user picks them. "
+        .. "who: a name, account, email or (GitHub) login. Its author and current reviewers are left out.",
+      schema = { type = "object", properties = { pr_id = { type = "integer" }, people = { type = "array",
+        items = { type = "object", properties = { who = { type = "string" }, why = { type = "string" } },
+          required = { "who" } } } }, required = { "pr_id", "people" } },
+      risk = "read",
+      unsupported = needs("add_reviewer", "add reviewers"),
+      run = function(args, _, done)
+        local pr = T.need_pr(args, done)
+        if not pr then return end
+        local PEOPLE = require("azure-cli.people")
+        local asks = vim.tbl_filter(function(x) return type(x) == "table" and type(x.who) == "string" end,
+          type(args.people) == "table" and args.people or {})
+        if #asks == 0 then return done(nil, "people is empty") end
+        local have = {}
+        for _, r in ipairs(type(pr.reviewers) == "table" and pr.reviewers or {}) do
+          if r.id then have[tostring(r.id):lower()] = true end
+        end
+        local found, missing, i = {}, {}, 0
+        local function nxt()
+          i = i + 1
+          local a = asks[i]
+          if not a then
+            if #found == 0 then
+              return done(nil, "none of them can be added" .. (#missing > 0 and (" (" .. table.concat(missing, "; ") .. ")") or ""))
+            end
+            PEOPLE.add_reviewer(pr, nil, found)
+            return done("Showing " .. #found .. " suggestion" .. (#found == 1 and "" or "s")
+              .. " in the add-a-reviewer popup; the user picks." .. (#missing > 0 and (" Left out: "
+                .. table.concat(missing, "; ") .. ".") or ""))
+          end
+          PEOPLE.search(pr, vim.trim(a.who):gsub("^@", ""), function(list)
+            local p = list and (PEOPLE.match(list, a.who) or (#list == 1 and list[1]) or nil)
+            if not p then
+              missing[#missing + 1] = a.who .. ": " .. (list and #list > 1 and "several match" or "not found")
+            elseif have[tostring(p.id):lower()] then
+              missing[#missing + 1] = a.who .. ": already a reviewer"
+            else
+              have[tostring(p.id):lower()] = true
+              found[#found + 1] = vim.tbl_extend("force", p, { why = a.why })
+            end
+            nxt()
+          end)
+        end
+        nxt()
+      end,
+    },
+    {
       name = "remove_reviewer",
       description = "Takes a reviewer off a pull request, by name, account, login or id (one of its reviewers; "
         .. "on GitHub only a review request still waiting, since GitHub keeps a review once given). Asks first.",
