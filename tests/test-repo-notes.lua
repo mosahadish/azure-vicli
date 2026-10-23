@@ -41,8 +41,8 @@ check("locate: owner/repo picks that owner's", o_web and o_web.owner == "o" and 
 check("key: GitHub repos of two owners don't share a file", NOTES.path(o_web) ~= NOTES.path(p_web)
   and NOTES.key(o_web) == "github~o~web", NOTES.key(o_web))
 local az = NOTES.locate("my repo")
-check("key: Azure has org, project and repo, escaped and lowercased", az
-  and NOTES.key(az) == "azure~x~proj~my%20repo", az and NOTES.key(az))
+check("key: Azure has project and repo, escaped and lowercased", az
+  and NOTES.key(az) == "azure~proj~my%20repo", az and NOTES.key(az))
 check("of_pr: the same repository as locate", NOTES.key(NOTES.of_pr(STATE.PR_LIST_CACHE.prs[3])) == NOTES.key(az))
 check("of_snap: a GitHub issue by its key", NOTES.key(NOTES.of_snap({ board = "github",
   work_item = { id = 3, key = "o~web~3" } })) == "github~o~web")

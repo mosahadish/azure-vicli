@@ -694,9 +694,12 @@ end
 
 -- Whether plan `rec` is approved and not finished: being carried out, or
 -- carried out with its PR not merged or abandoned yet (the Agents screen's
--- groups: only plan.pr_closed finishes one). Pure.
+-- groups: plan.pr_closed finishes one, or a push straight to an existing
+-- branch, which has no PR). Pure.
 function M.in_flight(rec)
   if type(rec) ~= "table" or rec.pr_state then return false end
+  -- Pushed straight to an existing branch: no PR will close it.
+  if rec.status == "done" and rec.no_pr then return false end
   return rec.status == "approved" or rec.status == "done" or type(rec.pr) == "table"
 end
 

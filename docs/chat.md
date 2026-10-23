@@ -645,9 +645,10 @@ files that another approved, unfinished plan of the same repository
 changes too (it's still being carried out, or its PR is open), `gA`
 says so (`#141 also changes: lua/azure-cli/chat/agents.lua`) and offers
 **Approve after #141**: the plan is approved, but its agent isn't told
-until #141 is finished - its PR merged or abandoned, or the plan
-discarded. Then it gets the go-ahead, told to start from the target
-branch as it is now. With several, it waits for all of them; approving
+until #141 is finished - its PR merged or abandoned, its change pushed
+straight to an existing branch (no PR), or the plan discarded. Then it
+gets the go-ahead, told to start from the target branch as it is now.
+`W` does the same and lets it push and open its PR, as `p` does. With several, it waits for all of them; approving
 several rows at once, a later one counts the earlier ones. The Agents
 screen shows it as `waits for #141`; `gA` on it starts it now. A plan
 whose repository can't be told yet (no worktree, no PR) is compared with
@@ -1074,7 +1075,7 @@ The agent gets an MCP server named `azure-vicli` with these tools:
 | `set_work_item_parent` | Moves a work item under another parent, or off its own (`"none"`) - on GitHub, makes the issue a sub-issue of the parent. Undoable: the undo puts the old parent back | **yes** |
 
 **Notes on a repository.** What an agent saves with `remember` goes into
-`stdpath("data")/azure-cli-chat/repo-notes/<host>~[<org>~]<owner or
+`stdpath("data")/azure-cli-chat/repo-notes/<host>~<owner or
 project>~<repo>.md`, one `- ` line per note. The first message to an agent
 started for a PR or a GitHub issue in that repository (and any chat message
 sent from such a PR) carries them, as `Notes on <repo> from earlier

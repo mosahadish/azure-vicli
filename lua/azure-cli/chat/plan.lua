@@ -684,7 +684,8 @@ end
 -- its tests pass (without asking, for a plan with no test command). When
 -- one changes files a plan in flight changes too (M.overlapping; an earlier
 -- of `keys` counts), the popup says which and offers to approve it to start
--- once those are finished: wait_for = key -> { { key, label } }.
+-- once those are finished (pushing allowed or not): wait_for = key ->
+-- { { key, label } }.
 function M.ask_approval(keys, cb)
   local has_cmd = false
   for _, k in ipairs(keys) do
@@ -709,8 +710,9 @@ function M.ask_approval(keys, cb)
   local hint = "a approve \u{00B7} p approve and let it push \u{00B7} "
   if waits then
     buttons[3] = #keys == 1 and ("Approve after " .. table.concat(blockers, ", ")) or "Approve, each after the plans it overlaps"
-    bkeys.w = 3
-    hint = hint .. "w approve after \u{00B7} "
+    buttons[4] = buttons[3] .. ", and let it push"
+    bkeys.w, bkeys.W = 3, 4
+    hint = hint .. "w approve after \u{00B7} W and let it push \u{00B7} "
   end
   buttons[#buttons + 1] = "Cancel"
   require("azure-cli.ui").choose({ title = "Approve " .. what .. "?", lines = {
@@ -720,7 +722,7 @@ function M.ask_approval(keys, cb)
     buttons = buttons, keys = bkeys, cancel = #buttons,
     hint = hint .. "Esc cancel \u{00B7} Tab moves" }, function(i)
     if i == 1 or i == 2 then cb(i == 2) end
-    if i == 3 and waits then cb(false, waits) end
+    if (i == 3 or i == 4) and waits then cb(i == 4, waits) end
   end)
 end
 
@@ -924,13 +926,18 @@ function M.change_seen(rec)
   VIEW().changed(rec)
 end
 
--- commit_and_push_fix pushed the change: its plan is done.
+-- commit_and_push_fix pushed the change: its plan is done. On an existing
+-- branch (#57) there's no PR to wait for: the change is on the branch, so
+-- plans waiting for this one may start (M.in_flight).
 function M.mark_done(target)
   local rec = M.load(M.key(target))
   if rec and rec.status == "approved" then
     rec.status = "done"
     rec.done_at = os.time()
+    local ok, _, _, _, existing = pcall(require("azure-cli.chat.tools_fix").find_story, target)
+    rec.no_pr = (ok and existing) or nil
     VIEW().changed(rec)
+    if rec.no_pr then vim.schedule(function() pcall(M.release_waiting) end) end
   end
 end
 

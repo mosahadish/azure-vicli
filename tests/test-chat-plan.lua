@@ -1896,6 +1896,8 @@ do
     PLAN.in_flight({ status = "approved" }) and PLAN.in_flight({ status = "done" })
       and PLAN.in_flight({ status = "draft", pr = { id = 1 } }) and not PLAN.in_flight({ status = "draft" })
       and not PLAN.in_flight({ status = "done", pr = { id = 1 }, pr_state = "completed" }) and not PLAN.in_flight(nil))
+  check("in_flight: not once pushed straight to an existing branch",
+    not PLAN.in_flight({ status = "done", no_pr = true }) and PLAN.in_flight({ status = "approved", no_pr = true }))
   local mine = { key = "wi-1", repo = "cli", files = { "lua/azure-cli/chat/agents.lua", "docs/chat.md", "x.lua" } }
   local found = PLAN.overlaps(mine, {
     { key = "wi-1", label = "#1", repo = "cli", files = { "x.lua" } },
@@ -1941,7 +1943,8 @@ do
     for k, v in pairs(extra or {}) do rec[k] = v end
     PLAN.save(rec)
   end
-  local made = { "wi-9701", "wi-9702", "pr-github-o~other~3", "wi-github-o~cli~9703", "wi-9704", "wi-9705", "wi-9706" }
+  local made = { "wi-9701", "wi-9702", "pr-github-o~other~3", "wi-github-o~cli~9703", "wi-9704", "wi-9705", "wi-9706",
+    "wi-9707", "wi-9708" }
   put("wi-9701", { work_item_id = 9701 }, "approved", { "src/ovl_a.lua", "docs/ovl.md" })
   put("wi-9702", { work_item_id = 9702 }, "done", { "src/ovl_b.lua" }, { pr = { id = 97002 } })
   put("pr-github-o~other~3", { pr_id = 3, pr_key = "o~other~3" }, "approved", { "src/ovl_a.lua" })
@@ -1960,7 +1963,11 @@ do
   local o = asked and asked.opts or {}
   check("ask_approval: the overlaps in the details, one more button",
     vim.deep_equal(o.details, { "#9701 also changes: lua/src/ovl_a.lua, docs/ovl.md", "#9702 also changes: src/ovl_b.lua" })
-      and o.buttons[3] == "Approve after #9701, #9702" and o.keys.w == 3 and o.cancel == 4, vim.inspect(o))
+      and o.buttons[3] == "Approve after #9701, #9702" and o.keys.w == 3
+      and o.buttons[4] == "Approve after #9701, #9702, and let it push" and o.keys.W == 4 and o.cancel == 5, vim.inspect(o))
+  asked.cb(4)
+  check("ask_approval: after, and let it push", picked and picked.allow == true and picked.wait_for
+    and #picked.wait_for[key] == 2, vim.inspect(picked))
   asked.cb(3)
   local wf = picked and picked.wait_for and picked.wait_for[key]
   check("ask_approval: after - which to wait for", picked and picked.allow == false and wf and #wf == 2
@@ -2034,6 +2041,20 @@ do
   asked.cb(1)
   check("start now: sent, no note", #sent == 1 and sent[1].text:find("I approve the plan", 1, true) == 1
     and PLAN.load("wi-9706").wait_for == nil, vim.inspect(sent))
+
+  -- Pushed straight to an existing branch: no PR, so a plan waiting for it starts.
+  local TF = require("azure-cli.chat.tools_fix")
+  local find_story = TF.find_story
+  TF.find_story = function(t) return "/x", "feature/old", "main", t.work_item_id == 9707 end
+  put("wi-9707", { work_item_id = 9707 }, "approved", { "src/ovl_g.lua" })
+  put("wi-9708", { work_item_id = 9708 }, "approved", { "src/ovl_g.lua" },
+    { wait_for = { { key = "wi-9707", label = "#9707" } } })
+  sent = {}
+  PLAN.mark_done({ work_item_id = 9707 })
+  vim.wait(200, function() return #sent > 0 end, 10)
+  TF.find_story = find_story
+  check("existing branch: done, and the plan waiting for it starts", PLAN.load("wi-9707").no_pr == true
+    and #sent == 1 and PLAN.load("wi-9708").wait_for == nil, vim.inspect(sent))
 
   CHAT.send, CHAT.find_conversation, UI.choose = send, find, choose
   for _, k in ipairs(made) do

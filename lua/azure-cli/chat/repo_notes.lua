@@ -5,10 +5,11 @@
 -- per note; the user edits it by hand too (gn on the Agents screen), so
 -- reading takes any "- " or "* " line and skips the rest.
 --
--- A repository is { host, org, owner, name }: on GitHub owner/name; on
--- Azure the org (its URL's last part), the project as owner, and the repo.
--- Its file is <host>~[<org>~]<owner>~<name>.md, each part lowercased and
--- %-escaped outside [%w._-], so no two repositories share one.
+-- A repository is { host, owner, name }: on GitHub owner/name; on Azure
+-- the project as owner, and the repo. Its file is <host>~<owner>~<name>.md,
+-- each part lowercased and %-escaped outside [%w._-], so no two
+-- repositories share one. Not the Azure org: a PR's URL and the work-item
+-- collection can name a TFS server's differently.
 --
 --   M.of_pr(pr) / M.of_item(item) / M.of_snap(snap) / M.of_target(target)
 --                          the repository of a PR record, a GitHub issue, a
@@ -35,14 +36,9 @@ local function enc(s)
   return (tostring(s or ""):lower():gsub("[^%w._-]", function(c) return string.format("%%%02X", c:byte()) end))
 end
 
--- "https://dev.azure.com/x/" -> "x"; a collection URL -> its collection.
-local function org_name(url)
-  return (tostring(url or ""):gsub("/+$", ""):match("([^/]+)$")) or ""
-end
-
 function M.key(r)
   if r.host == "github" then return "github~" .. enc(r.owner) .. "~" .. enc(r.name) end
-  return "azure~" .. enc(org_name(r.org)) .. "~" .. enc(r.owner) .. "~" .. enc(r.name)
+  return "azure~" .. enc(r.owner) .. "~" .. enc(r.name)
 end
 
 function M.label(r) return (r.owner ~= "" and (r.owner .. "/") or "") .. r.name end
@@ -59,22 +55,13 @@ local function known_prs()
   return out
 end
 
--- An Azure project's org: a PR's from that project, else the work-item account's.
-local function azure_org(project)
-  for _, p in ipairs(known_prs()) do
-    if require("azure-cli.hosts").host(p) == "azure" and p.project == project and (p.org or "") ~= "" then return p.org end
-  end
-  return vim.env.AZVICLI_WI_COLLECTION or ""
-end
-
 function M.of_pr(pr)
   if type(pr) ~= "table" or (pr.repo or "") == "" then return nil end
   if require("azure-cli.hosts").host(pr) == "github" then
     local owner = tostring(pr.key or ""):match("^(.-)~.-~%d+$") or pr.project or ""
     return { host = "github", owner = owner, name = pr.repo }
   end
-  local org = (pr.org or "") ~= "" and pr.org or azure_org(pr.project)
-  return { host = "azure", org = org, owner = pr.project or "", name = pr.repo }
+  return { host = "azure", owner = pr.project or "", name = pr.repo }
 end
 
 -- A GitHub issue (its key is owner~repo~n); an Azure work item has no repository.
@@ -139,7 +126,7 @@ function M.locate(repo, host)
   end
   owner = owner or vim.env.AZVICLI_WI_PROJECT
   if not owner or owner == "" then return nil, "give repo as project/repo" end
-  return { host = "azure", org = azure_org(owner), owner = owner, name = name }
+  return { host = "azure", owner = owner, name = name }
 end
 
 local function squash(s) return vim.trim((tostring(s or ""):gsub("%s+", " "))) end
