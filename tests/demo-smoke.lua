@@ -299,6 +299,39 @@ if hl:find("(collapsed)", 1, true) then return fail("<Space> again didn't expand
 smoke_ok("DEMO")
 end)
 
+-- A redraw (the poll, a resize, a badge changing) leaves the cursor where it
+-- is: on a PR listed twice (Mentions and its own section) it stays on the row
+-- it was on, column too.
+section("CURSOR", function()
+ensure_dashboard()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
+local rows = {}
+for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+  local n = l:match("#(%d+) ")
+  if n then rows[n] = rows[n] or {}; table.insert(rows[n], i) end
+end
+local twice
+for _, r in pairs(rows) do if #r > 1 then twice = r break end end
+local spots = { { (select(2, next(rows)))[1], 12 } }
+if twice then spots[#spots + 1] = { twice[#twice], 15 } end
+for _, spot in ipairs(spots) do
+  for _ = 1, 5 do
+    vim.api.nvim_win_set_cursor(0, spot)
+    -- So the redraw writes the buffer again, as a changed badge does.
+    vim.bo[dash].modifiable = true
+    vim.api.nvim_buf_set_lines(dash, 0, 1, false, { "x" })
+    vim.bo[dash].modifiable = false
+    vim.cmd("doautocmd VimResized")
+    local cur = vim.api.nvim_win_get_cursor(0)
+    if cur[1] ~= spot[1] or cur[2] ~= spot[2] then
+      return fail("a redraw moved the cursor from " .. vim.inspect(spot) .. " to " .. vim.inspect(cur))
+    end
+  end
+end
+if not twice then print("SMOKE-NOTE[CURSOR]: no PR listed twice") end
+smoke_ok("CURSOR")
+end)
+
 -- PR #101's row gets its linked work item (#3001) once the background read
 -- lands, and gW on it opens #3001's detail view in a new tab.
 section("PRWI", function()
