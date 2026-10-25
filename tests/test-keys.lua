@@ -289,6 +289,11 @@ do
   config.setup({})
 end
 
+-- 12b. ]w / [w, the next / previous thing waiting for you, on every screen.
+for _, s in ipairs({ "dashboard", "list", "diff", "overview", "nav", "workitems", "workitem_view", "chat", "plan", "agents" }) do
+  check("]w / [w on " .. s, keys.resolve(s, "next_waiting") == "]w" and keys.resolve(s, "prev_waiting") == "[w")
+end
+
 -- 13. Inner tabs (innertabs.lua): ]r / [r, and g1..g9 for the strip's
 -- entries. They're bound on the PR dashboard, the boards (W, I), the
 -- reviewer's, the work-item view's, the Agents screen's and the plan's

@@ -39,7 +39,7 @@
 --                       the "@" list - the pick goes in as "@Name" and is
 --                       sent as a real mention.
 --   opts.on_submit(text)  called with the trimmed, mention-translated text
---                       once <C-s>/<C-CR> submits non-empty content.
+--                       once <CR> submits non-empty content.
 --   opts.on_cancel(draft)  called on q/<Esc><Esc>/an empty submit, with the
 --                       trimmed text that was kept as a draft (nil if
 --                       there was nothing worth keeping).
@@ -67,7 +67,9 @@
 --                       offered back the next time this exact target is
 --                       opened; a successful submit clears it.
 --
--- Keys: <C-s> and <C-CR>, in insert AND normal mode, submit. q (normal
+-- Keys: <CR>, in insert AND normal mode, submits (as the chat's input
+-- does; with the "@" completion menu open it picks the entry); <S-CR> or
+-- <C-j> while typing breaks the line. q (normal
 -- mode) and <Esc><Esc> (the first Esc is vim's own "leave insert mode";
 -- the second is this module's normal-mode cancel binding) cancel. Opens in
 -- insert mode, cursor at the end of the starting text. The window starts 3
@@ -297,7 +299,7 @@ function M.open(opts)
   win_opts.title_pos = "left"
   -- The keys, on the border, so a first-time user isn't guessing.
   win_opts.footer = " " .. (opts.pr and "<C-t> tag \u{00B7} " or "")
-    .. "<C-s> send \u{00B7} q / <Esc><Esc> cancel (keeps a draft) "
+    .. "<CR> send \u{00B7} <C-j> new line \u{00B7} q / <Esc><Esc> cancel (keeps a draft) "
   width = math.max(width, vim.fn.strdisplaywidth(win_opts.footer) + 2)
   win_opts.width = width
   win_opts.footer_pos = "right"
@@ -385,10 +387,15 @@ function M.open(opts)
   end
 
   local kopts = { buffer = buf, silent = true, nowait = true }
-  vim.keymap.set({ "n", "i" }, "<C-s>", do_submit, kopts)
-  vim.keymap.set({ "n", "i" }, "<C-CR>", do_submit, kopts)
-  -- <C-s> freezes some terminals (XON/XOFF) and <C-CR> is unreliable in
-  -- most; ZZ is vim's own "write and close".
+  vim.keymap.set("n", "<CR>", do_submit, kopts)
+  vim.keymap.set("i", "<CR>", function()
+    if vim.fn.pumvisible() == 1 then return vim.api.nvim_replace_termcodes("<C-y>", true, false, true) end
+    vim.schedule(do_submit)
+    return ""
+  end, vim.tbl_extend("force", kopts, { expr = true }))
+  -- A line break: <S-CR> where the terminal reports it, <C-j> everywhere.
+  for _, k in ipairs({ "<S-CR>", "<C-j>" }) do vim.keymap.set("i", k, "<CR>", kopts) end
+  -- ZZ is vim's own "write and close".
   vim.keymap.set("n", "ZZ", do_submit, kopts)
   vim.keymap.set("n", "q", do_cancel, kopts)
   if opts.pr then

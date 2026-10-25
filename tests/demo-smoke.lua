@@ -299,6 +299,39 @@ if hl:find("(collapsed)", 1, true) then return fail("<Space> again didn't expand
 smoke_ok("DEMO")
 end)
 
+-- A redraw (the poll, a resize, a badge changing) leaves the cursor where it
+-- is: on a PR listed twice (Mentions and its own section) it stays on the row
+-- it was on, column too.
+section("CURSOR", function()
+ensure_dashboard()
+vim.api.nvim_set_current_win(vim.fn.bufwinid(dash))
+local rows = {}
+for i, l in ipairs(vim.api.nvim_buf_get_lines(dash, 0, -1, false)) do
+  local n = l:match("#(%d+) ")
+  if n then rows[n] = rows[n] or {}; table.insert(rows[n], i) end
+end
+local twice
+for _, r in pairs(rows) do if #r > 1 then twice = r break end end
+local spots = { { (select(2, next(rows)))[1], 12 } }
+if twice then spots[#spots + 1] = { twice[#twice], 15 } end
+for _, spot in ipairs(spots) do
+  for _ = 1, 5 do
+    vim.api.nvim_win_set_cursor(0, spot)
+    -- So the redraw writes the buffer again, as a changed badge does.
+    vim.bo[dash].modifiable = true
+    vim.api.nvim_buf_set_lines(dash, 0, 1, false, { "x" })
+    vim.bo[dash].modifiable = false
+    vim.cmd("doautocmd VimResized")
+    local cur = vim.api.nvim_win_get_cursor(0)
+    if cur[1] ~= spot[1] or cur[2] ~= spot[2] then
+      return fail("a redraw moved the cursor from " .. vim.inspect(spot) .. " to " .. vim.inspect(cur))
+    end
+  end
+end
+if not twice then print("SMOKE-NOTE[CURSOR]: no PR listed twice") end
+smoke_ok("CURSOR")
+end)
+
 -- PR #101's row gets its linked work item (#3001) once the background read
 -- lands, and gW on it opens #3001's detail view in a new tab.
 section("PRWI", function()
@@ -695,13 +728,37 @@ section("PEOPLE", function()
     for _, r in ipairs(pr and pr.reviewers or {}) do if r.name == name then return true end end
   end
   feed("gR")
-  -- Before anything is typed it lists everyone who can review, less the
-  -- PR's reviewers (Bob Brown is one).
-  local _, list = picker()
+  -- Before anything is typed it lists the PR's reviewers (Bob Brown is
+  -- one), optional or required, then everyone else who can review.
+  local ib0, list = picker()
   if not vim.wait(10000, function() return list():find("Carol Chen", 1, true) ~= nil end, 20)
-    or not list():find("Alice Andersson", 1, true) or list():find("Bob Brown", 1, true) then
+    or not list():find("Alice Andersson", 1, true) or not list():find("Bob Brown  \u{00B7}  optional, no vote", 1, true)
+    or select(2, list():gsub("Bob Brown", "")) ~= 1 then
     restore()
     return fail("gR's list before typing: " .. list())
+  end
+  -- <Space> on a reviewer makes them required, and again optional; the
+  -- popup stays open.
+  local space
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib0, "i")) do if m.lhs == " " or m.lhs == "<Space>" then space = m.callback end end
+  if not space then restore() return fail("gR has no <Space>") end
+  local function bob()
+    for _, r in ipairs(rec101() and rec101().reviewers or {}) do if r.name == "Bob Brown" then return r end end
+    return {}
+  end
+  local nav
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib0, "i")) do if m.lhs == "<C-N>" or m.lhs == "<C-n>" then nav = m.callback end end
+  local first = vim.split(list(), "\n")[1]
+  if not first:find("Bob Brown", 1, true) then nav() end
+  space()
+  if not vim.wait(10000, function() return bob().isRequired and list():find("Bob Brown  \u{00B7}  required, no vote", 1, true) end, 20) then
+    restore()
+    return fail("<Space> in gR didn't make Bob Brown required: " .. list())
+  end
+  space()
+  if not vim.wait(10000, function() return not bob().isRequired and list():find("Bob Brown  \u{00B7}  optional", 1, true) end, 20) then
+    restore()
+    return fail("<Space> again didn't make Bob Brown optional: " .. list())
   end
   local err = answer("carol", "Carol Chen")
   if err then restore() return fail("gR: " .. err) end
@@ -731,7 +788,7 @@ section("PEOPLE", function()
   end, 50)
   if not tagged then restore() return fail("<C-t> didn't put \"@Bob Brown\" in the editor") end
   vim.api.nvim_set_current_win(vim.fn.bufwinid(ebuf))
-  feed("<C-s>")
+  feed("<CR>")
   restore()
   if not (sent and sent:find("@<bbbbbbbb-0000-0000-0000-000000000002>", 1, true)) then
     return fail("the tag wasn't sent as a mention: " .. tostring(sent))
@@ -2292,7 +2349,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   if not table.concat(vim.api.nvim_buf_get_lines(ed, 0, -1, false), "\n"):find("FAKE-CHAT-RAN", 1, true) then
     return fail("gr didn't prefill the editor with the answer")
   end
-  feed("<C-s>")
+  feed("<CR>")
   ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
   if not ok then return fail("gr's reply wasn't queued") end
 
@@ -2587,7 +2644,7 @@ section("PLAN", function()
   n = #st.entries
   feed("ga")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
-  feed("<C-s>")
+  feed("<CR>")
   local rec
   local okq = vim.wait(40000, function()
     rec = PLAN.load("wi-3002")
@@ -2631,7 +2688,7 @@ section("PLAN", function()
   local nthreads = #PLAN.load("wi-3002").threads
   feed("gc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper" })
-  feed("<C-s>")
+  feed("<CR>")
   rec = PLAN.load("wi-3002")
   local req = rec.threads[#rec.threads]
   if not (req.kind == "request" and req.status == "queued" and req.line == 8) then
@@ -2646,7 +2703,7 @@ section("PLAN", function()
   vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
   feed("gc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Typo'd change" })
-  feed("<C-s>")
+  feed("<CR>")
   if not vim.wo[v.plan_win].winbar:find("\u{270E}2 queued", 1, true) then return fail("two queued changes aren't counted") end
   vim.api.nvim_set_current_win(v.plan_win)
   vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
@@ -2673,7 +2730,7 @@ section("PLAN", function()
   vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
   feed("cc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper, please" })
-  feed("<C-s>")
+  feed("<CR>")
   rec = PLAN.load("wi-3002")
   req = rec.threads[#rec.threads]
   if not (req.id == id8 and req.line == 8 and req.status == "queued" and req.question == "Make it a thin wrapper, please") then
@@ -2681,7 +2738,7 @@ section("PLAN", function()
   end
   n = #st.entries
   feed("gR")
-  feed("<C-s>")
+  feed("<CR>")
   e = answered(n)
   if not (e and e.text:find("requests: 1", 1, true)) then return fail("gR didn't send the line's change: " .. vim.inspect(e and e.text)) end
   rec = PLAN.load("wi-3002")
@@ -2733,7 +2790,7 @@ section("PLAN", function()
   end
   feed("gr")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "No, admins too." })
-  feed("<C-s>")
+  feed("<CR>")
   if not drawn(v.plan_buf, "\u{21AA} you: No, admins too.") or vim.wo[v.plan_win].winbar:find("to answer", 1, true) then
     return fail("the answer isn't under its question, or still counted as open")
   end
@@ -2804,7 +2861,7 @@ section("PLAN", function()
   vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
   feed("ga")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
-  feed("<C-s>")
+  feed("<CR>")
   local dbuf = vim.api.nvim_win_get_buf(dwin)
   local okd = vim.wait(40000, function() return drawn(dbuf, "BECAUSE-PLANNED_CHANGE = True") ~= nil end, 100)
   if not okd then return fail("the question in the change viewer wasn't answered under its line") end
@@ -2843,7 +2900,7 @@ section("PLAN", function()
   -- c queues a change on the line, gS sends the queue in one message.
   feed("c")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Name it LOCKOUT_REASON" })
-  feed("<C-s>")
+  feed("<CR>")
   dbuf = vim.api.nvim_win_get_buf(dwin)
   if not drawn(dbuf, "\u{270E} Name it LOCKOUT_REASON") or not vim.wo[dwin].winbar:find("1 queued", 1, true) then
     return fail("c didn't queue the change under the line: " .. vim.wo[dwin].winbar)
@@ -2852,7 +2909,7 @@ section("PLAN", function()
   if not drawn(dbuf, "queued - gS sends it") then return fail("the queued change doesn't say gS sends it") end
   n = #st.entries
   feed("gS")
-  feed("<C-s>")
+  feed("<CR>")
   e = answered(n)
   if not (e and e.text:find("fix requests: 1", 1, true)) then return fail("gS didn't send the queued change: " .. vim.inspect(e and e.text)) end
   if not drawn(dbuf, "sent with your change request") then return fail("the sent change isn't marked as sent") end
@@ -2936,7 +2993,7 @@ section("PLAN", function()
   n = #st.entries
   feed("ga")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you do this?" })
-  feed("<C-s>")
+  feed("<CR>")
   e = answered(n)
   if not (e and e.text:find("BECAUSE-", 1, true) and e.text:find("show_fix", 1, true)) then
     return fail("ga on a step didn't ask about it: " .. vim.inspect(e and e.text))
@@ -4934,6 +4991,63 @@ ok = vim.wait(10000, function()
 end, 100)
 if not ok then return fail("#3011's view didn't reload with the saved changes", view) end
 smoke_ok("WIEDIT")
+end)
+
+-- R in the K popup: the reply shows in it at once - the popup grows to
+-- fit it and the cursor goes to it - before it's reopened.
+section("KREPLY", function()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  ensure_review()
+  local lw = vim.fn.bufwinid(files)
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { 1, 0 })
+  local ns = vim.api.nvim_get_namespaces()["azure_cli_comments"]
+  feed("]C")
+  if not vim.wait(15000, function()
+    local w = vim.api.nvim_get_current_win()
+    if w == lw or vim.api.nvim_win_get_config(w).relative ~= "" then return false end
+    local row = vim.api.nvim_win_get_cursor(w)[1] - 1
+    return #vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(w), ns, { row, 0 }, { row, -1 }, {}) > 0
+  end, 50) then
+    return fail("]C didn't reach a comment")
+  end
+  feed("K")
+  local pop
+  if not vim.wait(5000, function()
+    local w = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pop = w return true end
+  end, 20) then return fail("K didn't open the thread popup") end
+  local h0 = vim.api.nvim_win_get_height(pop)
+  -- Two threads on the line by now (BATCHQ's): the first, Bob's.
+  local PROMPT = require("azure-cli.prompt")
+  local real_sel = PROMPT.select
+  PROMPT.select = function(o, cb) cb(o.items[1], 1) end
+  feed("R")
+  PROMPT.select = real_sel
+  if not vim.wait(5000, function() return vim.api.nvim_get_current_win() ~= pop end, 20) then
+    return fail("R didn't open the reply editor")
+  end
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "KREPLY one", "KREPLY two", "KREPLY three" })
+  feed("<CR>")
+  local function popup_text()
+    return vim.api.nvim_win_is_valid(pop) and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pop), 0, -1, false), "\n") or ""
+  end
+  if not vim.wait(30000, function()
+    return popup_text():find("KREPLY three", 1, true) ~= nil and not popup_text():find("sending", 1, true)
+  end, 50) then
+    return fail("the reply didn't show in the K popup: " .. popup_text())
+  end
+  local h1 = vim.api.nvim_win_get_height(pop)
+  local cur = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pop), vim.api.nvim_win_get_cursor(pop)[1] - 1,
+    vim.api.nvim_win_get_cursor(pop)[1] + 1, false)
+  if h1 <= h0 then return fail("the K popup didn't grow for the reply: " .. h0 .. " -> " .. h1) end
+  if not (cur[2] or ""):find("KREPLY one", 1, true) then
+    return fail("the cursor isn't on the reply: " .. vim.inspect(cur))
+  end
+  pcall(vim.api.nvim_win_close, pop, true)
+  smoke_ok("KREPLY")
 end)
 
 print("SMOKE-DONE")

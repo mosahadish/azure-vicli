@@ -1127,6 +1127,19 @@ class Fake:
         print(json.dumps({"added": people[0]["displayName"], "id": people[0]["id"]}))
         return 0
 
+    def cmd_set_required(self, rest):
+        if not self.need_pr():
+            return 1
+        who = (rest[0] if rest else "").lower()
+        for r in self.pr()["reviewers"]:
+            if r["id"].lower() == who:
+                r["isRequired"] = (rest[1] if len(rest) > 1 else "true") == "true"
+                self.ws.save(self.state)
+                print(json.dumps({"id": r["id"], "isRequired": r["isRequired"], "vote": r.get("vote", 0)}))
+                return 0
+        print("REST set-required failed: HTTP 404: no reviewer {0}".format(who), file=sys.stderr)
+        return 1
+
     def cmd_remove_reviewer(self, rest):
         if not self.need_pr():
             return 1
@@ -2106,7 +2119,7 @@ class Fake:
 PR_ACTION_FLAGS = ("--threads", "--iterations", "--post", "--file-comment", "--pr-comment", "--reply", "--status",
                    "--edit-comment", "--delete-comment", "--vote", "--work-items", "--complete", "--auto-complete",
                    "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr",
-                   "--get-pr", "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer")
+                   "--get-pr", "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer", "--set-required")
 
 
 def dispatch(ws, argv, env):
@@ -2157,6 +2170,7 @@ def dispatch(ws, argv, env):
         "--set-description": lambda: f.cmd_set_description(rest),
         "--find-people": lambda: f.cmd_find_people(rest),
         "--remove-reviewer": lambda: f.cmd_remove_reviewer(rest),
+        "--set-required": lambda: f.cmd_set_required(rest),
         "--create-pr": lambda: f.cmd_create_pr(rest),
         "--get-pr": lambda: f.cmd_get_pr(),
         "--submit-review": lambda: f.cmd_submit_review(rest),

@@ -1,7 +1,7 @@
 -- lua/azure-cli/chat/tools_pr.lua: the chat agent's pull-request tools
 -- beyond the basics in chat/tools.lua - a failed build's log and tests, thread
 -- status, reviewers, the description, opening and completing PRs,
--- re-queueing the build - plus the two that act on the screen rather than
+-- finding and removing people, re-queueing the build - plus the two that act on the screen rather than
 -- on Azure DevOps: open_in_ui (show the user something) and annotate_code
 -- (leave a note on a line of the diff, review/chat.lua draws it).
 --
@@ -152,6 +152,118 @@ return function(T)
           d = okd and type(d) == "table" and d or {}
           done("Added " .. (d.added or args.who) .. " as a reviewer on PR !" .. pr.id .. "."
             .. (d.note and (" Note: " .. d.note .. ".") or ""))
+        end)
+      end,
+    },
+    {
+      name = "find_people",
+      description = "Finds people by name, account, email or (GitHub) login. With pr_id: who can review that "
+        .. "pull request (an empty query lists everyone on its project's teams, or the repository's assignable "
+        .. "people), for add_reviewer. Without: who the work-item board's directory finds, for assign_work_item "
+        .. "(query needed).",
+      schema = { type = "object", properties = T.with_board({ query = { type = "string" }, pr_id = { type = "integer" } }) },
+      risk = "read",
+      run = function(args, env, done)
+        local q = vim.trim(tostring(args.query or ""))
+        if args.pr_id then
+          local pr = T.need_pr(args, done)
+          if not pr then return end
+          return require("azure-cli.people").search(pr, q, function(list, err)
+            if not list then return done(nil, err) end
+            done(vim.tbl_map(function(p) return { name = p.name, id = p.id, account = p.account or p.login } end, list))
+          end)
+        end
+        if q == "" then return done(nil, "give a query (or a pr_id, to list who can review it)") end
+        local B = T.board_for(args, env)
+        T.provider({ "--wi-list", "people", q }, B.env, function(ok, out, err)
+          if not ok then return done(nil, "the search failed: " .. err) end
+          local list = {}
+          for _, l in ipairs(vim.split(out, "\n", { plain = true })) do
+            local okd, d = pcall(vim.json.decode, l)
+            if okd and type(d) == "table" and d.name then
+              list[#list + 1] = { name = d.name, account = d.email, assign = d.assign }
+            end
+          end
+          done(list)
+        end)
+      end,
+    },
+    {
+      name = "suggest_reviewers",
+      description = "Suggests reviewers for a pull request: opens the user's add-a-reviewer popup with these "
+        .. "people first, each with why (\"wrote most of auth.py\"). Nobody is added until the user picks them. "
+        .. "who: a name, account, email or (GitHub) login. Its author and current reviewers are left out.",
+      schema = { type = "object", properties = { pr_id = { type = "integer" }, people = { type = "array",
+        items = { type = "object", properties = { who = { type = "string" }, why = { type = "string" } },
+          required = { "who" } } } }, required = { "pr_id", "people" } },
+      risk = "read",
+      unsupported = needs("add_reviewer", "add reviewers"),
+      run = function(args, _, done)
+        local pr = T.need_pr(args, done)
+        if not pr then return end
+        local PEOPLE = require("azure-cli.people")
+        local asks = vim.tbl_filter(function(x) return type(x) == "table" and type(x.who) == "string" end,
+          type(args.people) == "table" and args.people or {})
+        if #asks == 0 then return done(nil, "people is empty") end
+        local have = {}
+        for _, r in ipairs(type(pr.reviewers) == "table" and pr.reviewers or {}) do
+          if r.id then have[tostring(r.id):lower()] = true end
+        end
+        local found, missing, i = {}, {}, 0
+        local function nxt()
+          i = i + 1
+          local a = asks[i]
+          if not a then
+            if #found == 0 then
+              return done(nil, "none of them can be added" .. (#missing > 0 and (" (" .. table.concat(missing, "; ") .. ")") or ""))
+            end
+            PEOPLE.add_reviewer(pr, nil, found)
+            return done("Showing " .. #found .. " suggestion" .. (#found == 1 and "" or "s")
+              .. " in the add-a-reviewer popup; the user picks." .. (#missing > 0 and (" Left out: "
+                .. table.concat(missing, "; ") .. ".") or ""))
+          end
+          PEOPLE.search(pr, vim.trim(a.who):gsub("^@", ""), function(list)
+            local p = list and (PEOPLE.match(list, a.who) or (#list == 1 and list[1]) or nil)
+            if not p then
+              missing[#missing + 1] = a.who .. ": " .. (list and #list > 1 and "several match" or "not found")
+            elseif have[tostring(p.id):lower()] then
+              missing[#missing + 1] = a.who .. ": already a reviewer"
+            else
+              have[tostring(p.id):lower()] = true
+              found[#found + 1] = vim.tbl_extend("force", p, { why = a.why })
+            end
+            nxt()
+          end)
+        end
+        nxt()
+      end,
+    },
+    {
+      name = "remove_reviewer",
+      description = "Takes a reviewer off a pull request, by name, account, login or id (one of its reviewers; "
+        .. "on GitHub only a review request still waiting, since GitHub keeps a review once given). Asks first.",
+      schema = { type = "object", properties = { pr_id = { type = "integer" }, who = { type = "string" } },
+        required = { "pr_id", "who" } },
+      risk = "ask",
+      unsupported = needs("remove_reviewer", "remove reviewers"),
+      confirm = function(a) return "remove " .. tostring(a.who) .. " from PR !" .. tostring(a.pr_id) .. "'s reviewers" end,
+      run = function(args, _, done)
+        local pr = T.need_pr(args, done)
+        if not pr then return end
+        local PEOPLE = require("azure-cli.people")
+        local list = PEOPLE.removable(pr)
+        local r, hits = PEOPLE.match(list, args.who)
+        if not r then
+          if #hits > 1 then return done(nil, "\"" .. tostring(args.who) .. "\" matches " .. table.concat(hits, ", ")) end
+          local names = vim.tbl_map(function(x) return tostring(x.name or x.id) end, list)
+          return done(nil, tostring(args.who) .. " isn't a reviewer that can be removed from PR !" .. pr.id
+            .. (#names > 0 and (" (those are: " .. table.concat(names, ", ") .. ")") or " (there are none)"))
+        end
+        PEOPLE.take_off(pr, r, function(ok, err)
+          if not ok then return done(nil, err) end
+          done("Removed " .. tostring(r.name or r.id) .. " from PR !" .. pr.id .. "'s reviewers.", nil,
+            { op = "readd_reviewer", pr_id = pr.id, pr_key = require("azure-cli.hosts").key(pr), id = r.id,
+              name = r.name, required = r.isRequired or nil })
         end)
       end,
     },

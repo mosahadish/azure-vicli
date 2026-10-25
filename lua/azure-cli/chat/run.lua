@@ -191,6 +191,10 @@ local function decide_permission(st, entry, tool, answer, w)
   if tool.kind == "execute" and st.plan_key and PLAN.test_command_allowed(st.plan_key, raw.command or raw.cmd) then
     return allow_quietly("the plan's tests")
   end
+  -- Like a command you allowed for the rest of the plan.
+  if tool.kind == "execute" and st.plan_key and PLAN.command_allowed(st.plan_key, cmd) then
+    return allow_quietly("allowed for the plan")
+  end
   -- Searching and listing through the shell (grep, git log, ...).
   if tool.kind == "execute" and CORE.look_only_command(raw.command or raw.cmd) then return allow_quietly("only looks") end
   -- A skill you've allowed: whatever it does through the agent's tools.
@@ -199,9 +203,18 @@ local function decide_permission(st, entry, tool, answer, w)
     log_cmd("allowed: skill " .. entry.skill, true)
     return answer(true)
   end
-  -- Otherwise a third button allows that skill from now on.
-  local extra = entry.skill and ("Allow all of skill " .. entry.skill) or nil
-  local function remember(always) if always and entry.skill then SKILLS.allow(entry.skill) end end
+  -- Otherwise a third button allows that skill from now on - or, for a
+  -- command in an approved plan's conversation, it and ones like it for
+  -- the rest of the plan (when it has patterns to allow it by).
+  local like = not entry.skill and tool.kind == "execute" and st.plan_key and PLAN.command_patterns(cmd)
+    and PLAN.load(st.plan_key) or nil
+  if like and like.status ~= "approved" then like = nil end
+  local extra = entry.skill and ("Allow all of skill " .. entry.skill)
+    or (like and ("Allow like this for " .. PLAN.target_label(like.target))) or nil
+  local function remember(always)
+    if always and entry.skill then SKILLS.allow(entry.skill)
+    elseif always and like then PLAN.allow_commands(like, cmd) end
+  end
   if verdict == "unplanned" then
     local question = "The agent wants to " .. tool.kind .. " " .. table.concat(rels, ", ") .. ", which the plan for "
       .. PLAN.target_label(rec.target) .. " doesn't include. Why: " .. CORE.last_reason(entry.text)
@@ -214,7 +227,8 @@ local function decide_permission(st, entry, tool, answer, w)
   confirm_for(st.plan_key and st or nil)((tool.title or "The agent") .. " wants to " .. (tool.kind or "act")
     .. (entry.skill and (" (skill " .. entry.skill .. ")") or ""), function(yes, always)
     remember(always)
-    log_cmd(always and ("you allowed skill " .. entry.skill) or (yes and "you allowed it" or "you denied it"))
+    log_cmd(always and (entry.skill and ("you allowed skill " .. entry.skill) or "you allowed it for the plan")
+      or (yes and "you allowed it" or "you denied it"))
     answer(yes)
   end, details, extra, full)
 end
@@ -489,12 +503,14 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
     if entry.text == "" then entry.text = "_(no answer)_" end
     render()
     save(st)
-    if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
+    if not opts.quiet and not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
       .. " shows it).")) end
-    if st.plan_key and STATE() ~= st then
+    if st.plan_key and STATE() ~= st and not opts.quiet then
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
+    -- A task agent's answer goes back to the main chat (#143), whoever sent its message.
+    pcall(function() require("azure-cli.chat.agents").task_answered(st, entry) end)
     -- Free again: what you sent meanwhile goes next, then the next plan
     -- waiting for an agent starts.
     vim.schedule(function() M.drain(st) end)
@@ -677,6 +693,9 @@ local function send_acp(st, agent, agent_name, entry, message, snap, vars, reuse
           return finish("failed", tostring(serr or "the agent didn't return a session id"))
         end
         pj.acp_session_id = result.sessionId
+        -- Kept on the conversation too (saved with it), with where and by
+        -- which agent it runs: the Agents screen's go resumes it (#142).
+        st.session_id, st.agent_cwd, st.session_agent = result.sessionId, agent_cwd(snap), agent_name
         set_model(pj, function() if live() then send_prompt(pj) end end)
       end)
     end)
@@ -746,7 +765,8 @@ end
 -- window "current view" describes; opts.display is what the conversation
 -- shows as your message (default: `text`); opts.on_done(entry) runs once
 -- the answer is complete, and opts.done_note replaces the "answered in the
--- chat" note shown while the panel is hidden. Returns the answer's entry
+-- chat" note shown while the panel is hidden (opts.quiet: neither that
+-- nor the desktop alert). Returns the answer's entry
 -- (its status "running" while the agent works), or nil when nothing was
 -- sent - the agent busy, or none configured.
 send = function(text, opts)
@@ -851,8 +871,10 @@ send = function(text, opts)
   if st.persistent_job and not reuse then stop_persistent(st) end
   local replay = not first and not reuse
   table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
+  -- A task agent without an approved plan changes no files, on any turn (#143).
+  local read_only = prompt_name == "plan" or require("azure-cli.chat.plan").task_read_only(st.plan_key and st or nil)
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,
-    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = prompt_name == "plan" or nil,
+    label = agent.label or agent_name, mode = replay and "replay" or nil, text = "", planning = read_only or nil,
     requests = CORE.request_multiplier(agent, model), model = model }
   table.insert(st.entries, entry)
   -- The agent's skills where it runs, and the one this message asks for
@@ -870,9 +892,21 @@ send = function(text, opts)
   end
   render()
 
+  -- The main chat's message takes its task agents' answers since its last
+  -- one (#143), each once.
+  local task_results
+  if not st.plan_key and st.task_results and #st.task_results > 0 then
+    task_results, st.task_results = st.task_results, nil
+  end
+  -- What earlier agents noted on the repository in view, once per agent
+  -- process (a new one, replayed to, hasn't seen them).
+  if not reuse then st.repo_notes_sent = nil end
+  local NOTES = require("azure-cli.chat.repo_notes")
+  local ok_notes, repo_notes = pcall(function() return NOTES.once(st, NOTES.of_snap(snap)) end)
   local message = CORE.compose(expanded, view_text, {
     first = first, history = replay and history or nil, orchestrator = not st.plan_key,
-    refs = require("azure-cli.chat.refs").describe(expanded),
+    refs = require("azure-cli.chat.refs").describe(expanded), task_results = task_results,
+    repo_notes = ok_notes and repo_notes or nil,
   })
   local vars = {
     message = message, message_json = vim.json.encode(message), text = expanded,
@@ -950,12 +984,14 @@ send = function(text, opts)
     end
     render()
     save(st)
-    if not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
+    if not opts.quiet and not panel_visible() then notify(opts.done_note or (agent_label() .. " answered in the chat (" .. require("azure-cli.keys").name("dashboard", "chat_input")
       .. " shows it).")) end
-    if st.plan_key and STATE() ~= st then
+    if st.plan_key and STATE() ~= st and not opts.quiet then
       CHAT().alert("azure-vicli: " .. (st.label or "an agent") .. " answered", (entry.text or ""):gsub("%s+", " "):sub(1, 160))
     end
     if opts.on_done then pcall(opts.on_done, entry) end
+    -- A task agent's answer goes back to the main chat (#143), whoever sent its message.
+    pcall(function() require("azure-cli.chat.agents").task_answered(st, entry) end)
     -- Free again: what you sent meanwhile goes next, then the next plan
     -- waiting for an agent starts.
     vim.schedule(function() M.drain(st) end)
@@ -999,6 +1035,9 @@ send = function(text, opts)
       entry.status, entry.text = "failed", "could not start the agent: " .. tostring(job)
       return render()
     end
+    -- Where and by which agent its session runs (the session id itself
+    -- comes with the answer, turn.finish): the Agents screen's go (#142).
+    st.agent_cwd, st.session_agent = agent_cwd(snap), agent_name
     pj.job = job
     st.persistent_job = pj
   end

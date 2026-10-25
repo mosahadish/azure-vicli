@@ -44,6 +44,8 @@ local LIST_HELP = {
   { "open", "go to the section - a file under Changes: its diff in the plan pane" },
   { "next_thread", "move the plan to the next open question or thread, in line order (answered ones too)" },
   { "prev_thread", "move the plan to the previous open question or thread" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   "Decide",
   { "approve", "approve it - the agent goes ahead" },
   { "revise", "ask for changes or send your answers (you say what; your unsent answers go along)" },
@@ -65,6 +67,8 @@ local PLAN_HELP = {
   "Navigate",
   { "next_thread", "next open question or thread, in line order (answered ones too)" },
   { "prev_thread", "previous open question or thread" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   { "goto_code", "the code this line became (a linked step, or a Files entry's file)" },
   { "back", "back to the section list" },
   "Ask the agent",
@@ -501,9 +505,12 @@ end
 local function approve()
   local rec = view and view.rec
   if not rec then return end
+  if #PLAN().waiting_on(rec) > 0 then return PLAN().ask_start_now(rec.key) end
   if rec.status == "approved" then return notify("Already approved.") end
   if rec.status == "done" then return notify("This plan was implemented already.") end
-  PLAN().ask_approval({ rec.key }, function(allow_push) PLAN().approve(rec.key, allow_push) end)
+  PLAN().ask_approval({ rec.key }, function(allow_push, wait_for)
+    PLAN().approve(rec.key, allow_push, wait_for and wait_for[rec.key])
+  end)
 end
 
 -- gR: ask for changes - what you write here, plus every change queued on
@@ -858,6 +865,8 @@ local function bind_common(buf)
   bind(buf, "discard", function() require("azure-cli.chat.plan_discard").ask({ key = view.key }) end,
     { desc = "discard this plan (asks first)" })
   bind(buf, "open_pr", open_pr, { desc = "its pull request, in the reviewer" })
+  -- ]w / [w: in this plan, its next unanswered question, then its approval.
+  require("azure-cli.chat.waiting").bind(buf, "plan")
 end
 
 local function goto_section(s, focus)
@@ -1069,6 +1078,7 @@ function M.open(key, line)
     if view and valid_win(view.plan_win) then vim.api.nvim_set_current_win(view.plan_win) end
   end
   if line then
+    back_to_plan()  -- a Changes file in the plan pane: the line is the plan's
     pcall(vim.api.nvim_win_set_cursor, view.plan_win, { line, 0 })
     vim.api.nvim_win_call(view.plan_win, function() vim.cmd("normal! zz") end)
   end

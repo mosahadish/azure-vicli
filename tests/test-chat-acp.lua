@@ -57,6 +57,17 @@ local count = 0
 for _ in io.lines(marker) do count = count + 1 end
 check("only one agent process was ever started", count == 1, count)
 
+-- #142: the ACP session id is kept on the conversation, with where and by
+-- which agent it runs, and saved with it - the Agents screen's go resumes it.
+check("the ACP session id is kept", STATE.chat.session_id == "fake-acp-1", tostring(STATE.chat.session_id))
+check("with its directory and agent", type(STATE.chat.agent_cwd) == "string" and STATE.chat.agent_cwd ~= ""
+  and STATE.chat.session_agent == "Fake ACP", vim.inspect({ STATE.chat.agent_cwd, STATE.chat.session_agent }))
+do
+  local saved = require("azure-cli.chat.store").load(STATE.chat.conv_id) or {}
+  check("and saved with the conversation", saved.session_id == "fake-acp-1" and saved.agent_cwd == STATE.chat.agent_cwd
+    and saved.session_agent == "Fake ACP", vim.inspect({ saved.session_id, saved.agent_cwd, saved.session_agent }))
+end
+
 CHAT.new_chat(true)
 vim.wait(2000, function() return vim.fn.jobwait({ pj.job }, 0)[1] ~= -1 end, 20)
 check("a new chat stops the ACP process", vim.fn.jobwait({ pj.job }, 0)[1] ~= -1)
@@ -186,6 +197,27 @@ UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons;
 send_and_wait("no skill here EXEC=kubectl_apply")
 check("without the skill it asks as before, with two buttons", #asked == 1 and #buttons == 2, vim.inspect(buttons))
 SK.available = orig_avail
+-- A command in an approved plan's conversation: the third button allows
+-- it and ones like it for the rest of the plan.
+STATE.chat.plan_key = "wi-3001"
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(3) end
+asked = {}
+local l1 = send_and_wait("EXEC=make_lint_src")
+check("a plan's command offers to allow ones like it", buttons and buttons[3] == "Allow like this for #3001"
+  and l1 and l1.text:find("exec[make lint src]=yes", 1, true) ~= nil, vim.inspect({ buttons, l1 and l1.text }))
+asked = {}
+local l2 = send_and_wait("EXEC=make_lint_tests EXEC=make_clean")
+check("then one like it doesn't ask, another does", #asked == 1 and asked[1]:find("make clean", 1, true) ~= nil
+  and table.concat(l2 and l2.tools or {}, "\n"):find("$ make lint tests  (allowed: allowed for the plan)", 1, true) ~= nil,
+  vim.inspect({ asked, l2 and l2.tools }))
+asked = {}
+UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; buttons = o.buttons; cb(2) end
+send_and_wait("EXEC=rm_-rf_build")
+check("not for a command it can't be allowed by", #asked == 1 and #buttons == 2, vim.inspect(buttons))
+STATE.chat.plan_key = nil
+local lrec = PLAN.load("wi-3001")
+lrec.allowed_commands = nil
+PLAN.save(lrec)
 -- chat.permissions' "agent-commands": the agent's commands don't ask.
 require("azure-cli.config").get().chat.permissions = { ["agent-commands"] = "allow" }
 asked = {}
@@ -345,6 +377,131 @@ local started = call("start_agents", { work_item_ids = { 3006 } })
 check("start_agents starts one", started and started:find("Planning #3006", 1, true) ~= nil, started)
 local c6 = CHAT.find_conversation("wi-3006")
 vim.wait(20000, function() return c6 and not c6.running end, 20)
+
+-- Task agents (#143): start_agents with `task` starts an agent of its own
+-- (Task <n>) under chat.max_agents; it only reads - edits refused on every
+-- turn, the write tools refused, a shell command still asks - and its
+-- answer goes back to the main chat (a note, and its next message) without
+-- starting a turn there. It plans only when told: a plan of its task's own,
+-- or a work item's, which makes it that item's agent.
+do
+  local CFG = require("azure-cli.config").get().chat
+  local real_max = CFG.max_agents
+  CFG.max_agents = 1
+  asked = {}
+  UI.choose = function(o, cb) asked[#asked + 1] = o.lines[1]; cb(2) end
+  local s1, e1 = call("start_agents", { task = "Find where PERMS EXEC=make_build are handled", title = "Find perms" })
+  check("task: start_agents { task } starts a task agent", s1 and s1:find("Started Task 1", 1, true) ~= nil, e1 or s1)
+  local s2 = call("start_agents", { task = "Second task, look around", title = "Second" })
+  check("task: a second one waits under chat.max_agents", s2 and s2:find("Started Task 2", 1, true) ~= nil
+    and s2:find("waiting for an agent", 1, true) ~= nil, s2)
+  CFG.max_agents = real_max
+  local tc = CHAT.find_conversation("task-1")
+  check("task: a conversation of its own, keyed task-1", tc ~= nil and tc.target.task_id == 1 and tc.label == "Task 1",
+    tc and vim.inspect(tc.target))
+  vim.wait(20000, function() return tc and not tc.running and #tc.entries >= 2 end, 20)
+  local te = tc and tc.entries[#tc.entries]
+  check("task: a read is allowed", te and te.text:find("read=yes", 1, true) ~= nil, te and te.text)
+  check("task: an edit is refused", te and te.text:find("edit=no", 1, true) ~= nil, te and te.text)
+  check("task: a shell command still asks", #asked == 1 and asked[1]:find("make build", 1, true) ~= nil, vim.inspect(asked))
+  local main = STATE.chat
+  local note
+  for _, e in ipairs(main.entries) do
+    if e.role == "note" and (e.text or ""):find("Task 1's agent - Find perms", 1, true) then note = e end
+  end
+  check("task: its answer goes back to the main chat", note and note.text:find("read=yes", 1, true) ~= nil,
+    vim.inspect(main.entries[#main.entries]))
+  check("task: without starting a turn there", not main.running)
+  check("task: kept for the main chat's next message", main.task_results and main.task_results[1]
+    and main.task_results[1].label == "Task 1's agent" and main.task_results[1].text:find("read=yes", 1, true) ~= nil,
+    vim.inspect(main.task_results))
+  local rows = require("azure-cli.chat.agents_view").rows(CHAT.conversations(), AG.queued(), PLAN.load, os.time())
+  local row
+  for _, r in ipairs(rows) do if r.key == "task-1" then row = r end end
+  check("task: on the Agents screen, answered", row and row.label == "Task 1" and row.state:find("answered", 1, true) ~= nil
+    and row.title == "Find perms", vim.inspect(row))
+  local t2 = CHAT.find_conversation("task-2")
+  vim.wait(20000, function() return t2 and not t2.running and #t2.entries >= 2 end, 20)
+  check("task: the queued one started once there was room", t2 and #t2.entries >= 2, t2 and vim.inspect(t2.entries))
+  -- A follow-up turn, the user's in its own chat: still read-only.
+  asked = {}
+  local fdone
+  CHAT.send("PERMS again", { conv = tc, view_win = win, on_done = function() fdone = true end })
+  vim.wait(20000, function() return fdone end, 20)
+  te = tc.entries[#tc.entries]
+  check("task: a follow-up turn refuses edits too", te.text:find("edit=no", 1, true) ~= nil and #asked == 0,
+    vim.inspect({ te.text, asked }))
+  vim.wait(2000, function() return #(main.task_results or {}) == 3 end, 20)
+  check("task: every answer goes back", #(main.task_results or {}) == 3, vim.inspect(main.task_results))
+  -- azure-vicli's tools: only the read ones, drafts and the plan's.
+  local function tcall(name, args, conv)
+    local res, is_err
+    TOOLS.call(name, args, { conv = conv, log = function() end, confirm = function(_, cb) cb(false) end,
+      view = function() return {} end }, function(r, e) res, is_err = r, e end)
+    vim.wait(5000, function() return res ~= nil end, 10)
+    return tostring(res), is_err
+  end
+  local r1, x1 = tcall("commit_and_push_fix", { message = "x" }, tc)
+  check("task: commit_and_push_fix refused", x1 and r1:find("read-only until the user approves a plan", 1, true) ~= nil, r1)
+  local r2, x2 = tcall("create_pull_request", { repo = "r", source = "a", target = "b", title = "t" }, tc)
+  check("task: create_pull_request refused", x2 and r2:find("read-only", 1, true) ~= nil, r2)
+  local r3 = tcall("list_agents", {}, tc)
+  check("task: a read tool runs", not r3:find("read-only", 1, true), r3)
+  local r4 = tcall("draft_reply", { pr_id = 1, thread_id = 1, text = "x" }, tc)
+  check("task: a draft isn't refused as a write", not r4:find("read-only", 1, true), r4)
+  check("task: the main chat's own calls aren't", not PLAN.task_refusal(nil, { name = "vote", risk = "ask" }))
+  -- The main chat's next message carries the results, once.
+  local m = send_and_wait("what did the tasks find")
+  check("task: the main chat's next message takes the results", m ~= nil and main.task_results == nil,
+    vim.inspect(main.task_results))
+  local composed = CORE.compose("x", "v", { task_results = { { label = "Task 1's agent", title = "Find perms",
+    text = "found it in run.lua" } } })
+  check("task: composed under its own heading", composed:find("## Results from task agents since your last message", 1, true)
+    ~= nil and composed:find("### Task 1's agent (Find perms)\nfound it in run.lua", 1, true) ~= nil, composed)
+  -- Told to, it plans for its own task: task-1's plan, gated like a story's.
+  local md = "# Fix\n\n## Goal\nx\n\n## Files\n- `src/a.py` - x\n\n## Test plan\n```sh\nmake test\n```\n"
+  local p1, pe1 = call("submit_plan", { title = "Fix", markdown = md }, { conv = tc })
+  local trec = PLAN.load("task-1")
+  check("task: submit_plan without ids is the task's own plan", p1 and trec and trec.target.task_id == 1, pe1)
+  check("task: still read-only while it waits", PLAN.task_read_only(tc))
+  check("task: gated as a story", not PLAN.gate({ task_id = 1 }) and PLAN.gate_check(nil, "stories", { task_id = 1 }) == false)
+  PLAN.approve("task-1")
+  vim.wait(20000, function() return not tc.running end, 20)
+  check("task: approved, it isn't read-only any more", not PLAN.task_read_only(tc))
+  local r5 = tcall("commit_and_push_fix", { message = "x" }, tc)
+  check("task: approved, its write tools aren't refused", not r5:find("read-only", 1, true), r5)
+  local _, x6 = call("commit_and_push_fix", { message = "x" }, { conv = tc })
+  check("task: they act on its own change", x6 and x6:find("no change in progress for Task 1", 1, true) ~= nil, x6)
+  local twt = TF.root() .. "/widgets-task1"
+  check("task: its worktree is <repo>-task<n>", TF.story_path("widgets", { task_id = 1 }) == twt)
+  check("task: the worktree finds its plan", (PLAN.for_worktree(twt) or {}).key == "task-1")
+  check("task: an edit the plan lists is planned", PLAN.edit_check({ twt .. "/src/a.py" }) == "planned")
+  check("task: its Test plan runs without asking", PLAN.test_command_allowed("task-1", "make test"))
+  check("task: the approval tells it how to push", PLAN.approval_message(vim.tbl_extend("force", trec, { allow_push = true }),
+    PLAN.lines(trec)):find("your task's own", 1, true) ~= nil)
+  -- Planning for a work item instead makes it that item's agent.
+  local p2, pe2 = call("submit_plan", { work_item_id = 3007, title = "For 3007", markdown = md }, { conv = t2 })
+  check("task: a work item's plan from a task agent", p2 ~= nil, pe2)
+  check("task: it becomes that item's agent", CHAT.find_conversation("wi-3007") == t2 and CHAT.find_conversation("task-2") == nil
+    and t2.plan_key == "wi-3007" and t2.target.work_item_id == 3007 and t2.label == "#3007", t2 and vim.inspect(t2.target))
+  local _, pe3 = call("submit_plan", { work_item_id = 3005, title = "x", markdown = md }, { conv = tc })
+  check("task: not one that has an agent already", pe3 and pe3:find("already has an agent", 1, true) ~= nil, pe3)
+  -- Restart: the task agent comes back.
+  CHAT.drop_conversation("task-1")
+  STATE.chat.plans_restored = nil
+  CHAT.restore_plans()
+  local back = CHAT.find_conversation("task-1")
+  check("task: restored after a restart", back ~= nil and back.target.task_id == 1 and back.label == "Task 1"
+    and #back.entries > 0, back and vim.inspect(back.target))
+  check("task: the adopted one comes back as the item's", CHAT.find_conversation("task-2") == nil)
+  check("task: a new task never reuses a number", PLAN.next_task_id() == 3)
+  os.remove(PLAN.root() .. "/task-1.json")
+  os.remove(PLAN.root() .. "/task-1.md")
+  os.remove(PLAN.root() .. "/wi-3007.json")
+  os.remove(PLAN.root() .. "/wi-3007.md")
+  CHAT.drop_conversation("task-1")
+  CHAT.drop_conversation("wi-3007")
+end
 
 -- Claude Code's --permission-prompt-tool (mcp__azure-vicli__permission):
 -- its requests reach the same rules and popup as an ACP agent's.

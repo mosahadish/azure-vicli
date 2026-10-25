@@ -203,7 +203,8 @@ text - never part of what gets submitted.
 
 | Key | Action |
 |---|---|
-| `<C-s>` / `<C-CR>` (insert or normal mode) | Submit |
+| `<CR>` (insert or normal mode) | Submit; with the `@` completion menu open it picks the entry |
+| `<S-CR>` / `<C-j>` (insert mode) | A new line |
 | `q` (normal mode) | Cancel |
 | `<Esc><Esc>` | Cancel (the first `<Esc>` just leaves insert mode, like usual) |
 

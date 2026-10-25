@@ -12,7 +12,8 @@
 -- risk = "read"|"write"|"ask", run = function(args, env, done) } (an "ask"
 -- one can also have confirm(args) -> what it would do, details(args, cb)
 -- -> lines shown with the question, preapproved(args, cb(ok, by_what))
--- -> whether the question can be skipped), where
+-- -> whether the question can be skipped, always_ask(args) -> true when
+-- this call asks whatever chat.permissions says), where
 -- done(result) answers with a table (sent as JSON) or a string, and
 -- done(nil, err) reports a failure. `env` is chat/init.lua's: main_win()
 -- (the window the user was last in), log(line) (a line in the chat
@@ -732,6 +733,7 @@ for _, mod in ipairs({ "azure-cli.chat.tools_pr", "azure-cli.chat.tools_board", 
   vim.list_extend(M.list, require(mod)(M))
 end
 vim.list_extend(M.list, require("azure-cli.chat.plan").tools(M))
+vim.list_extend(M.list, require("azure-cli.chat.repo_notes").tools(M))
 
 M.by_name = {}
 for _, t in ipairs(M.list) do M.by_name[t.name] = t end
@@ -787,6 +789,14 @@ function M.call(name, args, env, cb)
   args = type(args) == "table" and args or {}
   local perm = M.permission(tool, perms())
   if perm == "deny" then return cb("The user doesn't allow " .. name .. ".", true) end
+  local must_ask = tool.always_ask and tool.always_ask(args) or false
+  if must_ask then perm = "ask" end
+  -- A task agent without an approved plan only looks (#143).
+  local ro = require("azure-cli.chat.plan").task_refusal(env and env.conv, tool)
+  if ro then
+    if env.log then env.log("\u{2717} " .. name .. ": read-only task agent") end
+    return cb(ro, true)
+  end
   -- What the PR's host can't do ends here, before anyone is asked.
   local nope = tool.unsupported and tool.unsupported(args)
   if nope then
@@ -817,7 +827,7 @@ function M.call(name, args, env, cb)
     if not ok then finish(nil, err) end
   end
   if perm == "ask" then
-    local what = tool.confirm and tool.confirm(args) or name
+    local what = tool.confirm and tool.confirm(args, env) or name
     local because  -- why a question the plan would have skipped is asked after all
     local function ask(details)
       env.confirm("The agent wants to " .. what .. "." .. (because and (" Asking because " .. because .. ".") or ""), function(yes)
@@ -829,14 +839,14 @@ function M.call(name, args, env, cb)
         end
       end, details)
     end
-    local function asking() if tool.details then tool.details(args, ask) else ask(nil) end end
+    local function asking() if tool.details then tool.details(args, ask, env) else ask(nil) end end
     -- A tool can skip the question when you've already said yes some other
     -- way (commit_and_push_fix and create_pull_request under a plan you
     -- approved with pushing allowed) - never when chat.permissions says
     -- "ask" for it outright. preapproved's cb(ok, why): what allowed it, or
     -- why it asks after all (nil: nothing to explain).
     local explicit = (perms() or {})[name] == "ask"
-    if tool.preapproved and not explicit then
+    if tool.preapproved and not explicit and not must_ask then
       return tool.preapproved(args, function(ok, why)
         if ok then
           env.log("\u{2713} " .. name .. ": allowed by " .. tostring(why or "you"))
@@ -845,7 +855,7 @@ function M.call(name, args, env, cb)
           because = why
           asking()
         end
-      end)
+      end, env)
     end
     asking()
   else
@@ -920,6 +930,45 @@ M.undoers = {
     provider({ "--status", tostring(u.thread_id), u.status }, pr_env(pr), function(ok, _, err)
       cb(ok, ok and ("Thread #" .. u.thread_id .. " is " .. u.status .. " again.") or err)
     end)
+  end,
+  readd_reviewer = function(u, cb)
+    local pr = M.pr_record(u.pr_key or u.pr_id)
+    if not pr then return cb(false, "PR !" .. u.pr_id .. " isn't in the list") end
+    M.provider({ "--add-reviewer", tostring(u.id), u.required and "true" or "false" }, pr_env(pr), function(ok, _, err)
+      if ok then
+        pr.reviewers = pr.reviewers or {}
+        table.insert(pr.reviewers, { name = u.name, id = u.id, vote = 0, isRequired = u.required,
+          requested = require("azure-cli.hosts").host(pr) == "github" or nil })
+        pcall(require("azure-cli.prs").recompute, pr)
+      end
+      cb(ok, ok and (tostring(u.name or u.id) .. " is a reviewer again.") or err)
+    end)
+  end,
+  set_fields = function(u, cb)
+    local B = undo_board(u)
+    local i = 0
+    local function nxt()
+      i = i + 1
+      local f = u.fields[i]
+      if not f then
+        M.refresh_item(B, u.id)
+        return cb(true, "#" .. u.id .. "'s " .. table.concat(vim.tbl_map(function(x) return x.label end, u.fields), ", ")
+          .. (#u.fields == 1 and " is" or " are") .. " back.")
+      end
+      M.provider({ "--wi-edit", "set", u.ref or tostring(u.id), f.key, f.value or "" }, B.env, function(ok, _, err)
+        if not ok then return cb(false, err) end
+        nxt()
+      end)
+    end
+    nxt()
+  end,
+  forget_note = function(u, cb)
+    local ok = require("azure-cli.chat.repo_notes").remove(u.repo, u.note)
+    cb(ok ~= nil, ok and "Removed the note." or "That note isn't there any more.")
+  end,
+  remember_note = function(u, cb)
+    local ok, err = require("azure-cli.chat.repo_notes").add(u.repo, u.note)
+    cb(ok ~= nil or err == "already noted", "The note is back.")
   end,
   description = function(u, cb)
     local pr = M.pr_record(u.pr_id)

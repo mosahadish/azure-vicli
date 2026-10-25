@@ -16,7 +16,16 @@
 --                             active one); a PR an agent opened for a work
 --                             item (plan.owner_of_pr) goes back to that
 --                             agent, as a new revision of its plan
---     (both return what they did, as a sentence, and the labels started)
+--   M.start_for_build(pr)     queues PR `pr`: its agent plans the fix of its
+--                             failed build (the same agent as its comments')
+--   M.start_for_conflict(pr)  the same for its merge conflict: a rebase
+--                             onto its target
+--     (all four return what they did, as a sentence, and the labels started)
+--   M.start_for_task(text, title, extra)  queues a task agent (#143): a
+--                             free-form task, no work item or PR - it only
+--                             reads until a plan of its own is approved,
+--                             and its answers go back to the main chat
+--                             (M.task_answered, from chat/run.lua)
 --   M.start_for(text, snap)   the main chat's /plan: the work items and PRs
 --                             `text` names, else the one in view `snap`
 --   M.pump()                  starts queued ones while there's room
@@ -25,6 +34,7 @@
 --   M.unqueue(key)            takes one out (its plan discarded)
 --   M.max()                   chat.max_agents
 --   M.plan_prompt(item)       the first message (pure)
+--   M.task_prompt(n, text)    a task agent's first message (pure)
 local M = {}
 
 local queue = {}  -- { { key, item } } in order
@@ -151,28 +161,90 @@ function M.pr_followup_prompt(pr, threads, wi)
     .. "push it with commit_and_push_fix (work_item_id " .. tostring(wi) .. "): the PR picks it up."
 end
 
-local function job_for_pr(pr, threads, extra)
+-- The first message of an agent started for a PR's failed build (#141):
+-- `wi` = the work item whose plan opened the PR, which then plans the fix
+-- as a new revision of that plan. Pure.
+function M.build_prompt(pr, wi)
+  local read = "read why with get_build_log and get_test_results (pr_id " .. tostring(pr.id)
+    .. ") and look at the code they point at"
+  local title = pr.title and (" \"" .. pr.title .. "\"") or ""
+  if wi then
+    return "/plan The build of PR !" .. tostring(pr.id) .. title .. ", which you opened for #" .. tostring(wi)
+      .. ", failed. Plan how to fix it: " .. read .. ", then write the plan for this round with submit_plan "
+      .. "(work_item_id " .. tostring(wi) .. ") - a new revision of your plan. Once it's approved, make the change "
+      .. "in your story's worktree (start_story for #" .. tostring(wi) .. " reuses it) and push it with "
+      .. "commit_and_push_fix (work_item_id " .. tostring(wi) .. "): the PR picks it up."
+  end
+  local repo = pr.key and tostring(pr.key):match("^(.-~.-)~%d+$")
+  return "/plan PR !" .. tostring(pr.id) .. (repo and (" in " .. repo:gsub("~", "/")) or "") .. title
+    .. ": its build failed. Plan how to fix it: " .. read .. ", then write one plan for the fix with submit_plan "
+    .. "(pr_id " .. tostring(pr.id) .. "). You were started for this PR only."
+end
+
+-- The first message of an agent started for a PR that conflicts with its
+-- target: a plan for rebasing onto it, then the rebase and a force push.
+-- `wi` as in build_prompt. Pure.
+function M.conflict_prompt(pr, wi)
+  local named = pr.target and pr.target ~= ""
+  local target = named and pr.target or "its target branch"
+  local onto = named and ("origin/" .. pr.target) or "origin/<its target branch>"
+  local title = pr.title and (" \"" .. pr.title .. "\"") or ""
+  local head, where, submit, push
+  if wi then
+    head = "/plan PR !" .. tostring(pr.id) .. title .. ", which you opened for #" .. tostring(wi)
+      .. ", conflicts with " .. target .. ". "
+    where = "your story's worktree (start_story for #" .. tostring(wi) .. " reuses it)"
+    submit = "the plan for this round with submit_plan (work_item_id " .. tostring(wi) .. ") - a new revision of "
+      .. "your plan"
+    push = "commit_and_push_fix (work_item_id " .. tostring(wi) .. ", rebased = true)"
+  else
+    local repo = pr.key and tostring(pr.key):match("^(.-~.-)~%d+$")
+    head = "/plan PR !" .. tostring(pr.id) .. (repo and (" in " .. repo:gsub("~", "/")) or "") .. title
+      .. ": it conflicts with " .. target .. ". "
+    where = "the PR's worktree (start_fix, pr_id " .. tostring(pr.id) .. ")"
+    submit = "one plan for it with submit_plan (pr_id " .. tostring(pr.id) .. ")"
+    push = "commit_and_push_fix (pr_id " .. tostring(pr.id) .. ", rebased = true)"
+  end
+  return head .. "Plan rebasing it onto " .. onto .. ": find what conflicts (git fetch origin, then e.g. git "
+    .. "merge-tree --write-tree " .. onto .. " HEAD, and what each side changed in those files), then write "
+    .. submit .. ", naming each conflict and how you'll resolve it keeping both sides' intent. If one can't be "
+    .. "resolved with confidence, don't guess: say in the plan what conflicts and why. Once it's approved, in "
+    .. where .. " run git fetch origin and git rebase " .. onto .. ", resolve the conflicts as planned, run the "
+    .. "plan's tests (run_tests), then push with " .. push .. ": that force-pushes the rewritten branch, and the "
+    .. "user is asked first. If the rebase hits a conflict you can't resolve with confidence, git rebase --abort "
+    .. "and stop: say what conflicts and why instead of guessing."
+    .. (wi and "" or " You were started for this PR only.")
+end
+
+-- `kind`: "build" for the PR's failed build, "conflict" for its merge
+-- conflict, nil for its review comments.
+local function job_for_pr(pr, threads, extra, kind)
   -- A PR one of the agents opened goes back to that agent, with its plan
   -- and its conversation.
   local PLAN = require("azure-cli.chat.plan")
   local owner = PLAN.owner_of_pr(pr, pr.source)
   local wi = owner and owner.target and owner.target.work_item_id
+  local which = (threads and #threads > 0)
+    and (" (thread " .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""
+  local build, conflict = kind == "build", kind == "conflict"
   if wi then
     return { key = owner.key, label = PLAN.target_label(owner.target), title = owner.title or pr.title, target = owner.target,
-      prompt = with_extra(M.pr_followup_prompt(pr, threads, wi), extra),
-      display = "/plan PR !" .. tostring(pr.id) .. "'s comments" .. ((threads and #threads > 0) and (" (thread "
-        .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
-      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. " got review comments)",
-        pr = pr } }
+      prompt = with_extra(conflict and M.conflict_prompt(pr, wi) or build and M.build_prompt(pr, wi)
+        or M.pr_followup_prompt(pr, threads, wi), extra),
+      display = "/plan PR !" .. tostring(pr.id) .. (conflict and "'s conflict" or build and "'s build"
+        or ("'s comments" .. which)),
+      snap = { screen = "pull request (the PR this agent opened for #" .. tostring(wi) .. (conflict
+        and " conflicts with its target)" or build and "'s build failed)" or " got review comments)"), pr = pr } }
   end
   -- Keyed by the PR's key, not its number (#109): two GitHub #7s in
   -- different repos are two agents.
   local target = PLAN.pr_target(pr)
   return { key = PLAN.key(target), label = PLAN.target_label(target), title = pr.title,
-    target = target, prompt = with_extra(M.pr_prompt(pr, threads), extra),
-    display = "/plan PR !" .. tostring(pr.id) .. ((threads and #threads > 0) and (" (thread "
-      .. table.concat(vim.tbl_map(tostring, threads), ", ") .. ")") or ""),
-    snap = { screen = "pull request (this agent was started for one PR's review comments)", pr = pr } }
+    target = target, prompt = with_extra(conflict and M.conflict_prompt(pr) or build and M.build_prompt(pr)
+      or M.pr_prompt(pr, threads), extra),
+    display = "/plan PR !" .. tostring(pr.id) .. (conflict and "'s conflict" or build and "'s build" or which),
+    snap = { screen = "pull request (this agent was started for one PR's " .. (conflict and "merge conflict)"
+      or build and "failed build)" or "review comments)"), pr = pr } }
 end
 
 -- Neovim is quitting: start nothing more (stopping an agent finishes its
@@ -190,8 +262,9 @@ end
 
 -- Queues `jobs` (ones already queued or working are skipped), then starts
 -- as many as there's room for. Says what it did (a toast), and returns it:
--- the sentence, and the labels it started or queued.
-local function enqueue(jobs, nothing)
+-- the sentence, and the labels it started or queued. `verb`: "Planning"
+-- unless said otherwise.
+local function enqueue(jobs, nothing, verb)
   local function say(msg, level)
     notify(msg, level)
     return msg, {}
@@ -215,7 +288,7 @@ local function enqueue(jobs, nothing)
   end
   M.pump()
   local waiting = #queue
-  local msg = "Planning " .. table.concat(added, ", ")
+  local msg = (verb or "Planning") .. " " .. table.concat(added, ", ")
     .. (waiting > 0 and (", " .. waiting .. " waiting for an agent (chat.max_agents = " .. M.max() .. ")") or "")
     .. (#skipped > 0 and ("; already working on " .. table.concat(skipped, ", ")) or "")
     .. "."
@@ -244,6 +317,70 @@ function M.start_for_prs(prs, threads_of, extra)
     if type(pr) == "table" and pr.id then jobs[#jobs + 1] = job_for_pr(pr, (threads_of or {})[pr.id], extra) end
   end
   return enqueue(jobs, "Put the cursor on a pull request (or select some rows).")
+end
+
+-- Queues PR `pr`, its agent planning the fix of its failed build (#141).
+function M.start_for_build(pr)
+  if type(pr) ~= "table" or not pr.id then return enqueue({}, "No pull request.") end
+  return enqueue({ job_for_pr(pr, nil, nil, "build") }, "No pull request.")
+end
+
+-- Queues PR `pr`, its agent planning the rebase onto its target.
+function M.start_for_conflict(pr)
+  if type(pr) ~= "table" or not pr.id then return enqueue({}, "No pull request.") end
+  return enqueue({ job_for_pr(pr, nil, nil, "conflict") }, "No pull request.")
+end
+
+-- A task agent's first message (#143): task `n`, `text` as the main chat
+-- put it. Pure.
+function M.task_prompt(n, text)
+  return "Task " .. tostring(n) .. ", from the main chat: " .. text .. "\n\n"
+    .. "You were started for this task only, and you are read-only: research it - read work items, pull requests "
+    .. "and code with your tools (to read a repository's code, call start_story without work_item_id for its "
+    .. "repository and branch: before approval it gives you a read-only worktree of that branch to read with "
+    .. "Read/Grep) - and answer. Don't edit files, push, or change anything on the server; drafts (draft_reply, "
+    .. "draft_comment) are fine, they wait for the user. Your answer goes back to the main chat, so make it "
+    .. "complete on its own. Only if the user tells you to, write a plan with submit_plan - without work_item_id "
+    .. "or pr_id for this task's own, or with the work item or PR it's for - and wait for their approval."
+end
+
+-- Queues a task agent (#143) for free-form `text`, shown as `title` (by
+-- default the start of the text); `extra` is passed on as with items.
+-- Returns what it did, as a sentence, and the label.
+function M.start_for_task(text, title, extra)
+  text = vim.trim(text or "")
+  if text == "" then return "Give the task to start an agent on.", {} end
+  local PLAN = require("azure-cli.chat.plan")
+  local target = { task_id = PLAN.next_task_id() }
+  title = vim.trim(title or "")
+  if title == "" then
+    title = text:gsub("%s+", " ")
+    if #title > 60 then title = title:sub(1, 57) .. "..." end
+  end
+  return enqueue({ { key = PLAN.key(target), label = PLAN.target_label(target), title = title, target = target,
+    prompt = with_extra(M.task_prompt(target.task_id, text), extra), display = "/task " .. title,
+    snap = { screen = "task (this agent was started for one task from the main chat)" } } }, "", "Started")
+end
+
+-- How much of a task agent's answer goes back to the main chat.
+M.TASK_ANSWER_MAX = 4000
+
+-- Conversation `st`'s turn `entry` ended: a task agent's answer (#143)
+-- goes back to the main chat - a note there now, and in its next message
+-- (chat/run.lua) - without starting a turn of its own.
+function M.task_answered(st, entry)
+  if not (st and type(st.target) == "table" and st.target.task_id and entry) then return end
+  if entry.status == "running" then return end
+  local text = vim.trim(entry.text or "")
+  if #text > M.TASK_ANSWER_MAX then
+    text = text:sub(1, M.TASK_ANSWER_MAX) .. "\n... (cut off - the rest is in its own chat on the Agents screen)"
+  end
+  local status = entry.status ~= "done" and entry.status or nil
+  local label = (st.label or "A task") .. "'s agent" .. (status and (" (" .. status .. ")") or "")
+  local main = CHAT().main_conversation()
+  main.task_results = main.task_results or {}
+  table.insert(main.task_results, { label = label, title = st.title, text = text })
+  CHAT().note(label .. (st.title and st.title ~= "" and (" - " .. st.title) or "") .. ":\n\n" .. text, { main = true })
 end
 
 -- The main chat's /plan (chat/run.lua): an agent for each work item and PR

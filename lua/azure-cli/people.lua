@@ -10,9 +10,11 @@
 --                 teams / the repo's assignable people) that typing
 --                 narrows (picker.lua), searching the host for more
 --   add_reviewer  pick, then (Azure) optional or required, then
---                 --add-reviewer with the person's id
+--                 --add-reviewer with the person's id; the PR's reviewers
+--                 come first, <Space> on one making them required or
+--                 optional (set_required, Azure)
 --   remove_reviewer  gX: pick one of the PR's reviewers, confirm, then
---                 --remove-reviewer
+--                 --remove-reviewer (take_off, which the chat's tool uses too)
 local M = {}
 
 local function notify(msg, level) require("azure-cli.shell").notify(msg, level) end
@@ -62,9 +64,14 @@ end
 -- also searches the host's directory and adds whoever else that finds -
 -- only people the host itself returns, nobody from anywhere else.
 -- cb(person) once one is picked, nothing on a cancel.
--- opts.skip_reviewers leaves out the PR's reviewers (gR).
+-- opts.skip_reviewers leaves out the PR's reviewers (gR); opts.suggested
+-- (people with a `why`) come first, each with its why. opts.reviewers
+-- lists the PR's reviewers above everyone, as gX does; <Space> or <CR> on
+-- one is opts.on_reviewer(r, api) - it isn't picked.
 function M.pick(pr, title, cb, opts)
   opts = opts or {}
+  local revs = {}
+  for _, r in ipairs(opts.reviewers or {}) do revs[#revs + 1] = { reviewer = r } end
   local skip = opts.skip_reviewers and reviewer_ids(pr) or {}
   local by_id, asked = {}, {}
   -- `list` less the skipped, as the entries already listed where they
@@ -84,8 +91,20 @@ function M.pick(pr, title, cb, opts)
     return new, all
   end
   local api = require("azure-cli.picker").open({
-    title = title, items = {}, format = M.label,
-    width = 70, height = M.MAX_ROWS, ft = "azure-cli-people", empty = "Nobody to list",
+    title = title, items = vim.list_extend(revs, (sort(opts.suggested))), format = function(p)
+      if p.reviewer then return M.reviewer_label(pr, p.reviewer) end
+      return M.label(p) .. (p.why and ("  \u{2605} " .. p.why) or "")
+    end,
+    space_hint = opts.on_reviewer and #revs > 0 and opts.space_hint or nil,
+    on_space = opts.on_reviewer and function(p, api)
+      if p.reviewer then return opts.on_reviewer(p.reviewer, api) end
+    end,
+    on_enter = function(p, api)
+      if not p.reviewer then return false end
+      if opts.on_reviewer then opts.on_reviewer(p.reviewer, api) end
+      return true
+    end,
+    width = (opts.on_reviewer and #revs > 0) and 86 or 70, height = M.MAX_ROWS, ft = "azure-cli-people", empty = "Nobody to list",
     on_query = function(q, api)
       if #q < M.MIN_CHARS or asked[q:lower()] then return end
       asked[q:lower()] = true
@@ -114,8 +133,10 @@ end
 
 -- gR: adds a reviewer to `pr`, then on_done(person) once the host has
 -- them (the record's reviewers list has them too, and the PR dashboard is
--- redrawn and refetched).
-function M.add_reviewer(pr, on_done)
+-- redrawn and refetched). `suggested` (the chat's suggest_reviewers):
+-- people listed first with why; the popup comes back for the rest of them
+-- after each one added.
+function M.add_reviewer(pr, on_done, suggested)
   if not pr then return notify("No PR here.", vim.log.levels.WARN) end
   if not HOSTS().caps(pr).add_reviewer then
     return notify("Adding reviewers isn't available for this PR.", vim.log.levels.WARN)
@@ -146,6 +167,9 @@ function M.add_reviewer(pr, on_done)
           if STATE.PR_DASHBOARD_RENDER then STATE.PR_DASHBOARD_RENDER() end
           if STATE.PR_DASHBOARD_RELOAD then STATE.PR_DASHBOARD_RELOAD() end
           if on_done then on_done(p) end
+          local rest = vim.tbl_filter(function(x) return tostring(x.id):lower() ~= tostring(p.id):lower() end,
+            suggested or {})
+          if #rest > 0 then vim.schedule(function() M.add_reviewer(pr, on_done, rest) end) end
         end)
     end
     if HOSTS().host(pr) == "azure" then
@@ -156,7 +180,48 @@ function M.add_reviewer(pr, on_done)
     else
       go(false)
     end
-  end, { skip_reviewers = true })
+  end, { skip_reviewers = true, suggested = suggested, reviewers = M.listed_reviewers(pr),
+    space_hint = HOSTS().caps(pr).set_required and "required/optional" or nil,
+    on_reviewer = HOSTS().caps(pr).set_required and function(r, api)
+      api.status("saving\u{2026}")
+      M.set_required(pr, r, not r.isRequired, function(ok, err)
+        api.status("")
+        if not ok then notify("Couldn't change " .. tostring(r.name or r.id) .. ": " .. err, vim.log.levels.ERROR) end
+        api.refresh()
+      end)
+      return true
+    end or nil })
+end
+
+-- The PR's reviewers, as gR lists them above everyone else.
+function M.listed_reviewers(pr)
+  return vim.tbl_filter(function(r) return r.id and r.id ~= "" end,
+    type(pr.reviewers) == "table" and pr.reviewers or {})
+end
+
+-- Makes reviewer `r` of `pr` required or optional (--set-required): the
+-- record follows what the host answers - a branch policy can keep them
+-- required - and a vote the host didn't keep is said. cb(ok, err).
+function M.set_required(pr, r, required, cb)
+  T().provider({ "--set-required", tostring(r.id), required and "true" or "false" }, T().pr_env(pr),
+    function(ok, out, err)
+      if not ok then return cb(false, (err ~= "" and err) or "the host refused") end
+      local okj, d = pcall(vim.json.decode, out)
+      d = okj and type(d) == "table" and d or {}
+      if d.isRequired ~= nil then r.isRequired = d.isRequired or nil else r.isRequired = required or nil end
+      if required == false and r.isRequired then
+        notify(tostring(r.name or r.id) .. " stays required (a branch policy).", vim.log.levels.WARN)
+      end
+      if d.vote ~= nil and d.vote ~= vim.NIL and tonumber(d.vote) ~= tonumber(r.vote or 0) then
+        r.vote = tonumber(d.vote)
+        notify(tostring(r.name or r.id) .. "'s vote was reset.", vim.log.levels.WARN)
+      end
+      require("azure-cli.prs").recompute(pr)
+      local STATE = require("azure-cli.state")
+      if STATE.PR_DASHBOARD_RENDER then STATE.PR_DASHBOARD_RENDER() end
+      if STATE.PR_DASHBOARD_RELOAD then STATE.PR_DASHBOARD_RELOAD() end
+      cb(true)
+    end)
 end
 
 -- What the PR dashboard and reviewer redraw after a reviewer change: the
@@ -174,7 +239,8 @@ function M.reviewer_label(pr, r)
   for _, v in ipairs(HOSTS().caps(pr).votes or {}) do
     if tostring(v.key) == tostring(r.vote or 0) and tostring(r.vote or 0) ~= "0" then vote = v.label:lower() end
   end
-  return tostring(r.name or r.id) .. "  \u{00B7}  " .. (r.isRequired and "required, " or "") .. vote
+  local need = r.isRequired and "required, " or (HOSTS().caps(pr).set_required and "optional, " or "")
+  return tostring(r.name or r.id) .. "  \u{00B7}  " .. need .. vote
 end
 
 -- The reviewers gX can take off `pr`: all of them on Azure; on GitHub only
@@ -185,6 +251,43 @@ function M.removable(pr)
     if r.id and r.id ~= "" and (HOSTS().host(pr) ~= "github" or r.requested) then out[#out + 1] = r end
   end
   return out
+end
+
+-- Takes reviewer `r` (one of M.removable(pr)) off `pr` with
+-- --remove-reviewer; the record loses them and the dashboard is redrawn.
+-- cb(ok, err). gX's and the chat's remove_reviewer.
+function M.take_off(pr, r, cb)
+  T().provider({ "--remove-reviewer", tostring(r.id) }, T().pr_env(pr), function(ok, _, err)
+    if not ok then return cb(false, err) end
+    for i, x in ipairs(pr.reviewers or {}) do
+      if x == r then table.remove(pr.reviewers, i) break end
+    end
+    require("azure-cli.prs").recompute(pr)
+    redraw()
+    cb(true)
+  end)
+end
+
+-- The one of `list` (reviewers or people) `who` names - its id, account,
+-- login or name, exactly (any case), else as the only one whose name or
+-- account contains it. nil, and the names that matched, when it isn't one.
+function M.match(list, who)
+  local w = vim.trim(tostring(who or "")):gsub("^@", ""):lower()
+  if w == "" then return nil, {} end
+  local function fields(p) return { p.id, p.account, p.login, p.name } end
+  for _, p in ipairs(list) do
+    for _, f in ipairs(fields(p)) do
+      if f and tostring(f):lower() == w then return p, {} end
+    end
+  end
+  local hits = {}
+  for _, p in ipairs(list) do
+    for _, f in ipairs({ p.name, p.account, p.login }) do
+      if f and tostring(f):lower():find(w, 1, true) then hits[#hits + 1] = p break end
+    end
+  end
+  if #hits == 1 then return hits[1], {} end
+  return nil, vim.tbl_map(function(p) return tostring(p.name or p.id) end, hits)
 end
 
 -- gX: picks one of `pr`'s reviewers, asks, and takes them off; then
@@ -208,16 +311,11 @@ function M.remove_reviewer(pr, on_done)
     PROMPT.confirm({ title = "Remove " .. tostring(r.name or r.id) .. "?" }, function(yes)
       if not yes then return end
       notify("Removing " .. tostring(r.name or r.id) .. "\u{2026}")
-      T().provider({ "--remove-reviewer", tostring(r.id) }, T().pr_env(pr), function(ok, _, err)
+      M.take_off(pr, r, function(ok, err)
         if not ok then
           return notify("Couldn't remove " .. tostring(r.name or r.id) .. ": " .. err, vim.log.levels.ERROR)
         end
-        for i, x in ipairs(pr.reviewers or {}) do
-          if x == r then table.remove(pr.reviewers, i) break end
-        end
-        require("azure-cli.prs").recompute(pr)
         notify("Removed " .. tostring(r.name or r.id) .. " from " .. HOSTS().ref(pr) .. ".")
-        redraw()
         if on_done then on_done(r) end
       end)
     end)

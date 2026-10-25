@@ -74,10 +74,13 @@ end
 -- to it in <dir>.branch: the worktree is on that branch (#59), unless git
 -- couldn't put it there (the branch is out in the user's clone or another
 -- worktree, or has commits origin hasn't) - then its HEAD is detached,
--- like a fix's.
+-- like a fix's. A task's (#143, { task_id }): <root>/<repo>-task<n>.
 function M.story_path(repo, target)
   if type(target) == "table" and target.item_key then
     return M.root() .. "/" .. require("azure-cli.chat.plan").key(target)
+  end
+  if type(target) == "table" and target.task_id then
+    return M.root() .. "/" .. (tostring(repo) .. "-task" .. tostring(target.task_id)):gsub("[^%w%._%-]", "_")
   end
   local id = type(target) == "table" and target.work_item_id or target
   return M.root() .. "/" .. (tostring(repo) .. "-wi" .. tostring(id)):gsub("[^%w%._%-]", "_")
@@ -108,15 +111,17 @@ function M.inside(wt, path)
 end
 
 -- The worktrees work item `target` (a plan target, or an id) may have: a
--- GitHub issue's under its key; else <repo>-wi<id>, whichever repository.
+-- GitHub issue's under its key; a task's <repo>-task<n>; else <repo>-wi<id>,
+-- whichever repository.
 function M.story_dirs(target)
   if type(target) == "table" and target.item_key then
     local d = M.story_path(nil, target)
     return is_repo(d) and { d } or {}
   end
+  local task = type(target) == "table" and target.task_id
   local id = type(target) == "table" and target.work_item_id or target
   local out = {}
-  for _, d in ipairs(vim.fn.glob(M.root() .. "/*-wi" .. tostring(id), false, true)) do
+  for _, d in ipairs(vim.fn.glob(M.root() .. (task and ("/*-task" .. tostring(task)) or ("/*-wi" .. tostring(id))), false, true)) do
     if is_repo(d) then out[#out + 1] = d end
   end
   return out
@@ -195,6 +200,9 @@ end
 
 -- The worktree's change: `git add -A -N` first so new files show, then the
 -- diff against its base. cb(ok, diff, stat).
+-- show_fix returns the diff up to this many bytes; over it, the stat only.
+M.SHOW_DIFF_MAX = 12000
+
 function M.diff(wt, cb, git)
   git({ "git", "-C", wt, "add", "-A", "-N" }, function()
     git({ "git", "-C", wt, "diff", "HEAD" }, function(ok, out, err)
@@ -238,9 +246,10 @@ function M.open_latest(git, cb)
     if not dir then return cb("The agent hasn't started a change yet (start_fix / start_story).") end
     local name = vim.fn.fnamemodify(dir, ":t")
     local wi = name:match("%-wi(%d+)$")
+    local task = name:match("%-task(%d+)$")
     local key = name:find("~", 1, true) and name:match("^pr%-github%-(.+)$")
     local ikey = name:find("~", 1, true) and name:match("^wi%-github%-(.+)$")
-    title = "Proposed change - " .. (wi and ("#" .. wi)
+    title = "Proposed change - " .. (wi and ("#" .. wi) or (task and ("Task " .. task))
       or (ikey and require("azure-cli.chat.plan").target_label({ item_key = ikey }))
       or (key and require("azure-cli.chat.plan").target_label({ pr_key = key }))
       or ("PR !" .. (name:match("%-(%d+)$") or name)))
@@ -256,7 +265,7 @@ end
 -- The worktree of the change for `target` ({ work_item_id } / { pr_id,
 -- pr_key }), or nil when none was started.
 function M.dir_for(target)
-  if target.work_item_id then return (M.find_story(target)) end
+  if target.work_item_id or target.task_id then return (M.find_story(target)) end
   local pr = require("azure-cli.chat.tools").pr_record(target.pr_key or target.pr_id)
   local d = pr and M.fix_dir(pr)
   return (d and is_repo(d)) and d or nil
@@ -289,10 +298,19 @@ setmetatable(M, { __call = function(_, T)
     return pr, clone
   end
 
-  -- What show/commit/discard act on: { dir, branch, label, wi, target },
+  -- What show/commit/discard act on: { dir, branch, label, wi, task, target },
   -- or nil and the reason. `env` (optional) picks the calling agent's own
-  -- PR when two share pr_id (#109).
+  -- PR when two share pr_id (#109); without work_item_id or pr_id, a task
+  -- agent's own task's change (#143).
   local function locate(args, env)
+    if not args.work_item_id and not args.pr_id then
+      local PLAN = require("azure-cli.chat.plan")
+      local target = PLAN.task_target_for(env)
+      if not target then return nil, "give work_item_id or pr_id" end
+      local dir, branch = M.find_story(target)
+      if not dir then return nil, "no change in progress for " .. PLAN.target_label(target) .. " - call start_story first" end
+      return { dir = dir, branch = branch, label = PLAN.target_label(target), task = target.task_id, target = target }
+    end
     if args.work_item_id then
       local PLAN = require("azure-cli.chat.plan")
       local target = PLAN.item_target_for(args.work_item_id, env)
@@ -315,10 +333,40 @@ setmetatable(M, { __call = function(_, T)
     return t.target
   end
 
+  -- The branch located change `t` goes into: its PR's target, else the
+  -- one its story started from; nil when that's its own branch.
+  local function onto_of(t)
+    local onto
+    if not (t.wi or t.task) then
+      local pr = T.pr_record(t.target.pr_key or t.target.pr_id)
+      onto = pr and pr.target
+    else
+      local PLAN = require("azure-cli.chat.plan")
+      local rec = PLAN.load(PLAN.key(t.target))
+      local pr = rec and type(rec.pr) == "table" and T.pr_record(rec.pr.key or rec.pr.id)
+      onto = pr and pr.target or select(3, M.find_story(t.target))
+    end
+    if type(onto) ~= "string" or onto == "" or onto == t.branch then return nil end
+    return onto
+  end
+
   local target_schema = { type = "object", properties = {
     pr_id = { type = "integer", description = "for a start_fix change" },
     work_item_id = { type = "integer", description = "for a start_story change" },
   } }
+
+  -- Why fetching `branch` from `clone`'s origin failed, for the agent: a
+  -- branch that isn't there says what the default branch is (an agent
+  -- guessing main where it's master). cb(message).
+  local function fetch_failed(clone, branch, ferr, cb)
+    if not tostring(ferr):find("couldn't find remote ref", 1, true) then
+      return cb("fetching " .. branch .. " failed: " .. ferr)
+    end
+    T.git({ "git", "-C", clone, "ls-remote", "--symref", "origin", "HEAD" }, function(_, out)
+      local default = tostring(out or ""):match("ref: refs/heads/(%S+)%s+HEAD")
+      cb("there's no branch " .. branch .. " on origin" .. (default and (" - its default branch is " .. default) or ""))
+    end)
+  end
 
   -- start_story before its plan is approved (#71): a worktree of the branch
   -- the story goes on - origin/<name>, or origin/<from> for a new branch -
@@ -331,7 +379,7 @@ setmetatable(M, { __call = function(_, T)
       local branch = vim.trim(heads or "") ~= "" and args.name or args.from
       local ref = "origin/" .. branch
       T.git({ "git", "-C", clone, "fetch", "-q", "origin", branch }, function(fok, _, ferr)
-        if not fok then return done(nil, "fetching " .. branch .. " failed: " .. ferr) end
+        if not fok then return fetch_failed(clone, branch, ferr, function(m) done(nil, m) end) end
         local function ready(kept)
           T.git({ "git", "-C", wt, "rev-parse", "--short", "HEAD" }, function(_, sha)
             sha = vim.trim(sha or "")
@@ -446,7 +494,9 @@ setmetatable(M, { __call = function(_, T)
         .. "only gives a read-only worktree of that branch (detached, nothing created on the server) to read the "
         .. "code there while planning; called again once the plan is approved, the same directory becomes the "
         .. "story's worktree. Runs without asking (nothing but the empty branch leaves the machine until commit_and_push_fix). "
-        .. "For a GitHub issue (board = \"github\"), the branch is linked to the issue (its Development section).",
+        .. "For a GitHub issue (board = \"github\"), the branch is linked to the issue (its Development section). "
+        .. "A task agent leaves work_item_id out for its own task's plan: the branch links to nothing, and "
+        .. "show_fix / commit_and_push_fix / run_tests are called without work_item_id or pr_id.",
       schema = { type = "object", properties = {
         work_item_id = { type = "integer" },
         repo = { type = "string", description = "repository name (owner/repo on GitHub also works)" },
@@ -455,14 +505,24 @@ setmetatable(M, { __call = function(_, T)
           .. "directly; without refs/heads/" },
         board = T.board_props.board,
         item_repo = T.board_props.repo_of_item,
-      }, required = { "work_item_id", "repo", "from", "name" } },
+      }, required = { "repo", "from", "name" } },
       risk = "write",
       run = function(args, env, done)
         local id = args.work_item_id
         local PLAN = require("azure-cli.chat.plan")
         local B = T.board_for(args, env)
-        -- A GitHub issue's by its key (#114), the calling agent's own first.
-        local target = PLAN.item_target_for(id, env, args.item_repo, B.host)
+        -- Its answer brings what earlier agents noted on the repository.
+        done = require("azure-cli.chat.repo_notes").with_notes(done, env.conv, args.repo,
+          B.host == "github" and "github" or nil)
+        -- A GitHub issue's by its key (#114), the calling agent's own first;
+        -- without an id, a task agent's own task (#143).
+        local target
+        if id then
+          target = PLAN.item_target_for(id, env, args.item_repo, B.host)
+        else
+          target = PLAN.task_target_for(env)
+          if not target then return done(nil, "give work_item_id") end
+        end
         local refused = PLAN.main_chat_refusal(env, "start_story", target)
         if refused then return done(nil, refused) end
         local planned, why = PLAN.gate(target)
@@ -470,6 +530,8 @@ setmetatable(M, { __call = function(_, T)
         -- the plan was carried out already, which needs a new one first.
         local rec = not planned and PLAN.load(PLAN.key(target))
         if rec and rec.status == "done" then return done(nil, why) end
+        local then_show = "Edit files under the directory, then call show_fix "
+          .. (id and "with work_item_id." or "without work_item_id or pr_id (your task's own).")
         local existing, ebranch = M.find_story(target)
         if existing then
           if not planned then
@@ -479,7 +541,7 @@ setmetatable(M, { __call = function(_, T)
               next = "Write the plan with submit_plan and wait for the user's approval." })
           end
           return done({ directory = existing, branch = ebranch, note = "Already started - kept as it was.",
-            next = "Edit files under the directory, then call show_fix with work_item_id." })
+            next = then_show })
         end
         local org, project, clone, tried = T.repo_location(args.repo, B)
         local repo = tostring(args.repo):match("/(.+)$") or args.repo
@@ -498,7 +560,7 @@ setmetatable(M, { __call = function(_, T)
         local function checkout(existing)
           env.log("git fetch " .. args.name)
           T.git({ "git", "-C", clone, "fetch", "-q", "origin", args.name }, function(fok, _, ferr)
-            if not fok then return failed("fetching " .. args.name .. " failed: " .. ferr) end
+            if not fok then return fetch_failed(clone, args.name, ferr, failed) end
             vim.fn.mkdir(M.root(), "p")
             T.git({ "git", "-C", clone, "worktree", "prune" }, function()
               M.add_story_worktree(clone, wt, args.name, function(ok, err, note)
@@ -506,7 +568,7 @@ setmetatable(M, { __call = function(_, T)
                 vim.fn.writefile({ args.name, args.from or "", existing and "existing" or "" }, wt .. ".branch")
                 done({ directory = wt, branch = args.name, repo = repo, note = note,
                   existing_branch = existing or nil,
-                  next = "Edit files under the directory, then call show_fix with work_item_id."
+                  next = then_show
                     .. (existing and (" It's the existing branch " .. args.name .. ": commit_and_push_fix pushes "
                       .. "straight to it, and there's no pull request to open.") or "") }, nil, undo)
               end, T.git)
@@ -523,8 +585,8 @@ setmetatable(M, { __call = function(_, T)
             if args.name == args.from then
               return done(nil, "there's no branch " .. args.name .. " on origin to work on (from and name are the same)")
             end
-            T.provider({ "--wi-edit", "create-branch", T.wi_ref(B, id, args.item_repo), org, project, repo, args.from,
-              args.name }, B.env,
+            T.provider({ "--wi-edit", "create-branch", id and T.wi_ref(B, id, args.item_repo) or "0", org, project, repo,
+              args.from, args.name }, B.env,
               function(ok, out, err)
                 if not ok then return done(nil, "creating the branch failed: " .. err) end
                 local okd, res = pcall(vim.json.decode, out)
@@ -543,7 +605,8 @@ setmetatable(M, { __call = function(_, T)
     {
       name = "show_fix",
       description = "Makes the change in the start_fix or start_story directory ready for the user to review (they're "
-        .. "told it's waiting on the Agents screen; nothing opens by itself) and returns the diff, plus plan_check "
+        .. "told it's waiting on the Agents screen; nothing opens by itself) and returns its stat and diff (a big "
+        .. "diff: the stat only - read it with git diff in the directory), plus plan_check "
         .. "when the change and its plan's Files section disagree (files changed that the plan doesn't list, files it "
         .. "lists that weren't changed). Give pr_id for a fix, work_item_id for a story.",
       schema = { type = "object", properties = {
@@ -567,10 +630,16 @@ setmetatable(M, { __call = function(_, T)
           -- foreground (#120): it says it's ready (gd opens M.last), and an
           -- open plan view's Changes section picks the change up.
           M.last = { title = "Proposed change - " .. t.label, dir = t.dir }
-          require("azure-cli.shell").notify(t.label .. "'s change is ready on the Agents screen.")
-          pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
-            "Waiting for your review on the Agents screen") end)
-          pcall(function() require("azure-cli.chat.plan_changes").poke() end)
+          local function announce()
+            pcall(require("azure-cli.chat.plan").change_shown, t.dir)
+            require("azure-cli.shell").notify(t.label .. "'s change is ready on the Agents screen.")
+            pcall(function() require("azure-cli.chat").alert("azure-vicli: " .. t.label .. "'s change is ready",
+              "Waiting for your review on the Agents screen") end)
+            pcall(function() require("azure-cli.chat.plan_changes").poke() end)
+          end
+          -- chat.self_review: the first under an approved revision goes to
+          -- a reviewer agent instead (chat/review.lua), announced after.
+          local review_note, in_review = require("azure-cli.chat.review").on_show(target, t.dir, env, announce)
           -- Its change viewer, when it's open, redrawn where it is (#126).
           pcall(require("azure-cli.chat.changes").refresh, t.dir, { quiet = true })
           -- Against the plan: what it changed that the plan doesn't list,
@@ -588,11 +657,17 @@ setmetatable(M, { __call = function(_, T)
             env.log("! against the plan: " .. #check.unplanned .. " file(s) not in it, "
               .. #check.missing .. " planned file(s) not changed")
           end
-          if #diff > 60000 then diff = diff:sub(1, 60000) .. "\n... (cut off)" end
-          done({ stat = stat, diff = diff, plan_check = plan_check, steps_linked = linked,
-            shown = false, ci = M.ci(args.pr_id, t.branch),
-            note = "The change isn't on screen: it waits for the user on the Agents screen - say it's ready, not "
-              .. "that you opened it." })
+          -- A big diff isn't returned (#34): Claude Code would put it in a
+          -- file to dig through. The agent reads its own worktree instead.
+          local diff_note
+          if #diff > M.SHOW_DIFF_MAX then
+            diff, diff_note = nil, "The diff is too big to return (" .. #paths .. " files): run git diff HEAD -- <file> in "
+              .. t.dir .. " for one file's."
+          end
+          done({ stat = stat, diff = diff, diff_note = diff_note, plan_check = plan_check, steps_linked = linked,
+            shown = false, ci = M.ci(args.pr_id, t.branch), in_review = in_review or nil,
+            note = in_review and review_note or ((review_note and (review_note .. " ") or "") .. "The change isn't "
+              .. "on screen: it waits for the user on the Agents screen - say it's ready, not that you opened it.") })
         end, T.git)
       end,
     },
@@ -603,17 +678,30 @@ setmetatable(M, { __call = function(_, T)
         .. "user first, showing the diff. If the change is already committed (nothing to commit, HEAD ahead of the "
         .. "branch), it pushes those commits. It only fast-forwards: if the branch has moved, it says so and you "
         .. "rebase onto origin/<branch> and call it again. Never git reset --soft onto a branch HEAD isn't directly "
-        .. "on: that silently reverts the commits it doesn't have.",
+        .. "on: that silently reverts the commits it doesn't have. After rebasing the branch onto its target (the "
+        .. "PR's target branch, or the one the story started from), pass rebased = true: HEAD must contain "
+        .. "origin/<target>'s current tip, and it force-pushes with a lease on the commit the branch was at - "
+        .. "refused if anyone pushed to it since. That always asks the user.",
       schema = { type = "object", properties = { pr_id = target_schema.properties.pr_id,
-        work_item_id = target_schema.properties.work_item_id, message = { type = "string" } }, required = { "message" } },
+        work_item_id = target_schema.properties.work_item_id, message = { type = "string" },
+        rebased = { type = "boolean", description = "the branch was rebased onto its target: force-push it" } },
+        required = { "message" } },
       risk = "ask",
-      confirm = function(a)
-        local t = locate(a)
-        return "commit \"" .. tostring(a.message) .. "\" and push it to "
-          .. (t and t.branch or (a.work_item_id and ("#" .. tostring(a.work_item_id)) or ("PR !" .. tostring(a.pr_id))))
+      -- A force push rewrites the branch: never without asking.
+      always_ask = function(a) return a.rebased == true end,
+      confirm = function(a, env)
+        local t = locate(a, env)
+        local branch = t and t.branch or (a.work_item_id and ("#" .. tostring(a.work_item_id))
+          or a.pr_id and ("PR !" .. tostring(a.pr_id)) or "the task's branch")
+        if a.rebased == true then
+          local onto = t and onto_of(t)
+          return "commit \"" .. tostring(a.message) .. "\" and force-push it to " .. branch
+            .. ", rewriting the branch" .. (onto and (" (rebased onto " .. onto .. ")") or "")
+        end
+        return "commit \"" .. tostring(a.message) .. "\" and push it to " .. branch
       end,
-      details = function(a, cb)
-        local t = locate(a)
+      details = function(a, cb, env)
+        local t = locate(a, env)
         if not t then return cb(nil) end
         M.diff(t.dir, function(_, diff)
           -- The plan's tests' last run - which one, and whether it was on
@@ -633,9 +721,9 @@ setmetatable(M, { __call = function(_, T)
           end)
         end, T.git)
       end,
-      preapproved = function(a, cb)
-        local t = locate(a)
-        if not t then return cb(false) end
+      preapproved = function(a, cb, env)
+        local t = locate(a, env)
+        if not t or a.rebased == true then return cb(false) end
         local target = target_of_change(t)
         require("azure-cli.chat.plan").push_allowed(target, t.dir, function(ok, why)
           cb(ok, ok and "the approved plan (pushing allowed, tests passed)" or why)
@@ -679,12 +767,60 @@ setmetatable(M, { __call = function(_, T)
             end)
           end)
         end
+        -- rebased = true: HEAD must have origin/<onto>'s tip, fetched fresh,
+        -- and the push replaces the branch only while it's still at the
+        -- commit this worktree last saw (`seen`). cb(seen) to push.
+        local function check_rebased(committed, cb)
+          local onto = onto_of(t)
+          if not onto then return done(nil, "rebased: can't tell which branch " .. t.branch .. " goes into") end
+          T.git({ "git", "-C", wt, "rev-parse", "-q", "--verify", remote }, function(sok, seen)
+            seen = vim.trim(seen or "")
+            if not sok or seen == "" then
+              return done(nil, "origin/" .. t.branch .. " isn't known here: run git fetch origin first")
+            end
+            local tref = "refs/remotes/origin/" .. onto
+            T.git({ "git", "-C", wt, "fetch", "-q", "origin", "+refs/heads/" .. onto .. ":" .. tref }, function(fok, _, ferr)
+              if not fok then return done(nil, "fetching " .. onto .. " failed: " .. vim.trim(ferr or "")) end
+              T.git({ "git", "-C", wt, "merge-base", "--is-ancestor", tref, "HEAD" }, function(on)
+                T.git({ "git", "-C", wt, "rev-parse", "--short", tref }, function(_, tip)
+                  if not on then
+                    return done(nil, "not rebased: HEAD doesn't contain origin/" .. onto .. " (" .. vim.trim(tip or "")
+                      .. "). Run git fetch origin and git rebase origin/" .. onto .. ", then call commit_and_push_fix "
+                      .. "again.")
+                  end
+                  T.git({ "git", "-C", wt, "rev-parse", "HEAD" }, function(_, head)
+                    if not committed and vim.trim(head or "") == seen then
+                      return done(nil, "nothing to push: HEAD is already at origin/" .. t.branch)
+                    end
+                    cb(seen)
+                  end)
+                end)
+              end)
+            end)
+          end)
+        end
+        local function checked(committed, cb)
+          if args.rebased == true then return check_rebased(committed, cb) end
+          check_target(committed, cb)
+        end
         T.git({ "git", "-C", wt, "add", "-A" }, function()
           commit(function(committed)
-          check_target(committed, function()
-            env.log("git push " .. t.branch)
-            T.git({ "git", "-C", wt, "push", "-q", "origin", "HEAD:refs/heads/" .. t.branch }, function(pok, _, perr)
+          checked(committed, function(seen)
+            local argv = { "git", "-C", wt, "push", "-q", "origin", "HEAD:refs/heads/" .. t.branch }
+            if seen then
+              -- Never a plain --force: someone else's push since is kept.
+              table.insert(argv, 5, "--force-with-lease=" .. t.branch .. ":" .. seen)
+              env.log("git push --force-with-lease " .. t.branch)
+            else
+              env.log("git push " .. t.branch)
+            end
+            T.git(argv, function(pok, _, perr)
               if not pok then
+                if seen then
+                  return done(nil, "force push refused: " .. t.branch .. " on origin isn't at " .. seen:sub(1, 7)
+                    .. " any more (someone pushed to it) - fetch it, rebase onto it and the target again, then call "
+                    .. "commit_and_push_fix again: " .. vim.trim(perr or ""):gsub("%s*\n%s*", " "))
+                end
                 return done(nil, "push failed (the branch may have moved since): " .. vim.trim(perr or ""):gsub("%s*\n%s*", " "))
               end
               -- The plan behind it is done: the next change needs its own.
@@ -698,9 +834,10 @@ setmetatable(M, { __call = function(_, T)
                 pcall(require("azure-cli.chat.plan").event_for_worktree, wt, "pushed",
                   "Pushed " .. vim.trim(sha) .. " to " .. t.branch .. ": " .. tostring(args.message))
                 local PLAN = require("azure-cli.chat.plan")
-                local rec = t.wi and PLAN.load(PLAN.key(t.target))
+                local story = t.wi or t.task
+                local rec = story and PLAN.load(PLAN.key(t.target))
                 local base, existing
-                if t.wi then base, existing = select(3, M.find_story(t.target)) end
+                if story then base, existing = select(3, M.find_story(t.target)) end
                 local next_step = ""
                 if existing then
                   -- Worked on an existing branch: pushed straight to it, no PR (#57).
@@ -709,9 +846,11 @@ setmetatable(M, { __call = function(_, T)
                 elseif rec and rec.allow_push and rec.pr == nil then
                   next_step = " The approved plan lets you open its pull request without asking: call "
                     .. "create_pull_request now - source " .. t.branch .. ", target " .. (base or "the branch you started from")
-                    .. ", work_item_ids [" .. t.wi .. "], no description (the plan's is used), not a draft."
-                elseif t.wi and not (rec and rec.pr) then
-                  next_step = " Offer to open a pull request for it (create_pull_request, linking the work item)."
+                    .. (t.wi and (", work_item_ids [" .. t.wi .. "]") or ", no work_item_ids")
+                    .. ", no description (the plan's is used), not a draft."
+                elseif story and not (rec and rec.pr) then
+                  next_step = " Offer to open a pull request for it (create_pull_request"
+                    .. (t.wi and ", linking the work item)." or ").")
                 end
                 -- CI runs on what was just pushed: not done until it passes.
                 local ci = M.ci(args.pr_id, t.branch)
@@ -719,7 +858,8 @@ setmetatable(M, { __call = function(_, T)
                   .. " (it was " .. ci.build .. " before this push): it isn't done until that passes - check "
                   .. "get_pull_request, and get_build_log if it fails, before calling it done.")
                   or " If this branch has a pull request, its CI now runs on it: check it passes before calling it done."
-                done("Pushed " .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label .. ")." .. ci_step .. next_step)
+                done((seen and "Force-pushed " or "Pushed ") .. vim.trim(sha) .. " to " .. t.branch .. " (" .. t.label
+                  .. ")." .. ci_step .. next_step)
               end)
             end)
           end)
@@ -738,16 +878,16 @@ setmetatable(M, { __call = function(_, T)
         work_item_id = target_schema.properties.work_item_id,
         command = { type = "string", description = "instead of the plan's" } } },
       risk = "ask",
-      confirm = function(a)
-        local t = locate(a)
+      confirm = function(a, env)
+        local t = locate(a, env)
         local PLAN = require("azure-cli.chat.plan")
         local cmd = a.command or (t and require("azure-cli.chat.tests_run").command(t.dir, PLAN.for_worktree(t.dir)))
         return "run `" .. tostring(cmd or "?") .. "` in " .. (t and vim.fn.fnamemodify(t.dir, ":t") or "the worktree")
       end,
       -- The user's own command (chat.test_cmd) needs no question, nor does
       -- the Test plan command of a plan you approved.
-      preapproved = function(a, cb)
-        local t = locate(a)
+      preapproved = function(a, cb, env)
+        local t = locate(a, env)
         if a.command or not t then return cb(false) end
         local rec = require("azure-cli.chat.plan").for_worktree(t.dir)
         local _, source = require("azure-cli.chat.tests_run").command(t.dir, rec)

@@ -1177,6 +1177,9 @@ def to_record(pr, account, state, thread_counts, build_info, user_id, user_name)
         # updatedIso it moves on every push, and the list call already
         # returns it - the dashboard keys its branch warm on it (#124).
         "sourceCommit": ((pr.get("lastMergeSourceCommit") or {}).get("commitId")) or "",
+        # And the target's: the chat's watch tells a merge conflict apart
+        # by the pair, so a later one counts again.
+        "targetCommit": ((pr.get("lastMergeTargetCommit") or {}).get("commitId")) or "",
         "isDraft": bool(pr.get("isDraft") or False),
         "state": state,
         "autoComplete": pr.get("autoCompleteSetBy") is not None,
@@ -2395,7 +2398,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
-    "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer",
+    "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer", "--set-required",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -3074,6 +3077,27 @@ class PrActions:
                           for p in people], ensure_ascii=False))
         return 0
 
+    def set_required(self, reviewer_id, required="true"):
+        """--set-required: makes reviewer `reviewer_id` (their identity id)
+        required or optional (Pull Request Reviewers - Create, PUT with
+        isRequired and no vote - the documented PATCH can't change it).
+        Prints what the server answers: their isRequired and vote, so the
+        caller sees a policy keeping them required, or a vote that didn't
+        survive."""
+        if _is_blank(reviewer_id):
+            print("Which reviewer?", file=sys.stderr)
+            return 1
+        try:
+            r = self.fetch(self._pr_url("/reviewers/{0}".format(urllib.parse.quote(reviewer_id.strip(), safe=""))),
+                           method="PUT", data={"isRequired": _to_bool(required)}, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST set-required failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        r = r if isinstance(r, dict) else {}
+        print(json.dumps({"id": reviewer_id.strip(), "isRequired": bool(r.get("isRequired", _to_bool(required))),
+                          "vote": r.get("vote")}, ensure_ascii=False))
+        return 0
+
     def remove_reviewer(self, reviewer_id):
         """--remove-reviewer: takes reviewer `reviewer_id` (their identity
         id) off the PR - Pull Request Reviewers - Delete. A reviewer a
@@ -3174,9 +3198,10 @@ class PrActions:
     def get_pr(self):
         """Any PR in the project by id (GET {org}/{project}/_apis/git/
         pullrequests/{id} - no repository needed), printed as the same record
-        --list prints for a dashboard row, minus what --list works out on top
-        (thread counts, build, policies). For the chat's get_pull_request on
-        a PR that isn't on the user's dashboard."""
+        --list prints for a dashboard row, minus the thread counts --list
+        works out on top. Its build (and policies) are --list's: the chat's
+        watch tells a failed build by it (#141). For the chat's
+        get_pull_request on a PR that isn't on the user's dashboard."""
         if not _is_uint(self.pr_id):
             print("get-pr needs a numeric AZVICLI_PR", file=sys.stderr)
             return 1
@@ -3199,10 +3224,20 @@ class PrActions:
             project = self.project
             clones_dir = (getattr(account, "clones_dir", "") or "") if account else ""
 
+        project_id = (((pr or {}).get("repository") or {}).get("project") or {}).get("id")
         record = to_record(pr or {}, _Acct, (pr or {}).get("status") or "", (None, None, None, None, None),
-                           ("none", None, "", [], []), None, None)
+                           self._build_info(project_id, pr or {}), None, None)
         print(json.dumps(record, ensure_ascii=False))
         return 0
+
+    def _build_info(self, project_id, pr):
+        """PR `pr`'s build as --list works it out (_get_build_status: "none"
+        when that fails), its requests going through self.fetch."""
+        source = AzureDevOpsPullRequestSource(self.config)
+        fetch = self.fetch
+        source.fetch = lambda method, url, pat, data=None, api_version="7.1": fetch(
+            url, method=method, data=data, pat=pat, api_version=api_version)
+        return source._get_build_status(self.org, self.pat, self.project, project_id, pr)
 
     def complete_pr(self, strategy, del_branch="true", transition="true"):
         if strategy not in _MERGE_STRATEGIES:
@@ -3349,6 +3384,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.find_people(arg(0))
     if flag == "--remove-reviewer":
         return actions.remove_reviewer(arg(0))
+    if flag == "--set-required":
+        return actions.set_required(arg(0), arg(1, "true"))
     if flag == "--set-description":
         return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":

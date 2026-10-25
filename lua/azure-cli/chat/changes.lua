@@ -136,6 +136,8 @@ local LIST_HELP = {
   { "refresh", "refresh (the agent may have changed more)" },
   { "chat_input", "type in the chat (opens the panel; a draft stays)" },
   "Window",
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   { "resize_less", "shrink the file list" }, { "resize_more", "grow the file list" },
   { "quit", "close" }, { "help", "this help" },
 }
@@ -147,6 +149,8 @@ local DIFF_HELP = {
   { "goto_plan", "the plan line this code carries out (or the plan's entry for the file)" },
   { "back", "back to the file list" },
   { "open_file", "edit the file in the worktree, at this line" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   "Ask the agent",
   { "ask", "ask about this line (\"why did you choose this here?\") - the answer shows under it" },
   { "expand_thread", "show all of the answer under this line / fold it again" },
@@ -665,6 +669,7 @@ local function bind_common(buf, surface)
     { desc = "send the selected lines to the chat", mode = "x" })
   bind(buf, surface, "refresh", function() M.refresh() end, { desc = "refresh the change" })
   bind(buf, surface, "run_tests", function() run_tests() end, { desc = "run the plan's tests on the change" })
+  require("azure-cli.chat.waiting").bind(buf, surface)
 end
 
 -- The diff buffer for file `idx` (built once per open).
@@ -863,6 +868,8 @@ function M.open(title, dir, raw, keep)
   view.plan = okp and PLAN.for_worktree(dir) or nil
   view.fp = require("azure-cli.chat.tests_run").fingerprint(table.concat(raw, "\n"))
   view.check = okp and PLAN.check_change(view.plan, paths) or nil
+  -- Opened, not only redrawn where it is: it no longer waits for you (]w).
+  if okp and view.plan and not (keep and keep.quiet) then pcall(PLAN.change_seen, view.plan) end
   view.has_tests = require("azure-cli.chat.tests_run").command(dir, view.plan) ~= nil
   if old then
     view.tab, view.list_win, view.diff_win, view.list_buf = old.tab, old.list_win, old.diff_win, old.list_buf

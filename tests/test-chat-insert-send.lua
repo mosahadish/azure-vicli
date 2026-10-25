@@ -42,8 +42,8 @@ local steps = {
     if sent[1] ~= "hi" then return "<CR> while typing sent " .. vim.inspect(sent) end
     if mode() ~= "n" then return "<CR> left the box in mode " .. mode() end
   end },
-  { keys = "iyo<C-s>", check = function()
-    if sent[2] ~= "yo" then return "<C-s> sent " .. vim.inspect(sent) end
+  { keys = "iyo<CR>", check = function()
+    if sent[2] ~= "yo" then return "<CR> sent " .. vim.inspect(sent) end
   end },
   { keys = "i<C-r>=v:lua.TEST_COMPLETE()<CR>", check = function()
     if vim.fn.pumvisible() ~= 1 then return "the completion menu didn't open" end

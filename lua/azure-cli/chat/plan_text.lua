@@ -9,11 +9,13 @@ local M = {}
 -- "wi-3001" for { work_item_id = 3001 }, "pr-101" for { pr_id = 101 },
 -- "pr-github-o~r~7" for { pr_id = 7, pr_key = "o~r~7" } (#109: a GitHub
 -- number repeats across repos), "wi-github-o~r~7" for { work_item_id = 7,
--- item_key = "o~r~7" } (#114, the same for issues), nil for none. A key is
--- a file name under plans/: anything but [%w._~-] becomes "_", so it holds
--- no "/".
+-- item_key = "o~r~7" } (#114, the same for issues), "task-3" for
+-- { task_id = 3 } (#143: a task the main chat handed an agent), nil for
+-- none. A key is a file name under plans/: anything but [%w._~-] becomes
+-- "_", so it holds no "/".
 function M.key(target)
   if type(target) ~= "table" then return nil end
+  if target.task_id then return "task-" .. tostring(target.task_id) end
   if target.item_key then return "wi-github-" .. (tostring(target.item_key):gsub("[^%w%._~%-]", "_")) end
   if target.work_item_id then return "wi-" .. tostring(target.work_item_id) end
   if target.pr_key then return "pr-github-" .. (tostring(target.pr_key):gsub("[^%w%._~%-]", "_")) end
@@ -45,6 +47,7 @@ local function key_ref(key)
 end
 
 function M.target_label(target)
+  if target.task_id then return "Task " .. tostring(target.task_id) end
   if target.item_key and key_ref(target.item_key) then return key_ref(target.item_key) end
   if target.work_item_id then return "#" .. tostring(target.work_item_id) end
   local ref = target.pr_key and key_ref(target.pr_key)
@@ -149,6 +152,30 @@ end
 function M.planned_files(lines)
   local out = {}
   for _, e in ipairs(file_entries(lines)) do vim.list_extend(out, e.paths) end
+  return out
+end
+
+-- The test files the plan's Test plan section names (`tests/test-x.lua`,
+-- test_chat.py - a file name with "test" or "spec" in it): changing them
+-- is part of the plan too, though it doesn't list them under Files. Pure.
+function M.test_plan_files(lines)
+  local out, seen, inside, fenced = {}, {}, false, false
+  for _, l in ipairs(lines or {}) do
+    if l:match("^%s*```") then fenced = not fenced end
+    local hashes, title = l:match("^(#+)%s+(.-)%s*$")
+    if hashes and not fenced then
+      inside = #hashes == 2 and title:lower():find("test", 1, true) ~= nil
+    elseif inside then
+      for word in l:gmatch("[%w_%-%./]+%.%w+") do
+        local name = (word:match("([^/]+)$") or ""):lower()
+        if (name:find("test", 1, true) or name:find("spec", 1, true)) and not word:find("..", 1, true)
+            and not word:match("^/") and not seen[word] then
+          seen[word] = true
+          out[#out + 1] = word
+        end
+      end
+    end
+  end
   return out
 end
 
@@ -423,26 +450,59 @@ local COMPANIONS = {
   gradle = { "build", "test" }, ["./gradlew"] = { "build", "test" }, ["gradlew"] = { "build", "test" },
 }
 
+-- `timeout 300`, PATH=dir[:$PATH] and $PWD in front change nothing a
+-- step runs.
+local function unprefixed(step)
+  for _ = 1, 2 do
+    step = step:gsub("^timeout %d+ ", "")
+    step = step:gsub("^PATH=[%w%._/~:%-]*%$PATH ", ""):gsub("^PATH=[%w%._/~:%-]+ ", "")
+  end
+  return (step:gsub('"set rtp%+=%$PWD"', '"set rtp+=."'))
+end
+
 -- Whether shell command `cmd` runs the plan's tests (`test_cmd`,
 -- test_command's " && "-joined lines). Each step of `cmd` (split on &&
 -- and ;) has to be one of its lines - or one with more arguments, or the
 -- same tool's build/restore (COMPANIONS) - optionally piped into commands
 -- that only look (`| tail -50`, `| Select-Object -Last 50`) and with
 -- 2>&1; a leading cd / Set-Location / pushd into a directory is dropped.
+-- A step may start with `timeout N` and PATH=<dirs>[:$PATH]. Also one of
+-- the test files the plan's command lives with (TEST_RUNNERS run on a path
+-- under its directory - `nvim -l tests/test-chat.lua` for `tests/run.sh`),
+-- and `python -m pytest` / `-m unittest`.
 -- Nothing else - no redirect into a file, no $(...), no other program.
 -- Pure.
+local TEST_RUNNERS = { nvim = true, python = true, python3 = true, py = true, pytest = true, node = true,
+  bash = true, sh = true, lua = true, luajit = true }
 function M.is_test_command(cmd, test_cmd)
   if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
   if type(cmd) ~= "string" or not test_cmd then return false end
   local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
-  local lines = {}
+  local lines, dirs = {}, {}
   for part in (test_cmd .. " && "):gmatch("(.-) && ") do
     if norm(part) ~= "" then lines[#lines + 1] = norm(part) end
+    for word in part:gmatch("%S+") do
+      local dir = word:gsub("^%./", ""):match("^([%w_%-%.]+)/[^/]+$")
+      if dir and dir ~= "." and dir ~= ".." then dirs[dir] = true end
+    end
   end
   local function extra_ok(rest)
     return rest == "" or (rest:sub(1, 1) == " " and not rest:find("[|&;<>`$(){}]"))
   end
+  -- A test file next to the plan's command, or Python's own test runners.
+  local function runs_test_file(step)
+    local prog, rest = step:match("^(%S+)(.*)$")
+    if not (prog and TEST_RUNNERS[prog] and extra_ok(rest)) then return false end
+    if prog:match("^py") and (rest:match("^ %-m pytest") or rest:match("^ %-m unittest")) then return true end
+    for word in rest:gmatch("%S+") do
+      local dir = word:gsub("^[\"']", ""):gsub("^%./", ""):match("^([%w_%-%.]+)/")
+      if dir and dirs[dir] and not word:find("..", 1, true) then return true end
+    end
+    return false
+  end
   local function runs_tests(step)
+    step = unprefixed(step)
+    if runs_test_file(step) then return true end
     for _, l in ipairs(lines) do
       if step == l then return true end
       if (l:find(" ", 1, true) or ONE_WORD[l]) and step:sub(1, #l) == l and extra_ok(step:sub(#l + 1)) then
@@ -456,7 +516,8 @@ function M.is_test_command(cmd, test_cmd)
     end
     return false
   end
-  cmd = norm(cmd):gsub(" 2>&1", "")
+  -- A new line runs another command, like ;.
+  cmd = norm((cmd:gsub("\r?\n", ";"))):gsub(" 2>&1", "")
   if cmd == "" or cmd:find("||", 1, true) then return false end
   local steps = {}
   for step in (cmd:gsub(" ?&& ?", ";") .. ";"):gmatch("(.-);") do
@@ -479,6 +540,99 @@ function M.is_test_command(cmd, test_cmd)
   return true
 end
 
+-- The steps of shell command `cmd` as is_test_command splits it (&&, ;
+-- and new lines, a cd before the last dropped), each unprefixed and
+-- without what it's piped into when that only looks - nil when any of it
+-- could do more than run its program: ||, a redirect, $(...), backticks,
+-- &, a pipe into anything else.
+local function plain_steps(cmd)
+  if type(cmd) == "table" then cmd = table.concat(cmd, " ") end
+  if type(cmd) ~= "string" then return nil end
+  local function norm(s) return vim.trim((s:gsub("%s+", " "))) end
+  cmd = norm((cmd:gsub("\r?\n", ";"))):gsub(" 2>&1", "")
+  if cmd:find("||", 1, true) then return nil end
+  local parts = {}
+  for step in (cmd:gsub(" ?&& ?", ";") .. ";"):gmatch("(.-);") do
+    step = norm(step)
+    if step ~= "" then parts[#parts + 1] = step end
+  end
+  local CORE = require("azure-cli.chat.core")
+  local steps = {}
+  for i, step in ipairs(parts) do
+    local lower = step:lower()
+    local dir_change = i < #parts and (lower:match("^cd ") or lower:match("^set%-location ") or lower:match("^sl ")
+      or lower:match("^pushd ")) and not step:find("[|&<>`$(){}]")
+    if not dir_change then
+      local first, piped = step:match("^([^|]-) ?| ?(.+)$")
+      if piped and not CORE.look_only_command(piped) then return nil end
+      first = unprefixed(norm(first or step))
+      if first == "" or first:find("[|&;<>`$(){}]") then return nil end
+      steps[#steps + 1] = first
+    end
+  end
+  return #steps > 0 and steps or nil
+end
+
+-- Programs no pattern covers (deleting, moving, downloading, running as
+-- someone else) and flags that run code given inline (`bash -c`, `node -e`).
+local NEVER_LIKE = { rm = true, rmdir = true, mv = true, dd = true, sudo = true, su = true, doas = true,
+  chmod = true, chown = true, curl = true, wget = true, ssh = true, scp = true, rsync = true, eval = true,
+  exec = true, xargs = true, env = true, kill = true, pkill = true, killall = true, iex = true,
+  ["Remove-Item"] = true, ["Invoke-Expression"] = true }
+local INLINE_CODE = { ["-c"] = true, ["-e"] = true, ["-lc"] = true, ["-ic"] = true, ["--command"] = true,
+  ["--eval"] = true, ["-Command"] = true, ["-EncodedCommand"] = true }
+
+-- One step's pattern: its program, the flags right after it, and the
+-- argument after those when it's a word (a subcommand, a module) rather
+-- than a path: `python3 -m unittest discover` -> "python3 -m unittest",
+-- `git fetch origin x` -> "git fetch", `luajit -bl a.lua` -> "luajit -bl".
+-- None for NEVER_LIKE, inline code or git push (the plan's own gate).
+local function step_pattern(step)
+  local words = vim.split(step, " ", { plain = true })
+  local prog = words[1]
+  local name = prog:match("[^/]+$") or prog
+  if not prog:match("^[%w%._/~%-]+$") or NEVER_LIKE[name] then return nil end
+  for _, w in ipairs(words) do
+    if INLINE_CODE[w] or (name == "git" and w == "push") then return nil end
+  end
+  local out, i = { prog }, 2
+  while words[i] and words[i]:match("^%-") do out[#out + 1] = words[i]; i = i + 1 end
+  if words[i] and words[i]:match("^%a[%w_%-]*$") then out[#out + 1] = words[i] end
+  return table.concat(out, " ")
+end
+
+-- What allowing shell command `cmd` "and commands like it" stores: a
+-- pattern per step (step_pattern), or nil when a step has none or `cmd`
+-- fails plain_steps - then there's nothing to allow it by. Pure.
+function M.command_patterns(cmd)
+  local steps = plain_steps(cmd)
+  if not steps then return nil end
+  local out, seen = {}, {}
+  for _, step in ipairs(steps) do
+    local p = step_pattern(step)
+    if not p then return nil end
+    if not seen[p] then seen[p] = true; out[#out + 1] = p end
+  end
+  return out
+end
+
+-- Whether each step of shell command `cmd` is like one of `patterns`
+-- (starts with it, word for word) and would get a pattern itself. Pure.
+function M.command_like(cmd, patterns)
+  if type(patterns) ~= "table" or #patterns == 0 then return false end
+  local steps = plain_steps(cmd)
+  if not steps then return false end
+  for _, step in ipairs(steps) do
+    if not step_pattern(step) then return false end
+    local like = false
+    for _, p in ipairs(patterns) do
+      if step == p or step:sub(1, #p + 1) == p .. " " then like = true; break end
+    end
+    if not like then return false end
+  end
+  return true
+end
+
 -- The template's "## " headings `markdown` doesn't have. Pure.
 function M.missing(markdown, template)
   local have = {}
@@ -491,12 +645,18 @@ function M.missing(markdown, template)
 end
 
 -- Whether a change may start for `target`, given its plan record `rec`
--- (nil: none yet) and the plan_first setting `mode`: ok, why. Pure.
+-- (nil: none yet) and the plan_first setting `mode`: ok, why. A task's
+-- change (#143) is gated as a story's is. Pure.
 function M.gate_check(rec, mode, target)
   if mode == nil then mode = true end
-  if mode == false or (mode == "stories" and not target.work_item_id) then return true end
-  if rec and rec.status == "approved" then return true end
+  if mode == false or (mode == "stories" and not (target.work_item_id or target.task_id)) then return true end
   local label = M.target_label(target)
+  local waits = M.waiting_on(rec)
+  if #waits > 0 then
+    return false, "The plan for " .. label .. " is approved to start once " .. table.concat(waits, ", ")
+      .. " is finished (it changes some of the same files). Wait - you'll get a message then."
+  end
+  if rec and rec.status == "approved" then return true end
   if not rec then
     return false, "No plan for " .. label .. " yet. Write one with submit_plan first (following its template), then "
       .. "stop and wait: the user reads it, may ask about it, and approves it before you change any code."
@@ -529,6 +689,66 @@ function M.push_check(rec, has_cmd, result, fp)
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- Two plans changing the same files: their PRs conflict.
+
+-- Whether plan `rec` is approved and not finished: being carried out, or
+-- carried out with its PR not merged or abandoned yet (the Agents screen's
+-- groups: plan.pr_closed finishes one, or a push straight to an existing
+-- branch, which has no PR). Pure.
+function M.in_flight(rec)
+  if type(rec) ~= "table" or rec.pr_state then return false end
+  -- Pushed straight to an existing branch: no PR will close it.
+  if rec.status == "done" and rec.no_pr then return false end
+  return rec.status == "approved" or rec.status == "done" or type(rec.pr) == "table"
+end
+
+-- Which of `others` ({ { key, label, repo, files } }) change files that
+-- `mine` ({ key, repo, files }) changes too: { { key, label, files } },
+-- `files` the ones of mine they share (matched as check_files does), in
+-- `others`' order. Not one in another repository - when both say which;
+-- a plan that can't tell is compared with every one. Pure.
+function M.overlaps(mine, others)
+  local out = {}
+  for _, o in ipairs(others) do
+    if o.key ~= mine.key and not (mine.repo and o.repo and mine.repo ~= o.repo) then
+      local shared, seen = {}, {}
+      for _, p in ipairs(mine.files or {}) do
+        if not seen[p] and M.paths_planned(o.files or {}, { p }) then
+          seen[p] = true
+          shared[#shared + 1] = p
+        end
+      end
+      if #shared > 0 then out[#out + 1] = { key = o.key, label = o.label, files = shared } end
+    end
+  end
+  return out
+end
+
+-- The approval popup's lines for the overlaps of plans `keys` (`found`:
+-- key -> M.overlaps' list, `label_of(key)`): "#141 also changes: a, b",
+-- "#150 and #141 both change: a" when approving several. Pure.
+function M.overlap_lines(keys, found, label_of)
+  local out = {}
+  for _, k in ipairs(keys) do
+    for _, o in ipairs(found[k] or {}) do
+      local files = table.concat(o.files, ", ")
+      out[#out + 1] = #keys == 1 and (o.label .. " also changes: " .. files)
+        or (label_of(k) .. " and " .. o.label .. " both change: " .. files)
+    end
+  end
+  return out
+end
+
+-- The plans approved plan `rec` still waits for before its agent hears
+-- (plan.approve's wait_for): their labels. Pure.
+function M.waiting_on(rec)
+  local out = {}
+  if type(rec) ~= "table" or rec.status ~= "approved" or type(rec.wait_for) ~= "table" then return out end
+  for _, w in ipairs(rec.wait_for) do if not w.done then out[#out + 1] = w.label end end
+  return out
+end
+
 local STATUS = {
   draft = { "\u{25CF} Waiting for your review", "AzureCliStatusDraft" },
   approved = { "\u{2713} Approved", "AzureCliStatusOk" },
@@ -540,6 +760,8 @@ function M.status_label(rec)
   -- Its PR merged or abandoned (plan.pr_closed): finished, whatever it was.
   if rec.pr_state == "completed" then return "\u{2713} Finished: PR merged", "AzureCliStatusDone" end
   if rec.pr_state == "abandoned" then return "\u{2717} Finished: PR abandoned", "AzureCliMuted" end
+  local waits = M.waiting_on(rec)
+  if #waits > 0 then return "\u{231B} Approved, waits for " .. table.concat(waits, ", "), "AzureCliStatusOk" end
   local s = STATUS[rec.status] or STATUS.draft
   return s[1], s[2]
 end
@@ -604,6 +826,14 @@ function M.unsent_answers(lines, threads)
   return n
 end
 
+-- Whether plan `rec`'s change waits for your review: show_fix showed it
+-- (change_shown) since you last opened it (change_seen), and it isn't
+-- pushed yet (pushing makes the plan done). Pure.
+function M.change_waits(rec)
+  if type(rec) ~= "table" or rec.status ~= "approved" or not rec.change_shown then return false end
+  return (rec.change_seen or 0) < rec.change_shown
+end
+
 -- Where ]t / [t stop in the plan (`lines`): every open question, answered
 -- or not, and every thread's line, sorted, each once; a thread past the
 -- end is left out. Pure.
@@ -643,14 +873,18 @@ function M.approval_message(rec, lines)
     .. "change as planned, then show_fix it to me - with `steps` tying the parts of the change to the plan lines "
     .. "they carry out."
   if rec.allow_push then
-    local id = rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id))
+    local id = rec.target.task_id and "without work_item_id or pr_id: your task's own"
+      or rec.target.work_item_id and ("work_item_id " .. rec.target.work_item_id) or ("pr_id " .. tostring(rec.target.pr_id))
     text = text .. "\n\nYou may push without waiting for me: after show_fix, "
       .. (M.test_command(lines) and ("run the plan's tests with run_tests (only run_tests counts - not your own "
         .. "shell), fix the change until they pass, then ") or "")
       .. "call commit_and_push_fix (" .. id .. ") - it won't ask."
       .. (rec.target.work_item_id and (" Then open its pull request with create_pull_request (source your story "
         .. "branch, target the branch you started from, work_item_ids [" .. rec.target.work_item_id .. "], no "
-        .. "description - the plan's is used - and not a draft); it won't ask either.") or "")
+        .. "description - the plan's is used - and not a draft); it won't ask either.")
+        or rec.target.task_id and (" Then open its pull request with create_pull_request (source your task's "
+          .. "branch, target the branch you started from, no work_item_ids, no description - the plan's is used - "
+          .. "and not a draft); it won't ask either.") or "")
       .. " If the tests keep failing, stop and tell me what's wrong instead of pushing."
   end
   local answers = M.answers_block(rec, lines)

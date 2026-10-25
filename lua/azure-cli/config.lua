@@ -23,6 +23,7 @@ local DEFAULT_KEYS = {
     first_pr = "gg", last_pr = "G", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", agents = "A", plan_agents = "gP",
     agent_chat = "ga", goto_plan = "gp", chat_input = "i", chat_selection = "<CR>",
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- Reviewer file list.
   list = {
@@ -36,7 +37,7 @@ local DEFAULT_KEYS = {
     since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m", plan_agents = "gP", goto_plan = "gp",
-    chat_input = "i", chat_selection = "<CR>",
+    chat_input = "i", chat_selection = "<CR>", next_waiting = "]w", prev_waiting = "[w",
     refresh = "r",  -- the chat's change viewer only (the reviewer refreshes by itself)
     run_tests = "gb",  -- the chat's change viewer only: the plan's tests
   },
@@ -55,7 +56,7 @@ local DEFAULT_KEYS = {
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL",
     expand_thread = "<Tab>", toggle_viewed = "m", next_unviewed = "]m", prev_unviewed = "[m",
-    plan_agents = "gP", chat_input = "i", chat_selection = "<CR>",
+    plan_agents = "gP", chat_input = "i", chat_selection = "<CR>", next_waiting = "]w", prev_waiting = "[w",
     -- The "· N unchanged lines ·" fold under the cursor; zR / zM do them all.
     toggle_fold = { "za", "<Space>" },
     refresh = "r",  -- the chat's change viewer only
@@ -76,13 +77,14 @@ local DEFAULT_KEYS = {
     open_commit = "<CR>", open_image = { "<CR>", "gx" }, batch_toggle = "gB", batch_queue = "gQ",
     batch_submit = "gS", since = "gi", followup = "gu", open_workitem = "gW",
     link_workitem = "gl", unlink_workitem = "gL", plan_agents = "gP", goto_plan = "gp",
-    chat_input = "i", chat_selection = "<CR>",
+    chat_input = "i", chat_selection = "<CR>", next_waiting = "]w", prev_waiting = "[w",
   },
   -- Code-navigation peek/revision buffers.
   nav = {
     goto_definition = "gd", find_references = "gr", search = "g/",
     back = "<BS>", back_to_diff = "q", config = "gO", resize_less = "<",
     resize_more = ">", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- Work-items dashboard - and the issues dashboard (I), the same screen
   -- on a GitHub account's project. workitems (W) is bound on the issues
@@ -97,7 +99,7 @@ local DEFAULT_KEYS = {
     filter = "/", unlink_pr = "gL", tree = "T", open_pr = "gR",
     toggle_fold = { "za", "<Space>" }, expand_all = "zR", collapse_all = "zM",
     plan_agents = "gP", agents = "A", chat_input = "i", chat_selection = "<CR>",
-    first_row = "gg", last_row = "G",
+    first_row = "gg", last_row = "G", next_waiting = "]w", prev_waiting = "[w",
   },
   -- Work-item detail view.
   workitem_view = {
@@ -105,11 +107,12 @@ local DEFAULT_KEYS = {
     edit_title = "ge", description = "gE", move_sprint = "gi", set_parent = "gU", comment = "gc", link_pr = "gl",
     unlink_pr = "gL", open_pr = "gR", browser = "o", copy_link = "gy", refresh = "r",
     back = "<BS>", quit = "q", help = "?", palette = "g.", chat_input = "i", chat_selection = "<CR>",
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- The chat panel (both its conversation and its input box).
   chat = {
     -- newline: <S-CR> where the terminal reports it, <C-j> everywhere.
-    send = "<CR>", send_insert = { "<CR>", "<C-s>" }, newline = { "<S-CR>", "<C-j>" },
+    send = "<CR>", send_insert = "<CR>", newline = { "<S-CR>", "<C-j>" },
     focus_input = { "i", "a" }, new_chat = "gn",
     cancel = "<C-c>", model = "gm", agent = "gM", prompts = "gp", history = "gh", audit = "gH",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",
@@ -117,12 +120,16 @@ local DEFAULT_KEYS = {
     changes = "gd", why = "ga", expand = "<Tab>", agents = "A",
     -- On a message queued while the agent answers (conversation only).
     queue_drop = "dd", queue_edit = "cc",
+    -- The conversation only, as agents.
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- The Agents screen (chat/agents_view.lua): every plan's agent.
   agents = {
     open = "<CR>", changes = "gd", run_log = "gH", cancel = "<C-c>", refresh = "r",
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G", open_pr = "gp",
+    open_session = "go", next_waiting = "]w", prev_waiting = "[w",
+    notes = "gn",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -134,6 +141,7 @@ local DEFAULT_KEYS = {
     revisions = "gh",
     discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
     open_pr = "gp",  -- the PR its agent opened, or the one it fixes
+    next_waiting = "]w", prev_waiting = "[w",
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to
@@ -337,28 +345,32 @@ local CHAT_FIELDS = {
   default_agent = "string", prompts = "table", permissions = "table", daily_summary = "boolean",
   suggest_on_new_comments = "boolean", plan_first = "any", plan_template = "string", max_agents = "number",
   plan_revisions = "number",
-  test_cmd = "any", toasts = "any", on_new_comments = "string", watch_seconds = "number", skill_dirs = "table",
+  test_cmd = "any", toasts = "any", on_new_comments = "string", on_failed_build = "string", watch_seconds = "number",
+  on_conflict = "string",
+  skill_dirs = "table", self_review = "boolean",
 }
 -- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
   label = "string", stdin = "string", env = "table", timeout_seconds = "number", model = "string",
   idle_timeout_seconds = "number", max_turn_seconds = "number", interrupt_grace_seconds = "number",
   models = "table", strip = "table", acp = "boolean", premium_requests = "table",
-  planner_model = "string", implementer_model = "string",
+  planner_model = "string", implementer_model = "string", reviewer_model = "string",
 }
 -- Fields from when every message started a fresh process: the agent now
 -- stays running for the whole conversation, so there's nothing to resume.
 local CHAT_AGENT_REMOVED = {
   followup = true, session_pattern = true, persistent = true,
 }
-local function check_chat_cmd(v, where)
+-- `field`: which of the agent's commands (default "cmd").
+local function check_chat_cmd(v, where, field)
+  local name = where .. "." .. (field or "cmd")
   if type(v) == "table" then
-    if #v == 0 then error("azure-cli.setup: " .. where .. ".cmd is an empty list") end
+    if #v == 0 then error("azure-cli.setup: " .. name .. " is an empty list") end
     for _, part in ipairs(v) do
-      if type(part) ~= "string" then error("azure-cli.setup: " .. where .. ".cmd must be a list of strings") end
+      if type(part) ~= "string" then error("azure-cli.setup: " .. name .. " must be a list of strings") end
     end
   elseif type(v) ~= "string" or v == "" then
-    error("azure-cli.setup: " .. where .. ".cmd must be a list of strings or a shell command string")
+    error("azure-cli.setup: " .. name .. " must be a list of strings or a shell command string")
   end
 end
 local function validate_chat(chat)
@@ -397,6 +409,14 @@ local function validate_chat(chat)
   if out.on_new_comments ~= nil and out.on_new_comments ~= "suggest" and out.on_new_comments ~= "plan" then
     error("azure-cli.setup: chat.on_new_comments must be \"suggest\" or \"plan\"")
   end
+  if out.on_failed_build ~= nil and out.on_failed_build ~= "suggest" and out.on_failed_build ~= "plan"
+      and out.on_failed_build ~= "off" then
+    error("azure-cli.setup: chat.on_failed_build must be \"suggest\", \"plan\" or \"off\"")
+  end
+  if out.on_conflict ~= nil and out.on_conflict ~= "suggest" and out.on_conflict ~= "rebase"
+      and out.on_conflict ~= "off" then
+    error("azure-cli.setup: chat.on_conflict must be \"suggest\", \"rebase\" or \"off\"")
+  end
   if out.watch_seconds ~= nil and out.watch_seconds < 30 then
     error("azure-cli.setup: chat.watch_seconds must be at least 30")
   end
@@ -414,6 +434,10 @@ local function validate_chat(chat)
     for k, v in pairs(a) do
       if k == "cmd" then
         check_chat_cmd(v, where)
+      elseif k == "resume_cmd" then
+        -- The agent's CLI on a session, {session_id} expanded: go on the
+        -- Agents screen opens it in a terminal (#142).
+        check_chat_cmd(v, where, "resume_cmd")
       elseif CHAT_AGENT_REMOVED[k] then
         error("azure-cli.setup: " .. where .. "." .. k .. " is gone - the agent now stays running for the whole "
           .. "conversation instead of starting per message; remove it (docs/chat.md has the new examples)")
@@ -921,8 +945,9 @@ function M.render_options()
   w("    --   label = \"Copilot\", acp = true,")
   w("    --   models = { \"claude-sonnet-5\", \"gpt-5.5\" },  -- the names `copilot --help` lists")
   w("    --   cmd = { \"copilot\", \"--acp\", \"--add-dir\", \"{fix_root}\", \"--allow-tool\", \"azure-vicli\" },")
+  w("    --   resume_cmd = { \"copilot\", \"--resume\", \"{session_id}\" },  -- go on the Agents screen: its session in a terminal")
   w("    --   premium_requests = { default = 1 },")
-  w("    --   planner_model = \"gpt-5.5\", implementer_model = \"claude-sonnet-5\",")
+  w("    --   planner_model = \"gpt-5.5\", implementer_model = \"claude-sonnet-5\", reviewer_model = \"gpt-5-mini\",")
   w("    -- },")
   w("    -- agents = { copilot = { ... }, claude = { ... } }, default_agent = \"copilot\",  -- instead of agent; gM switches")
   w("    -- permissions = {              -- \"allow\" / \"ask\" / \"deny\": a tool's name, else its group, else all")
@@ -937,7 +962,10 @@ function M.render_options()
   w("    -- plan_revisions = 3,          -- revisions kept per plan (and the approved one)")
   w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
   w("    -- max_agents = 3,              -- agents working at once")
+  w("    -- self_review = false,         -- a second agent reviews a plan agent's change before you do")
   w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")
+  w("    -- on_failed_build = \"suggest\", -- or \"plan\", \"off\": what a failed build on the agent's PRs does")
+  w("    -- on_conflict = \"suggest\",     -- or \"rebase\", \"off\": what a merge conflict on the agent's PRs does")
   w("    -- suggest_on_new_comments = true,")
   w("    -- watch_seconds = 120,         -- how often the agent's PRs are checked")
   w("    -- daily_summary = false,       -- /standup the first time the dashboard opens each day")
