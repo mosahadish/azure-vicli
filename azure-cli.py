@@ -2398,7 +2398,7 @@ PR_ACTION_FLAGS = (
     "--reply", "--status", "--vote", "--complete", "--auto-complete",
     "--edit-comment", "--delete-comment", "--work-items",
     "--build-log", "--test-results", "--add-reviewer", "--set-description", "--create-pr", "--get-pr",
-    "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer",
+    "--submit-review", "--fetch-image", "--find-people", "--remove-reviewer", "--set-required",
 )
 
 # review-pr.sh's set_thread_status: most keywords pass through unchanged:
@@ -3077,6 +3077,27 @@ class PrActions:
                           for p in people], ensure_ascii=False))
         return 0
 
+    def set_required(self, reviewer_id, required="true"):
+        """--set-required: makes reviewer `reviewer_id` (their identity id)
+        required or optional (Pull Request Reviewers - Create, PUT with
+        isRequired and no vote - the documented PATCH can't change it).
+        Prints what the server answers: their isRequired and vote, so the
+        caller sees a policy keeping them required, or a vote that didn't
+        survive."""
+        if _is_blank(reviewer_id):
+            print("Which reviewer?", file=sys.stderr)
+            return 1
+        try:
+            r = self.fetch(self._pr_url("/reviewers/{0}".format(urllib.parse.quote(reviewer_id.strip(), safe=""))),
+                           method="PUT", data={"isRequired": _to_bool(required)}, pat=self.pat, api_version="6.0")
+        except AdoHttpError as e:
+            print("REST set-required failed: HTTP {0}: {1}".format(e.status, _clip(e.body)), file=sys.stderr)
+            return 1
+        r = r if isinstance(r, dict) else {}
+        print(json.dumps({"id": reviewer_id.strip(), "isRequired": bool(r.get("isRequired", _to_bool(required))),
+                          "vote": r.get("vote")}, ensure_ascii=False))
+        return 0
+
     def remove_reviewer(self, reviewer_id):
         """--remove-reviewer: takes reviewer `reviewer_id` (their identity
         id) off the PR - Pull Request Reviewers - Delete. A reviewer a
@@ -3363,6 +3384,8 @@ def cmd_pr_action(flag, rest, env=None):
         return actions.find_people(arg(0))
     if flag == "--remove-reviewer":
         return actions.remove_reviewer(arg(0))
+    if flag == "--set-required":
+        return actions.set_required(arg(0), arg(1, "true"))
     if flag == "--set-description":
         return actions.set_description(arg(0), arg(1))
     if flag == "--create-pr":

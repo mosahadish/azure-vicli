@@ -48,6 +48,8 @@ local AZURE = {
   add_reviewer = true,
   -- gX: any reviewer (a policy's required ones are the server's to refuse).
   remove_reviewer = true,
+  -- gR's <Space> on a reviewer: required or optional.
+  set_required = true,
   set_description = true,
   -- "@<guid>": Azure DevOps only notifies for a mention by GUID.
   mention = function(id) return "@<" .. id .. ">" end,

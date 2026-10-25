@@ -51,7 +51,7 @@ error until you remove it, and you allow a skill from `/skills` instead
 
 | Key (in the panel) | Action |
 |---|---|
-| `<CR>` (input box, normal mode or while typing) / `<C-s>` (while typing) | Send the message; with the completion menu open, `<CR>` picks the entry instead |
+| `<CR>` (input box, normal mode or while typing) | Send the message; with the completion menu open, `<CR>` picks the entry instead |
 | `<S-CR>` / `<C-j>` (while typing) | A new line in the message (`<S-CR>` where the terminal reports it, `<C-j>` everywhere) |
 | `<Up>` / `<Down>` (input box) | Step through the messages you sent |
 | `i` / `a` (conversation) | Go to the input box |
@@ -585,7 +585,7 @@ always has all of them.
 
 **Ask why.** Put the cursor on any line of the plan - or select a few -
 and press `ga`: an empty editor opens under the line - type your question
-and send it with `<C-s>`.
+and send it with `<CR>`.
 The question goes to the agent through the chat, with the line and its
 section, and the answer appears under that line, like a review thread
 (also in the chat). `<Tab>` unfolds a long answer, `K` shows it in a

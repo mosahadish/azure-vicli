@@ -112,7 +112,7 @@ local DEFAULT_KEYS = {
   -- The chat panel (both its conversation and its input box).
   chat = {
     -- newline: <S-CR> where the terminal reports it, <C-j> everywhere.
-    send = "<CR>", send_insert = { "<CR>", "<C-s>" }, newline = { "<S-CR>", "<C-j>" },
+    send = "<CR>", send_insert = "<CR>", newline = { "<S-CR>", "<C-j>" },
     focus_input = { "i", "a" }, new_chat = "gn",
     cancel = "<C-c>", model = "gm", agent = "gM", prompts = "gp", history = "gh", audit = "gH",
     use_as_reply = "gr", open_ref = "<CR>", prev_message = "<Up>", next_message = "<Down>",

@@ -728,13 +728,37 @@ section("PEOPLE", function()
     for _, r in ipairs(pr and pr.reviewers or {}) do if r.name == name then return true end end
   end
   feed("gR")
-  -- Before anything is typed it lists everyone who can review, less the
-  -- PR's reviewers (Bob Brown is one).
-  local _, list = picker()
+  -- Before anything is typed it lists the PR's reviewers (Bob Brown is
+  -- one), optional or required, then everyone else who can review.
+  local ib0, list = picker()
   if not vim.wait(10000, function() return list():find("Carol Chen", 1, true) ~= nil end, 20)
-    or not list():find("Alice Andersson", 1, true) or list():find("Bob Brown", 1, true) then
+    or not list():find("Alice Andersson", 1, true) or not list():find("Bob Brown  \u{00B7}  optional, no vote", 1, true)
+    or select(2, list():gsub("Bob Brown", "")) ~= 1 then
     restore()
     return fail("gR's list before typing: " .. list())
+  end
+  -- <Space> on a reviewer makes them required, and again optional; the
+  -- popup stays open.
+  local space
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib0, "i")) do if m.lhs == " " or m.lhs == "<Space>" then space = m.callback end end
+  if not space then restore() return fail("gR has no <Space>") end
+  local function bob()
+    for _, r in ipairs(rec101() and rec101().reviewers or {}) do if r.name == "Bob Brown" then return r end end
+    return {}
+  end
+  local nav
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(ib0, "i")) do if m.lhs == "<C-N>" or m.lhs == "<C-n>" then nav = m.callback end end
+  local first = vim.split(list(), "\n")[1]
+  if not first:find("Bob Brown", 1, true) then nav() end
+  space()
+  if not vim.wait(10000, function() return bob().isRequired and list():find("Bob Brown  \u{00B7}  required, no vote", 1, true) end, 20) then
+    restore()
+    return fail("<Space> in gR didn't make Bob Brown required: " .. list())
+  end
+  space()
+  if not vim.wait(10000, function() return not bob().isRequired and list():find("Bob Brown  \u{00B7}  optional", 1, true) end, 20) then
+    restore()
+    return fail("<Space> again didn't make Bob Brown optional: " .. list())
   end
   local err = answer("carol", "Carol Chen")
   if err then restore() return fail("gR: " .. err) end
@@ -764,7 +788,7 @@ section("PEOPLE", function()
   end, 50)
   if not tagged then restore() return fail("<C-t> didn't put \"@Bob Brown\" in the editor") end
   vim.api.nvim_set_current_win(vim.fn.bufwinid(ebuf))
-  feed("<C-s>")
+  feed("<CR>")
   restore()
   if not (sent and sent:find("@<bbbbbbbb-0000-0000-0000-000000000002>", 1, true)) then
     return fail("the tag wasn't sent as a mention: " .. tostring(sent))
@@ -2325,7 +2349,7 @@ json.dump(s, open(p, "w", encoding="utf-8"))
   if not table.concat(vim.api.nvim_buf_get_lines(ed, 0, -1, false), "\n"):find("FAKE-CHAT-RAN", 1, true) then
     return fail("gr didn't prefill the editor with the answer")
   end
-  feed("<C-s>")
+  feed("<CR>")
   ok = vim.wait(3000, function() return #STATE.batch["101"].items == before + 1 end, 50)
   if not ok then return fail("gr's reply wasn't queued") end
 
@@ -2620,7 +2644,7 @@ section("PLAN", function()
   n = #st.entries
   feed("ga")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
-  feed("<C-s>")
+  feed("<CR>")
   local rec
   local okq = vim.wait(40000, function()
     rec = PLAN.load("wi-3002")
@@ -2664,7 +2688,7 @@ section("PLAN", function()
   local nthreads = #PLAN.load("wi-3002").threads
   feed("gc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper" })
-  feed("<C-s>")
+  feed("<CR>")
   rec = PLAN.load("wi-3002")
   local req = rec.threads[#rec.threads]
   if not (req.kind == "request" and req.status == "queued" and req.line == 8) then
@@ -2679,7 +2703,7 @@ section("PLAN", function()
   vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
   feed("gc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Typo'd change" })
-  feed("<C-s>")
+  feed("<CR>")
   if not vim.wo[v.plan_win].winbar:find("\u{270E}2 queued", 1, true) then return fail("two queued changes aren't counted") end
   vim.api.nvim_set_current_win(v.plan_win)
   vim.api.nvim_win_set_cursor(v.plan_win, { 9, 0 })
@@ -2706,7 +2730,7 @@ section("PLAN", function()
   vim.api.nvim_win_set_cursor(v.plan_win, { 8, 0 })
   feed("cc")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Make it a thin wrapper, please" })
-  feed("<C-s>")
+  feed("<CR>")
   rec = PLAN.load("wi-3002")
   req = rec.threads[#rec.threads]
   if not (req.id == id8 and req.line == 8 and req.status == "queued" and req.question == "Make it a thin wrapper, please") then
@@ -2714,7 +2738,7 @@ section("PLAN", function()
   end
   n = #st.entries
   feed("gR")
-  feed("<C-s>")
+  feed("<CR>")
   e = answered(n)
   if not (e and e.text:find("requests: 1", 1, true)) then return fail("gR didn't send the line's change: " .. vim.inspect(e and e.text)) end
   rec = PLAN.load("wi-3002")
@@ -2766,7 +2790,7 @@ section("PLAN", function()
   end
   feed("gr")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "No, admins too." })
-  feed("<C-s>")
+  feed("<CR>")
   if not drawn(v.plan_buf, "\u{21AA} you: No, admins too.") or vim.wo[v.plan_win].winbar:find("to answer", 1, true) then
     return fail("the answer isn't under its question, or still counted as open")
   end
@@ -2837,7 +2861,7 @@ section("PLAN", function()
   vim.api.nvim_win_set_cursor(dwin, { drow, 0 })
   feed("ga")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you choose this?" })
-  feed("<C-s>")
+  feed("<CR>")
   local dbuf = vim.api.nvim_win_get_buf(dwin)
   local okd = vim.wait(40000, function() return drawn(dbuf, "BECAUSE-PLANNED_CHANGE = True") ~= nil end, 100)
   if not okd then return fail("the question in the change viewer wasn't answered under its line") end
@@ -2876,7 +2900,7 @@ section("PLAN", function()
   -- c queues a change on the line, gS sends the queue in one message.
   feed("c")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Name it LOCKOUT_REASON" })
-  feed("<C-s>")
+  feed("<CR>")
   dbuf = vim.api.nvim_win_get_buf(dwin)
   if not drawn(dbuf, "\u{270E} Name it LOCKOUT_REASON") or not vim.wo[dwin].winbar:find("1 queued", 1, true) then
     return fail("c didn't queue the change under the line: " .. vim.wo[dwin].winbar)
@@ -2885,7 +2909,7 @@ section("PLAN", function()
   if not drawn(dbuf, "queued - gS sends it") then return fail("the queued change doesn't say gS sends it") end
   n = #st.entries
   feed("gS")
-  feed("<C-s>")
+  feed("<CR>")
   e = answered(n)
   if not (e and e.text:find("fix requests: 1", 1, true)) then return fail("gS didn't send the queued change: " .. vim.inspect(e and e.text)) end
   if not drawn(dbuf, "sent with your change request") then return fail("the sent change isn't marked as sent") end
@@ -2969,7 +2993,7 @@ section("PLAN", function()
   n = #st.entries
   feed("ga")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Why did you do this?" })
-  feed("<C-s>")
+  feed("<CR>")
   e = answered(n)
   if not (e and e.text:find("BECAUSE-", 1, true) and e.text:find("show_fix", 1, true)) then
     return fail("ga on a step didn't ask about it: " .. vim.inspect(e and e.text))

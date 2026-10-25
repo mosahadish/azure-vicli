@@ -441,7 +441,7 @@ paste the output here after changing a default.
 | `resize_less` | `<` |
 | `resize_more` | `>` |
 | `send` | `<CR>` |
-| `send_insert` | `<CR>` / `<C-s>` |
+| `send_insert` | `<CR>` |
 | `use_as_reply` | `gr` |
 | `why` | `ga` |
 
