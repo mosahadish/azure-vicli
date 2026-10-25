@@ -4993,5 +4993,62 @@ if not ok then return fail("#3011's view didn't reload with the saved changes", 
 smoke_ok("WIEDIT")
 end)
 
+-- R in the K popup: the reply shows in it at once - the popup grows to
+-- fit it and the cursor goes to it - before it's reopened.
+section("KREPLY", function()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pcall(vim.api.nvim_win_close, w, true) end
+  end
+  ensure_review()
+  local lw = vim.fn.bufwinid(files)
+  vim.api.nvim_set_current_win(lw)
+  vim.api.nvim_win_set_cursor(lw, { 1, 0 })
+  local ns = vim.api.nvim_get_namespaces()["azure_cli_comments"]
+  feed("]C")
+  if not vim.wait(15000, function()
+    local w = vim.api.nvim_get_current_win()
+    if w == lw or vim.api.nvim_win_get_config(w).relative ~= "" then return false end
+    local row = vim.api.nvim_win_get_cursor(w)[1] - 1
+    return #vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(w), ns, { row, 0 }, { row, -1 }, {}) > 0
+  end, 50) then
+    return fail("]C didn't reach a comment")
+  end
+  feed("K")
+  local pop
+  if not vim.wait(5000, function()
+    local w = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_config(w).relative ~= "" then pop = w return true end
+  end, 20) then return fail("K didn't open the thread popup") end
+  local h0 = vim.api.nvim_win_get_height(pop)
+  -- Two threads on the line by now (BATCHQ's): the first, Bob's.
+  local PROMPT = require("azure-cli.prompt")
+  local real_sel = PROMPT.select
+  PROMPT.select = function(o, cb) cb(o.items[1], 1) end
+  feed("R")
+  PROMPT.select = real_sel
+  if not vim.wait(5000, function() return vim.api.nvim_get_current_win() ~= pop end, 20) then
+    return fail("R didn't open the reply editor")
+  end
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "KREPLY one", "KREPLY two", "KREPLY three" })
+  feed("<CR>")
+  local function popup_text()
+    return vim.api.nvim_win_is_valid(pop) and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pop), 0, -1, false), "\n") or ""
+  end
+  if not vim.wait(30000, function()
+    return popup_text():find("KREPLY three", 1, true) ~= nil and not popup_text():find("sending", 1, true)
+  end, 50) then
+    return fail("the reply didn't show in the K popup: " .. popup_text())
+  end
+  local h1 = vim.api.nvim_win_get_height(pop)
+  local cur = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pop), vim.api.nvim_win_get_cursor(pop)[1] - 1,
+    vim.api.nvim_win_get_cursor(pop)[1] + 1, false)
+  if h1 <= h0 then return fail("the K popup didn't grow for the reply: " .. h0 .. " -> " .. h1) end
+  if not (cur[2] or ""):find("KREPLY one", 1, true) then
+    return fail("the cursor isn't on the reply: " .. vim.inspect(cur))
+  end
+  pcall(vim.api.nvim_win_close, pop, true)
+  smoke_ok("KREPLY")
+end)
+
 print("SMOKE-DONE")
 vim.cmd("qa!")

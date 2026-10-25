@@ -944,6 +944,31 @@ do
   local saved = TR.load(wdir)
   check("run: a gb run is kept with who started it", got and got.code == 0 and saved and saved.by == "user"
     and saved.fingerprint == "fp1", vim.inspect(saved))
+  -- Timed out with a child still holding the output open: the run is let
+  -- go after the grace period, not "already running" for good.
+  -- (jobstop doing nothing stands in for Windows, where it doesn't reach
+  -- what the shell started.)
+  local timeout, grace, jobstop = TR.TIMEOUT, TR.GRACE_MS, vim.fn.jobstop
+  TR.TIMEOUT, TR.GRACE_MS = 0.2, 300
+  vim.fn.jobstop = function() return 1 end
+  local tg
+  TR.run(wdir, "sleep 4", "fpt", function(r) tg = r end, { by = "agent" })
+  vim.wait(2000, function() return tg ~= nil end, 20)
+  TR.TIMEOUT, TR.GRACE_MS, vim.fn.jobstop = timeout, grace, jobstop
+  check("run: a timed-out run is let go even when its exit never comes", tg and tg.timed_out and not TR.running(wdir),
+    vim.inspect(tg))
+  local again
+  TR.run(wdir, "true", "fp1", function(r) again = r end, { by = "user" })
+  vim.wait(5000, function() return again ~= nil end, 20)
+  check("run: and the next run starts", again and again.code == 0, vim.inspect(again))
+  local yes = function() return true end
+  local no = function() return false end
+  check("argv: on Windows a .ps1 goes to PowerShell, pwsh when there",
+    vim.deep_equal(TR.argv([[.\Scripts\Find.ps1 -All]], true, yes),
+      { "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", [[.\Scripts\Find.ps1 -All]] })
+    and TR.argv([["C:\a b\t.PS1"]], true, no)[1] == "powershell")
+  check("argv: on Windows anything else to 'shell' as a string; elsewhere shell + flag",
+    TR.argv("dotnet test", true, yes) == "dotnet test" and TR.argv("make test", false)[3] == "make test")
   local PROMPT = require("azure-cli.prompt")
   local real_confirm = PROMPT.confirm
   PROMPT.confirm = function(_, cb) cb(false) end

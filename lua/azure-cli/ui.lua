@@ -305,6 +305,28 @@ end
 -- Height is capped by the screen, not a constant, and a cursor-anchored
 -- float that wouldn't fit below the cursor opens above it instead of
 -- being clipped. q / <Esc> close a focused float. Returns win, buf.
+-- The float `win` (M.open_float's, centred or not) grown or shrunk to its
+-- buffer's lines now - after they changed under it (a reply added to a
+-- comment thread) - within the screen, a centred one kept centred.
+function M.refit_float(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then return end
+  local cfg = vim.api.nvim_win_get_config(win)
+  local width = cfg.width
+  local rows = 0
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)) do
+    local w = vim.fn.strdisplaywidth(l)
+    rows = rows + (w <= width and 1 or 1 + math.ceil((w - width) / math.max(1, width - 4)))
+  end
+  local height = math.min(math.max(rows, 1), math.max(5, vim.o.lines - 4))
+  if height == cfg.height then return end
+  local new = { height = height }
+  if cfg.relative == "editor" then
+    new.relative, new.col = "editor", cfg.col
+    new.row = math.floor((vim.o.lines - height) / 2)
+  end
+  pcall(vim.api.nvim_win_set_config, win, new)
+end
+
 function M.open_float(lines, opts)
   if not lines or #lines == 0 then return nil end
   opts = opts or {}

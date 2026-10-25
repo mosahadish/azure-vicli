@@ -830,6 +830,7 @@ $out"
   }
   smoke_check "smoke: demo.sh --headless renders the fake dashboard, numbers its rows, <Space> folds a section" DEMO
   smoke_check "smoke: a redraw leaves the dashboard cursor on its row and column, a PR listed twice too" CURSOR
+  smoke_check "smoke: R in the K popup shows the reply in it at once, the popup grown to fit" KREPLY
   smoke_check "smoke: gd jumps to the definition at the PR's revision, <BS> walks back, gr peeks every reference" NAV
   smoke_check "smoke: gu lists my comments and gA filters them there like everywhere else" FOLLOWUP
   smoke_check "smoke: ]C / ]c on the file list land on the comment / change itself in the diff pane" LISTJUMP

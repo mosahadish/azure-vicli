@@ -622,6 +622,11 @@ widgets = ".venv/bin/python -m pytest -q", api = "dotnet test" }`. It runs
 in the worktree like the plan's, but without the question (it's yours),
 for `gb` and for the agent's `run_tests` alike.
 
+The command goes through Neovim's `shell` - on Windows `cmd.exe`, except
+a command that starts with a `.ps1` script, which runs in PowerShell
+(`pwsh` when it's installed). A run stops after 10 minutes, with
+everything it started; the next run can start right after.
+
 **Letting an approved plan push and open its PR.** `gA` offers two ways
 to approve: just approve, or approve *and let it push and open the PR
 once the tests pass*. With the second, the agent is told so and carries
