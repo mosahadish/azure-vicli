@@ -328,6 +328,12 @@ do
   VIEW.remember(win)
   vim.fn.systemlist = real_systemlist
   check("fix: remembering a window runs no git", spawned == 0 and VIEW.recent()[1] == "on m.lua:2", spawned)
+  -- Where the file is in its repository is looked up once, not per move.
+  local finds, real_find = 0, vim.fs.find
+  vim.fs.find = function(...) finds = finds + 1 return real_find(...) end
+  for _ = 1, 5 do VIEW.snapshot(win, nil, { light = true }) end
+  vim.fs.find = real_find
+  check("fix: the repository is looked up once per file", finds <= 1, finds)
 
   -- A describer that fails on a code file still lets the message go.
   local real_get = vim.diagnostic.get

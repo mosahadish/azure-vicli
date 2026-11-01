@@ -122,6 +122,23 @@ local function resolved(path)
   return dir and (dir .. "/" .. vim.fs.basename(path)) or path
 end
 
+-- File `name`'s repository root and its path in it, looked up once per
+-- 30 seconds: the input bar asks after every move.
+local where_cache = {}  -- name -> { root, rel, at }
+local function where(name)
+  local now = (vim.uv or vim.loop).now()
+  local c = where_cache[name]
+  if c and now - c.at < 30000 then return c.root, c.rel end
+  local root = git_root(name)
+  local rel
+  if root then
+    root = vim.loop.fs_realpath(root) or root
+    rel = M.relative(root, resolved(name))
+  end
+  where_cache[name] = { root = root, rel = rel, at = now }
+  return root, rel
+end
+
 -- `light` (the trail's and the input bar's label, which only name the file
 -- and line) skips the branch, the symbol and the diagnostics: no git, no
 -- parsing on every window switch.
@@ -134,11 +151,8 @@ function M.code(win, sel, light)
     code_line = vim.api.nvim_buf_get_lines(buf, cur[1] - 1, cur[1], false)[1] }
   if sel and sel.buf == buf then snap.selection_lines = sel.from .. "-" .. sel.to end
   snap.visible = vim.fn.line("w0", win) .. "-" .. vim.fn.line("w$", win)
-  local root = git_root(name)
-  if root then
-    root = vim.loop.fs_realpath(root) or root
-    snap.file = M.relative(root, resolved(name)) or name
-  end
+  local root, rel = where(name)
+  if root then snap.file = rel or name end
   if light then return snap end
   if root then snap.repo, snap.branch = root, git_branch(root) end
   snap.symbol = symbol_at(buf, cur[1] - 1, cur[2])
@@ -208,7 +222,7 @@ function M.recent()
   for i, e in ipairs(trail) do out[i] = e.label end
   return out
 end
-M._forget = function() trail, git_cache = {}, {} end  -- tests
+M._forget = function() trail, git_cache, where_cache = {}, {}, {} end  -- tests
 
 -- Remembers where window `win` is. Floating windows (popups) and whatever
 -- describes as nothing in particular (the chat panel, a scratch buffer)
