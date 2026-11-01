@@ -59,6 +59,25 @@ do
   IDE.open(dir)
   check("open: says when it can't start it", (notified[#notified] or ""):find("Couldn't start code", 1, true) ~= nil,
     notified[#notified])
+
+  -- A whole command in one list item: says why, and how to write it.
+  config.setup({ chat = { ide = { "code -n {dir}" } } })
+  vim.fn.jobstart = function() error("Vim:E475: Invalid value for argument cmd: 'code -n x' is not executable") end
+  IDE.open(dir)
+  local msg = notified[#notified] or ""
+  check("open: the reason it couldn't start", msg:find("is not executable", 1, true) ~= nil, msg)
+  check("open: a list item with spaces is one argument", msg:find('one list item per argument, or a string: "code -n {dir}"', 1, true) ~= nil, msg)
+
+  -- The launcher starts, then fails.
+  config.setup({ chat = { ide = { "code", "{dir}" } } })
+  vim.fn.jobstart = function(cmd, opts) started = { cmd = cmd, opts = opts } return 9 end
+  IDE.open(dir)
+  started.opts.on_exit(9, 0)
+  local quiet = #notified
+  started.opts.on_exit(9, 2)
+  vim.wait(200, function() return #notified > quiet end)
+  check("open: a launcher that fails says so", #notified == quiet + 1 and notified[#notified]:find("code exited with 2", 1, true) ~= nil,
+    notified[#notified])
   vim.fn.jobstart, NOTIFY.notify = real_jobstart, real_notify
 end
 

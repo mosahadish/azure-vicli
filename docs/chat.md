@@ -480,13 +480,15 @@ or in a plan, opens that agent's worktree in the IDE you set in
 its own, so it stays open when Neovim quits.
 
 ```lua
-ide = { "code", "-n", "{dir}" },         -- VS Code, a new window
+ide = "code -n {dir}",                   -- VS Code, a new window
 ide = "devenv.exe {dir}",                -- Visual Studio (opens the folder)
 ide = { "idea", "{dir}" },               -- IntelliJ / Rider: their launcher
 ```
 
-On Windows, use the string form for a launcher that's a `.cmd` (VS Code's
-`code` is): the shell finds it.
+The string form suits Windows, where VS Code's `code` is a `.cmd` the
+shell finds. In the list form each item is one argument: `{ "code -n {dir}" }`
+looks for a program called `code -n ...` - write `{ "code", "-n", "{dir}" }`.
+If the IDE can't start, or its launcher exits with an error, you're told.
 
 `followup`, `session_pattern` and `persistent` are gone: they were for
 starting a process per message and resuming a session each time. A config

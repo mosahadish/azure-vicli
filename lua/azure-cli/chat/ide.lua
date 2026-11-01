@@ -36,10 +36,19 @@ function M.open(dir)
   if not spec then return notify("No IDE set: chat.ide (docs/chat.md).") end
   if vim.fn.isdirectory(dir) == 0 then return notify(dir .. " isn't there any more.") end
   local cmd = M.command(spec, dir)
-  local ok, job = pcall(vim.fn.jobstart, cmd, { detach = true, cwd = dir })
+  local name = type(cmd) == "table" and cmd[1] or cmd:match("^%S+")
+  local ok, job = pcall(vim.fn.jobstart, cmd, { detach = true, cwd = dir,
+    -- A launcher (code.cmd, devenv) that starts and then fails.
+    on_exit = function(_, code)
+      if code ~= 0 then vim.schedule(function() notify(tostring(name) .. " exited with " .. code .. ".") end) end
+    end })
   if not ok or job <= 0 then
-    local name = type(cmd) == "table" and cmd[1] or cmd:match("^%S+")
-    return notify("Couldn't start " .. tostring(name) .. ".")
+    local why = not ok and (": " .. tostring(job):gsub("^Vim:", "")) or "."
+    -- { "code -n {dir}" } is one argument: a program by that whole name.
+    if type(spec) == "table" and spec[1]:find("%s") then
+      why = why .. ' - one list item per argument, or a string: "' .. spec[1] .. '"'
+    end
+    return notify("Couldn't start " .. tostring(name) .. why)
   end
 end
 
