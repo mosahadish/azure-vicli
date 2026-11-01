@@ -48,10 +48,18 @@ end
 -- (M.GROUPS) and `at` (when it last did something). Pure.
 function M.rows(convs, queued, plan_of, now, frame)
   local rows, seen = {}, {}
+  -- A change's reviewer (chat/review.lua) has no row: its implementer's
+  -- says it's in review.
+  local reviewers = {}
   for _, c in ipairs(convs) do
-    if c.plan_key then
+    if type(c.target) == "table" and c.target.review_of then reviewers[c.target.review_of] = c end
+  end
+  for _, c in ipairs(convs) do
+    local reviewer = reviewers[c.plan_key or ""]
+    if c.plan_key and not (type(c.target) == "table" and c.target.review_of) then
       seen[c.plan_key] = true
       local rec = plan_of(c.plan_key)
+      local waits = require("azure-cli.chat.plan_text").waiting_on(rec)
       local last = c.entries[#c.entries]
       local state, hl, group
       local detail = ""
@@ -59,6 +67,12 @@ function M.rows(convs, queued, plan_of, now, frame)
         group = 2
         state, hl = (frame or "*") .. " working", "AzureCliAccent"
         local tools = last and last.tools or {}
+        detail = tools[#tools] or ""
+      elseif reviewer and reviewer.running then
+        group = 2
+        state, hl = (frame or "*") .. " in review", "AzureCliAccent"
+        local rlast = reviewer.entries[#reviewer.entries]
+        local tools = rlast and rlast.tools or {}
         detail = tools[#tools] or ""
       elseif rec and rec.pr_state == "completed" then
         state, hl = "\u{2713} merged (PR !" .. tostring(rec.pr and rec.pr.id or c.target and c.target.pr_id or "?") .. ")",
@@ -74,6 +88,9 @@ function M.rows(convs, queued, plan_of, now, frame)
         state, hl, group = "\u{25CF} plan waits for you", "AzureCliStatusDraft", 1
       elseif rec and rec.status == "changes_requested" then
         state, hl, group = "\u{21BA} changes asked, not revised yet", "AzureCliStatusBad", 1
+      elseif #waits > 0 then
+        -- Approved to start once the plans it overlaps are finished.
+        state, hl, group = "\u{231B} waits for " .. table.concat(waits, ", "), "AzureCliMuted", 3
       elseif rec and rec.status == "approved" then
         state, hl, group = "\u{2713} approved", "AzureCliStatusOk", 3
       elseif rec and rec.status == "done" and type(rec.pr) == "table" then
@@ -82,6 +99,9 @@ function M.rows(convs, queued, plan_of, now, frame)
         state, hl, group = "\u{2713} pushed", "AzureCliStatusDone", 3
       elseif last and last.status and last.status ~= "done" then
         state, hl, group = "\u{2717} " .. last.status, "AzureCliStatusBad", 1
+      elseif not rec and type(c.target) == "table" and c.target.task_id and last and last.role == "agent" then
+        -- A task agent (#143) that answered, its answer gone to the main chat.
+        state, hl, group = "\u{2713} answered", "AzureCliStatusOk", 3
       else
         state, hl, group = "idle", "AzureCliMuted", 3
       end
@@ -93,7 +113,8 @@ function M.rows(convs, queued, plan_of, now, frame)
         pr_key = (rec and type(rec.pr) == "table" and (rec.pr.key or rec.pr.id))
           or (c.target and (c.target.pr_key or c.target.pr_id)) or nil, at = started or 0, closed_at = rec and rec.closed_at, cost = require("azure-cli.chat.core").cost_of(c.entries),
         requests = require("azure-cli.chat.core").requests_of(c.entries), context = last and last.context,
-        waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil }
+        waiting = rec and (rec.status == "draft" or rec.status == "changes_requested") or nil,
+        review = rec and require("azure-cli.chat.plan_text").change_waits(rec) or nil }
     end
   end
   for _, q in ipairs(queued) do
@@ -364,13 +385,71 @@ function M.open_for_pr(key)
   return true
 end
 
+-- go's command for conversation `conv` run by `agent` (its spec): the
+-- agent's resume_cmd with {session_id} expanded (a list, or a shell
+-- string), and where to run it - where its session ran, else `fallback`
+-- (conversations saved before that was kept). nil and why it can't. Pure.
+function M.resume_command(agent, conv, fallback)
+  if not conv then return nil, "That row has no agent yet." end
+  if conv.running then return nil, "That agent is still working - stop it first (<C-c>)." end
+  if not conv.session_id or conv.session_id == "" then return nil, "That agent hasn't started a session yet." end
+  if not (agent and agent.resume_cmd) then
+    return nil, "That agent has no resume_cmd - set chat.agent.resume_cmd (docs/chat.md)."
+  end
+  local cwd = conv.agent_cwd or fallback
+  if not cwd or cwd == "" then return nil, "Don't know where that agent's session ran." end
+  local CORE = require("azure-cli.chat.core")
+  local vars = { session_id = conv.session_id, fix_root = require("azure-cli.chat.tools_fix").root() }
+  local cmd
+  if type(agent.resume_cmd) == "table" then
+    cmd = {}
+    for i, a in ipairs(agent.resume_cmd) do cmd[i] = CORE.expand(a, vars) end
+  else
+    cmd = CORE.expand(agent.resume_cmd, vars, vim.fn.shellescape)
+  end
+  return cmd, cwd
+end
+
+-- go: the row's agent's session in a terminal split, in the directory it
+-- ran in (#142). Its idle process lets go of the session first; the next
+-- message starts a new one, replaying the conversation.
+local function open_session(r)
+  if not r then return end
+  local c = r.conv
+  local agents = CHAT().agents()
+  local name = c and (c.session_agent or c.agent_name)
+  local agent = (name and agents[name]) or select(2, CHAT().current_agent())
+  local fallback = r.target and require("azure-cli.chat.tools_fix").dir_for(r.target) or nil
+  local cmd, cwd = M.resume_command(agent, c, fallback)
+  if not cmd then return notify(cwd) end
+  if vim.fn.isdirectory(cwd) == 0 then return notify(cwd .. " isn't there any more.") end
+  if c.persistent_job then require("azure-cli.chat.run").stop_persistent(c) end
+  vim.cmd("botright split")
+  vim.cmd("enew")
+  local ok, job
+  if vim.fn.has("nvim-0.11") == 1 then
+    ok, job = pcall(vim.fn.jobstart, cmd, { term = true, cwd = cwd })
+  else
+    ok, job = pcall(vim.fn.termopen, cmd, { cwd = cwd })
+  end
+  if not ok or job <= 0 then
+    pcall(vim.cmd, "close")
+    return notify("Couldn't start " .. (type(cmd) == "table" and cmd[1] or cmd) .. ": " .. tostring(job))
+  end
+  vim.cmd("startinsert")
+end
+
 local HELP = {
   "Move",
   { "first_row", "the first agent (a count: that row)" }, { "last_row", "the last agent (a count: that row)" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   "This agent",
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
   { "open_pr", "its pull request in the reviewer (the one it opened, or the one it fixes)" },
+  { "open_session", "its session in a terminal, in its directory (the agent's resume_cmd; not while it works)" },
+  { "notes", "the notes agents keep on its repository" },
   "Act",
   { "approve", "approve its plan (in visual mode: every selected row's), sent to its own agent" },
   { "cancel", "stop what that agent is doing" },
@@ -405,6 +484,21 @@ local function setup(buf)
     if not r.pr_key then return notify((r.label or "That agent") .. " has no pull request yet.") end
     require("azure-cli.chat.plan_view").open_pr(r.pr_key, r.pr_id)
   end, { desc = "its pull request" })
+  K.bind(buf, "agents", "open_session", function() open_session(row_here()) end,
+    { desc = "its session in a terminal" })
+  K.bind(buf, "agents", "notes", function()
+    local r = row_here()
+    if not r then return end
+    local NOTES = require("azure-cli.chat.repo_notes")
+    local repo = NOTES.of_target(r.target)
+    if not repo then return notify((r.label or "That agent") .. " has no repository yet.") end
+    local path = NOTES.path(repo)
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+    vim.cmd("botright split " .. vim.fn.fnameescape(path))
+    if vim.fn.filereadable(path) == 0 then
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# " .. NOTES.label(repo), "" })
+    end
+  end, { desc = "its repository's notes" })
   -- i: straight into the chat's input box, the panel opened if it's hidden.
   K.bind(buf, "agents", "chat_input", function() CHAT().show(true) end,
     { desc = "main chat" })
@@ -427,9 +521,12 @@ local function setup(buf)
       if rec and (rec.status == "draft" or rec.status == "changes_requested") then keys[#keys + 1] = r.key
       else skipped[#skipped + 1] = r.label end
     end
+    if #keys == 0 and #rows == 1 and #PLAN.waiting_on(PLAN.load(rows[1].key)) > 0 then
+      return PLAN.ask_start_now(rows[1].key, render)
+    end
     if #keys == 0 then return notify("No plan there waits for your approval.") end
-    PLAN.ask_approval(keys, function(allow_push)
-      for _, k in ipairs(keys) do PLAN.approve(k, allow_push) end
+    PLAN.ask_approval(keys, function(allow_push, wait_for)
+      for _, k in ipairs(keys) do PLAN.approve(k, allow_push, wait_for and wait_for[k]) end
       notify("Approved " .. #keys .. " plan" .. (#keys == 1 and "" or "s")
         .. (#skipped > 0 and (" (not " .. table.concat(skipped, ", ") .. ": nothing to approve)") or "") .. ".")
       render()
@@ -463,6 +560,7 @@ local function setup(buf)
     render()
   end, { desc = "show the older finished agents" })
   K.bind(buf, "agents", "refresh", render, { desc = "redraw" })
+  require("azure-cli.chat.waiting").bind(buf, "agents")
   K.bind(buf, "agents", "quit", function()
     if view and vim.api.nvim_tabpage_is_valid(view.tab) and #vim.api.nvim_list_tabpages() > 1 then
       pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(view.tab))

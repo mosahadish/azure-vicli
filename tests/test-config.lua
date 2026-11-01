@@ -505,6 +505,30 @@ do
   rejects("a bad plan_first", { plan_first = "sometimes" }, "chat.plan_first")
   rejects("a bad test_cmd", { test_cmd = { widgets = 3 } }, "chat.test_cmd")
   rejects("a bad max_agents", { max_agents = 0 }, "chat.max_agents")
+  rejects("a bad on_failed_build", { on_failed_build = "expired" }, "chat.on_failed_build")
+  for _, v in ipairs({ "suggest", "plan", "off" }) do
+    check("chat: on_failed_build = " .. v, pcall(config.setup, { chat = { on_failed_build = v } })
+      and config.get().chat.on_failed_build == v)
+  end
+  rejects("a bad on_conflict", { on_conflict = "plan" }, "chat.on_conflict")
+  for _, v in ipairs({ "suggest", "rebase", "off" }) do
+    check("chat: on_conflict = " .. v, pcall(config.setup, { chat = { on_conflict = v } })
+      and config.get().chat.on_conflict == v)
+  end
+  rejects("a bad self_review", { self_review = "yes" }, "chat.self_review must be a boolean")
+  rejects("a bad reviewer_model", { agent = { cmd = { "a" }, reviewer_model = 3 } }, "chat.agent.reviewer_model must be a string")
+  config.setup({ chat = {} })
+  check("chat: self_review off by default", config.get().chat.self_review == nil)
+  config.setup({ chat = { self_review = true, agent = { cmd = { "a" }, reviewer_model = "mini" } } })
+  check("chat: self_review and reviewer_model", config.get().chat.self_review == true
+    and config.get().chat.agent.reviewer_model == "mini")
+  -- resume_cmd (#142): a list or a shell string, like cmd.
+  config.setup({ chat = { agent = { cmd = { "claude" }, resume_cmd = { "claude", "--resume", "{session_id}" } } } })
+  check("chat: resume_cmd as a list", config.get().chat.agent.resume_cmd[2] == "--resume")
+  config.setup({ chat = { agents = { c = { cmd = { "copilot", "--acp" }, acp = true, resume_cmd = "copilot --resume {session_id}" } } } })
+  check("chat: resume_cmd as a string, on an agents entry", config.get().chat.agents.c.resume_cmd == "copilot --resume {session_id}")
+  rejects("an empty resume_cmd", { agent = { cmd = { "a" }, resume_cmd = {} } }, "chat.agent.resume_cmd is an empty list")
+  rejects("a numeric resume_cmd", { agent = { cmd = { "a" }, resume_cmd = 3 } }, "chat.agent.resume_cmd must be")
   config.setup({})
 end
 

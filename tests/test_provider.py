@@ -1123,7 +1123,7 @@ EXPECTED_FIELDS = {
     "closedThreads", "totalThreads", "myActiveThreads", "mentionThreads",
     "mentionTotal", "description", "buildStatus", "queuePosition", "buildUrl",
     "policies", "missingReviewers", "mergeConflict", "url", "cloneUrl",
-    "clonesDir", "myId", "myName", "reviewers", "sourceCommit",
+    "clonesDir", "myId", "myName", "reviewers", "sourceCommit", "targetCommit",
 }
 
 

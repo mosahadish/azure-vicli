@@ -259,7 +259,8 @@ def _pr_node(client, owner, name, number, check_branch):
         "body": p.get("body") or "", "isDraft": bool(p.get("draft")), "createdAt": p.get("created_at"),
         "updatedAt": p.get("updated_at"), "state": state,
         "headRefName": head.get("ref") or "", "baseRefName": base.get("ref") or "",
-        "headRefOid": head.get("sha") or "", "isCrossRepository": cross, "headRef": head_ref,
+        "headRefOid": head.get("sha") or "", "baseRefOid": base.get("sha") or "",
+        "isCrossRepository": cross, "headRef": head_ref,
         "repository": {"name": name, "url": repo.get("html_url") or "https://{0}/{1}/{2}".format(
                            host.web_host(client.api_url), owner, name),
                        "owner": {"login": owner},

@@ -262,6 +262,26 @@ class ChatPrActionTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("HTTP 400", err)
 
+    def test_set_required_puts_only_is_required(self):
+        gid = "12345678-90ab-cdef-1234-567890abcdef"
+        rc, out, _, fetch = self.run_action("set_required", gid, "false", responses={
+            self.PR + "/reviewers/" + gid: {"id": gid, "isRequired": False, "vote": 10}})
+        self.assertEqual((rc, json.loads(out)), (0, {"id": gid, "isRequired": False, "vote": 10}))
+        self.assertEqual([(c["method"], c["url"], c["data"]) for c in fetch.calls],
+                         [("PUT", self.PR + "/reviewers/" + gid, {"isRequired": False})])
+
+    def test_set_required_reports_a_policy_keeping_them(self):
+        rc, out, _, _ = self.run_action("set_required", "req", "false", responses={
+            self.PR + "/reviewers/req": {"id": "req", "isRequired": True, "vote": 0}})
+        self.assertEqual((rc, json.loads(out)["isRequired"]), (0, True))
+
+    def test_set_required_reports_the_servers_refusal(self):
+        url = self.PR + "/reviewers/req"
+        rc, _, err, _ = self.run_action("set_required", "req", "true", raise_for={
+            url: tpa.ac.AdoHttpError(403, url, b"no")})
+        self.assertEqual(rc, 1)
+        self.assertIn("HTTP 403", err)
+
     def test_remove_reviewer_needs_someone(self):
         self.assertEqual(self.run_action("remove_reviewer", " ")[0], 1)
 
@@ -315,6 +335,23 @@ class ChatPrActionTests(unittest.TestCase):
         self.assertEqual((rec["id"], rec["repo"], rec["source"], rec["target"], rec["author"], rec["state"]),
                          (42, "other-repo", "feature/x", "develop", "Bob", "active"))
         self.assertEqual((rec["org"], rec["project"]), ("https://dev.azure.com/org", "proj"))
+
+    def test_get_pr_has_the_build_as_the_dashboard_works_it_out(self):
+        url = "https://dev.azure.com/org/proj/_apis/git/pullrequests/42"
+        evals = ("https://dev.azure.com/org/proj/_apis/policy/evaluations?artifactId="
+                 "vstfs%3A%2F%2F%2FCodeReview%2FCodeReviewId%2Fproj-guid%2F42")
+        pr = {"pullRequestId": 42, "title": "Fix it", "status": "active",
+              "repository": {"name": "r", "project": {"id": "proj-guid"}}}
+        build = {"configuration": {"type": {"id": ac.BUILD_POLICY_TYPE_ID, "displayName": "Build"}},
+                 "status": "rejected", "context": {"buildId": 77}}
+        rc, out, _, _ = self.run_action("get_pr", responses={url: pr, evals: {"value": [build]}})
+        rec = json.loads(out)
+        self.assertEqual((rc, rec["buildStatus"]), (0, "failed"))
+        self.assertIn("buildId=77", rec["buildUrl"])
+        # The evaluations failing: no build, not a failed --get-pr.
+        rc, out, _, _ = self.run_action("get_pr", responses={url: pr},
+                                        raise_for={evals: ac.AdoHttpError(500, evals, b"down")})
+        self.assertEqual((rc, json.loads(out)["buildStatus"]), (0, "none"))
 
     def test_get_pr_failure(self):
         url = "https://dev.azure.com/org/proj/_apis/git/pullrequests/42"

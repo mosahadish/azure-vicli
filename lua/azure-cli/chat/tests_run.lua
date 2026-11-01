@@ -25,6 +25,27 @@ M.KEEP_LINES = 400
 
 local running = {}  -- dir -> true while its tests run
 
+-- How long a timed-out run's process tree gets to go before the run is
+-- let go anyway (its exit may never be reported - a child keeping the
+-- pipes open on Windows).
+M.GRACE_MS = 5000
+
+-- What runs `cmd`: on Windows a .ps1 script goes to PowerShell (cmd.exe
+-- would hand it to its file association - Notepad), anything else to
+-- 'shell' as a string, which Neovim quotes for cmd.exe; elsewhere
+-- { 'shell', 'shellcmdflag', cmd }. `win` and `has` (an executable check)
+-- are for tests.
+function M.argv(cmd, win, has)
+  if win == nil then win = vim.fn.has("win32") == 1 end
+  has = has or function(x) return vim.fn.executable(x) == 1 end
+  if not win then return { vim.o.shell, vim.o.shellcmdflag, cmd } end
+  local first = vim.trim(cmd):match('^"([^"]+)"') or vim.trim(cmd):match("^(%S+)") or ""
+  if first:lower():match("%.ps1$") then
+    return { has("pwsh") and "pwsh" or "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd }
+  end
+  return cmd
+end
+
 -- The repository of a fix / story worktree: start_fix's <repo>-<pr id>,
 -- start_story's <repo>-wi<id>, a GitHub PR's or issue's pr-github- /
 -- wi-github-<owner~repo~n>. Pure.
@@ -145,31 +166,38 @@ function M.run(dir, cmd, fp, cb, opts)
   running[dir] = true
   local out, started = {}, os.time()
   local function add(_, d) if d then for _, l in ipairs(d) do out[#out + 1] = (l:gsub("\r$", "")) end end end
-  local timed_out = false
-  local ok, job = pcall(vim.fn.jobstart, { vim.o.shell, vim.o.shellcmdflag, cmd }, {
+  local timed_out, finished = false, false
+  -- Once, from the job's exit or - after a timeout - the grace period.
+  local function finish(code)
+    if finished then return end
+    finished = true
+    running[dir] = nil
+    local keep = #out > M.KEEP_LINES and vim.list_slice(out, #out - M.KEEP_LINES + 1) or out
+    local r = { cmd = cmd, code = code, timed_out = timed_out or nil, output = keep, at = os.time(),
+      seconds = os.time() - started, fingerprint = fp, by = by }
+    save(dir, r)
+    pcall(require("azure-cli.chat.plan").event_for_worktree, dir, "tests",
+      "Tests (" .. cmd .. "): " .. (M.label(r) or ""):gsub("^%[", ""):gsub("%]$", ""))
+    cb(r)
+  end
+  local ok, job = pcall(vim.fn.jobstart, M.argv(cmd), {
     cwd = dir, on_stdout = add, on_stderr = add,
-    on_exit = function(_, code)
-      vim.schedule(function()
-        running[dir] = nil
-        local keep = #out > M.KEEP_LINES and vim.list_slice(out, #out - M.KEEP_LINES + 1) or out
-        local r = { cmd = cmd, code = code, timed_out = timed_out or nil, output = keep, at = os.time(),
-          seconds = os.time() - started, fingerprint = fp, by = by }
-        save(dir, r)
-        pcall(require("azure-cli.chat.plan").event_for_worktree, dir, "tests",
-          "Tests (" .. cmd .. "): " .. (M.label(r) or ""):gsub("^%[", ""):gsub("%]$", ""))
-        cb(r)
-      end)
-    end,
+    on_exit = function(_, code) vim.schedule(function() finish(code) end) end,
   })
   if not ok or job <= 0 then
     running[dir] = nil
     return cb(nil, "couldn't start it: " .. tostring(job))
   end
   vim.defer_fn(function()
-    if running[dir] then
-      timed_out = true
-      pcall(vim.fn.jobstop, job)
+    if finished then return end
+    timed_out = true
+    -- The whole tree: on Windows stopping the shell leaves what it started.
+    local okp, pid = pcall(vim.fn.jobpid, job)
+    if vim.fn.has("win32") == 1 and okp and pid and pid > 0 then
+      pcall(vim.fn.jobstart, { "taskkill", "/T", "/F", "/PID", tostring(pid) })
     end
+    pcall(vim.fn.jobstop, job)
+    vim.defer_fn(function() finish(-1) end, M.GRACE_MS)
   end, M.TIMEOUT * 1000)
 end
 

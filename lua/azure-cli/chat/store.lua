@@ -7,6 +7,7 @@
 --                            there after a restart (the last 50 are kept)
 --   current                  the id of the conversation in the panel
 --   notes/<pr>.json          the agent's notes on a PR's lines (chat/notes.lua)
+--   repo-notes/<repo>.md     what agents noted on a repository (chat/repo_notes.lua)
 --   watched.json             the chat's PRs, watched for new comments (chat/watch.lua)
 --   allowed_skills.json      skills you allowed from /skills or a permission popup (chat/skills.lua)
 --   audit.json               every change the agent made through a tool
@@ -46,6 +47,7 @@ function M.save(conv)
   SHELL().write_json(conv_dir() .. "/" .. conv.id .. ".json", {
     id = conv.id, created = conv.created, updated = os.time(), entries = entries,
     session_id = conv.session_id, agent = conv.agent, model = conv.model, plan = conv.plan,
+    agent_cwd = conv.agent_cwd, session_agent = conv.session_agent,
     title = require("azure-cli.chat.core").title(entries),
   })
   if not conv.plan then pcall(vim.fn.writefile, { conv.id }, M.root() .. "/current") end

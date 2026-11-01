@@ -1413,6 +1413,8 @@ local function send_reply(target, comment, text, on_success)
     remove_entry(pending_replies, rec)
     notify("Reply posted to thread " .. target.id .. ".")
     redraw()
+    -- The K popup it was sent from drops its "(sending…)" tag.
+    if on_success then on_success() end
   end, function(msg)
     remove_entry(pending_replies, rec)
     local t = find_thread(target.id) or target
@@ -1463,7 +1465,9 @@ local function reply_to_thread(target, on_success)
     draft_key = EDITOR.draft_key(KEY, "reply", tostring(target.id)),
     on_submit = function(text)
       close_thread_float()
-      -- Show the reply at once; the write confirms or removes it.
+      -- Show the reply at once; the write confirms or removes it. On the
+      -- thread as it is now: a poll since the popup opened replaced it.
+      target = find_thread(target.id) or target
       local comment = { author = my_display_name(), authorId = my_id, content = text, pending = true }
       table.insert(target.comments, comment)
       mark_thread_read(target)
@@ -1630,12 +1634,21 @@ local function show_comments_here()
 
   -- Redraw the popup with the current `threads` (used after a cancelled
   -- status change, and as the tail of refresh() below).
-  local function show_threads()
+  -- It grows to fit (a reply added), and with `show` (a comment) the
+  -- cursor goes to that comment, so it's in view.
+  local function show_threads(show)
     if not vim.api.nvim_buf_is_valid(fbuf) then return end
+    local lines, cmap = threads_to_lines(threads, width)
     vim.bo[fbuf].modifiable = true
-    pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, threads_to_lines(threads, width))
+    pcall(vim.api.nvim_buf_set_lines, fbuf, 0, -1, false, lines)
     vim.bo[fbuf].modifiable = false
     TT.paint(fbuf)
+    UI.refit_float(win)
+    if show and vim.api.nvim_win_is_valid(win) then
+      for ln, at in pairs(cmap) do
+        if at.comment == show then pcall(vim.api.nvim_win_set_cursor, win, { ln, 0 }) end
+      end
+    end
   end
   local function close()
     if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
@@ -1643,7 +1656,7 @@ local function show_comments_here()
 
   -- Re-decorate the diff + sidebar after an action, then either refresh the
   -- popup with the (possibly now-filtered) threads or close it if none remain.
-  local function refresh()
+  local function refresh(show)
     if vim.api.nvim_buf_is_valid(buf) and paths_by_buf[buf] and maps_by_buf[buf] then
       vim.api.nvim_buf_clear_namespace(buf, comments_ns, 0, -1)
       decorate_comments(buf, paths_by_buf[buf], maps_by_buf[buf])
@@ -1657,13 +1670,16 @@ local function show_comments_here()
       return
     end
     threads = fresh
-    show_threads()
+    show_threads(show)
   end
 
   local kopts = { buffer = fbuf, silent = true, nowait = true }
   vim.keymap.set("n", "R", function()
     pick_thread(threads, function(target)
-      reply_to_thread(target, refresh)
+      reply_to_thread(target, function()
+        local live = find_thread(target.id) or target
+        refresh(live.comments[#live.comments])
+      end)
     end, "Reply to which thread?")
   end, kopts)
   vim.keymap.set("n", "s", function()

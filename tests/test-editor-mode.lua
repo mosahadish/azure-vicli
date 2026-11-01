@@ -1,7 +1,7 @@
--- test-editor-mode.lua: sending from the comment editor (<C-s> while
--- typing) leaves Neovim in normal mode in the window underneath - before,
+-- test-editor-mode.lua: <C-j> while typing in the comment editor breaks
+-- the line; sending (<CR> while typing) leaves Neovim in normal mode in the window underneath - before,
 -- insert mode carried over into a read-only plan or diff and the next key
--- failed with E21. Then opts.allow_empty: an emptied buffer's <C-s> submits
+-- failed with E21. Then opts.allow_empty: an emptied buffer's <CR> submits
 -- "" with it (an issue's description being cleared), and cancels without
 -- it (a comment). Needs the main loop (real input events; nvim -l and
 -- nvim_feedkeys(..., "x") both end insert mode by themselves), so:
@@ -26,17 +26,23 @@ local function send_emptied(allow_empty, after)
     on_submit = function(text) submitted = text end, on_cancel = function() cancelled = true end })
   vim.defer_fn(function()
     vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
-    vim.api.nvim_input("<C-s>")
+    vim.api.nvim_input("<CR>")
     vim.defer_fn(function() after(submitted, cancelled) end, 200)
   end, 200)
 end
 
 vim.defer_fn(function()
   if vim.api.nvim_get_mode().mode ~= "i" then return finish(false, "the editor didn't start in insert mode") end
-  vim.api.nvim_input("<C-s>")
+  vim.api.nvim_input("<C-j>x")
+  vim.defer_fn(function()
+  if submitted then return finish(false, "<C-j> sent it") end
+  if not vim.deep_equal(vim.api.nvim_buf_get_lines(0, 0, -1, false), { "why?", "x" }) then
+    return finish(false, "<C-j> gave " .. vim.inspect(vim.api.nvim_buf_get_lines(0, 0, -1, false)))
+  end
+  vim.api.nvim_input("<CR>")
   vim.defer_fn(function()
     local mode = vim.api.nvim_get_mode().mode
-    if submitted ~= "why?" then return finish(false, "nothing was submitted") end
+    if submitted ~= "why?\nx" then return finish(false, "<CR> submitted " .. vim.inspect(submitted)) end
     if vim.api.nvim_get_current_win() ~= under then return finish(false, "the focus didn't come back") end
     if mode ~= "n" then return finish(false, "left in mode " .. mode) end
     send_emptied(true, function(sub, can)
@@ -50,5 +56,6 @@ vim.defer_fn(function()
         finish(true)
       end)
     end)
+  end, 200)
   end, 200)
 end, 200)

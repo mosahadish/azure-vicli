@@ -1747,6 +1747,8 @@ local WORKITEMS_HELP = {
   "Agents",
   { "plan_agents", "an agent plans this " .. WORDS.item .. " (in visual mode: one agent per selected item)" },
   { "agents", "every plan's agent: what each is doing (the Agents screen)" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   { "chat_input", "type in the chat, about the " .. WORDS.item .. " under the cursor (opens the panel; a draft stays)" },
   { "chat_selection", "in visual mode: ask the chat about the selected lines" },
   "Session",
@@ -1836,6 +1838,8 @@ KEYS.bind(buf, "workitems", "config", open_config_file, { desc = "open a config 
 KEYS.bind(buf, "workitems", "help", show_help, { desc = "this help" })
 KEYS.bind(buf, "workitems", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
+-- ]w / [w: the next / previous thing that waits for you (chat/waiting.lua).
+require("azure-cli.chat.waiting").bind(buf, "workitems")
 -- i and gP where the board has them (B.caps): on GitHub the chat's board
 -- tools take board = "github", which the snapshot and gP's agents name.
 if B.caps.chat then

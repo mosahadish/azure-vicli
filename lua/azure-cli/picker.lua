@@ -110,6 +110,12 @@ end
 --                  listed while `q` is typed even where they don't match
 --                  the text), api.status(s) shows a word in the footer
 --   opts.empty     the list's line while it has nothing ("Nobody to list")
+--   opts.on_space(item, api)  <Space> on an entry, when nothing is typed or
+--                  you moved to it with <C-n>/<C-p>: true when it did
+--                  something (else <Space> types a space); opts.space_hint
+--                  names it in the footer
+--   opts.on_enter(item, api)  <CR> on an entry: true keeps the popup open
+--                  (it did something else than picking it)
 -- cb(item, index) - index into opts.items, nil for an added entry - or
 -- cb(nil) on <Esc>.
 function M.open(opts, cb)
@@ -130,7 +136,7 @@ function M.open(opts, cb)
   vim.bo[ibuf].filetype = opts.ft or "azure-cli-pick"
   vim.bo[lbuf].filetype = (opts.ft or "azure-cli-pick") .. "-list"
 
-  local shown, sel, status, kept, timer = {}, 1, "", {}, nil
+  local shown, sel, status, kept, timer, moved = {}, 1, "", {}, nil, false
   for i, it in ipairs(items) do
     if opts.current and opts.current(it) then sel = i end
   end
@@ -156,6 +162,7 @@ function M.open(opts, cb)
     UI().wo(lwin, "cursorline", #shown > 0)
     local count = status ~= "" and status or (#shown .. (q == "" and "" or (" of " .. #items)))
     pcall(vim.api.nvim_win_set_config, lwin, { footer = " " .. count
+      .. (opts.space_hint and (" \u{00B7} <Space> " .. opts.space_hint) or "")
       .. " \u{00B7} <CR> pick \u{00B7} <C-n>/<C-p> move \u{00B7} <Esc> cancel ", footer_pos = "right" })
   end
   local api = {
@@ -168,13 +175,14 @@ function M.open(opts, cb)
       render()
     end,
     keep = function(q, list) kept[q] = list; render() end,
+    refresh = function() render() end,
     status = function(s) status = s or ""; render() end,
     items = function() return items end,
     done = is_done,
   }
   local function changed()
     if is_done() then return end
-    sel = 1
+    sel, moved = 1, false
     render()
     if not opts.on_query then return end
     local q = query()
@@ -186,12 +194,25 @@ function M.open(opts, cb)
   end
   local function move(d)
     if #shown == 0 then return end
+    moved = true
     sel = (sel - 1 + d) % #shown + 1
     pcall(vim.api.nvim_win_set_cursor, lwin, { sel, 0 })
   end
   vim.api.nvim_buf_attach(ibuf, false, { on_lines = function() vim.schedule(changed) end })
   local kopts = { buffer = ibuf, silent = true, nowait = true }
-  vim.keymap.set({ "i", "n" }, "<CR>", function() if shown[sel] then finish(shown[sel]) end end, kopts)
+  vim.keymap.set({ "i", "n" }, "<CR>", function()
+    local it = shown[sel]
+    if not it then return end
+    if opts.on_enter and opts.on_enter(it, api) then return end
+    finish(it)
+  end, kopts)
+  if opts.on_space then
+    vim.keymap.set({ "i", "n" }, "<Space>", function()
+      local it = shown[sel]
+      if it and (moved or query() == "") and opts.on_space(it, api) then return end
+      if vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then vim.api.nvim_feedkeys(" ", "n", false) end
+    end, kopts)
+  end
   for _, k in ipairs({ "<Esc>", "<C-c>" }) do vim.keymap.set({ "i", "n" }, k, function() finish(nil) end, kopts) end
   vim.keymap.set("n", "q", function() finish(nil) end, kopts)
   for _, k in ipairs({ "<C-n>", "<Down>", "<Tab>", "<C-j>" }) do vim.keymap.set({ "i", "n" }, k, function() move(1) end, kopts) end

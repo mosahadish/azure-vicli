@@ -70,6 +70,40 @@ do
   end
 end
 
+-- #143: task agents - their target, key and label, gated as stories, the
+-- first message, and their row on the Agents screen.
+do
+  local PLAN = require("azure-cli.chat.plan")
+  local AGENTS = require("azure-cli.chat.agents")
+  check("#143 key: task-<n>", PLAN.key({ task_id = 4 }) == "task-4")
+  check("#143 target_label: Task <n>", PLAN.target_label({ task_id = 4 }) == "Task 4")
+  check("#143 gate_check: no plan, gated", PLAN.gate_check(nil, true, { task_id = 4 }) == false
+    and PLAN.gate_check(nil, "stories", { task_id = 4 }) == false)
+  check("#143 gate_check: plan_first = false lets it through", PLAN.gate_check(nil, false, { task_id = 4 }) == true)
+  check("#143 gate_check: approved goes", PLAN.gate_check({ status = "approved" }, true, { task_id = 4 }) == true)
+  local p = AGENTS.task_prompt(4, "find the parser")
+  check("#143 task_prompt: the task, read-only, answer goes back, plan only when told",
+    p:find("Task 4, from the main chat: find the parser", 1, true) and p:find("you are read-only", 1, true)
+      and p:find("goes back to the main chat", 1, true) and p:find("Only if the user tells you to", 1, true)
+      and p:find("start_story without work_item_id", 1, true), p)
+  check("#143 task_read_only: only a task agent's conversation", PLAN.task_read_only({ target = { task_id = 4 },
+    plan_key = "task-4" }) and not PLAN.task_read_only({ target = { work_item_id = 4 }, plan_key = "wi-4" })
+    and not PLAN.task_read_only(nil))
+  check("#143 task_refusal: reads, drafts and the plan's tools pass",
+    not PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "get_work_item", risk = "read" })
+    and not PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "draft_reply", risk = "write" })
+    and not PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "submit_plan", risk = "write" }))
+  check("#143 task_refusal: other writes don't",
+    (PLAN.task_refusal({ target = { task_id = 4 }, plan_key = "task-4" }, { name = "vote", risk = "ask" }) or "")
+      :find("read-only", 1, true) ~= nil)
+  local now = os.time()
+  local conv = { plan_key = "task-4", label = "Task 4", title = "Find the parser", target = { task_id = 4 }, created = now,
+    entries = { { role = "you", text = "/task Find the parser" }, { role = "agent", status = "done", text = "here", started = now } } }
+  local rows = require("azure-cli.chat.agents_view").rows({ conv }, {}, function() return nil end, now)
+  check("#143 rows: a task agent that answered", rows[1] and rows[1].label == "Task 4" and rows[1].title == "Find the parser"
+    and rows[1].state:find("answered", 1, true) ~= nil and rows[1].group == 3, vim.inspect(rows[1]))
+end
+
 -- --- parse_answer / expand ---------------------------------------
 do
   local text, sid = CHAT.parse_answer('{"type":"result","result":"  Hello\\n","session_id":"s-1"}', "", vim.json.decode)
@@ -152,8 +186,8 @@ do
   table.sort(asks)
   check("tools: what asks first - everything others see or that leaves the machine",
     table.concat(asks, ",") == "add_reviewer,assign_work_item,comment_on_work_item,commit_and_push_fix,"
-      .. "complete_pull_request,create_pull_request,create_work_item,discard_plan,run_tests,set_thread_status,set_work_item_parent,"
-      .. "set_work_item_state,update_pr_description,vote",
+      .. "complete_pull_request,create_pull_request,create_work_item,discard_plan,edit_work_item,remove_reviewer,"
+      .. "run_tests,set_thread_status,set_work_item_parent,set_work_item_state,update_pr_description,vote",
     table.concat(asks, ","))
   check("tools: links, branches, drafts, tasks and sprints don't",
     TOOLS.by_name.create_branch.risk == "write" and TOOLS.by_name.draft_reply.risk == "write"
@@ -193,7 +227,8 @@ do
   ST.BOARDS = saved_boards
   for _, name in ipairs({ "list_work_items", "get_work_item", "set_work_item_state", "link_pr_to_work_item",
       "create_branch", "list_sprints", "create_child_task", "create_work_item", "assign_work_item", "move_to_sprint",
-      "set_work_item_parent", "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents" }) do
+      "set_work_item_parent", "comment_on_work_item", "start_story", "create_pull_request", "open_in_ui", "start_agents",
+      "edit_work_item", "find_people" }) do
     local props = TOOLS.by_name[name].schema.properties
     check("tools: " .. name .. " takes board", type(props) == "table" and props.board ~= nil
       and props.board.enum[1] == "azure" and props.board.enum[2] == "github")
@@ -702,6 +737,102 @@ do
     TOOLS.provider, S.PR_LIST_CACHE = real_provider, saved
   end
   do
+    -- find_people, remove_reviewer (and its undo) and edit_work_item.
+    local S = require("azure-cli.state")
+    local saved, real_provider = S.PR_LIST_CACHE, TOOLS.provider
+    local AZ = require("azure-cli.workitems.board").get("azure")
+    local saved_list = AZ.state.WI_LIST_CACHE
+    AZ.state.WI_LIST_CACHE = nil
+    S.PR_LIST_CACHE = { prs = {
+      { id = 101, repo = "w", project = "p", org = "https://dev.azure.com/x", reviewers = {
+        { name = "Bob Brown", id = "b1", vote = 10 }, { name = "Carol Chen", id = "c1", vote = 0, isRequired = true } } },
+      { id = 7, key = "o~web~7", host = "github", repo = "web", project = "o", org = "https://api.github.com",
+        reviewers = { { name = "Dan", id = "dan", vote = 10 }, { name = "Eve", id = "eve", vote = 0, requested = true } } } } }
+    local calls = {}
+    TOOLS.provider = function(argv, _, cb)
+      calls[#calls + 1] = argv
+      if argv[1] == "--find-people" then return cb(true, '[{"name": "Tal Gross", "id": "t1", "account": "tal@x"}]', "") end
+      if argv[1] == "--wi-list" then return cb(true, '{"name": "Tal Gross", "email": "tal@x", "assign": "tal"}\n', "") end
+      if argv[1] == "--wi-detail" then
+        return cb(true, '{"item": {"id": 3011, "title": "Old", "priority": 2, "hours": {"remainingWork": 3}}}', "")
+      end
+      cb(true, "{}", "")
+    end
+    local asked = 0
+    local env = { log = function() end, confirm = function(_, cb) asked = asked + 1; cb(true) end }
+    local got
+    local function call(name, args) TOOLS.call(name, args, env, function(t, e) got = { t, e } end) end
+
+    call("find_people", { pr_id = 101, query = "gross" })
+    check("find_people: with a PR, its host's --find-people", got[2] == false and calls[1][1] == "--find-people"
+      and calls[1][2] == "gross" and vim.json.decode(got[1])[1].id == "t1", vim.inspect({ calls, got }))
+    call("find_people", { query = "gross" })
+    check("find_people: without, the board's directory", got[2] == false and calls[2][1] == "--wi-list"
+      and calls[2][2] == "people" and vim.json.decode(got[1])[1].assign == "tal", vim.inspect({ calls[2], got }))
+    call("find_people", {})
+    check("find_people: the board needs a query", got[2] == true and #calls == 2)
+
+    calls = {}
+    call("remove_reviewer", { pr_id = 101, who = "r" })
+    check("remove_reviewer: a name two reviewers share is refused, saying whose", got[2] == true and #calls == 0
+      and got[1]:find("Bob Brown, Carol Chen", 1, true) ~= nil, vim.inspect(got))
+    call("remove_reviewer", { pr_id = 101, who = "carol" })
+    local pr101 = S.PR_LIST_CACHE.prs[1]
+    check("remove_reviewer: asks, takes them off by id", got[2] == false and vim.deep_equal(calls[1], { "--remove-reviewer", "c1" })
+      and #pr101.reviewers == 1 and got[1] == "Removed Carol Chen from PR !101's reviewers.", vim.inspect({ calls, got }))
+    local undone
+    TOOLS.undo({ undo = TOOLS.last_undo }, function(ok, msg) undone = { ok, msg } end)
+    check("remove_reviewer: undo adds them back, required again", undone[1] == true
+      and vim.deep_equal(calls[2], { "--add-reviewer", "c1", "true" }) and #pr101.reviewers == 2
+      and pr101.reviewers[2].isRequired == true, vim.inspect({ calls, undone }))
+    call("remove_reviewer", { pr_id = 7, who = "dan" })
+    check("remove_reviewer: on GitHub a given review stays", got[2] == true and #calls == 2
+      and got[1]:find("(those are: Eve)", 1, true) ~= nil, vim.inspect(got))
+
+    calls, asked = {}, 0
+    call("edit_work_item", { id = 3011, title = "New", remainingWork = 2 })
+    check("edit_work_item: asks once, then sets each field", asked == 1 and got[2] == false
+      and calls[1][1] == "--wi-detail" and vim.deep_equal(calls[2], { "--wi-edit", "set", "3011", "title", "New" })
+      and vim.deep_equal(calls[3], { "--wi-edit", "set", "3011", "remainingWork", "2" })
+      and got[1] == "Changed #3011's title, remaining work.", vim.inspect({ calls, got }))
+    check("edit_work_item: the undo keeps what they were", TOOLS.last_undo.op == "set_fields"
+      and TOOLS.last_undo.fields[1].value == "Old" and TOOLS.last_undo.fields[2].value == "3", vim.inspect(TOOLS.last_undo))
+    check("edit_work_item: the question names the fields",
+      TOOLS.by_name.edit_work_item.confirm({ id = 3011, title = "x", priority = 1 }) == "change #3011's title, priority")
+    calls = {}
+    call("edit_work_item", { id = 12, board = "github", remainingWork = 2 })
+    check("edit_work_item: GitHub issues have no hours", got[2] == true and #calls == 0, vim.inspect(got))
+    call("edit_work_item", { id = 3011 })
+    check("edit_work_item: nothing to change", got[2] == true and #calls == 0)
+
+    -- suggest_reviewers: each one looked up, reviewers left out, then gR's popup with them first.
+    local PEOPLE = require("azure-cli.people")
+    local real_add, real_open = PEOPLE.add_reviewer, require("azure-cli.picker").open
+    local shown
+    PEOPLE.add_reviewer = function(pr, _, list) shown = { pr = pr, list = list } end
+    TOOLS.provider = function(argv, _, cb)
+      if argv[2] == "tal" then return cb(true, '[{"name": "Tal Gross", "id": "t1"}]', "") end
+      if argv[2] == "bob" then return cb(true, '[{"name": "Bob Brown", "id": "b1"}]', "") end
+      cb(true, "[]", "")
+    end
+    call("suggest_reviewers", { pr_id = 101, people = { { who = "tal", why = "wrote auth.py" }, { who = "bob" },
+      { who = "nobody" } } })
+    check("suggest_reviewers: found ones go to gR's popup, the rest are said", got[2] == false and shown
+      and #shown.list == 1 and shown.list[1].id == "t1" and shown.list[1].why == "wrote auth.py"
+      and got[1]:find("bob: already a reviewer", 1, true) and got[1]:find("nobody: not found", 1, true), vim.inspect(got))
+    PEOPLE.add_reviewer = real_add
+    local opened
+    require("azure-cli.picker").open = function(o) opened = o; return { add = function() end, status = function() end,
+      done = function() return true end, keep = function() end } end
+    PEOPLE.everyone = {}
+    PEOPLE.pick(S.PR_LIST_CACHE.prs[1], "Add", function() end,
+      { skip_reviewers = true, suggested = { { name = "Tal Gross", id = "t1", why = "wrote auth.py" }, { name = "Bob Brown", id = "b1" } } })
+    check("pick: suggestions come first with why, reviewers still left out", opened and #opened.items == 1
+      and opened.format(opened.items[1]) == "Tal Gross  \u{2605} wrote auth.py", vim.inspect(opened and opened.items))
+    require("azure-cli.picker").open = real_open
+    TOOLS.provider, S.PR_LIST_CACHE, AZ.state.WI_LIST_CACHE = real_provider, saved, saved_list
+  end
+  do
     -- find_implementations / find_definition's patterns against real git grep.
     local C = require("azure-cli.chat.tools_code")
     local dir = vim.fn.tempname()
@@ -903,6 +1034,208 @@ do
   require("azure-cli.config").setup({})
 end
 
+-- --- chat/watch.lua: the chat's PRs, watched for failed builds (#141) ---------------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local AG = require("azure-cli.chat.agents")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    start = AG.start_for_build, comments = AG.start_for_prs }
+  local notes, started, busy = {}, {}, false
+  local build, url = "failed", "o/p/_build/results?buildId=1"
+  local threads = { { id = 1, comments = { { id = 1, author = { id = "me" }, content = "mine" } } } }
+  CH.current_agent = function() return { name = "x" } end
+  CH.note = function(t) notes[#notes + 1] = t end
+  CH.alert = function() end
+  T.provider = function(argv, _, cb)
+    if argv[1] == "--get-pr" then
+      return cb(true, vim.json.encode({ id = 501, title = "T", state = "active", org = "o", project = "p", repo = "r",
+        buildStatus = build, buildUrl = url }), "")
+    end
+    cb(true, vim.json.encode({ value = threads }), "")
+  end
+  AG.start_for_build = function(pr)
+    if busy then return "busy", {} end
+    started[#started + 1] = pr.id
+    return "ok", { "PR !501" }
+  end
+  AG.start_for_prs = function() return "ok", { "PR !501" } end
+  ST.whoami = { ["o|p"] = { id = "me" } }
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  require("azure-cli.config").setup({})
+  check("failed_build: by its url, else its status; not expired",
+    W.failed_build({ buildStatus = "failed", buildUrl = "u" }) == "u"
+    and W.failed_build({ buildStatus = "failed", buildUrl = "" }) == "failed"
+    and W.failed_build({ buildStatus = "expired", buildUrl = "u" }) == nil
+    and W.failed_build({ buildStatus = "running" }) == nil)
+  W.add({ id = 501, org = "o", project = "p", repo = "r" })
+  W.poll()
+  check("watch build: a failure already there isn't new", #notes == 0, vim.inspect(notes))
+  W.poll()
+  check("watch build: nor at the next poll", #notes == 0, vim.inspect(notes))
+  build, url = "running", "o/p/_build/results?buildId=2"
+  W.poll()
+  build = "failed"
+  W.poll()
+  check("watch build: a new failure - the note says just that (suggest)",
+    #notes == 1 and notes[1] == "!501 \"T\"'s build failed.", vim.inspect(notes))
+  W.poll()
+  check("watch build: the same build again says nothing", #notes == 1, vim.inspect(notes))
+  url = "o/p/_build/results?buildId=3"
+  W.poll()
+  check("watch build: another failed build, another note", #notes == 2, vim.inspect(notes))
+  build, url = "expired", "o/p/_build/results?buildId=4"
+  W.poll()
+  check("watch build: an expired one doesn't count", #notes == 2, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_failed_build = "off" } })
+  build, url = "failed", "o/p/_build/results?buildId=5"
+  W.poll()
+  check("watch build: off says nothing", #notes == 2 and #started == 0, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_failed_build = "plan" } })
+  build, url = "running", "o/p/_build/results?buildId=6"
+  W.poll()
+  build = "failed"
+  busy = true
+  table.insert(threads, { id = 2, comments = { { id = 1, author = { id = "alice" }, content = "c" } } })
+  W.poll(); W.poll()
+  check("watch build: plan - its agent busy, it waits; the comments still say so",
+    #started == 0 and #notes == 3 and notes[3]:find("1 new comment", 1, true) ~= nil, vim.inspect(notes))
+  W._reset()  -- a restart in between: what's pending is kept
+  busy = false
+  W.poll()
+  check("watch build: plan - its agent plans the fix", vim.deep_equal(started, { 501 })
+    and notes[4] == "!501 \"T\"'s build failed - an agent is planning the fix.", vim.inspect({ started, notes }))
+  W.poll()
+  check("watch build: plan - once", #started == 1, vim.inspect(started))
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  CH.current_agent, CH.note, CH.alert, T.provider = orig.agent, orig.note, orig.alert, orig.provider
+  AG.start_for_build, AG.start_for_prs = orig.start, orig.comments
+  require("azure-cli.config").setup({})
+end
+
+-- --- chat/watch.lua: the chat's PRs, watched for merge conflicts ----------------------
+do
+  local W = require("azure-cli.chat.watch")
+  local CH = require("azure-cli.chat")
+  local T = require("azure-cli.chat.tools")
+  local AG = require("azure-cli.chat.agents")
+  local ST = require("azure-cli.state")
+  local orig = { agent = CH.current_agent, note = CH.note, alert = CH.alert, provider = T.provider,
+    start = AG.start_for_conflict }
+  local notes, started, busy = {}, {}, false
+  local conflict, src, tgt = true, "s1", "t1"
+  CH.current_agent = function() return { name = "x" } end
+  CH.note = function(t) notes[#notes + 1] = t end
+  CH.alert = function() end
+  T.provider = function(argv, _, cb)
+    if argv[1] == "--get-pr" then
+      return cb(true, vim.json.encode({ id = 503, title = "T", state = "active", org = "o", project = "p", repo = "r",
+        target = "main", buildStatus = "succeeded", mergeConflict = conflict, sourceCommit = src, targetCommit = tgt }), "")
+    end
+    cb(true, vim.json.encode({ value = {} }), "")
+  end
+  AG.start_for_conflict = function(pr)
+    if busy then return "busy", {} end
+    started[#started + 1] = pr.id
+    return "ok", { "PR !503" }
+  end
+  ST.whoami = { ["o|p"] = { id = "me" } }
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  require("azure-cli.config").setup({})
+  check("conflict: by its commits; nil without one",
+    W.conflict({ mergeConflict = true, sourceCommit = "a", targetCommit = "b" }) == "a:b"
+    and W.conflict({ mergeConflict = false, sourceCommit = "a" }) == nil and W.conflict(nil) == nil)
+  W.add({ id = 503, org = "o", project = "p", repo = "r" })
+  W.poll()
+  check("watch conflict: one already there isn't new", #notes == 0, vim.inspect(notes))
+  tgt = "t2"
+  W.poll()
+  check("watch conflict: nor the target moving on while it conflicts", #notes == 0, vim.inspect(notes))
+  conflict = false
+  W.poll()
+  conflict, tgt = true, "t3"
+  W.poll()
+  check("watch conflict: a new one waits for a second poll", #notes == 0, vim.inspect(notes))
+  W.poll()
+  check("watch conflict: a new one - the note says just that (suggest)",
+    #notes == 1 and notes[1] == "!503 \"T\" conflicts with main.", vim.inspect(notes))
+  W.poll()
+  check("watch conflict: the same one again says nothing", #notes == 1, vim.inspect(notes))
+  src = "s2"
+  W.poll(); W.poll()
+  check("watch conflict: a push that still conflicts, another note", #notes == 2, vim.inspect(notes))
+  -- Right after a push the host still reports the old status once: nothing.
+  src = "s3"
+  W.poll()
+  conflict = false
+  W.poll()
+  check("watch conflict: a stale status after a push says nothing", #notes == 2, vim.inspect(notes))
+  conflict, src = true, "s2"
+  conflict = false
+  W.poll()
+  conflict = true
+  W.poll()
+  check("watch conflict: the same pair again isn't told twice", #notes == 2, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_conflict = "off" } })
+  conflict = false
+  W.poll()
+  conflict, tgt = true, "t4"
+  W.poll()
+  check("watch conflict: off says nothing", #notes == 2 and #started == 0, vim.inspect(notes))
+  require("azure-cli.config").setup({ chat = { on_conflict = "rebase" } })
+  conflict = false
+  W.poll()
+  conflict, tgt = true, "t5"
+  busy = true
+  W.poll(); W.poll()
+  check("watch conflict: rebase - its agent busy, it waits", #started == 0 and #notes == 2, vim.inspect(notes))
+  W._reset()  -- a restart in between: what's pending is kept
+  busy = false
+  W.poll()
+  check("watch conflict: rebase - its agent plans the rebase", vim.deep_equal(started, { 503 })
+    and notes[3] == "!503 \"T\" conflicts with main - an agent is planning the rebase.", vim.inspect({ started, notes }))
+  W.poll()
+  check("watch conflict: rebase - once", #started == 1, vim.inspect(started))
+  W._reset()
+  pcall(vim.fn.delete, require("azure-cli.chat.store").root() .. "/watched.json")
+  CH.current_agent, CH.note, CH.alert, T.provider = orig.agent, orig.note, orig.alert, orig.provider
+  AG.start_for_conflict = orig.start
+  require("azure-cli.config").setup({})
+end
+
+-- --- agents.lua: an agent for a PR's merge conflict ----------------------------------
+do
+  local AG = require("azure-cli.chat.agents")
+  local p = AG.conflict_prompt({ id = 504, title = "Fix", key = "own~repo~504", target = "main" })
+  check("conflict_prompt: a PR's", p:find("^/plan PR !504 in own/repo \"Fix\": it conflicts with main%.") ~= nil
+    and p:find("git rebase origin/main", 1, true) ~= nil and p:find("submit_plan (pr_id 504)", 1, true) ~= nil
+    and p:find("commit_and_push_fix (pr_id 504, rebased = true)", 1, true) ~= nil
+    and p:find("instead of guessing", 1, true) ~= nil, p)
+  p = AG.conflict_prompt({ id = 504, title = "Fix", target = "main" }, 92)
+  check("conflict_prompt: the work item's agent that opened it",
+    p:find("which you opened for #92, conflicts with main", 1, true) ~= nil
+    and p:find("start_story for #92 reuses it", 1, true) ~= nil
+    and p:find("commit_and_push_fix (work_item_id 92, rebased = true)", 1, true) ~= nil, p)
+end
+
+-- --- agents.lua: an agent for a PR's failed build (#141) ------------------------------
+do
+  local AG = require("azure-cli.chat.agents")
+  local p = AG.build_prompt({ id = 502, title = "Fix", key = "own~repo~502" })
+  check("build_prompt: a PR's", p:find("^/plan PR !502 in own/repo \"Fix\": its build failed") ~= nil
+    and p:find("get_build_log and get_test_results (pr_id 502)", 1, true) ~= nil
+    and p:find("submit_plan (pr_id 502)", 1, true) ~= nil, p)
+  p = AG.build_prompt({ id = 502, title = "Fix" }, 91)
+  check("build_prompt: the work item's agent that opened it", p:find("which you opened for #91, failed", 1, true) ~= nil
+    and p:find("submit_plan (work_item_id 91)", 1, true) ~= nil
+    and p:find("commit_and_push_fix (work_item_id 91)", 1, true) ~= nil, p)
+end
+
 -- --- a PR an agent opened: its comments go back to that agent ------------------------
 do
   local PL = require("azure-cli.chat.plan")
@@ -1035,6 +1368,31 @@ do
   CH.send, CH.current_agent, CH.alert, PL.open, PV.show = orig.send, orig.agent, orig.alert, orig.open, orig.show
   STATE.PR_LIST_CACHE = orig.cache
   AG.reset()
+end
+
+-- --- #142: go on the Agents screen - the agent's session in a terminal ------------------
+do
+  local AV = require("azure-cli.chat.agents_view")
+  local list = { resume_cmd = { "claude", "--resume", "{session_id}" } }
+  local shell = { resume_cmd = "copilot --resume {session_id}" }
+  local conv = { session_id = "abc 1", agent_cwd = "/work/wt" }
+  local cmd, cwd = AV.resume_command(list, conv, "/fallback")
+  check("#142 resume_command: {session_id} expanded, in its own directory",
+    vim.deep_equal(cmd, { "claude", "--resume", "abc 1" }) and cwd == "/work/wt", vim.inspect({ cmd, cwd }))
+  cmd = AV.resume_command(shell, conv)
+  check("#142 resume_command: a shell string gets it shell-escaped", cmd == "copilot --resume 'abc 1'", tostring(cmd))
+  cmd, cwd = AV.resume_command(list, { session_id = "x" }, "/fallback")
+  check("#142 resume_command: no directory kept - the fallback", cwd == "/fallback", tostring(cwd))
+  local function refused(name, agent, c, needle)
+    local got, why = AV.resume_command(agent, c, "/fallback")
+    check("#142 resume_command refuses " .. name, got == nil and tostring(why):find(needle, 1, true) ~= nil, why)
+  end
+  refused("while it works", list, { session_id = "x", running = {} }, "still working")
+  refused("before a session", list, { agent_cwd = "/w" }, "hasn't started a session")
+  refused("without resume_cmd", { cmd = { "claude" } }, conv, "no resume_cmd")
+  refused("with no conversation", list, nil, "no agent yet")
+  local _, why = AV.resume_command(list, { session_id = "x" }, nil)
+  check("#142 resume_command refuses not knowing where", tostring(why):find("Don't know where", 1, true) ~= nil, why)
 end
 
 -- --- #113: two GitHub cli#7s get a fix worktree each; old <repo>-<id> ones still work --

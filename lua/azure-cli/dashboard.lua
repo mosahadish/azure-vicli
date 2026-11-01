@@ -92,6 +92,7 @@ local row_pr = {}           -- buffer line (1-based) -> pr record (nil for heade
 -- collapsed one.
 local row_pr_key = {}
 local row_header_key = {}
+local last_row_offset = 0  -- render()'s box offset last time: where a line off the rows was
 local buf, win
 local set_winbar  -- rebuilds the winbar; assigned once the fetching-state bookkeeping it reads exists (below). render() calls it on every rebuild.
 
@@ -196,6 +197,8 @@ local DASHBOARD_ACTIONS = {
   "Session",
   { "refresh", "refresh" }, { "workitems", "work items" }, { "issues", "issues (GitHub)" },
   { "agents", "every plan's agent (the Agents screen)" },
+  { "next_waiting", "the next thing waiting for you: a plan's open question, its approval, a change to review" },
+  { "prev_waiting", "the previous thing waiting for you" },
   { "toasts", "notifications" }, { "config", "config" },
   { "quit", "quit" }, { "help", "help" },
 }
@@ -709,10 +712,11 @@ local function render()
   -- section header when a section collapses out from under the cursor
   -- (its own toggle via za, or collapse_all/zM) instead of jumping
   -- somewhere else in the list.
-  local prev_pr_id, prev_key
+  local prev_pr_id, prev_key, prev_cur
   if win and vim.api.nvim_win_is_valid(win) then
     local ok, cur = pcall(vim.api.nvim_win_get_cursor, win)
     if ok then
+      prev_cur = cur
       local prev_pr = row_pr[cur[1]]
       if prev_pr then
         prev_pr_id = HOSTS.key(prev_pr)
@@ -836,14 +840,22 @@ local function render()
   -- other way, then to the first PR row, then to the first header row (every
   -- section collapsed), or just inside the box if the list is empty. A PR
   -- with an active mention can now occupy two rows (its Mentions row and its
-  -- normal state row); either match is a fine place to land, so the first
-  -- one found wins.
+  -- normal state row): the one in the same section wins, else the one
+  -- nearest where the cursor was. On no row at all (the column header, the
+  -- border), it stays on the same line of the box. The column stays too.
   if win and vim.api.nvim_win_is_valid(win) then
     local target
     if prev_pr_id then
+      local best
       for ln, pr in pairs(row_pr) do
-        if HOSTS.key(pr) == prev_pr_id then target = ln; break end
+        if HOSTS.key(pr) == prev_pr_id then
+          local d = (row_pr_key[ln] == prev_key and 0 or 1e6) + math.abs(ln - prev_cur[1])
+          if not best or d < best then target, best = ln, d end
+        end
       end
+    end
+    if not target and not prev_pr_id and not prev_key and prev_cur then
+      target = math.min(prev_cur[1] - last_row_offset + row_offset, #lines)
     end
     if not target and prev_key then
       for ln, key in pairs(row_header_key) do
@@ -860,8 +872,13 @@ local function render()
         if not target or ln < target then target = ln end
       end
     end
-    pcall(vim.api.nvim_win_set_cursor, win, { target or (row_offset + 1), col_offset })
+    target = target or (row_offset + 1)
+    local col = prev_cur and prev_cur[2] or col_offset
+    if not (prev_cur and prev_cur[1] == target and prev_cur[2] == col) then
+      pcall(vim.api.nvim_win_set_cursor, win, { target, col })
+    end
   end
+  last_row_offset = row_offset
   paint_numbers()
 end
 
@@ -1997,6 +2014,8 @@ KEYS.bind(buf, "dashboard", "help", show_help, { desc = "show this help" })
 -- it's hidden, and what it's told this screen shows - the PR under the
 -- cursor (chat/view.lua).
 require("azure-cli.chat").bind_toggle(buf, "dashboard")
+-- ]w / [w: the next / previous thing that waits for you (chat/waiting.lua).
+require("azure-cli.chat.waiting").bind(buf, "dashboard")
 KEYS.bind(buf, "dashboard", "agents", function() require("azure-cli.home").go("agents") end,
   { desc = "every plan's agent (the Agents screen)" })
 -- ga: the agent working on the PR under the cursor, its conversation in a
@@ -2053,11 +2072,19 @@ end, { desc = "quit" })
 -- reviewer opens with branches already warmed. Half a second of stillness
 -- rather than a fifth: each prefetch is a bash + git fetch spawn, and at
 -- 200ms a leisurely scroll through the list fired one per row passed over.
-local prefetch_timer
+-- Only when the cursor reaches another PR: a redraw that changes the cursor
+-- line's badge fires CursorMoved too, and prefetching again on that showed
+-- the badge flipping between \u{21E3} and \u{25C6} for as long as you stayed.
+local prefetch_timer, hovered
 vim.api.nvim_create_autocmd("CursorMoved", {
   buffer = buf,
   callback = function()
+    local cur = current_pr()
+    local id = cur and (tostring(HOSTS.key(cur)) .. "@" .. tostring(cur.updatedIso)) or nil
+    if id == hovered then return end
+    hovered = id
     if prefetch_timer then vim.fn.timer_stop(prefetch_timer) end
+    if not cur or pr_sync_state(cur) == "ready" then return end
     prefetch_timer = vim.fn.timer_start(500, function()
       local pr = current_pr()
       ensure_warm(pr, function(ok)

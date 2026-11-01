@@ -10,10 +10,25 @@
 -- Comments arriving close together are taken together: a PR's new ones
 -- are acted on at the first poll that finds no newer ones. Only other
 -- people's comments count (not yours, nor the agent's - it posts as you).
+--
+-- Its build failing is chat.on_failed_build's (#141): "suggest" (default)
+-- a note, "plan" an agent plans the fix from get_build_log /
+-- get_test_results, "off" nothing. Once per failed build (told apart by
+-- its buildUrl, which has its id); an expired one doesn't count - it
+-- needs a requeue (gr), not a fix. Nor does one that had failed already
+-- when the PR started being watched.
+--
+-- It conflicting with its target is chat.on_conflict's: "suggest"
+-- (default) a note, "rebase" its agent plans the rebase onto the target
+-- (then rebases and force-pushes), "off" nothing. Once per conflict: a
+-- new one is the PR going into conflict again, or a push that still
+-- conflicts - never the same source/target commit pair twice, so the
+-- target moving on while it conflicts doesn't count again.
+--
 -- A PR that's completed or abandoned stops being watched, and the plans
 -- behind it are finished (plan.pr_closed). Kept in
 -- stdpath("data")/azure-cli-chat/watched.json: per PR, where it is and the
--- comments already seen.
+-- comments already seen, its failed build, its merge conflict.
 --
 --   M.add(pr)       starts watching PR `pr` (id, org, project, repo, title,
 --                   and key/host on GitHub)
@@ -22,6 +37,11 @@
 --   M.poll(cb)      one round now; cb() once every PR's been looked at
 --   M.new_comments(threads, seen, me)  pure: the other people's comments
 --                   not in `seen`, as { keys, threads (ids) }
+--   M.failed_build(pr)  pure: what tells PR record `pr`'s failed build
+--                   apart (its buildUrl, else "failed"); nil if it hasn't
+--                   failed (an expired build hasn't)
+--   M.conflict(pr)  pure: what tells PR record `pr`'s merge conflict apart
+--                   ("<sourceCommit>:<targetCommit>"); nil if it has none
 --
 -- Keyed by the PR's key (hosts.lua's): its id on Azure, owner~repo~n on
 -- GitHub, where a number repeats across repos (#113). An entry from before
@@ -40,7 +60,9 @@ local function config() return require("azure-cli.config").get().chat or {} end
 local function file() return require("azure-cli.chat.store").root() .. "/watched.json" end
 
 local poll_one  -- below
-local list  -- key (string) -> { id, key, host, org, project, repo, title, seen = { "tid:cid" = true }, pending }
+local list  -- key (string) -> { id, key, host, org, project, repo, title, seen = { "tid:cid" = true }, pending,
+            --   build_seen, failed_build, build_pending, conflict_seen, conflict, conflict_told,
+            --   conflict_pending }
 local function load()
   if not list then
     list = SHELL().read_json(file(), {}, { validate = function(t) return type(t) == "table" end })
@@ -69,6 +91,16 @@ function M.new_comments(threads, seen, me)
     end
   end
   return { keys = keys, threads = ids }
+end
+
+function M.failed_build(pr)
+  if type(pr) ~= "table" or pr.buildStatus ~= "failed" then return nil end
+  return (type(pr.buildUrl) == "string" and pr.buildUrl ~= "") and pr.buildUrl or "failed"
+end
+
+function M.conflict(pr)
+  if type(pr) ~= "table" or pr.mergeConflict ~= true then return nil end
+  return tostring(pr.sourceCommit or "") .. ":" .. tostring(pr.targetCommit or "")
 end
 
 -- The list's key of watched PR record `rec`.
@@ -141,6 +173,93 @@ local function act(rec, pr, pending)
   return true
 end
 
+-- chat.on_failed_build: "suggest" (default), "plan" or "off".
+local function on_failed_build() return config().on_failed_build or "suggest" end
+
+-- PR `pr`'s build failed: says so, or has its agent plan the fix. False
+-- when that agent's busy (try again at the next poll).
+local function act_build(rec, pr)
+  local what = HOSTS().ref(pr or rec) .. " \"" .. tostring(rec.title or "") .. "\"'s build failed"
+  pcall(function() CHAT().alert("azure-vicli: PR " .. HOSTS().ref(pr or rec), what) end)
+  if on_failed_build() == "plan" then
+    local _, added = require("azure-cli.chat.agents").start_for_build(pr)
+    if not added or #added == 0 then return false end
+    CHAT().note(what .. " - an agent is planning the fix.")
+  else
+    CHAT().note(what .. ".")
+  end
+  return true
+end
+
+-- Watched `rec`'s build as `fresh` (--get-pr's record) has it; `pr` is
+-- the record an agent gets. A build that had failed when it started being
+-- watched isn't new, as its comments aren't.
+local function check_build(rec, fresh, pr)
+  if on_failed_build() == "off" then return end
+  local failed = M.failed_build(fresh)
+  local first = not rec.build_seen
+  rec.build_seen = true
+  if not failed then
+    rec.failed_build, rec.build_pending = nil, nil
+    return
+  end
+  if failed ~= rec.failed_build then
+    rec.failed_build = failed
+    if not first then rec.build_pending = true end
+  end
+  if rec.build_pending and act_build(rec, pr) then rec.build_pending = nil end
+end
+
+-- chat.on_conflict: "suggest" (default), "rebase" or "off".
+local function on_conflict() return config().on_conflict or "suggest" end
+
+-- PR `pr` conflicts with branch `target`: says so, or has its agent plan
+-- the rebase. False when that agent's busy (try again at the next poll).
+local function act_conflict(rec, pr, target)
+  local ref = HOSTS().ref(pr or rec)
+  local what = ref .. " \"" .. tostring(rec.title or "") .. "\" conflicts with "
+    .. ((target and target ~= "") and target or "its target")
+  pcall(function() CHAT().alert("azure-vicli: PR " .. ref, what) end)
+  if on_conflict() == "rebase" then
+    local _, added = require("azure-cli.chat.agents").start_for_conflict(pr)
+    if not added or #added == 0 then return false end
+    CHAT().note(what .. " - an agent is planning the rebase.")
+  else
+    CHAT().note(what .. ".")
+  end
+  return true
+end
+
+local function source_of(key) return key and key:match("^(.-):") end
+
+-- Watched `rec`'s merge state as `fresh` has it, as check_build. A new
+-- conflict: it wasn't conflicting, or its source moved (a push that still
+-- conflicts); the pair last told about isn't told again.
+local function check_conflict(rec, fresh, pr)
+  if on_conflict() == "off" then return end
+  local key = M.conflict(fresh)
+  local first = not rec.conflict_seen
+  rec.conflict_seen = true
+  if not key then
+    rec.conflict, rec.conflict_pending, rec.conflict_candidate = nil, nil, nil
+    return
+  end
+  local new = (rec.conflict == nil or source_of(rec.conflict) ~= source_of(key)) and key ~= rec.conflict_told
+  -- Right after a push the host may still report the old merge status for
+  -- the new commit (it's worked out in the background): a new conflict
+  -- counts once a second poll sees the same one.
+  if new and not first and rec.conflict_candidate ~= key then
+    rec.conflict_candidate = key
+    return
+  end
+  rec.conflict, rec.conflict_candidate = key, nil
+  if new then
+    rec.conflict_told = key
+    if not first then rec.conflict_pending = true end
+  end
+  if rec.conflict_pending and act_conflict(rec, pr, fresh.target) then rec.conflict_pending = nil end
+end
+
 -- Watched `rec` (under `was` in the list) is GitHub PR `pr`, whose key
 -- it didn't have yet (an entry from before #113): moves it there, taking
 -- in what was seen if the key has an entry already.
@@ -181,6 +300,10 @@ poll_one = function(rec, done)
     end
     TOOLS().fetched[key] = TOOLS().pr_record(key) or pr
     rec.title, rec.repo = pr.title or rec.title, pr.repo or rec.repo
+    -- The build as --get-pr reads it now: the dashboard's row may be old.
+    check_build(rec, pr, TOOLS().pr_record(key) or pr)
+    check_conflict(rec, pr, TOOLS().pr_record(key) or pr)
+    save()
     whoami(rec.org or "", rec.project or "", function(me)
       if not me then return done() end  -- can't tell whose they are: wait
       TOOLS().provider({ "--threads" }, TOOLS().pr_env(TOOLS().pr_record(key) or pr), function(tok, tout)

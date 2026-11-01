@@ -432,6 +432,50 @@ do
   check("agents rows: their groups", rows[1].group == 3 and rows[2].group == 4 and rows[3].group == 4)
 end
 
+-- --- ]w / [w: what waits for you next ---------------------------------------------------------
+do
+  check("change_waits: shown since you opened it, while approved",
+    PLAN.change_waits({ status = "approved", change_shown = 5 })
+    and PLAN.change_waits({ status = "approved", change_shown = 5, change_seen = 4 })
+    and not PLAN.change_waits({ status = "approved", change_shown = 5, change_seen = 5 })
+    and not PLAN.change_waits({ status = "done", change_shown = 5 })
+    and not PLAN.change_waits({ status = "approved" }) and not PLAN.change_waits(nil))
+  local AV = require("azure-cli.chat.agents_view")
+  local rows = AV.rows({ { plan_key = "wi-1", entries = {} }, { plan_key = "wi-2", entries = {} } }, {},
+    function(k) return ({ ["wi-1"] = { status = "approved", change_shown = 3 }, ["wi-2"] = { status = "draft" } })[k] end, 10)
+  check("agents rows: a change waiting for review", rows[1].review and not rows[2].review and rows[2].waiting)
+
+  local W = require("azure-cli.chat.waiting")
+  local qs = {
+    a = { { line = 9, text = "q9" }, { line = 4, text = "q4" }, { line = 6, text = "q6", answer = {} } },
+    b = { { line = 2, text = "q2" } },
+  }
+  local arranged = { { header = "Needs you (2)" }, { key = "a", waiting = true }, { key = "b", waiting = true },
+    { key = "busy", waiting = true, conv = { running = {} } }, { header = "In progress (1)" }, { key = "c", review = true } }
+  local stops = W.stops(arranged, function(r) return qs[r.key] end)
+  local got = {}
+  for _, s in ipairs(stops) do got[#got + 1] = s.key .. ":" .. s.kind .. (s.line and (":" .. s.line) or "") end
+  check("waiting stops: each plan's unanswered questions by line, its approval, then a change; not one being worked on",
+    table.concat(got, ",") == "a:question:4,a:question:9,a:approve,b:question:2,b:approve,c:review", table.concat(got, ","))
+  local function at(s) return s and (s.key .. ":" .. s.kind .. (s.line and (":" .. s.line) or "")) or "nil" end
+  check("waiting step: from elsewhere, the first / the last", at(W.step(stops, nil, 1)) == "a:question:4"
+    and at(W.step(stops, nil, -1)) == "c:review" and at(W.step(stops, { key = "zzz", kind = "question", line = 1 }, 1)) == "a:question:4")
+  check("waiting step: in a plan, its next question after the cursor",
+    at(W.step(stops, { key = "a", kind = "question", line = 1 }, 1)) == "a:question:4"
+    and at(W.step(stops, { key = "a", kind = "question", line = 4 }, 1)) == "a:question:9"
+    and at(W.step(stops, { key = "a", kind = "question", line = 6 }, 1)) == "a:question:9")
+  check("waiting step: past its questions its approval, then the next plan",
+    at(W.step(stops, { key = "a", kind = "question", line = 9 }, 1)) == "a:approve"
+    and at(W.step(stops, { key = "a", kind = "approve" }, 1)) == "b:question:2"
+    and at(W.step(stops, { key = "b", kind = "approve" }, 1)) == "c:review")
+  check("waiting step: wraps around", at(W.step(stops, { key = "c", kind = "review" }, 1)) == "a:question:4"
+    and at(W.step(stops, { key = "a", kind = "question", line = 4 }, -1)) == "c:review")
+  check("waiting step: backwards", at(W.step(stops, { key = "a", kind = "approve" }, -1)) == "a:question:9"
+    and at(W.step(stops, { key = "b", kind = "question", line = 1 }, -1)) == "a:approve"
+    and at(W.step(stops, { key = "a", kind = "question", line = 9 }, -1)) == "a:question:4")
+  check("waiting step: nothing waits", W.step({}, nil, 1) == nil and W.step({}, { key = "a", kind = "approve" }, -1) == nil)
+end
+
 -- --- open questions and your answers ---------------------------------------------------------
 do
   local lines = { "## Goal", "x?", "## Open questions", "- Should admins be exempt?", "1. Error or fallback?",
@@ -900,6 +944,31 @@ do
   local saved = TR.load(wdir)
   check("run: a gb run is kept with who started it", got and got.code == 0 and saved and saved.by == "user"
     and saved.fingerprint == "fp1", vim.inspect(saved))
+  -- Timed out with a child still holding the output open: the run is let
+  -- go after the grace period, not "already running" for good.
+  -- (jobstop doing nothing stands in for Windows, where it doesn't reach
+  -- what the shell started.)
+  local timeout, grace, jobstop = TR.TIMEOUT, TR.GRACE_MS, vim.fn.jobstop
+  TR.TIMEOUT, TR.GRACE_MS = 0.2, 300
+  vim.fn.jobstop = function() return 1 end
+  local tg
+  TR.run(wdir, "sleep 4", "fpt", function(r) tg = r end, { by = "agent" })
+  vim.wait(2000, function() return tg ~= nil end, 20)
+  TR.TIMEOUT, TR.GRACE_MS, vim.fn.jobstop = timeout, grace, jobstop
+  check("run: a timed-out run is let go even when its exit never comes", tg and tg.timed_out and not TR.running(wdir),
+    vim.inspect(tg))
+  local again
+  TR.run(wdir, "true", "fp1", function(r) again = r end, { by = "user" })
+  vim.wait(5000, function() return again ~= nil end, 20)
+  check("run: and the next run starts", again and again.code == 0, vim.inspect(again))
+  local yes = function() return true end
+  local no = function() return false end
+  check("argv: on Windows a .ps1 goes to PowerShell, pwsh when there",
+    vim.deep_equal(TR.argv([[.\Scripts\Find.ps1 -All]], true, yes),
+      { "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", [[.\Scripts\Find.ps1 -All]] })
+    and TR.argv([["C:\a b\t.PS1"]], true, no)[1] == "powershell")
+  check("argv: on Windows anything else to 'shell' as a string; elsewhere shell + flag",
+    TR.argv("dotnet test", true, yes) == "dotnet test" and TR.argv("make test", false)[3] == "make test")
   local PROMPT = require("azure-cli.prompt")
   local real_confirm = PROMPT.confirm
   PROMPT.confirm = function(_, cb) cb(false) end
@@ -933,6 +1002,27 @@ do
   check("is_test_command: anything else isn't", not PLAN.is_test_command("dotnet test; rm -rf /", tc)
     and not PLAN.is_test_command("dotnet", tc) and not PLAN.is_test_command("", tc)
     and not PLAN.is_test_command("dotnet build", nil))
+  -- #1 of the dogfood run: one test file next to the plan's command, and
+  -- timeout / PATH= in front, don't ask.
+  check("test_plan_files: the Test plan's test files, nothing else",
+    vim.deep_equal(PLAN.test_plan_files({ "## Files", "- `lua/x.lua`", "## Test plan",
+      "- `tests/test-chat.lua` and test_github.py: new cases", "- by hand: open lua/azure-cli/init.lua",
+      "```sh", "tests/run.sh", "```", "- not ../tests/test-evil.lua nor /etc/test.conf", "## Risks", "- tests/test-other.lua" }),
+      { "tests/test-chat.lua", "test_github.py" }),
+    vim.inspect(PLAN.test_plan_files({ "## Test plan", "- `tests/test-chat.lua` and test_github.py: new cases",
+      "- not ../tests/test-evil.lua nor /etc/test.conf" })))
+  local rs = "bash tests/run.sh"
+  local function rsy(c) return PLAN.is_test_command(c, rs) end
+  check("is_test_command: a test file next to the plan's command",
+    rsy('nvim -u NONE --headless --cmd "set rtp+=." -l tests/test-chat.lua 2>&1 | tail -20')
+      and rsy('PATH=/home/linuxbrew/.linuxbrew/bin:$PATH timeout 300 nvim -u NONE --headless --cmd "set rtp+=$PWD" -l tests/test-chat-acp.lua 2>&1 | grep -v "^ok " | tail -40')
+      and rsy("cd tests && python3 -m unittest test_chat_provider -k get_pr 2>&1 | tail -15")
+      and rsy("python3 -m pytest -q tests/test_github.py") and rsy("PATH=/opt/nvim/bin:$PATH bash tests/run.sh"))
+  check("is_test_command: not outside its directory, nor another program or a write",
+    not rsy("nvim -l lua/azure-cli/init.lua") and not rsy("nvim -l tests/../evil.lua")
+      and not rsy("rm tests/test-chat.lua") and not rsy("nvim -l tests/x.lua > out.txt")
+      and not rsy("nvim -l tests/x.lua $(rm -rf ~)") and not rsy("LD_PRELOAD=x.so nvim -l tests/x.lua")
+      and not rsy("PATH=$HOME/x:$PATH; nvim -l tests/x.lua"))
   local function yes(c) return PLAN.is_test_command(c, tc) end
   check("is_test_command: more arguments", yes("dotnet test --no-build --filter FullyQualifiedName~Throttle")
     and yes("dotnet build -c Release"))
@@ -958,6 +1048,63 @@ do
   check("test_command: a block wins; not a bare interpreter or a pipe",
     tcmd("## Test plan\n`dotnet test`\n```sh\nmake check\n```") == "make check"
       and tcmd("## Test plan\n`python` and `dotnet test | tee x`") == nil)
+end
+
+-- --- allowed for the plan: command_patterns / command_like ------------------------------------
+do
+  local function pats(c) return table.concat(PLAN.command_patterns(c) or { "nil" }, "|") end
+  check("command_patterns: the program, its flags and a subcommand",
+    pats("python3 -m unittest discover -s tests") == "python3 -m unittest" and pats("git fetch origin x") == "git fetch"
+      and pats("luajit -bl lua/a.lua") == "luajit -bl" and pats("make") == "make",
+    pats("python3 -m unittest discover -s tests") .. " " .. pats("luajit -bl lua/a.lua"))
+  check("command_patterns: one per step, as is_test_command splits it",
+    pats("cd /w/x && timeout 60 PATH=/o/bin:$PATH nvim -l tests/a.lua 2>&1 | tail -20; git status") == "nvim -l|git status",
+    pats("cd /w/x && timeout 60 PATH=/o/bin:$PATH nvim -l tests/a.lua 2>&1 | tail -20; git status"))
+  local none = { "make > out.txt", "make $(rm x)", "make `rm x`", "make || rm x", "make | sh", "make & calc",
+    "rm -rf build", "git push origin x", "git -C w push", "bash -c 'make'", "node -e 1", "FOO=1 make",
+    "sudo make", "make\nrm -rf x", "" }
+  local got = {}
+  for _, c in ipairs(none) do if PLAN.command_patterns(c) then got[#got + 1] = c end end
+  check("command_patterns: none for what the tests' rules refuse", #got == 0, vim.inspect(got))
+  local p = { "python3 -m unittest", "git fetch" }
+  local function like(c) return PLAN.command_like(c, p) end
+  check("command_like: more arguments, after a cd, piped into a look",
+    like("python3 -m unittest tests.test_x") and like("cd /w && git fetch upstream && python3 -m unittest | tail -5")
+      and like("git fetch"))
+  check("command_like: not another subcommand, step or write",
+    not like("python3 -m pip install x") and not like("git fetchall") and not like("git fetch; make")
+      and not like("git fetch > x") and not like("git fetch\nrm -rf x") and not like("python3 -m unittest -c x")
+      and not PLAN.command_like("git fetch", {}) and not PLAN.command_like("git fetch", nil))
+  check("is_test_command: a new line is another command",
+    not PLAN.is_test_command("dotnet test\nrm -rf x", "dotnet test")
+      and PLAN.is_test_command("dotnet build\ndotnet test", "dotnet test"))
+end
+
+-- --- allowed for the plan: kept on the record for its approved revision ------------------------
+do
+  local key = "wi-test-allow-cmd"
+  PLAN.save({ key = key, target = { work_item_id = 77001 }, status = "approved", approved_rev = 1, threads = {},
+    revisions = { { by = "agent", markdown = "## Files\n- `a.lua` - x" } } })
+  PLAN.allow_commands(PLAN.load(key), "git fetch origin && python3 -m unittest discover")
+  PLAN.allow_commands(PLAN.load(key), "git fetch")
+  local rec = PLAN.load(key)
+  check("allow_commands: saved once each, for the approved revision",
+    vim.deep_equal(PLAN.allowed_commands(rec), { "git fetch", "python3 -m unittest" }) and rec.allowed_commands_rev == 1,
+    vim.inspect(rec.allowed_commands))
+  check("command_allowed: like one of them", PLAN.command_allowed(key, "git fetch upstream")
+    and not PLAN.command_allowed(key, "git pull"))
+  PLAN.allow_commands(rec, "rm -rf x")
+  check("allow_commands: nothing for a command without patterns", #PLAN.allowed_commands(PLAN.load(key)) == 2)
+  rec = PLAN.load(key)
+  rec.approved_rev = 2
+  check("allowed_commands: none from an earlier approved revision", #PLAN.allowed_commands(rec) == 0)
+  rec = PLAN.load(key)
+  PLAN.add_revision(rec, "## Files\n- `b.lua` - y", "you")
+  rec.status, rec.approved_rev = "approved", 2
+  PLAN.save(rec)
+  check("command_allowed: a new approval asks again", rec.allowed_commands == nil
+    and not PLAN.command_allowed(key, "git fetch upstream"))
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
 end
 
 -- --- look_only_command -------------------------------------------------------------------------
@@ -1710,6 +1857,13 @@ do
     res and res.shown == false and tostring(res.diff):find("+return 2", 1, true) ~= nil
       and FIX.last and FIX.last.dir == wt, vim.inspect({ res, FIX.last }))
   check("#120 show_fix: the plan view's Changes section is poked", poked >= 1, poked)
+  -- #34: a big diff comes back as its stat, with where to read it.
+  vim.fn.writefile(vim.split(string.rep("return 'a long line of the change'\n", 600), "\n"), wt .. "/b.lua")
+  res = call("show_fix", { work_item_id = 9120 }, env)
+  check("#34 show_fix: a big diff isn't returned, the stat is", res and res.diff == nil and tostring(res.stat):find("b.lua", 1, true)
+    and tostring(res.diff_note):find("git diff HEAD", 1, true), vim.inspect(res and { res.stat, res.diff_note }))
+  vim.fn.delete(wt .. "/b.lua")
+
 
   -- #126: its change viewer already open, the user in another tab: show_fix
   -- redraws it in place - no tab, window or mode change.
@@ -1755,6 +1909,285 @@ do
 
   FIX.last = last
   SHELL.notify, CHAT.alert, PC.poke = real.notify, real.alert, real.poke
+  vim.fn.delete(wt, "rf")
+  vim.fn.delete(wt .. ".branch")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")
+  pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".md")
+end
+
+-- --- two plans changing the same files: the overlap, approving after the other --------
+do
+  check("in_flight: approved, done, a PR still open; not draft, nor a closed PR",
+    PLAN.in_flight({ status = "approved" }) and PLAN.in_flight({ status = "done" })
+      and PLAN.in_flight({ status = "draft", pr = { id = 1 } }) and not PLAN.in_flight({ status = "draft" })
+      and not PLAN.in_flight({ status = "done", pr = { id = 1 }, pr_state = "completed" }) and not PLAN.in_flight(nil))
+  check("in_flight: not once pushed straight to an existing branch",
+    not PLAN.in_flight({ status = "done", no_pr = true }) and PLAN.in_flight({ status = "approved", no_pr = true }))
+  local mine = { key = "wi-1", repo = "cli", files = { "lua/azure-cli/chat/agents.lua", "docs/chat.md", "x.lua" } }
+  local found = PLAN.overlaps(mine, {
+    { key = "wi-1", label = "#1", repo = "cli", files = { "x.lua" } },
+    { key = "wi-2", label = "#2", repo = "cli", files = { "chat/agents.lua", "docs/chat.md", "y.lua" } },
+    { key = "wi-3", label = "#3", repo = "other", files = { "x.lua" } },
+    { key = "wi-4", label = "#4", files = { "x.lua" } },
+    { key = "wi-5", label = "#5", repo = "cli", files = { "agents.lua.bak", "ox.lua" } },
+  })
+  check("overlaps: shared files by suffix, not itself, not another repo, an unknown repo compared",
+    #found == 2 and found[1].key == "wi-2" and table.concat(found[1].files, "|") == "lua/azure-cli/chat/agents.lua|docs/chat.md"
+      and found[2].key == "wi-4" and table.concat(found[2].files, "|") == "x.lua", vim.inspect(found))
+  local lines = PLAN.overlap_lines({ "wi-1" }, { ["wi-1"] = found }, function() return "#1" end)
+  check("overlap_lines: one plan", lines[1] == "#2 also changes: lua/azure-cli/chat/agents.lua, docs/chat.md"
+    and lines[2] == "#4 also changes: x.lua", vim.inspect(lines))
+  lines = PLAN.overlap_lines({ "wi-0", "wi-1" }, { ["wi-1"] = { found[2] } }, function() return "#1" end)
+  check("overlap_lines: several plans", #lines == 1 and lines[1] == "#1 and #4 both change: x.lua", vim.inspect(lines))
+  local held = { status = "approved", target = { work_item_id = 1 },
+    wait_for = { { key = "wi-2", label = "#2", done = true }, { key = "wi-4", label = "#4" } } }
+  check("waiting_on: the ones not finished, only while approved", table.concat(PLAN.waiting_on(held), ",") == "#4"
+    and #PLAN.waiting_on({ status = "draft", wait_for = held.wait_for }) == 0)
+  local ok, why = PLAN.gate_check(held, true, held.target)
+  check("gate: a held plan's change doesn't start", not ok and tostring(why):find("once #4 is finished", 1, true) ~= nil, why)
+  check("status_label: waits for", (PLAN.status_label(held)):find("waits for #4", 1, true) ~= nil)
+end
+
+do
+  local CHAT = require("azure-cli.chat")
+  local UI = require("azure-cli.ui")
+  local AV = require("azure-cli.chat.agents_view")
+  local send, find, choose = CHAT.send, CHAT.find_conversation, UI.choose
+  local sent, asked = {}, nil
+  CHAT.send = function(text, o) sent[#sent + 1] = { text = text, display = o and o.display } return {} end
+  CHAT.find_conversation = function() return nil end
+  UI.choose = function(opts, cb) asked = { opts = opts, cb = cb } end
+  local function md(files)
+    local l = { "# P", "", "## Files" }
+    for _, f in ipairs(files) do l[#l + 1] = "- `" .. f .. "` - x" end
+    return table.concat(l, "\n")
+  end
+  local function put(key, target, status, files, extra)
+    local rec = { key = key, target = target, title = key, status = status, threads = {},
+      revisions = { { n = 1, by = "agent", markdown = md(files) } }, approved_rev = status ~= "draft" and 1 or nil }
+    for k, v in pairs(extra or {}) do rec[k] = v end
+    PLAN.save(rec)
+  end
+  local made = { "wi-9701", "wi-9702", "pr-github-o~other~3", "wi-github-o~cli~9703", "wi-9704", "wi-9705", "wi-9706",
+    "wi-9707", "wi-9708" }
+  put("wi-9701", { work_item_id = 9701 }, "approved", { "src/ovl_a.lua", "docs/ovl.md" })
+  put("wi-9702", { work_item_id = 9702 }, "done", { "src/ovl_b.lua" }, { pr = { id = 97002 } })
+  put("pr-github-o~other~3", { pr_id = 3, pr_key = "o~other~3" }, "approved", { "src/ovl_a.lua" })
+  put("wi-github-o~cli~9703", { work_item_id = 9703, item_key = "o~cli~9703" }, "draft",
+    { "lua/src/ovl_a.lua", "docs/ovl.md", "src/ovl_b.lua", "src/ovl_c.lua" })
+  local key = "wi-github-o~cli~9703"
+  check("repo_of: a GitHub key's repo", PLAN.repo_of(PLAN.load(key)) == "cli" and PLAN.repo_of(PLAN.load("wi-9701")) == nil)
+  local found = PLAN.overlapping(key)
+  check("overlapping: the plans in flight it shares files with, not another repo's",
+    #found == 2 and vim.deep_equal({ found[1].label, found[2].label }, { "#9701", "#9702" })
+      and table.concat(found[1].files, "|") == "lua/src/ovl_a.lua|docs/ovl.md", vim.inspect(found))
+
+  -- gA: the popup says so, and "after" holds the approval back.
+  local picked
+  PLAN.ask_approval({ key }, function(allow, wait_for) picked = { allow = allow, wait_for = wait_for } end)
+  local o = asked and asked.opts or {}
+  check("ask_approval: the overlaps in the details, one more button",
+    vim.deep_equal(o.details, { "#9701 also changes: lua/src/ovl_a.lua, docs/ovl.md", "#9702 also changes: src/ovl_b.lua" })
+      and o.buttons[3] == "Approve after #9701, #9702" and o.keys.w == 3
+      and o.buttons[4] == "Approve after #9701, #9702, and let it push" and o.keys.W == 4 and o.cancel == 5, vim.inspect(o))
+  asked.cb(4)
+  check("ask_approval: after, and let it push", picked and picked.allow == true and picked.wait_for
+    and #picked.wait_for[key] == 2, vim.inspect(picked))
+  asked.cb(3)
+  local wf = picked and picked.wait_for and picked.wait_for[key]
+  check("ask_approval: after - which to wait for", picked and picked.allow == false and wf and #wf == 2
+    and wf[1].key == "wi-9701", vim.inspect(picked))
+  PLAN.approve(key, false, wf)
+  local rec = PLAN.load(key)
+  check("approve after: approved, nothing sent, the hold kept", rec.status == "approved" and #sent == 0
+    and table.concat(PLAN.waiting_on(rec), ",") == "#9701,#9702", vim.inspect(sent))
+  check("approve after: the gate holds its change", not PLAN.gate(rec.target))
+  local rows = AV.rows({ { plan_key = key, entries = {}, label = "o#9703", target = rec.target } }, {}, PLAN.load, os.time())
+  check("Agents screen: waits for, In progress", rows[1].state:find("waits for #9701, #9702", 1, true) ~= nil
+    and rows[1].group == 3, rows[1].state)
+
+  -- One finishes: still waiting for the other; its PR merged: it starts.
+  PLAN.pr_closed(97002, "completed")
+  rec = PLAN.load(key)
+  check("one finished: still waits for the other", #sent == 0 and table.concat(PLAN.waiting_on(rec), ",") == "#9701",
+    vim.inspect(rec.wait_for))
+  PLAN.release_waiting()  -- as a restart does: nothing changed, nothing sent
+  check("release with nothing finished: nothing sent", #sent == 0)
+  local a = PLAN.load("wi-9701")
+  a.pr = { id = 97001 }
+  PLAN.save(a)
+  PLAN.pr_closed(97001, "abandoned")
+  rec = PLAN.load(key)
+  local msg = sent[1] and sent[1].text or ""
+  check("all finished: the go-ahead, saying to start from the target branch as it is now", #sent == 1
+    and msg:find("#9701, #9702 (changing some of the same files) is finished", 1, true) == 1
+    and msg:find("start from the target branch as it is now", 1, true) ~= nil and msg:find("I approve the plan", 1, true) ~= nil
+    and rec.wait_for == nil and PLAN.gate(rec.target), msg)
+  check("all finished: the chat says after which", tostring(sent[1] and sent[1].display):find("(after #9701, #9702)", 1, true) ~= nil,
+    sent[1] and sent[1].display)
+
+  -- Approving several at once: a later one overlaps an earlier one.
+  put("wi-9704", { work_item_id = 9704 }, "draft", { "src/ovl_d.lua" })
+  put("wi-9705", { work_item_id = 9705 }, "draft", { "src/ovl_d.lua", "src/ovl_e.lua" })
+  asked, picked = nil, nil
+  PLAN.ask_approval({ "wi-9704", "wi-9705" }, function(allow, wait_for) picked = { allow = allow, wait_for = wait_for } end)
+  o = asked and asked.opts or {}
+  check("several: a later one overlapping an earlier one", vim.deep_equal(o.details, { "#9705 and #9704 both change: src/ovl_d.lua" }),
+    vim.inspect(o.details))
+  asked.cb(3)
+  sent = {}
+  for _, k in ipairs({ "wi-9704", "wi-9705" }) do PLAN.approve(k, picked.allow, picked.wait_for[k]) end
+  check("several, after: the first starts, the second waits for it", #sent == 1
+    and table.concat(PLAN.waiting_on(PLAN.load("wi-9705")), ",") == "#9704", vim.inspect(sent))
+
+  -- The other discarded: it starts.
+  sent = {}
+  for _, ext in ipairs({ ".json", ".md" }) do pcall(vim.fn.delete, PLAN.root() .. "/wi-9704" .. ext) end
+  PLAN.forget("wi-9704")
+  vim.wait(200, function() return #sent > 0 end, 10)
+  check("the other discarded: it starts", #sent == 1 and PLAN.load("wi-9705").wait_for == nil, vim.inspect(sent))
+
+  -- Plain approval with an overlap: no hold. A new revision drops a hold.
+  put("wi-9706", { work_item_id = 9706 }, "draft", { "src/ovl_e.lua" })
+  asked, picked = nil, nil
+  PLAN.ask_approval({ "wi-9706" }, function(allow, wait_for) picked = { allow = allow, wait_for = wait_for } end)
+  asked.cb(1)
+  check("plain approve: no wait_for", picked and picked.allow == false and picked.wait_for == nil)
+  rec = PLAN.load("wi-9706")
+  rec.status, rec.wait_for = "approved", { { key = "wi-9705", label = "#9705" } }
+  PLAN.add_revision(rec, md({ "src/ovl_e.lua" }), "agent")
+  check("a new revision drops the hold", rec.wait_for == nil and rec.status == "draft")
+  -- Start now: gA on a waiting plan asks, then sends without the note.
+  rec.status, rec.approved_rev, rec.wait_for = "approved", 2, { { key = "wi-9705", label = "#9705" } }
+  PLAN.save(rec)
+  sent, asked = {}, nil
+  PLAN.ask_start_now("wi-9706")
+  check("start now: asks", asked and asked.opts.title:find("without waiting for #9705", 1, true) ~= nil)
+  asked.cb(1)
+  check("start now: sent, no note", #sent == 1 and sent[1].text:find("I approve the plan", 1, true) == 1
+    and PLAN.load("wi-9706").wait_for == nil, vim.inspect(sent))
+
+  -- Pushed straight to an existing branch: no PR, so a plan waiting for it starts.
+  local TF = require("azure-cli.chat.tools_fix")
+  local find_story = TF.find_story
+  TF.find_story = function(t) return "/x", "feature/old", "main", t.work_item_id == 9707 end
+  put("wi-9707", { work_item_id = 9707 }, "approved", { "src/ovl_g.lua" })
+  put("wi-9708", { work_item_id = 9708 }, "approved", { "src/ovl_g.lua" },
+    { wait_for = { { key = "wi-9707", label = "#9707" } } })
+  sent = {}
+  PLAN.mark_done({ work_item_id = 9707 })
+  vim.wait(200, function() return #sent > 0 end, 10)
+  TF.find_story = find_story
+  check("existing branch: done, and the plan waiting for it starts", PLAN.load("wi-9707").no_pr == true
+    and #sent == 1 and PLAN.load("wi-9708").wait_for == nil, vim.inspect(sent))
+
+  CHAT.send, CHAT.find_conversation, UI.choose = send, find, choose
+  for _, k in ipairs(made) do
+    for _, ext in ipairs({ ".json", ".md" }) do pcall(vim.fn.delete, PLAN.root() .. "/" .. k .. ext) end
+    PLAN.forget(k)
+  end
+end
+
+-- --- chat.self_review: a reviewer agent sees the change before the user ----------------------
+do
+  local CHAT = require("azure-cli.chat")
+  local SHELL = require("azure-cli.shell")
+  local TOOLS = require("azure-cli.chat.tools")
+  local FIX = require("azure-cli.chat.tools_fix")
+  local PC = require("azure-cli.chat.plan_changes")
+  local AV = require("azure-cli.chat.agents_view")
+  local CONFIG = require("azure-cli.config")
+  local function call(name, args, env)
+    local res, err, finished
+    TOOLS.by_name[name].run(args, env, function(r, e) res, err, finished = r, e, true end)
+    vim.wait(5000, function() return finished end, 10)
+    return res, err
+  end
+  CONFIG.setup({ chat = { self_review = true } })
+  local notified, alerted, sent = {}, {}, {}
+  local real = { notify = SHELL.notify, alert = CHAT.alert, poke = PC.poke, send = CHAT.send, last = FIX.last }
+  SHELL.notify = function(m) notified[#notified + 1] = m end
+  CHAT.alert = function(t) alerted[#alerted + 1] = t end
+  PC.poke = function() end
+  CHAT.send = function(text, o) sent[#sent + 1] = { text = text, opts = o } return {} end
+  local key = "wi-9121"
+  local conv = CHAT.conversation(key, { target = { work_item_id = 9121 }, label = "#9121" })
+  local env = { conv = conv, background = function() return true end, log = function() end }
+  local function approve(n)
+    call("submit_plan", { work_item_id = 9121, title = "Reviewed", markdown = "# R" .. n .. "\n\n## Goal\nrev " .. n
+      .. "\n\n## Files\n- `a.lua` - x" }, env)
+    local rec = PLAN.load(key)
+    rec.status, rec.approved_rev = "approved", PLAN.rev_count(rec)
+    PLAN.save(rec)
+  end
+  approve(1)
+  local wt = FIX.root() .. "/azure-vicli-wi9121"
+  vim.fn.delete(wt, "rf")
+  vim.fn.mkdir(wt, "p")
+  vim.fn.writefile({ "feature/9121-x", "main" }, wt .. ".branch")
+  local function sh(args) return vim.fn.system(vim.list_extend({ "git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t" }, args)) end
+  sh({ "init", "-q" })
+  vim.fn.writefile({ "return 1" }, wt .. "/a.lua")
+  sh({ "add", "-A" })
+  sh({ "commit", "-q", "-m", "base" })
+  vim.fn.writefile({ "return 2" }, wt .. "/a.lua")
+  notified, alerted, sent = {}, {}, {}
+
+  -- The first show_fix: to the reviewer, not the user.
+  local res, err = call("show_fix", { work_item_id = 9121 }, env)
+  local reviewer = CHAT.find_conversation("review-" .. key)
+  check("self_review: the first show_fix isn't announced", res and #notified == 0 and #alerted == 0,
+    vim.inspect({ res, err, notified, alerted }))
+  check("self_review: it tells the agent the change is in review", res and res.in_review == true
+    and tostring(res.note):find("reviewer", 1, true) ~= nil, vim.inspect(res))
+  check("self_review: a read-only reviewer starts on the worktree's diff and the plan",
+    #sent == 1 and reviewer ~= nil and sent[1].opts.conv == reviewer and PLAN.task_read_only(reviewer)
+      and sent[1].text:find("git -C " .. wt .. " diff HEAD", 1, true) ~= nil and sent[1].text:find("rev 1", 1, true) ~= nil
+      and sent[1].text:find("No findings.", 1, true) ~= nil and sent[1].opts.quiet == true,
+    vim.inspect(sent[1] and sent[1].text))
+  check("self_review: once per approved revision, on the plan", PLAN.load(key).reviewed_rev == 1)
+  check("self_review: the reviewer runs on reviewer_model, else model (not planner_model)",
+    CHAT.current_model({ model = "m", planner_model = "p", reviewer_model = "r" }, reviewer) == "r"
+      and CHAT.current_model({ model = "m", planner_model = "p", implementer_model = "i" }, reviewer) == "m")
+  -- While it reviews: the implementer's row says so, the reviewer has none.
+  reviewer.running = {}
+  local rows = AV.rows({ conv, reviewer }, {}, PLAN.load, os.time())
+  check("self_review: the Agents screen shows the implementer in review, no reviewer row",
+    #rows == 1 and rows[1].key == key and rows[1].state == "* in review" and rows[1].group == 2, vim.inspect(rows))
+  res = call("show_fix", { work_item_id = 9121 }, env)
+  check("self_review: show_fix again mid-review: still held", res and res.in_review and #notified == 0 and #sent == 1,
+    vim.inspect({ res, notified }))
+  reviewer.running = nil
+
+  -- Its findings go back to the implementer.
+  sent[1].opts.on_done({ status = "done", text = "- a.lua:1 returns 2, the plan says 3" })
+  check("self_review: the findings reach the implementer",
+    #sent == 2 and sent[2].opts.conv == conv and sent[2].text:find("A reviewer looked at your change: - a.lua:1", 1, true) ~= nil
+      and sent[2].text:find("then call show_fix again", 1, true) ~= nil and #notified == 0,
+    vim.inspect(sent[2]))
+  vim.wait(500, function() return CHAT.find_conversation("review-" .. key) == nil end, 10)
+  check("self_review: the reviewer's conversation is gone", CHAT.find_conversation("review-" .. key) == nil)
+
+  -- The second show_fix: announced as usual, no second review.
+  res = call("show_fix", { work_item_id = 9121 }, env)
+  check("self_review: the next show_fix announces the change", res and not res.in_review and #notified == 1
+    and #alerted == 1 and #sent == 2, vim.inspect({ res, notified, sent }))
+
+  -- A new approved revision is reviewed again; a review that fails doesn't hold the change up.
+  approve(2)
+  notified, alerted, sent = {}, {}, {}
+  res = call("show_fix", { work_item_id = 9121 }, env)
+  check("self_review: a new approved revision goes to review again", res and res.in_review and #sent == 1 and #notified == 0,
+    vim.inspect({ res, notified }))
+  sent[1].opts.on_done({ status = "timed out (idle 300s)", text = "" })
+  check("self_review: a failed review announces the change and tells the implementer",
+    #notified == 1 and #alerted == 1 and #sent == 2 and sent[2].opts.conv == conv
+      and sent[2].text:find("The review didn't happen", 1, true) ~= nil, vim.inspect({ notified, sent[2] }))
+
+  CHAT.drop_conversation(key)
+  FIX.last = real.last
+  SHELL.notify, CHAT.alert, PC.poke, CHAT.send = real.notify, real.alert, real.poke, real.send
+  CONFIG.setup({})
   vim.fn.delete(wt, "rf")
   vim.fn.delete(wt .. ".branch")
   pcall(vim.fn.delete, PLAN.root() .. "/" .. key .. ".json")

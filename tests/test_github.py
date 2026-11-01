@@ -815,6 +815,24 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(rec["mergeability"]["blockers"], ["required check `ci / test` failed"])
         self.assertEqual(rec["mergeability"]["base"], "github-host")
 
+    def test_get_pr_merge_conflict_and_commits(self):
+        # The chat's watch (chat.on_conflict) goes by mergeConflict and the
+        # head/base pair: a DIRTY merge state is a conflict even when the
+        # node's `mergeable` hasn't caught up.
+        def get(merge, **node):
+            client = FakeClient({"mergeStateStatus": merge_repo(merge),
+                                 "viewer": {"viewer": user("me"), "repository": {"pullRequest": pr_node(5, **node)}}})
+            a = gh.Actions(account(), {"AZVICLI_PROJECT": "o", "AZVICLI_REPO": "r", "AZVICLI_PR": "5"}, client)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(a.get_pr(), 0)
+            return json.loads(out.getvalue())
+        rec = get(merge_pr(mergeStateStatus="DIRTY"), baseRefOid="BASESHA")
+        self.assertTrue(rec["mergeConflict"])
+        self.assertEqual((rec["sourceCommit"], rec["targetCommit"]), ("abc", "BASESHA"))
+        self.assertTrue(get(merge_pr(), mergeable="CONFLICTING")["mergeConflict"])
+        self.assertFalse(get(merge_pr())["mergeConflict"])
+
     def test_threads_print_an_ado_list(self):
         client = FakeClient({"reviewThreads": {"repository": {"pullRequest": {
             "reviewThreads": {"nodes": []}, "comments": {"nodes": [

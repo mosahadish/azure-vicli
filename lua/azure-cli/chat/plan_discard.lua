@@ -70,7 +70,7 @@ end
 -- planning one, which has no <dir>.branch), or a PR's fix.
 local function worktree_dirs(target)
   local out = {}
-  if target.work_item_id then
+  if target.work_item_id or target.task_id then
     out = FIX().story_dirs(target)
   elseif target.pr_id then
     local d = FIX().dir_for(target)
