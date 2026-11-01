@@ -151,7 +151,7 @@ end
 
 local row_link = {}  -- buffer line (1-based) -> work item id (parent/child rows)
 local row_pr = {}    -- buffer line (1-based) -> linked PR (Pull Requests rows)
-local row_comment = {}  -- buffer line (1-based) -> its comment's author (Discussion rows)
+local row_comment = {}  -- buffer line (1-based) -> its comment (Discussion rows)
 local row_title = {}  -- buffer line (1-based) -> the section title on it
 
 local notify = SHELL.notify
@@ -277,10 +277,10 @@ local function render(data)
   else
     for _, c in ipairs(comments) do
       lines[#lines + 1] = (c.author or "") .. "  " .. fmt_when(c.date) .. comment_tag(c)
-      row_comment[#lines] = c.author
+      row_comment[#lines] = c
       for _, cl in ipairs(vim.split(c.text or "", "\n", { plain = true })) do
         lines[#lines + 1] = "  " .. cl
-        row_comment[#lines] = c.author
+        row_comment[#lines] = c
       end
       lines[#lines + 1] = ""
     end
@@ -849,7 +849,9 @@ S.WI_VIEW_SNAP[buf] = function(win)
     snap.section = require("azure-cli.chat.view").section_at(row_title, lnum)
     local p = row_pr[lnum]
     if p then snap.pr = { id = p.id, title = p.title, repo = p.repo } end
-    snap.comment_author = row_comment[lnum]
+    local c = row_comment[lnum]
+    if c then snap.comment_author, snap.comment = c.author, c.text end
+    snap.line_text = vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
   end
   local c = S.WI_DETAIL_CACHE[ID]
   local ok, d = pcall(vim.json.decode, c and c.body or "")

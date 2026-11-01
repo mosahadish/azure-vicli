@@ -201,6 +201,9 @@ do
   check("section: the count goes", VIEW.section_at(titles, 11) == "Discussion", VIEW.section_at(titles, 11))
   local t = VIEW.text({ section = "Discussion", comment_author = "Bob" })
   check("view: comment author", t:find("Comment by Bob", 1, true) ~= nil, t)
+  t = VIEW.text({ section = "Discussion", comment_author = "Bob", comment = "Looks good,\nship it." })
+  check("view: a work item's line", VIEW.text({ line_text = "  Users can log in" }):find("The line under the cursor:   Users can log in", 1, true) ~= nil)
+  check("view: the comment's text", t:find("Comment by Bob: Looks good,\nship it.", 1, true) ~= nil, t)
 end
 
 -- --- the Agents screen --------------------------------------------------------

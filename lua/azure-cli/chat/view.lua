@@ -297,9 +297,13 @@ function M.text(snap)
   end
   if snap.section then out[#out + 1] = "Section: " .. snap.section end
   if snap.commit then out[#out + 1] = "Commit: " .. snap.commit end
-  if snap.comment_author then out[#out + 1] = "Comment by " .. snap.comment_author end
+  if snap.comment_author then
+    out[#out + 1] = "Comment by " .. snap.comment_author
+      .. (snap.comment and (": " .. tostring(snap.comment):sub(1, THREAD_MAX)) or "")
+  end
   if snap.repo then out[#out + 1] = "Repository: " .. snap.repo .. (snap.branch and (" (branch " .. snap.branch .. ")") or "") end
   if snap.code_line then out[#out + 1] = "Code on that line: " .. snap.code_line end
+  if snap.line_text and snap.line_text ~= "" then out[#out + 1] = "The line under the cursor: " .. snap.line_text end
   if type(snap.symbol) == "table" then out[#out + 1] = "Inside: " .. snap.symbol.name .. " (" .. snap.symbol.kind .. ")" end
   for _, d in ipairs(type(snap.diagnostics) == "table" and snap.diagnostics or {}) do
     out[#out + 1] = "Diagnostic on this line (" .. tostring(d.severity) .. "): " .. tostring(d.message)
