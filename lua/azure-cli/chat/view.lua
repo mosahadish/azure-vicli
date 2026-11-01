@@ -184,6 +184,8 @@ function M.text(snap)
     out[#out + 1] = "File: " .. snap.file .. (snap.line and (" line " .. snap.line
       .. (snap.side and (" (" .. (snap.side == "L" and "target" or "source") .. " side)") or "")) or "")
   end
+  if snap.section then out[#out + 1] = "Section: " .. snap.section end
+  if snap.commit then out[#out + 1] = "Commit: " .. snap.commit end
   if snap.repo then out[#out + 1] = "Repository: " .. snap.repo .. (snap.branch and (" (branch " .. snap.branch .. ")") or "") end
   if snap.code_line then out[#out + 1] = "Code on that line: " .. snap.code_line end
   if type(snap.symbol) == "table" then out[#out + 1] = "Inside: " .. snap.symbol.name .. " (" .. snap.symbol.kind .. ")" end

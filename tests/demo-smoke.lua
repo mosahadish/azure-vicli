@@ -3403,6 +3403,15 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   for _, c in ipairs(CHAT.conversations()) do
     if c ~= STATE.chat and c.persistent_job then pcall(vim.fn.jobstop, c.persistent_job.job) end
   end
+  -- The Overview tells the chat which part the cursor is in.
+  if not STATE.review_openers["101"]() then return fail("the reviewer's Overview didn't open") end
+  local ow = vim.api.nvim_get_current_win()
+  local olines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(ow), 0, -1, false)
+  for i, l in ipairs(olines) do
+    if l == "Description:" then pcall(vim.api.nvim_win_set_cursor, ow, { i + 1, 0 }) break end
+  end
+  local osnap = require("azure-cli.chat.view").snapshot(ow)
+  if osnap.section ~= "Description" then return fail("the Overview's section: " .. vim.inspect(osnap)) end
   smoke_ok("AGENTS")
 end)
 -- Batch review: gQ shows the place of the queued comment under the cursor

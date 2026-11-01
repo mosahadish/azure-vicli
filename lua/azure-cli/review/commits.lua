@@ -109,6 +109,15 @@ function M.overview_commit_at(lines, lnum)
   return nil
 end
 
+-- What row `line` of one of this module's buffers is about, given its
+-- buf_meta entry `meta` and, on a files buffer, the `path` on that row:
+-- { kind, commit = sha, file, code_line }. Pure.
+function M.describe_row(meta, line, path)
+  if meta.kind == "list" then return { kind = "list", commit = M.commit_line_sha(line) } end
+  if meta.kind == "files" then return { kind = "files", commit = meta.sha, file = path } end
+  return { kind = meta.kind, commit = meta.sha, file = meta.path, code_line = line }
+end
+
 -- Parses `git show --format= --name-status <sha>` output into a list of
 -- { status, path }, one per changed file. A rename/copy line has 3
 -- tab-separated fields (e.g. "R100<TAB>old<TAB>new"); the destination path -
@@ -443,6 +452,15 @@ open_commit_list = function(ctx)
   render_commit_list(ctx, buf)
   ctx.nav_show(buf)
   set_chrome(ctx, buf)
+end
+
+-- describe_row for row `lnum` of `buf`, or nil when `buf` isn't one of
+-- this module's (review/chat.lua's describer tells the chat with it).
+function M.describe_buf(buf, lnum)
+  local meta = buf_meta[buf]
+  if not meta then return nil end
+  local line = vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
+  return M.describe_row(meta, line, (files_line_paths[buf] or {})[lnum])
 end
 
 local function setup(ctx)

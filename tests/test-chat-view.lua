@@ -104,6 +104,46 @@ do
   vim.cmd("silent! %bwipeout!")
 end
 
+-- --- the reviewer's Overview and Commits views --------------------------------
+do
+  local RCHAT = require("azure-cli.review.chat")
+  local COMMITS = require("azure-cli.review.commits")
+  local t1 = { id = 1, status = "active", comments = { { author = "Ann", content = "first" } } }
+  local t2 = { id = 2, status = "fixed", comments = { { author = "Bob", content = "second" } } }
+  local lines = {
+    "PR #42  Add widgets", "master -> feature/widgets", "",
+    "Description:", "  some text", "",
+    "Commits (who pushed):", "  a1b2c3d  2024-01-15  John Doe: Fix the thing", "",
+    "Comments (2):", "", "┌─ thread [active]", "│ Ann:", "│   first", "", "┌─ thread [fixed]", "│ Bob:", "│   second",
+  }
+  local thread_map = { [12] = { t1 }, [16] = { t2 } }
+  local at = RCHAT.overview_at(lines, thread_map, 5)
+  check("overview: in the description", at.section == "Description" and at.commit == nil and at.thread == nil,
+    vim.inspect(at))
+  at = RCHAT.overview_at(lines, thread_map, 8)
+  check("overview: on a commit", at.section == "Commits" and at.commit == "a1b2c3d", vim.inspect(at))
+  at = RCHAT.overview_at(lines, thread_map, 18)
+  check("overview: inside a thread's body", at.section == "Comments" and at.thread and at.thread.id == 2,
+    vim.inspect(at))
+  at = RCHAT.overview_at(lines, thread_map, 11)
+  check("overview: above the first thread", at.section == "Comments" and at.thread == nil, vim.inspect(at))
+  at = RCHAT.overview_at(lines, thread_map, 1)
+  check("overview: the header has no section", at.section == nil)
+
+  local row = COMMITS.describe_row({ kind = "list" }, "  a1b2c3d  2024-01-15  John Doe: Fix the thing")
+  check("commits: the list's row", row.kind == "list" and row.commit == "a1b2c3d" and row.file == nil, vim.inspect(row))
+  check("commits: the list's title row", COMMITS.describe_row({ kind = "list" }, "PR #42 commits").commit == nil)
+  row = COMMITS.describe_row({ kind = "files", sha = "a1b2c3d" }, "  M  src/a.lua", "src/a.lua")
+  check("commits: a commit's file", row.kind == "files" and row.commit == "a1b2c3d" and row.file == "src/a.lua",
+    vim.inspect(row))
+  row = COMMITS.describe_row({ kind = "diff", sha = "a1b2c3d", path = "src/a.lua" }, "x = 1")
+  check("commits: a commit's diff", row.commit == "a1b2c3d" and row.file == "src/a.lua" and row.code_line == "x = 1",
+    vim.inspect(row))
+
+  local t = VIEW.text({ section = "Comments", commit = "a1b2c3d" })
+  check("view: section and commit", t:find("Section: Comments", 1, true) and t:find("Commit: a1b2c3d", 1, true), t)
+end
+
 if fails > 0 then
   print(fails .. " chat view test(s) failed")
   os.exit(1)

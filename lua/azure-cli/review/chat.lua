@@ -98,6 +98,33 @@ end
 
 local NOTE_HL = { info = "DiagnosticInfo", warning = "DiagnosticWarn", issue = "DiagnosticError" }
 
+-- Where cursor line `lnum` of the Overview page is, from its rendered
+-- `lines` and `thread_map` (as ctx.build_overview() returns them):
+-- { section = "Description"|"Commits"|"Comments"|"Since your last review",
+-- commit = the sha on a commit row, thread = the comment thread whose
+-- heading is at or above it within the Comments section }. Pure.
+local HEADINGS = { { "^Description:$", "Description" }, { "^Commits %(who pushed%):$", "Commits" },
+  { "^Comments %(%d+%):$", "Comments" }, { "^Since your last review", "Since your last review" } }
+function M.overview_at(lines, thread_map, lnum)
+  local out = {}
+  local start
+  for i = math.min(lnum, #lines), 1, -1 do
+    for _, h in ipairs(HEADINGS) do
+      if lines[i]:find(h[1]) then out.section, start = h[2], i break end
+    end
+    if start then break end
+  end
+  if out.section == "Commits" then
+    out.commit = require("azure-cli.review.commits").overview_commit_at(lines, lnum)
+  elseif out.section == "Comments" then
+    for i = lnum, start + 1, -1 do
+      local t = (thread_map or {})[i]
+      if t and t[1] then out.thread = t[1] break end
+    end
+  end
+  return out
+end
+
 local function setup(ctx)
   local STATE = require("azure-cli.state")
   local NOTES = require("azure-cli.chat.notes")
@@ -177,6 +204,9 @@ local function setup(ctx)
     if rec and tostring(rec.id) == ID then pr.title, pr.repo, pr.author = rec.title, rec.repo, rec.author end
     local snap = { screen = "reviewer", pr = pr }
     local path = ctx.paths_by_buf[buf]
+    -- The Commits views' buffers (review/commits.lua): the list, a commit's
+    -- files, one file's change in it.
+    local commit_row = not path and require("azure-cli.review.commits").describe_buf(buf, lnum)
     if path then
       snap.screen = "reviewer: a file's diff"
       snap.file = path
@@ -191,6 +221,15 @@ local function setup(ctx)
       end
     elseif buf == ctx.overview_buf() then
       snap.screen = "reviewer: Overview (description, commits, PR-level comments)"
+      local lines, thread_map = ctx.build_overview()
+      local at = M.overview_at(lines or {}, thread_map, lnum)
+      snap.section, snap.commit = at.section, at.commit
+      if at.thread and type(at.thread.id) == "number" then snap.thread = M.thread(at.thread) end
+    elseif commit_row then
+      local row = commit_row
+      snap.screen = row.kind == "files" and "reviewer: a commit's files" or row.kind == "diff" and "reviewer: a commit's diff"
+        or "reviewer: commit list"
+      snap.commit, snap.file, snap.code_line = row.commit, row.file, row.code_line
     elseif vim.bo[buf].filetype == "azurecli-files" then
       snap.screen = "reviewer: file list"
       local f = ctx.ext.filelist and ctx.ext.filelist.row_to_file[lnum - 1]
