@@ -104,9 +104,6 @@ local function symbol_at(buf, row, col)
   return nil
 end
 
--- `light` (the trail's and the input bar's label, which only name the file
--- and line) skips the branch, the symbol and the diagnostics: no git, no
--- parsing on every window switch.
 -- `path` relative to directory `root`, "/"-separated, or nil when it isn't
 -- inside it. Either may use Windows' "\\" and a drive letter in any case.
 -- Pure.
@@ -125,6 +122,9 @@ local function resolved(path)
   return dir and (dir .. "/" .. vim.fs.basename(path)) or path
 end
 
+-- `light` (the trail's and the input bar's label, which only name the file
+-- and line) skips the branch, the symbol and the diagnostics: no git, no
+-- parsing on every window switch.
 function M.code(win, sel, light)
   local buf = vim.api.nvim_win_get_buf(win)
   local name = vim.api.nvim_buf_get_name(buf)
@@ -280,6 +280,9 @@ local function wi_line(wi)
     .. (wi.title and (" \"" .. wi.title .. "\"") or "") .. (wi.state and (" [" .. wi.state .. "]") or "")
 end
 
+-- A comment thread's text is cut after this many characters.
+local THREAD_MAX = 4000
+
 -- A few lines describing `snap` for the agent. Pure.
 function M.text(snap)
   snap = snap or {}
@@ -311,10 +314,20 @@ function M.text(snap)
       .. ": " .. tostring(snap.plan_text or "")
   end
   if type(snap.thread) == "table" then
+    -- Every comment, one line each; the thread as a whole is capped.
     local t = snap.thread
-    local first = t.comments and t.comments[1]
-    out[#out + 1] = "Comment thread #" .. tostring(t.id) .. " [" .. tostring(t.status or "?") .. "]"
-      .. (first and (" started by " .. tostring(first.author) .. ": " .. tostring(first.content):gsub("%s+", " "):sub(1, 200)) or "")
+    local lines = { "Comment thread #" .. tostring(t.id) .. " [" .. tostring(t.status or "?") .. "]:" }
+    local size, comments = 0, t.comments or {}
+    for i, c in ipairs(comments) do
+      local l = "  " .. tostring(c.author) .. ": " .. vim.trim((tostring(c.content or ""):gsub("%s+", " ")))
+      if size + #l > THREAD_MAX and i > 1 then
+        lines[#lines + 1] = "  (" .. (#comments - i + 1) .. " more comments; get_pr_threads has them all)"
+        break
+      end
+      lines[#lines + 1] = l
+      size = size + #l
+    end
+    out[#out + 1] = table.concat(lines, "\n")
   end
   if snap.selection then
     out[#out + 1] = "Selected" .. (snap.selection_lines and (" (lines " .. snap.selection_lines .. ")") or "") .. ":\n"

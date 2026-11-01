@@ -122,6 +122,20 @@ do
   vim.cmd("silent! %bwipeout!")
 end
 
+-- --- a comment thread, in full ----------------------------------------------------
+do
+  local long = string.rep("word ", 100)  -- 500 characters
+  local t = VIEW.text({ thread = { id = 7, status = "active", comments = {
+    { author = "Ann", content = long }, { author = "Bob", content = "Agreed,\nbut later." } } } })
+  check("thread: the whole first comment", t:find("  Ann: " .. vim.trim(long), 1, true) ~= nil, t)
+  check("thread: the replies, each with its author", t:find("  Bob: Agreed, but later.", 1, true) ~= nil, t)
+  local many = {}
+  for i = 1, 40 do many[i] = { author = "P" .. i, content = string.rep("x", 300) } end
+  t = VIEW.text({ thread = { id = 8, status = "active", comments = many } })
+  check("thread: capped in all, saying how many are left", #t < 5000 and t:find("more comments; get_pr_threads has them all", 1, true) ~= nil,
+    #t)
+end
+
 -- --- the reviewer's Overview and Commits views --------------------------------
 do
   local RCHAT = require("azure-cli.review.chat")

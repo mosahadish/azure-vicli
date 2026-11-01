@@ -169,7 +169,7 @@ do
   })
   check("view: pr", t:find('Pull request: PR #101 "Throttle" in widgets (f -> main)', 1, true) ~= nil, t)
   check("view: file, line, side", t:find("File: src/a.py line 12 (source side)", 1, true) ~= nil)
-  check("view: thread", t:find("Comment thread #5000 [active] started by Bob: Why not?", 1, true) ~= nil, t)
+  check("view: thread", t:find("Comment thread #5000 [active]:\n  Bob: Why not?", 1, true) ~= nil, t)
   check("view: work item", t:find('Work item: work item #3001 User Story "Login" [Active]', 1, true) ~= nil)
   check("view: nothing", VIEW.text({}) == "Screen: ?")
 end
