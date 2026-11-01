@@ -616,6 +616,7 @@ function M.open()
 end
 
 function M.current() return view end
+M._set_view = function(v) view = v end  -- tests
 
 require("azure-cli.chat.view").register("azurecli-agents", function(win)
   local r = view and view.rows[vim.api.nvim_win_get_cursor(win)[1]]
@@ -623,6 +624,9 @@ require("azure-cli.chat.view").register("azurecli-agents", function(win)
   if r then
     snap.work_item = r.target and r.target.work_item_id and { id = r.target.work_item_id, title = r.title,
       board = r.target.item_key and "github" or nil, key = r.target.item_key } or nil
+    if r.pr_key or r.pr_id then
+      snap.pr = require("azure-cli.chat.tools").pr_record(r.pr_key or r.pr_id) or { id = r.pr_id }
+    end
     snap.note = "The cursor is on " .. r.label .. "'s agent: " .. r.state
   end
   return snap

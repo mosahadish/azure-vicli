@@ -156,6 +156,28 @@ do
   check("view: comment author", t:find("Comment by Bob", 1, true) ~= nil, t)
 end
 
+-- --- the Agents screen --------------------------------------------------------
+do
+  local AV = require("azure-cli.chat.agents_view")
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "PR !7 fix", "#3001 story" })
+  vim.bo[buf].filetype = "azurecli-agents"
+  vim.api.nvim_win_set_buf(0, buf)
+  AV._set_view({ rows = {
+    { label = "PR !7", state = "working", pr_id = 7, pr_key = "7", target = { pr_id = 7 } },
+    { label = "#3001", state = "PR !9 open", pr_id = 9, pr_key = "9", target = { work_item_id = 3001 } },
+  } })
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local snap = VIEW.snapshot(0)
+  check("agents: a PR agent's PR", type(snap.pr) == "table" and snap.pr.id == 7, vim.inspect(snap.pr))
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  snap = VIEW.snapshot(0)
+  check("agents: a story agent's item and the PR its plan opened",
+    snap.work_item and snap.work_item.id == 3001 and type(snap.pr) == "table" and snap.pr.id == 9, vim.inspect(snap))
+  AV._set_view(nil)
+  vim.cmd("silent! %bwipeout!")
+end
+
 if fails > 0 then
   print(fails .. " chat view test(s) failed")
   os.exit(1)
