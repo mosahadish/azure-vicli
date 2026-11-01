@@ -504,6 +504,11 @@ do
   rejects("acp with a string cmd", { agent = { cmd = "copilot --acp", acp = true } }, "must be a list of strings when acp is set")
   rejects("a bad plan_first", { plan_first = "sometimes" }, "chat.plan_first")
   rejects("a bad test_cmd", { test_cmd = { widgets = 3 } }, "chat.test_cmd")
+  check("chat: ide as a list", pcall(config.setup, { chat = { ide = { "code", "-n", "{dir}" } } })
+    and config.get().chat.ide[1] == "code")
+  check("chat: ide as a shell command", pcall(config.setup, { chat = { ide = "devenv.exe {dir}" } }))
+  rejects("an empty ide", { ide = {} }, "chat.ide is an empty list")
+  rejects("a bad ide", { ide = 3 }, "chat.ide")
   rejects("a bad max_agents", { max_agents = 0 }, "chat.max_agents")
   rejects("a bad on_failed_build", { on_failed_build = "expired" }, "chat.on_failed_build")
   for _, v in ipairs({ "suggest", "plan", "off" }) do

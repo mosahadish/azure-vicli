@@ -465,6 +465,7 @@ paste the output here after changing a default.
 | `next_waiting` | `]w` |
 | `open` | `<CR>` |
 | `open_file` | `gf` |
+| `open_ide` | `gI` |
 | `open_pr` | `gp` |
 | `palette` | `g.` |
 | `prev_thread` | `[t` |
@@ -496,6 +497,7 @@ paste the output here after changing a default.
 | `next_waiting` | `]w` |
 | `notes` | `gn` |
 | `open` | `<CR>` |
+| `open_ide` | `gI` |
 | `open_pr` | `gp` |
 | `open_session` | `go` |
 | `palette` | `g.` |

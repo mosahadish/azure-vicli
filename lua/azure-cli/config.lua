@@ -129,7 +129,7 @@ local DEFAULT_KEYS = {
     quit = "q", help = "?", palette = "g.", approve = "gA", pr_list = "P", workitems = "W", issues = "I",
     show_finished = "gF", chat_input = "i", discard = "dd", first_row = "gg", last_row = "G", open_pr = "gp",
     open_session = "go", next_waiting = "]w", prev_waiting = "[w",
-    notes = "gn",
+    notes = "gn", open_ide = "gI",
   },
   -- The agent's plan (chat/plan.lua): the section list and the plan itself.
   plan = {
@@ -142,6 +142,7 @@ local DEFAULT_KEYS = {
     discard = "gD",  -- throw the plan away (asks first) - dd here is delete_thread
     open_pr = "gp",  -- the PR its agent opened, or the one it fixes
     next_waiting = "]w", prev_waiting = "[w",
+    open_ide = "gI",  -- its worktree in your IDE (chat.ide)
   },
   -- Inner tabs (lua/azure-cli/innertabs.lua): bound on a home tab's list
   -- and on everything opened from it (a PR's reviewer). pick's keys go to
@@ -347,7 +348,7 @@ local CHAT_FIELDS = {
   plan_revisions = "number",
   test_cmd = "any", toasts = "any", on_new_comments = "string", on_failed_build = "string", watch_seconds = "number",
   on_conflict = "string",
-  skill_dirs = "table", self_review = "boolean",
+  skill_dirs = "table", self_review = "boolean", ide = "any",
 }
 -- timeout_seconds: the old name of idle_timeout_seconds (chat/watchdog.lua).
 local CHAT_AGENT_FIELDS = {
@@ -406,6 +407,7 @@ local function validate_chat(chat)
       error("azure-cli.setup: chat.test_cmd must be a command string, or a table of repository name -> command string")
     end
   end
+  if out.ide ~= nil then check_chat_cmd(out.ide, "chat", "ide") end
   if out.on_new_comments ~= nil and out.on_new_comments ~= "suggest" and out.on_new_comments ~= "plan" then
     error("azure-cli.setup: chat.on_new_comments must be \"suggest\" or \"plan\"")
   end
@@ -961,6 +963,7 @@ function M.render_options()
   w("    -- plan_template = \"...\",       -- the plan's sections")
   w("    -- plan_revisions = 3,          -- revisions kept per plan (and the approved one)")
   w("    -- test_cmd = \"dotnet test\",    -- or { [\"repo-name\"] = \"npm test\" }")
+  w("    -- ide = { \"code\", \"-n\", \"{dir}\" },  -- gI: an agent's worktree in your IDE; or \"devenv.exe {dir}\"")
   w("    -- max_agents = 3,              -- agents working at once")
   w("    -- self_review = false,         -- a second agent reviews a plan agent's change before you do")
   w("    -- on_new_comments = \"suggest\", -- or \"plan\": what new comments on the agent's PRs do")

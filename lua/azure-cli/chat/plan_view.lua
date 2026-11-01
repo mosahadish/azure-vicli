@@ -53,6 +53,7 @@ local LIST_HELP = {
   { "discard", "discard this plan, its worktree and local branch - asks first (as dd on Agents)" },
   "See",
   { "open_pr", "its pull request in the reviewer (the one its agent opened, or the one it fixes)" },
+  { "open_ide", "its worktree in your IDE (chat.ide)" },
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
     .. "on an older revision: the current one, marked against that one" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
@@ -95,6 +96,7 @@ local PLAN_HELP = {
   { "discard", "discard this plan, its worktree and local branch - asks first (as dd on Agents)" },
   "See",
   { "open_pr", "its pull request in the reviewer (the one its agent opened, or the one it fixes)" },
+  { "open_ide", "its worktree in your IDE (chat.ide)" },
   { "since", "a bar beside the lines this revision changed against the one before (on by default; toggles) - "
     .. "on an older revision: the current one, marked against that one" },
   { "revisions", "open an older revision, read-only (on one: back to the current one)" },
@@ -865,6 +867,11 @@ local function bind_common(buf)
   bind(buf, "discard", function() require("azure-cli.chat.plan_discard").ask({ key = view.key }) end,
     { desc = "discard this plan (asks first)" })
   bind(buf, "open_pr", open_pr, { desc = "its pull request, in the reviewer" })
+  bind(buf, "open_ide", function()
+    local rec = view and PLAN().load(view.key)
+    if not rec then return end
+    require("azure-cli.chat.ide").open(require("azure-cli.chat.tools_fix").dir_for(rec.target or {}))
+  end, { desc = "its worktree in your IDE" })
   -- ]w / [w: in this plan, its next unanswered question, then its approval.
   require("azure-cli.chat.waiting").bind(buf, "plan")
 end

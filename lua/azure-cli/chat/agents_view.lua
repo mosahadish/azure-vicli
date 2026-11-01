@@ -448,6 +448,7 @@ local HELP = {
   { "open", "the row's agent: its plan, with its conversation in the chat (before it has planned: its conversation)" },
   { "changes", "its change, file by file" }, { "run_log", "its run log" },
   { "open_pr", "its pull request in the reviewer (the one it opened, or the one it fixes)" },
+  { "open_ide", "its worktree in your IDE (chat.ide)" },
   { "open_session", "its session in a terminal, in its directory (the agent's resume_cmd; not while it works)" },
   { "notes", "the notes agents keep on its repository" },
   "Act",
@@ -484,6 +485,10 @@ local function setup(buf)
     if not r.pr_key then return notify((r.label or "That agent") .. " has no pull request yet.") end
     require("azure-cli.chat.plan_view").open_pr(r.pr_key, r.pr_id)
   end, { desc = "its pull request" })
+  K.bind(buf, "agents", "open_ide", function()
+    local r = row_here()
+    if r and r.target then require("azure-cli.chat.ide").open(require("azure-cli.chat.tools_fix").dir_for(r.target)) end
+  end, { desc = "its worktree in your IDE" })
   K.bind(buf, "agents", "open_session", function() open_session(row_here()) end,
     { desc = "its session in a terminal" })
   K.bind(buf, "agents", "notes", function()

@@ -473,6 +473,21 @@ has a session, and for an agent without `resume_cmd`. An idle agent's
 process lets go of the session first; your next message to it starts the
 agent again and replays the conversation.
 
+**An agent's worktree in your IDE.** `gI` on a row of the Agents screen,
+or in a plan, opens that agent's worktree in the IDE you set in
+`chat.ide`: a command as a list, or a string run through the shell, with
+`{dir}` for the worktree (left out, it goes at the end). The IDE starts on
+its own, so it stays open when Neovim quits.
+
+```lua
+ide = { "code", "-n", "{dir}" },         -- VS Code, a new window
+ide = "devenv.exe {dir}",                -- Visual Studio (opens the folder)
+ide = { "idea", "{dir}" },               -- IntelliJ / Rider: their launcher
+```
+
+On Windows, use the string form for a launcher that's a `.cmd` (VS Code's
+`code` is): the shell finds it.
+
 `followup`, `session_pattern` and `persistent` are gone: they were for
 starting a process per message and resuming a session each time. A config
 that still has them gets an error saying so.
