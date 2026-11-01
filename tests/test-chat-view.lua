@@ -183,7 +183,13 @@ do
   local hmap, hlines = {}, {}
   for i = 1, 70 do hmap[i], hlines[i] = { kind = "add" }, "l" .. i end
   local h = RCHAT.hunk(hmap, hlines, 5)
-  check("hunk: cut at 60, saying so", select(2, h:gsub("\n", "")) == 60 and h:find("\n\u{2026} 10 more changed lines$") ~= nil, h:sub(-40))
+  check("hunk: cut at 60, saying so", select(2, h:gsub("\n", "")) == 60 and h:find("\n\u{2026} 10 more changed lines below$") ~= nil, h:sub(-40))
+  -- A new file is one long change: the 60 lines go around the cursor.
+  local nmap, nlines = {}, {}
+  for i = 1, 226 do nmap[i], nlines[i] = { kind = "add" }, "l" .. i end
+  h = RCHAT.hunk(nmap, nlines, 93)
+  local first, last = h:match("^\u{2026} 62 more changed lines above\n%+l(%d+)\n"), h:match("\n%+l(%d+)\n\u{2026} 104 more changed lines below$")
+  check("hunk: centred on the cursor", first == "63" and last == "122" and h:find("\n+l93\n", 1, true) ~= nil, h:sub(1, 60) .. " ... " .. h:sub(-60))
   check("hunk: a short one isn't marked", not RCHAT.hunk(hmap, hlines, 5, 80):find("more changed", 1, true))
 
   local t = VIEW.text({ section = "Comments", commit = "a1b2c3d" })

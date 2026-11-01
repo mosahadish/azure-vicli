@@ -1577,7 +1577,7 @@ do
   local lines = { " a", "-b", "+B", "+C", " d" }
   check("hunk: the changed run around the cursor", RCHAT.hunk(map, lines, 3) == "--b\n++B\n++C")
   check("hunk: none on an unchanged line", RCHAT.hunk(map, lines, 1) == nil)
-  check("hunk: capped, saying so", RCHAT.hunk(map, lines, 3, 2) == "--b\n++B\n\u{2026} 1 more changed lines")
+  check("hunk: capped, saying so", RCHAT.hunk(map, lines, 3, 2) == "--b\n++B\n\u{2026} 1 more changed lines below")
   local range, side = RCHAT.selection_lines(map, 2, 5)
   check("selection_lines: source side preferred", range == "11-13" and side == "R")
   check("selection_lines: target only", RCHAT.selection_lines(map, 2, 2) == "11")

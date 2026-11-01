@@ -37,12 +37,17 @@ function M.hunk(map, lines, lnum, max)
   local a, b = lnum, lnum
   while a > 1 and changed(a - 1) do a = a - 1 end
   while b < #lines and changed(b + 1) do b = b + 1 end
+  -- A run longer than `max` (a new file is one): the `max` lines around
+  -- the cursor, saying what's left out at either end.
+  max = max or 60
+  local first = math.max(a, math.min(lnum - math.floor(max / 2), b - max + 1))
+  local last = math.min(b, first + max - 1)
   local out = {}
-  local last = math.min(b, a + (max or 60) - 1)
-  for i = a, last do
+  if first > a then out[#out + 1] = "\u{2026} " .. (first - a) .. " more changed lines above" end
+  for i = first, last do
     out[#out + 1] = (map[i].kind == "add" and "+" or "-") .. (lines[i] or "")
   end
-  if last < b then out[#out + 1] = "\u{2026} " .. (b - last) .. " more changed lines" end
+  if last < b then out[#out + 1] = "\u{2026} " .. (b - last) .. " more changed lines below" end
   return table.concat(out, "\n")
 end
 
