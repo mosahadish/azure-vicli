@@ -239,6 +239,37 @@ do
   vim.cmd("silent! %bwipeout!")
 end
 
+-- --- review fixes -------------------------------------------------------------
+do
+  -- The function around a method call is the symbol, not the call.
+  local dir = workdir({ ["m.lua"] = "local function foo()\n  local x = self:bar()\n  return x\nend\n" }, "main")
+  local win = open(dir .. "/m.lua", "lua", 2)
+  vim.api.nvim_win_set_cursor(win, { 2, 18 })
+  local snap = VIEW.snapshot(win)
+  check("fix: a call isn't the symbol", snap.symbol and snap.symbol.name == "foo", vim.inspect(snap.symbol))
+
+  -- A light snapshot (the trail's, the label's) asks git and treesitter nothing.
+  local light = VIEW.snapshot(win, nil, { light = true })
+  check("fix: a light snapshot skips branch, symbol, diagnostics",
+    light.file == "m.lua" and light.line == 2 and light.branch == nil and light.symbol == nil and light.diagnostics == nil,
+    vim.inspect(light))
+  VIEW._forget()
+  local spawned, real_systemlist = 0, vim.fn.systemlist
+  vim.fn.systemlist = function(...) spawned = spawned + 1 return real_systemlist(...) end
+  VIEW.remember(win)
+  vim.fn.systemlist = real_systemlist
+  check("fix: remembering a window runs no git", spawned == 0 and VIEW.recent()[1] == "on m.lua:2", spawned)
+
+  -- A describer that fails on a code file still lets the message go.
+  local real_get = vim.diagnostic.get
+  vim.diagnostic.get = function() error("broken") end
+  local ok, s = pcall(VIEW.snapshot, win)
+  vim.diagnostic.get = real_get
+  check("fix: a failing code describer doesn't throw", ok and type(s) == "table", tostring(s))
+  vim.cmd("silent! %bwipeout!")
+
+end
+
 -- --- the input bar's label ------------------------------------------------------
 do
   local CHAT = require("azure-cli.chat")
@@ -258,6 +289,18 @@ do
   vim.api.nvim_exec_autocmds("CursorMoved", {})
   local moved = vim.wait(1000, function() return vim.wo[input].winbar:find("on m.txt:3", 1, true) ~= nil end, 20)
   check("label: follows the cursor", moved, vim.wo[input].winbar)
+
+  -- The input bar reads a label worked out when you move, not on every
+  -- redraw (the spinner's are 8 a second).
+  local calls = 0
+  VIEW.register("test-counting", function() calls = calls + 1 return { screen = "counting" } end)
+  local cbuf = vim.api.nvim_create_buf(false, true)
+  vim.bo[cbuf].filetype = "test-counting"
+  vim.api.nvim_win_set_buf(win, cbuf)
+  CHAT.refresh_label()
+  calls = 0
+  for _ = 1, 5 do CHAT.set_winbars() end
+  check("fix: redrawing the bar describes nothing", calls == 0, calls)
 
   VIEW.register("test-broken", function() error("boom") end)
   local ok = pcall(function() vim.bo.filetype = "test-broken" end)

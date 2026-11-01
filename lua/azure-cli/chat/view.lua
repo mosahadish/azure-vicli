@@ -65,6 +65,20 @@ local function git_branch(root)
 end
 
 local SCOPES = { "function", "method", "class", "struct", "impl", "interface", "module" }
+-- Node types that name a scope's word but use it rather than define it:
+-- self:foo() is a method_index_expression, Java's foo() a
+-- method_invocation; a class_body is inside its class.
+local NOT_SCOPES = { "call", "expression", "invocation", "index", "reference", "body", "parameter", "argument" }
+
+local function is_scope(kind)
+  for _, s in ipairs(NOT_SCOPES) do
+    if kind:find(s, 1, true) then return false end
+  end
+  for _, s in ipairs(SCOPES) do
+    if kind:find(s, 1, true) then return true end
+  end
+  return false
+end
 
 -- The innermost function / class / ... around (row, col), as { kind, name }.
 local function symbol_at(buf, row, col)
@@ -75,40 +89,41 @@ local function symbol_at(buf, row, col)
   if not ok then return nil end
   while node do
     local kind = node:type()
-    for _, s in ipairs(SCOPES) do
-      if kind:find(s, 1, true) and not kind:find("call", 1, true) then
-        local name = node:field("name")[1]
-        if not name then
-          for child in node:iter_children() do
-            local t = child:type()
-            if t == "identifier" or t == "dot_index_expression" or t == "method_index_expression" then name = child break end
-          end
+    if is_scope(kind) then
+      local name = node:field("name")[1]
+      if not name then
+        for child in node:iter_children() do
+          local t = child:type()
+          if t == "identifier" or t == "dot_index_expression" or t == "method_index_expression" then name = child break end
         end
-        if name then
-          return { kind = kind, name = vim.treesitter.get_node_text(name, buf) }
-        end
-        break
       end
+      if name then return { kind = kind, name = vim.treesitter.get_node_text(name, buf) } end
     end
     node = node:parent()
   end
   return nil
 end
 
-function M.code(win, sel)
+-- `light` (the trail's and the input bar's label, which only name the file
+-- and line) skips the branch, the symbol and the diagnostics: no git, no
+-- parsing on every window switch.
+function M.code(win, sel, light)
   local buf = vim.api.nvim_win_get_buf(win)
   local name = vim.api.nvim_buf_get_name(buf)
   if vim.bo[buf].buftype ~= "" or name == "" then return nil end
   local cur = vim.api.nvim_win_get_cursor(win)
   local snap = { screen = "code", file = name, line = cur[1],
     code_line = vim.api.nvim_buf_get_lines(buf, cur[1] - 1, cur[1], false)[1] }
+  if sel and sel.buf == buf then snap.selection_lines = sel.from .. "-" .. sel.to end
+  snap.visible = vim.fn.line("w0", win) .. "-" .. vim.fn.line("w$", win)
   local root = git_root(name)
   if root then
     root = (vim.loop.fs_realpath(root) or root)
     local full = vim.loop.fs_realpath(name) or name
     if full:sub(1, #root + 1) == root .. "/" then snap.file = full:sub(#root + 2) end
-    snap.repo, snap.branch = root, git_branch(root)
   end
+  if light then return snap end
+  if root then snap.repo, snap.branch = root, git_branch(root) end
   snap.symbol = symbol_at(buf, cur[1] - 1, cur[2])
   local here, counts = {}, { errors = 0, warnings = 0 }
   for _, d in ipairs(vim.diagnostic.get(buf)) do
@@ -120,8 +135,6 @@ function M.code(win, sel)
   end
   snap.diagnostics, snap.diagnostic_counts = here, counts
   snap.modified = vim.bo[buf].modified
-  snap.visible = vim.fn.line("w0", win) .. "-" .. vim.fn.line("w$", win)
-  if sel and sel.buf == buf then snap.selection_lines = sel.from .. "-" .. sel.to end
   return snap
 end
 
@@ -169,7 +182,7 @@ local trail = {}
 local TRAIL_MAX = 5
 
 function M.recent() return vim.deepcopy(trail) end
-M._forget = function() trail = {} end  -- tests
+M._forget = function() trail, git_cache = {}, {} end  -- tests
 
 -- Remembers where window `win` is. Floating windows (popups) and whatever
 -- describes as nothing in particular (the chat panel, a scratch buffer)
@@ -177,7 +190,7 @@ M._forget = function() trail = {} end  -- tests
 function M.remember(win)
   if not (win and vim.api.nvim_win_is_valid(win)) then return end
   if vim.api.nvim_win_get_config(win).relative ~= "" then return end
-  local ok, label = pcall(function() return M.label(M.snapshot(win, nil, { no_trail = true })) end)
+  local ok, label = pcall(function() return M.label(M.snapshot(win, nil, { no_trail = true, light = true })) end)
   if not (ok and label) then return end
   for i = #trail, 1, -1 do
     if trail[i] == label then table.remove(trail, i) end
@@ -196,7 +209,7 @@ vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, {
 -- which can say where it is (the reviewer maps it to file lines); the text
 -- is added when the describer didn't.
 function M.snapshot(win, sel, opts)
-  local snap = M.describe(win, sel)
+  local snap = M.describe(win, sel, opts and opts.light)
   -- Where you were before, minus where you are.
   if not (opts and opts.no_trail) and #trail > 0 then
     local here = M.label(snap)
@@ -209,7 +222,7 @@ function M.snapshot(win, sel, opts)
   return snap
 end
 
-function M.describe(win, sel)
+function M.describe(win, sel, light)
   win = win or vim.api.nvim_get_current_win()
   if not (win and vim.api.nvim_win_is_valid(win)) then return { screen = "unknown" } end
   local buf = vim.api.nvim_win_get_buf(win)
@@ -226,8 +239,8 @@ function M.describe(win, sel)
     end
   end
   if not fn then
-    local snap = M.code(win, sel)
-    if snap then
+    local okc, snap = pcall(M.code, win, sel, light)
+    if okc and snap then
       if sel then snap.selection = sel.text end
       return snap
     end

@@ -475,6 +475,11 @@ function M.strip()
   return CORE.strip_text(s)
 end
 
+-- The input bar's label (M.view_label), worked out when you move on the
+-- screen beside the panel (M.refresh_label) or the selection changes, not
+-- on every redraw - the spinner redraws 8 times a second.
+local here_label, here_sel = "", nil
+
 function M.set_winbars()
   local st = panel_state()
   local tags = {}
@@ -496,7 +501,8 @@ function M.set_winbars()
   if #(st.queue or {}) > 0 then tags[#tags + 1] = "[\u{231B} " .. #st.queue .. " queued]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
-  local here = next(st.wins) and M.view_label() or ""
+  if next(st.wins) and st.selection ~= here_sel then here_label, here_sel = M.view_label(), st.selection end
+  local here = here_label
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) then
       pcall(UI.wo, w.log, "winbar", UI.winbar({ "Chat", agent_label(), st.label }, tags))
@@ -525,9 +531,15 @@ function M.view_label()
     local sel = panel_state().selection
     if sel and sel.win ~= win then sel = nil end
     local VIEW = require("azure-cli.chat.view")
-    return VIEW.label(VIEW.snapshot(win, sel, { no_trail = true }))
+    return VIEW.label(VIEW.snapshot(win, sel, { no_trail = true, light = true }))
   end)
   return ok and label or ""
+end
+
+-- Works the input bar's label out again and redraws the bars.
+function M.refresh_label()
+  here_label, here_sel = M.view_label(), panel_state().selection
+  M.set_winbars()
 end
 
 -- The window the user was last in, in the current tab (never the panel).
@@ -752,6 +764,7 @@ local function open_here(focus)
   -- The splits above fired WinEnter while still showing the screen's
   -- buffer: what the chat describes is the window i was pressed in.
   if not is_chat_buf(vim.api.nvim_win_get_buf(prev)) then st.main_win[tab] = prev end
+  here_label, here_sel = M.view_label(), panel_state().selection
   render()
   if focus then
     vim.api.nvim_set_current_win(input)
@@ -957,7 +970,7 @@ vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter", "WinEnter" }, {
     label_pending = true
     vim.defer_fn(function()
       label_pending = false
-      pcall(M.set_winbars)
+      pcall(M.refresh_label)
     end, 200)
   end,
 })
