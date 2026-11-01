@@ -124,6 +124,19 @@ function M.code(win, sel)
   return snap
 end
 
+-- The title of the section cursor line `lnum` of `lines` is in - a section
+-- being a line underlined by a rule of "─" (the work-item view's) - with a
+-- trailing " (N)" count dropped; nil above the first one. Pure.
+function M.section_at(lines, lnum)
+  local function is_rule(l) return l ~= nil and l ~= "" and l:gsub("\u{2500}", "") == "" end
+  for i = math.min(lnum, #lines), 1, -1 do
+    if is_rule(lines[i + 1]) and not is_rule(lines[i]) then
+      return (lines[i]:gsub(" %(%d+%)$", ""))
+    end
+  end
+  return nil
+end
+
 -- The snapshot for `win` (default: the current window). `sel` ({ buf,
 -- from, to, text }, from <CR> in visual mode) is handed to the describer,
 -- which can say where it is (the reviewer maps it to file lines); the text
@@ -186,6 +199,7 @@ function M.text(snap)
   end
   if snap.section then out[#out + 1] = "Section: " .. snap.section end
   if snap.commit then out[#out + 1] = "Commit: " .. snap.commit end
+  if snap.comment_author then out[#out + 1] = "Comment by " .. snap.comment_author end
   if snap.repo then out[#out + 1] = "Repository: " .. snap.repo .. (snap.branch and (" (branch " .. snap.branch .. ")") or "") end
   if snap.code_line then out[#out + 1] = "Code on that line: " .. snap.code_line end
   if type(snap.symbol) == "table" then out[#out + 1] = "Inside: " .. snap.symbol.name .. " (" .. snap.symbol.kind .. ")" end

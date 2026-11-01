@@ -3851,6 +3851,15 @@ section("INNERTABS-WI", function()
   if not (s12.work_item and s12.work_item.id == 12 and s13.work_item and s13.work_item.id == 13) then
     return fail("the chat sees the wrong issue: " .. vim.inspect({ s12.work_item, s13.work_item }))
   end
+  -- ... and the section its cursor is in.
+  local _, w12 = buf_in(i12, "azurecli-issue")
+  local l12 = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w12), 0, -1, false)
+  local drow
+  for i, l in ipairs(l12) do if l == "Description" then drow = i + 2 break end end
+  if not drow then return fail("#12's view has no Description: " .. table.concat(l12, " | ")) end
+  vim.api.nvim_win_set_cursor(w12, { drow, 0 })
+  local sec = VIEW.snapshot(w12).section
+  if sec ~= "Description" then return fail("the chat sees #12's section as " .. tostring(sec)) end
   keys_here()
   feed("[r")
   if cur() ~= i12 then return fail("[r in I didn't go to #12") end

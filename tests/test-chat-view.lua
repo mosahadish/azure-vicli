@@ -144,6 +144,18 @@ do
   check("view: section and commit", t:find("Section: Comments", 1, true) and t:find("Commit: a1b2c3d", 1, true), t)
 end
 
+-- --- a work item's sections -----------------------------------------------------
+do
+  local lines = { "#1 Story", "Title", "", "Description", "───────────", "  text", "",
+    "Discussion (2)", "─────────────", "Bob  1d", "  hi" }
+  check("section: the header fields have none", VIEW.section_at(lines, 2) == nil)
+  check("section: in the description", VIEW.section_at(lines, 6) == "Description")
+  check("section: on its title", VIEW.section_at(lines, 4) == "Description")
+  check("section: the count goes", VIEW.section_at(lines, 11) == "Discussion", VIEW.section_at(lines, 11))
+  local t = VIEW.text({ section = "Discussion", comment_author = "Bob" })
+  check("view: comment author", t:find("Comment by Bob", 1, true) ~= nil, t)
+end
+
 if fails > 0 then
   print(fails .. " chat view test(s) failed")
   os.exit(1)

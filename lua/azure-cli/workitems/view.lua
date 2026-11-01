@@ -151,6 +151,7 @@ end
 
 local row_link = {}  -- buffer line (1-based) -> work item id (parent/child rows)
 local row_pr = {}    -- buffer line (1-based) -> linked PR (Pull Requests rows)
+local row_comment = {}  -- buffer line (1-based) -> its comment's author (Discussion rows)
 
 local notify = SHELL.notify
 
@@ -187,6 +188,7 @@ local function render(data)
   local lines = {}
   row_link = {}
   row_pr = {}
+  row_comment = {}
 
   lines[#lines + 1] = string.format("#%s  %s  [%s]",
     tostring(it.id or "?"), it.type or "", it.state or "")
@@ -270,8 +272,10 @@ local function render(data)
   else
     for _, c in ipairs(comments) do
       lines[#lines + 1] = (c.author or "") .. "  " .. fmt_when(c.date) .. comment_tag(c)
+      row_comment[#lines] = c.author
       for _, cl in ipairs(vim.split(c.text or "", "\n", { plain = true })) do
         lines[#lines + 1] = "  " .. cl
+        row_comment[#lines] = c.author
       end
       lines[#lines + 1] = ""
     end
@@ -826,13 +830,22 @@ S.WI_VIEW_SNAP = S.WI_VIEW_SNAP or {}
 require("azure-cli.chat.view").register(B.item_ft, function(win)
   local ok, b = pcall(vim.api.nvim_win_get_buf, win or 0)
   local f = ok and S.WI_VIEW_SNAP[b]
-  if f then return f() end
+  if f then return f(win) end
 end)
 vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, once = true,
   callback = function() S.WI_VIEW_SNAP[buf] = nil end })
-S.WI_VIEW_SNAP[buf] = function()
+S.WI_VIEW_SNAP[buf] = function(win)
   local snap = { screen = B.host == "github" and "issue detail view" or "work item detail view",
     work_item = { id = tonumber(ID) or ID } }
+  -- Where the cursor is: the section, a linked PR, a comment.
+  local okc, cur = pcall(vim.api.nvim_win_get_cursor, win or 0)
+  if okc then
+    local lnum = cur[1]
+    snap.section = require("azure-cli.chat.view").section_at(vim.api.nvim_buf_get_lines(buf, 0, -1, false), lnum)
+    local p = row_pr[lnum]
+    if p then snap.pr = { id = p.id, title = p.title, repo = p.repo } end
+    snap.comment_author = row_comment[lnum]
+  end
   local c = S.WI_DETAIL_CACHE[ID]
   local ok, d = pcall(vim.json.decode, c and c.body or "")
   local item = ok and type(d) == "table" and (d.item or d) or nil
