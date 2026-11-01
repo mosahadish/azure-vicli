@@ -152,6 +152,7 @@ end
 local row_link = {}  -- buffer line (1-based) -> work item id (parent/child rows)
 local row_pr = {}    -- buffer line (1-based) -> linked PR (Pull Requests rows)
 local row_comment = {}  -- buffer line (1-based) -> its comment's author (Discussion rows)
+local row_title = {}  -- buffer line (1-based) -> the section title on it
 
 local notify = SHELL.notify
 
@@ -167,6 +168,7 @@ local function add_block(lines, title, text, always)
   if (not text or text == "") and not always then return end
   lines[#lines + 1] = ""
   lines[#lines + 1] = title
+  row_title[#lines] = title
   lines[#lines + 1] = string.rep("─", #title)
   if not text or text == "" then
     lines[#lines + 1] = "  (none)"
@@ -189,6 +191,7 @@ local function render(data)
   row_link = {}
   row_pr = {}
   row_comment = {}
+  row_title = {}
 
   lines[#lines + 1] = string.format("#%s  %s  [%s]",
     tostring(it.id or "?"), it.type or "", it.state or "")
@@ -247,6 +250,7 @@ local function render(data)
     local pr_title = "Pull Requests (" .. #prs .. ")"
     lines[#lines + 1] = ""
     lines[#lines + 1] = pr_title
+    row_title[#lines] = pr_title
     lines[#lines + 1] = string.rep("─", #pr_title)
     for _, p in ipairs(prs) do
       for _, l in ipairs(LINKED_PRS.lines(p, B.host)) do
@@ -264,6 +268,7 @@ local function render(data)
   local disc_title = WORDS.discussion .. " (" .. #comments .. ")"
   lines[#lines + 1] = ""
   lines[#lines + 1] = disc_title
+  row_title[#lines] = disc_title
   lines[#lines + 1] = string.rep("─", #disc_title)
   if data.commentsUnsupported then
     lines[#lines + 1] = "  (comments not available on this server)"
@@ -841,7 +846,7 @@ S.WI_VIEW_SNAP[buf] = function(win)
   local okc, cur = pcall(vim.api.nvim_win_get_cursor, win or 0)
   if okc then
     local lnum = cur[1]
-    snap.section = require("azure-cli.chat.view").section_at(vim.api.nvim_buf_get_lines(buf, 0, -1, false), lnum)
+    snap.section = require("azure-cli.chat.view").section_at(row_title, lnum)
     local p = row_pr[lnum]
     if p then snap.pr = { id = p.id, title = p.title, repo = p.repo } end
     snap.comment_author = row_comment[lnum]

@@ -99,7 +99,7 @@ end
 local NOTE_HL = { info = "DiagnosticInfo", warning = "DiagnosticWarn", issue = "DiagnosticError" }
 
 -- Where cursor line `lnum` of the Overview page is, from its rendered
--- `lines` and `thread_map` (as ctx.build_overview() returns them):
+-- `lines` and `thread_map` (its buffer's, and the one render_overview keeps):
 -- { section = "Description"|"Commits"|"Comments"|"Since your last review",
 -- commit = the sha on a commit row, thread = the comment thread whose
 -- heading is at or above it within the Comments section }. Pure.
@@ -236,8 +236,9 @@ local function setup(ctx)
       end
     elseif buf == ctx.overview_buf() then
       snap.screen = "reviewer: Overview (description, commits, PR-level comments)"
-      local lines, thread_map = ctx.build_overview()
-      local at = M.overview_at(lines or {}, thread_map, lnum)
+      -- The page as it's on screen: its lines, and the threads render_overview
+      -- put on them.
+      local at = M.overview_at(vim.api.nvim_buf_get_lines(buf, 0, -1, false), ctx.comments_by_buf[buf], lnum)
       snap.section, snap.commit = at.section, at.commit
       if at.thread and type(at.thread.id) == "number" then snap.thread = M.thread(at.thread) end
     elseif commit_row then

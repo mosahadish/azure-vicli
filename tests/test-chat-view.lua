@@ -104,6 +104,24 @@ do
   vim.cmd("silent! %bwipeout!")
 end
 
+do
+  check("relative: a path in the repository", VIEW.relative("/r/p", "/r/p/a/b.lua") == "a/b.lua")
+  check("relative: Windows separators", VIEW.relative("C:\\r\\p", "C:\\r\\p\\a\\b.lua") == "a/b.lua",
+    VIEW.relative("C:\\r\\p", "C:\\r\\p\\a\\b.lua"))
+  check("relative: Windows drive letters' case", VIEW.relative("c:/r", "C:/r/x.lua") == "x.lua")
+  check("relative: outside it", VIEW.relative("/r/p", "/r/q/x.lua") == nil)
+  check("relative: a sibling with the same prefix", VIEW.relative("/r/p", "/r/pp/x.lua") == nil)
+
+  -- An unsaved file reached through a symlinked directory.
+  local dir = workdir({ ["keep.txt"] = "k\n" }, "main")
+  local link = vim.fn.tempname()
+  vim.loop.fs_symlink(dir, link)
+  local win = open(link .. "/new.lua", "lua", 1)
+  local snap = VIEW.snapshot(win)
+  check("relative: an unsaved file through a symlink", snap.file == "new.lua" and snap.repo == dir, vim.inspect({ snap.file, snap.repo }))
+  vim.cmd("silent! %bwipeout!")
+end
+
 -- --- the reviewer's Overview and Commits views --------------------------------
 do
   local RCHAT = require("azure-cli.review.chat")
@@ -153,12 +171,13 @@ end
 
 -- --- a work item's sections -----------------------------------------------------
 do
-  local lines = { "#1 Story", "Title", "", "Description", "───────────", "  text", "",
-    "Discussion (2)", "─────────────", "Bob  1d", "  hi" }
-  check("section: the header fields have none", VIEW.section_at(lines, 2) == nil)
-  check("section: in the description", VIEW.section_at(lines, 6) == "Description")
-  check("section: on its title", VIEW.section_at(lines, 4) == "Description")
-  check("section: the count goes", VIEW.section_at(lines, 11) == "Discussion", VIEW.section_at(lines, 11))
+  -- The rows the view rendered a section title on (a description line of
+  -- only "─" is no title).
+  local titles = { [4] = "Description", [9] = "Discussion (2)" }
+  check("section: the header fields have none", VIEW.section_at(titles, 2) == nil)
+  check("section: in the description", VIEW.section_at(titles, 6) == "Description")
+  check("section: on its title", VIEW.section_at(titles, 4) == "Description")
+  check("section: the count goes", VIEW.section_at(titles, 11) == "Discussion", VIEW.section_at(titles, 11))
   local t = VIEW.text({ section = "Discussion", comment_author = "Bob" })
   check("view: comment author", t:find("Comment by Bob", 1, true) ~= nil, t)
 end
@@ -289,6 +308,23 @@ do
   vim.api.nvim_exec_autocmds("CursorMoved", {})
   local moved = vim.wait(1000, function() return vim.wo[input].winbar:find("on m.txt:3", 1, true) ~= nil end, 20)
   check("label: follows the cursor", moved, vim.wo[input].winbar)
+
+  -- It's worked out once the cursor rests, not while it still moves.
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", {})
+  vim.wait(150, function() return false end)
+  vim.api.nvim_win_set_cursor(win, { 2, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", {})
+  vim.wait(150, function() return false end)
+  check("label: waits for the cursor to rest", vim.wo[input].winbar:find("on m.txt:3", 1, true) ~= nil,
+    vim.wo[input].winbar)
+  local rested = vim.wait(1000, function() return vim.wo[input].winbar:find("on m.txt:2", 1, true) ~= nil end, 20)
+  check("label: then follows it", rested, vim.wo[input].winbar)
+  -- And in insert mode.
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
+  vim.api.nvim_exec_autocmds("CursorMovedI", {})
+  local typed = vim.wait(1000, function() return vim.wo[input].winbar:find("on m.txt:1", 1, true) ~= nil end, 20)
+  check("label: follows the cursor in insert mode", typed, vim.wo[input].winbar)
 
   -- The input bar reads a label worked out when you move, not on every
   -- redraw (the spinner's are 8 a second).

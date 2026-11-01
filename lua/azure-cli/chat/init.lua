@@ -960,18 +960,16 @@ end
 local group = vim.api.nvim_create_augroup("AzureCliChat", { clear = true })
 -- The input bar's label follows the cursor on the screen beside the panel
 -- (redrawn once it has rested 200ms).
-local label_pending = false
-vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter", "WinEnter" }, {
+local label_timer
+vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "BufEnter", "WinEnter" }, {
   group = group,
   callback = function()
-    if label_pending or is_chat_buf(vim.api.nvim_get_current_buf()) then return end
+    if is_chat_buf(vim.api.nvim_get_current_buf()) then return end
     if vim.api.nvim_win_get_config(0).relative ~= "" then return end
     if not panel_open_in(vim.api.nvim_get_current_tabpage()) then return end
-    label_pending = true
-    vim.defer_fn(function()
-      label_pending = false
-      pcall(M.refresh_label)
-    end, 200)
+    label_timer = label_timer or (vim.uv or vim.loop).new_timer()
+    label_timer:stop()
+    label_timer:start(200, 0, vim.schedule_wrap(function() pcall(M.refresh_label) end))
   end,
 })
 -- The places you were (chat/view.lua's trail) start counting with the chat.

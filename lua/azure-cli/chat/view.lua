@@ -107,6 +107,24 @@ end
 -- `light` (the trail's and the input bar's label, which only name the file
 -- and line) skips the branch, the symbol and the diagnostics: no git, no
 -- parsing on every window switch.
+-- `path` relative to directory `root`, "/"-separated, or nil when it isn't
+-- inside it. Either may use Windows' "\\" and a drive letter in any case.
+-- Pure.
+function M.relative(root, path)
+  local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", ""):gsub("^(%a):", function(d) return d:lower() .. ":" end)) end
+  root, path = norm(root), norm(path)
+  if path:sub(1, #root + 1) ~= root .. "/" then return nil end
+  return path:sub(#root + 2)
+end
+
+-- `path` with symlinks resolved; for a file not yet written, its directory's.
+local function resolved(path)
+  local real = vim.loop.fs_realpath(path)
+  if real then return real end
+  local dir = vim.loop.fs_realpath(vim.fs.dirname(path))
+  return dir and (dir .. "/" .. vim.fs.basename(path)) or path
+end
+
 function M.code(win, sel, light)
   local buf = vim.api.nvim_win_get_buf(win)
   local name = vim.api.nvim_buf_get_name(buf)
@@ -118,9 +136,8 @@ function M.code(win, sel, light)
   snap.visible = vim.fn.line("w0", win) .. "-" .. vim.fn.line("w$", win)
   local root = git_root(name)
   if root then
-    root = (vim.loop.fs_realpath(root) or root)
-    local full = vim.loop.fs_realpath(name) or name
-    if full:sub(1, #root + 1) == root .. "/" then snap.file = full:sub(#root + 2) end
+    root = vim.loop.fs_realpath(root) or root
+    snap.file = M.relative(root, resolved(name)) or name
   end
   if light then return snap end
   if root then snap.repo, snap.branch = root, git_branch(root) end
@@ -138,15 +155,12 @@ function M.code(win, sel, light)
   return snap
 end
 
--- The title of the section cursor line `lnum` of `lines` is in - a section
--- being a line underlined by a rule of "─" (the work-item view's) - with a
--- trailing " (N)" count dropped; nil above the first one. Pure.
-function M.section_at(lines, lnum)
-  local function is_rule(l) return l ~= nil and l ~= "" and l:gsub("\u{2500}", "") == "" end
-  for i = math.min(lnum, #lines), 1, -1 do
-    if is_rule(lines[i + 1]) and not is_rule(lines[i]) then
-      return (lines[i]:gsub(" %(%d+%)$", ""))
-    end
+-- The title of the section cursor line `lnum` is in, from `titles` (row ->
+-- section title, as a view rendered them), with a trailing " (N)" count
+-- dropped; nil above the first one. Pure.
+function M.section_at(titles, lnum)
+  for i = lnum, 1, -1 do
+    if titles[i] then return (titles[i]:gsub(" %(%d+%)$", "")) end
   end
   return nil
 end

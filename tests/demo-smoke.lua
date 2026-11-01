@@ -3416,6 +3416,19 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   end
   local osnap = require("azure-cli.chat.view").snapshot(ow)
   if osnap.section ~= "Description" then return fail("the Overview's section: " .. vim.inspect(osnap)) end
+  -- What's on screen, not the page built again: with its first line gone,
+  -- the "Description:" heading row is still the Description.
+  local obuf = vim.api.nvim_win_get_buf(ow)
+  vim.bo[obuf].modifiable = true
+  local first = vim.api.nvim_buf_get_lines(obuf, 0, 1, false)
+  vim.api.nvim_buf_set_lines(obuf, 0, 1, false, {})
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(obuf, 0, -1, false)) do
+    if l == "Description:" then pcall(vim.api.nvim_win_set_cursor, ow, { i, 0 }) break end
+  end
+  osnap = require("azure-cli.chat.view").snapshot(ow)
+  vim.api.nvim_buf_set_lines(obuf, 0, 0, false, first)
+  vim.bo[obuf].modifiable = false
+  if osnap.section ~= "Description" then return fail("the Overview's section, read off the screen: " .. vim.inspect(osnap.section)) end
   smoke_ok("AGENTS")
 end)
 -- Batch review: gQ shows the place of the queued comment under the cursor
