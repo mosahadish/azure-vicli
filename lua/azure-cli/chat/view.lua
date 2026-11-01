@@ -120,6 +120,7 @@ function M.code(win, sel)
   end
   snap.diagnostics, snap.diagnostic_counts = here, counts
   snap.modified = vim.bo[buf].modified
+  snap.visible = vim.fn.line("w0", win) .. "-" .. vim.fn.line("w$", win)
   if sel and sel.buf == buf then snap.selection_lines = sel.from .. "-" .. sel.to end
   return snap
 end
@@ -137,11 +138,77 @@ function M.section_at(lines, lnum)
   return nil
 end
 
+-- The short "on PR !101 · auth.py:12 · thread 5000" for `snap`: a sent
+-- message's heading in the conversation, the input bar's label, the trail
+-- of places you were. Nil when there's nothing to say. Pure.
+function M.label(snap)
+  local bits = {}
+  if type(snap.pr) == "table" then bits[#bits + 1] = "PR !" .. tostring(snap.pr.id) end
+  if type(snap.work_item) == "table" then bits[#bits + 1] = "#" .. tostring(snap.work_item.id) end
+  if snap.file then
+    local range = snap.line and (":" .. snap.line) or ""
+    if snap.selection_lines then range = ":" .. snap.selection_lines end
+    bits[#bits + 1] = vim.fn.fnamemodify(snap.file, ":t") .. range
+  elseif snap.selection then
+    bits[#bits + 1] = "a selection"
+  end
+  if type(snap.thread) == "table" then bits[#bits + 1] = "thread " .. tostring(snap.thread.id) end
+  if snap.commit then bits[#bits + 1] = "commit " .. tostring(snap.commit):sub(1, 7) end
+  if snap.plan_line then bits[#bits + 1] = "plan:" .. snap.plan_line
+  elseif snap.plan then bits[#bits + 1] = "the plan" end
+  if #bits > 0 then return "on " .. table.concat(bits, " \u{00B7} ") end
+  if snap.screen and snap.screen ~= "other" and snap.screen ~= "unknown" then return "on the " .. snap.screen end
+  return nil
+end
+
+-- The places you were, as labels, most recent first: remembered as you
+-- leave a window, each once (going back moves it to the front), five at
+-- most.
+local trail = {}
+local TRAIL_MAX = 5
+
+function M.recent() return vim.deepcopy(trail) end
+M._forget = function() trail = {} end  -- tests
+
+-- Remembers where window `win` is. Floating windows (popups) and whatever
+-- describes as nothing in particular (the chat panel, a scratch buffer)
+-- aren't kept.
+function M.remember(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then return end
+  if vim.api.nvim_win_get_config(win).relative ~= "" then return end
+  local ok, label = pcall(function() return M.label(M.snapshot(win, nil, { no_trail = true })) end)
+  if not (ok and label) then return end
+  for i = #trail, 1, -1 do
+    if trail[i] == label then table.remove(trail, i) end
+  end
+  table.insert(trail, 1, label)
+  while #trail > TRAIL_MAX do table.remove(trail) end
+end
+
+vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, {
+  group = vim.api.nvim_create_augroup("AzureCliChatView", { clear = true }),
+  callback = function() M.remember(vim.api.nvim_get_current_win()) end,
+})
+
 -- The snapshot for `win` (default: the current window). `sel` ({ buf,
 -- from, to, text }, from <CR> in visual mode) is handed to the describer,
 -- which can say where it is (the reviewer maps it to file lines); the text
 -- is added when the describer didn't.
-function M.snapshot(win, sel)
+function M.snapshot(win, sel, opts)
+  local snap = M.describe(win, sel)
+  -- Where you were before, minus where you are.
+  if not (opts and opts.no_trail) and #trail > 0 then
+    local here = M.label(snap)
+    local recent = {}
+    for _, l in ipairs(trail) do
+      if l ~= here then recent[#recent + 1] = l end
+    end
+    if #recent > 0 then snap.recent = recent end
+  end
+  return snap
+end
+
+function M.describe(win, sel)
   win = win or vim.api.nvim_get_current_win()
   if not (win and vim.api.nvim_win_is_valid(win)) then return { screen = "unknown" } end
   local buf = vim.api.nvim_win_get_buf(win)
@@ -227,7 +294,13 @@ function M.text(snap)
   elseif snap.hunk then
     out[#out + 1] = "The change around the cursor:\n" .. snap.hunk
   end
+  if snap.visible then out[#out + 1] = "Visible: lines " .. snap.visible end
   if snap.note then out[#out + 1] = snap.note end
+  if type(snap.recent) == "table" and #snap.recent > 0 then
+    local r = {}
+    for i, l in ipairs(snap.recent) do r[i] = (tostring(l):gsub("^on ", "")) end
+    out[#out + 1] = "Recently: " .. table.concat(r, "; ")
+  end
   return table.concat(out, "\n")
 end
 

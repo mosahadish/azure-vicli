@@ -93,25 +93,6 @@ local function agent_cwd(snap)
   return dir
 end
 
-local function where_label(snap)
-  local bits = {}
-  if type(snap.pr) == "table" then bits[#bits + 1] = "PR !" .. tostring(snap.pr.id) end
-  if type(snap.work_item) == "table" then bits[#bits + 1] = "#" .. tostring(snap.work_item.id) end
-  if snap.file then
-    local range = snap.line and (":" .. snap.line) or ""
-    if snap.selection_lines then range = ":" .. snap.selection_lines end
-    bits[#bits + 1] = vim.fn.fnamemodify(snap.file, ":t") .. range
-  elseif snap.selection then
-    bits[#bits + 1] = "a selection"
-  end
-  if type(snap.thread) == "table" then bits[#bits + 1] = "thread " .. tostring(snap.thread.id) end
-  if snap.plan_line then bits[#bits + 1] = "plan:" .. snap.plan_line
-  elseif snap.plan then bits[#bits + 1] = "the plan" end
-  if #bits > 0 then return "on " .. table.concat(bits, " \u{00B7} ") end
-  if snap.screen and snap.screen ~= "other" and snap.screen ~= "unknown" then return "on the " .. snap.screen end
-  return nil
-end
-
 -- `confirm` (a tool_env's, a confirm_for's) that counts the popup's wait
 -- as time asking you on turn watchdog `w` (nil: none).
 local function asking_confirm(confirm, w)
@@ -806,7 +787,7 @@ send = function(text, opts)
     end) then
       return
     end
-    table.insert(st.entries, { role = "you", text = text, where = where_label(snap), view = snap })
+    table.insert(st.entries, { role = "you", text = text, where = require("azure-cli.chat.view").label(snap), view = snap })
     table.insert(st.entries, { role = "note", text = SKILLS.report(agent_cwd(snap)) })
     render()
     return
@@ -844,7 +825,7 @@ send = function(text, opts)
   -- The main chat coordinates: its /plan starts an agent of its own for
   -- each work item or PR (chat/agents.lua), instead of planning here.
   if prompt_name == "plan" and not st.plan_key then
-    table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
+    table.insert(st.entries, { role = "you", text = shown_text, where = require("azure-cli.chat.view").label(snap), view = snap })
     table.insert(st.entries, { role = "note", text = require("azure-cli.chat.agents").start_for(text:gsub("^%s*/plan%s*", ""), snap) })
     render()
     save(st)
@@ -870,7 +851,7 @@ send = function(text, opts)
   if reuse and not agent.acp and st.persistent_job.model ~= model then reuse = false end
   if st.persistent_job and not reuse then stop_persistent(st) end
   local replay = not first and not reuse
-  table.insert(st.entries, { role = "you", text = shown_text, where = where_label(snap), view = snap })
+  table.insert(st.entries, { role = "you", text = shown_text, where = require("azure-cli.chat.view").label(snap), view = snap })
   -- A task agent without an approved plan changes no files, on any turn (#143).
   local read_only = prompt_name == "plan" or require("azure-cli.chat.plan").task_read_only(st.plan_key and st or nil)
   local entry = { role = "agent", status = "running", started = os.time(), tools = {}, view_win = view_win, snap = snap,

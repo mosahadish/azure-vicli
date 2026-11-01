@@ -125,6 +125,20 @@ function M.overview_at(lines, thread_map, lnum)
   return out
 end
 
+-- The first and last `side` line numbers ("R" source, "L" target) that diff
+-- rows `first`..`last` of `map` show, as "10-13"; nil when none. Pure.
+function M.visible_lines(map, first, last, side)
+  local lo, hi
+  for row = first, last do
+    local m = map[row]
+    if m and m.side == side and m.lineno then
+      lo = lo and math.min(lo, m.lineno) or m.lineno
+      hi = hi and math.max(hi, m.lineno) or m.lineno
+    end
+  end
+  return lo and (lo .. "-" .. hi) or nil
+end
+
 local function setup(ctx)
   local STATE = require("azure-cli.state")
   local NOTES = require("azure-cli.chat.notes")
@@ -213,6 +227,7 @@ local function setup(ctx)
       local map = ctx.maps_by_buf[buf] or {}
       local m = map[lnum]
       if m and m.lineno then snap.side, snap.line = m.side, m.lineno end
+      snap.visible = M.visible_lines(map, vim.fn.line("w0", win), vim.fn.line("w$", win), snap.side or "R")
       snap.code_line = vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
       snap.hunk = M.hunk(map, vim.api.nvim_buf_get_lines(buf, 0, -1, false), lnum)
       if sel and sel.buf == buf then

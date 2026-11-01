@@ -999,20 +999,19 @@ end
 function M.describe(win)
   local v = by_buf[vim.api.nvim_win_get_buf(win)] or view_of_tab(vim.api.nvim_win_get_tabpage(win))
   if not v then return nil end
-  view = v
   local files = {}
-  for _, f in ipairs(view.files) do files[#files + 1] = f.status .. " " .. f.path end
-  local snap = { screen = "change viewer", change = view.title, worktree = view.dir, files = files,
-    note = "Looking at " .. view.title .. " (worktree " .. view.dir .. "): " .. table.concat(files, ", ") }
+  for _, f in ipairs(v.files) do files[#files + 1] = f.status .. " " .. f.path end
+  local snap = { screen = "change viewer", change = v.title, worktree = v.dir, files = files,
+    note = "Looking at " .. v.title .. " (worktree " .. v.dir .. "): " .. table.concat(files, ", ") }
   local buf = vim.api.nvim_win_get_buf(win)
-  local cur = view.maps[buf]
+  local cur = v.maps[buf]
   if cur then
     local row = vim.api.nvim_win_get_cursor(win)[1]
     local m = cur.map[row] or {}
-    snap.file, snap.line, snap.side = view.files[cur.idx].path, m.lineno, m.side
+    snap.file, snap.line, snap.side = v.files[cur.idx].path, m.lineno, m.side
     snap.code_line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
-  elseif buf == view.list_buf then
-    local f = view.files[vim.api.nvim_win_get_cursor(win)[1]]
+  elseif buf == v.list_buf then
+    local f = v.files[vim.api.nvim_win_get_cursor(win)[1]]
     snap.file = f and f.path
   end
   return snap

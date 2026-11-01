@@ -3395,6 +3395,10 @@ section("AGENTS", { needs = { "ISSUE-TOOLS" }, reopen = both_boards }, function(
   end, 50)
   local tsnap = require("azure-cli.chat.view").snapshot(vim.api.nvim_get_current_win())
   if type(tsnap.thread) ~= "table" then return fail("no thread under the cursor at auth.py:12: " .. vim.inspect(tsnap.line)) end
+  local vis_lo, vis_hi = tostring(tsnap.visible):match("^(%d+)%-(%d+)$")
+  if not (vis_lo and tonumber(vis_lo) <= 12 and tonumber(vis_hi) >= 12) then
+    return fail("auth.py:12 isn't among the visible lines: " .. tostring(tsnap.visible))
+  end
   feed("gP")
   local one = vim.wait(30000, function()
     return answer(p1):find("planned PR !101 for " .. tostring(tsnap.thread.id), 1, true) ~= nil and AGENTS.working() == 0

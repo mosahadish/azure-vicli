@@ -140,6 +140,13 @@ do
   check("commits: a commit's diff", row.commit == "a1b2c3d" and row.file == "src/a.lua" and row.code_line == "x = 1",
     vim.inspect(row))
 
+  -- Diff rows 2..6 show source lines 10-13 (row 4 is a removed target line).
+  local map = { {}, { side = "R", lineno = 10 }, { side = "R", lineno = 11 }, { side = "L", lineno = 7 },
+    { side = "R", lineno = 12 }, { side = "R", lineno = 13 }, { side = "R", lineno = 14 } }
+  check("diff: visible source lines", RCHAT.visible_lines(map, 1, 6, "R") == "10-13", RCHAT.visible_lines(map, 1, 6, "R"))
+  check("diff: visible target lines", RCHAT.visible_lines(map, 1, 6, "L") == "7-7")
+  check("diff: nothing on that side", RCHAT.visible_lines(map, 1, 1, "R") == nil)
+
   local t = VIEW.text({ section = "Comments", commit = "a1b2c3d" })
   check("view: section and commit", t:find("Section: Comments", 1, true) and t:find("Commit: a1b2c3d", 1, true), t)
 end
@@ -175,6 +182,61 @@ do
   check("agents: a story agent's item and the PR its plan opened",
     snap.work_item and snap.work_item.id == 3001 and type(snap.pr) == "table" and snap.pr.id == 9, vim.inspect(snap))
   AV._set_view(nil)
+  vim.cmd("silent! %bwipeout!")
+end
+
+-- --- the label, what's visible, where you just were ---------------------------
+do
+  check("label: PR, file, thread", VIEW.label({ pr = { id = 101 }, file = "src/auth.py", line = 12, thread = { id = 5000 } })
+    == "on PR !101 \u{00B7} auth.py:12 \u{00B7} thread 5000", VIEW.label({ pr = { id = 101 }, file = "src/auth.py", line = 12, thread = { id = 5000 } }))
+  check("label: a screen", VIEW.label({ screen = "PR dashboard" }) == "on the PR dashboard")
+  check("label: other has none", VIEW.label({ screen = "other" }) == nil)
+  check("label: a commit", VIEW.label({ commit = "abcdef1234" }) == "on commit abcdef1", VIEW.label({ commit = "abcdef1234" }))
+
+  local text = {}
+  for i = 1, 100 do text[i] = "line " .. i end
+  local dir = workdir({ ["long.txt"] = table.concat(text, "\n") .. "\n", ["b.txt"] = "b\n", ["c.txt"] = "c\n" })
+  vim.o.lines = 60
+  local win = open(dir .. "/long.txt", "text", 45)
+  vim.api.nvim_win_set_height(win, 21)
+  vim.fn.winrestview({ topline = 40, lnum = 45 })
+  local snap = VIEW.snapshot(win)
+  check("visible: a code window's lines", snap.visible == "40-60", snap.visible)
+  check("view: visible", VIEW.text({ visible = "40-60" }):find("Visible: lines 40-60", 1, true) ~= nil)
+
+  VIEW._forget()
+  VIEW.remember(win)                       -- long.txt:45
+  open(dir .. "/b.txt", "text", 1)
+  VIEW.remember(0)                         -- b.txt:1
+  open(dir .. "/c.txt", "text", 1)
+  VIEW.remember(0)                         -- c.txt:1
+  VIEW.remember(0)                         -- again: collapsed
+  local float = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), false,
+    { relative = "editor", row = 1, col = 1, width = 10, height = 2 })
+  VIEW.remember(float)
+  vim.api.nvim_win_close(float, true)
+  local scratch = vim.api.nvim_create_buf(false, true)
+  open(dir .. "/b.txt", "text", 1)
+  local recent = VIEW.snapshot(0).recent or {}
+  check("trail: most recent first, not where you are", #recent == 2 and recent[1] == "on c.txt:1" and recent[2] == "on long.txt:45",
+    vim.inspect(recent))
+  vim.api.nvim_win_set_buf(0, scratch)
+  VIEW.remember(0)
+  check("trail: a buffer that describes as other isn't kept", #VIEW.recent() == 3, vim.inspect(VIEW.recent()))
+  for _ = 1, 6 do
+    open(dir .. "/long.txt", "text", math.random(1, 100))
+    VIEW.remember(0)
+  end
+  check("trail: five at most", #VIEW.recent() == 5)
+  local t = VIEW.text({ recent = { "on a.lua:3", "on PR !1" } })
+  check("view: recently", t:find("Recently: a.lua:3; PR !1", 1, true) ~= nil, t)
+
+  -- Leaving a window remembers it on its own.
+  VIEW._forget()
+  open(dir .. "/c.txt", "text", 1)
+  vim.cmd("silent split " .. vim.fn.fnameescape(dir .. "/b.txt"))
+  check("trail: leaving a window remembers it", VIEW.recent()[1] == "on c.txt:1", vim.inspect(VIEW.recent()))
+  vim.cmd("only")
   vim.cmd("silent! %bwipeout!")
 end
 
