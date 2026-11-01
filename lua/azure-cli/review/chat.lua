@@ -38,9 +38,11 @@ function M.hunk(map, lines, lnum, max)
   while a > 1 and changed(a - 1) do a = a - 1 end
   while b < #lines and changed(b + 1) do b = b + 1 end
   local out = {}
-  for i = a, math.min(b, a + (max or 60) - 1) do
+  local last = math.min(b, a + (max or 60) - 1)
+  for i = a, last do
     out[#out + 1] = (map[i].kind == "add" and "+" or "-") .. (lines[i] or "")
   end
+  if last < b then out[#out + 1] = "\u{2026} " .. (b - last) .. " more changed lines" end
   return table.concat(out, "\n")
 end
 

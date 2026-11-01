@@ -179,6 +179,13 @@ do
   check("diff: visible target lines", RCHAT.visible_lines(map, 1, 6, "L") == "7-7")
   check("diff: nothing on that side", RCHAT.visible_lines(map, 1, 1, "R") == nil)
 
+  -- A long hunk says it was cut.
+  local hmap, hlines = {}, {}
+  for i = 1, 70 do hmap[i], hlines[i] = { kind = "add" }, "l" .. i end
+  local h = RCHAT.hunk(hmap, hlines, 5)
+  check("hunk: cut at 60, saying so", select(2, h:gsub("\n", "")) == 60 and h:find("\n\u{2026} 10 more changed lines$") ~= nil, h:sub(-40))
+  check("hunk: a short one isn't marked", not RCHAT.hunk(hmap, hlines, 5, 80):find("more changed", 1, true))
+
   local t = VIEW.text({ section = "Comments", commit = "a1b2c3d" })
   check("view: section and commit", t:find("Section: Comments", 1, true) and t:find("Commit: a1b2c3d", 1, true), t)
 end
