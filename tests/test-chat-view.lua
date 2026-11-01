@@ -265,11 +265,37 @@ do
   vim.api.nvim_win_set_buf(0, scratch)
   VIEW.remember(0)
   check("trail: a buffer that describes as other isn't kept", #VIEW.recent() == 3, vim.inspect(VIEW.recent()))
-  for _ = 1, 6 do
-    open(dir .. "/long.txt", "text", math.random(1, 100))
+  local six = {}
+  for i = 1, 6 do six["f" .. i .. ".txt"] = "x\n" end
+  local dir6 = workdir(six)
+  for i = 1, 6 do
+    open(dir6 .. "/f" .. i .. ".txt", "text", 1)
     VIEW.remember(0)
   end
   check("trail: five at most", #VIEW.recent() == 5)
+
+  -- Moving around one PR is one place: its latest file and line.
+  VIEW.register("test-pr", function(w)
+    return { screen = "reviewer", pr = { id = 52084 }, file = "A.cs", line = vim.api.nvim_win_get_cursor(w)[1] }
+  end)
+  local prbuf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(prbuf, 0, -1, false, { "1", "2", "3" })
+  vim.bo[prbuf].filetype = "test-pr"
+  vim.api.nvim_win_set_buf(0, prbuf)
+  VIEW._forget()
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  VIEW.remember(0)
+  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+  VIEW.remember(0)
+  open(dir .. "/c.txt", "text", 1)
+  VIEW.remember(0)
+  local r = VIEW.recent()
+  check("trail: one entry per PR, at its latest place", #r == 2 and r[1] == "on c.txt:1" and r[2] == "on PR !52084 \u{00B7} A.cs:3",
+    vim.inspect(r))
+  vim.api.nvim_win_set_buf(0, prbuf)
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  r = VIEW.snapshot(0).recent or {}
+  check("trail: the PR you're in isn't among the recent places", #r == 1 and r[1] == "on c.txt:1", vim.inspect(r))
   local t = VIEW.text({ recent = { "on a.lua:3", "on PR !1" } })
   check("view: recently", t:find("Recently: a.lua:3; PR !1", 1, true) ~= nil, t)
 

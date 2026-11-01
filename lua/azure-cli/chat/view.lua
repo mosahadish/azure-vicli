@@ -189,13 +189,25 @@ function M.label(snap)
   return nil
 end
 
--- The places you were, as labels, most recent first: remembered as you
--- leave a window, each once (going back moves it to the front), five at
--- most.
+-- The places you were, most recent first, as { label, scope }: remembered
+-- as you leave a window, five at most. A place is its PR, work item, plan
+-- or file - moving around in one keeps a single entry, at its latest spot.
 local trail = {}
+
+local function scope_of(snap, label)
+  if type(snap.pr) == "table" then return "pr:" .. tostring(snap.pr.id) end
+  if type(snap.work_item) == "table" then return "wi:" .. tostring(snap.work_item.id) end
+  if type(snap.plan) == "table" and snap.plan.key then return "plan:" .. tostring(snap.plan.key) end
+  if snap.file then return "file:" .. snap.file end
+  return label
+end
 local TRAIL_MAX = 5
 
-function M.recent() return vim.deepcopy(trail) end
+function M.recent()
+  local out = {}
+  for i, e in ipairs(trail) do out[i] = e.label end
+  return out
+end
 M._forget = function() trail, git_cache = {}, {} end  -- tests
 
 -- Remembers where window `win` is. Floating windows (popups) and whatever
@@ -204,12 +216,14 @@ M._forget = function() trail, git_cache = {}, {} end  -- tests
 function M.remember(win)
   if not (win and vim.api.nvim_win_is_valid(win)) then return end
   if vim.api.nvim_win_get_config(win).relative ~= "" then return end
-  local ok, label = pcall(function() return M.label(M.snapshot(win, nil, { no_trail = true, light = true })) end)
-  if not (ok and label) then return end
+  local ok, snap = pcall(M.snapshot, win, nil, { no_trail = true, light = true })
+  local label = ok and M.label(snap)
+  if not label then return end
+  local scope = scope_of(snap, label)
   for i = #trail, 1, -1 do
-    if trail[i] == label then table.remove(trail, i) end
+    if trail[i].scope == scope then table.remove(trail, i) end
   end
-  table.insert(trail, 1, label)
+  table.insert(trail, 1, { label = label, scope = scope })
   while #trail > TRAIL_MAX do table.remove(trail) end
 end
 
@@ -226,10 +240,10 @@ function M.snapshot(win, sel, opts)
   local snap = M.describe(win, sel, opts and opts.light)
   -- Where you were before, minus where you are.
   if not (opts and opts.no_trail) and #trail > 0 then
-    local here = M.label(snap)
+    local here = scope_of(snap, M.label(snap))
     local recent = {}
-    for _, l in ipairs(trail) do
-      if l ~= here then recent[#recent + 1] = l end
+    for _, e in ipairs(trail) do
+      if e.scope ~= here then recent[#recent + 1] = e.label end
     end
     if #recent > 0 then snap.recent = recent end
   end
