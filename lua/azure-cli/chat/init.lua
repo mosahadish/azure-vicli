@@ -496,6 +496,7 @@ function M.set_winbars()
   if #(st.queue or {}) > 0 then tags[#tags + 1] = "[\u{231B} " .. #st.queue .. " queued]" end
   if st.selection then tags[#tags + 1] = "[selection: " .. (st.selection.to - st.selection.from + 1) .. " lines]" end
   local UI = require("azure-cli.ui")
+  local here = next(st.wins) and M.view_label() or ""
   for _, w in pairs(st.wins) do
     if w.log and vim.api.nvim_win_is_valid(w.log) then
       pcall(UI.wo, w.log, "winbar", UI.winbar({ "Chat", agent_label(), st.label }, tags))
@@ -506,13 +507,27 @@ function M.set_winbars()
       if type(send) == "table" then send = send[1] end
       local newline = KEYS.resolve("chat", "newline")
       if type(newline) == "table" then newline = table.concat(newline, "/") end
-      pcall(UI.wo, w.input, "winbar", "%#AzureCliWinbarHelp# " .. (send and (send .. " sends") or "")
+      pcall(UI.wo, w.input, "winbar", (here ~= "" and ("%#AzureCliWinbarTitle# " .. here:gsub("%%", "%%%%") .. " ") or "")
+        .. "%#AzureCliWinbarHelp# " .. (send and (send .. " sends") or "")
         .. (newline and (" \u{00B7} " .. newline .. " new line") or "")
         .. " \u{00B7} /prompt \u{00B7} !PR #item \u{00B7} ? keys%<")
     end
   end
   pcall(vim.cmd, "redrawstatus!")  -- for M.status() / M.strip() in a statusline
   pcall(vim.cmd, "redrawtabline")
+end
+
+-- What the next message goes with, as its heading will name it ("on PR
+-- !101 \u{00B7} auth.py:12"): the input bar shows it. "" when there's nothing.
+function M.view_label()
+  local ok, label = pcall(function()
+    local win = M.main_win()
+    local sel = panel_state().selection
+    if sel and sel.win ~= win then sel = nil end
+    local VIEW = require("azure-cli.chat.view")
+    return VIEW.label(VIEW.snapshot(win, sel, { no_trail = true }))
+  end)
+  return ok and label or ""
 end
 
 -- The window the user was last in, in the current tab (never the panel).
@@ -848,7 +863,10 @@ function M.popup(key)
   UI.wo(log, "conceallevel", 2)
   UI.wo(log, "concealcursor", "")
   local KEYS = require("azure-cli.keys")
-  local input = open(pinput, false, { row = row + height + 2, height = ih, footer = " " .. KEYS.name("chat", "focus_input")
+  -- The screen under it doesn't move while it's open: the label is fixed.
+  local here = M.view_label()
+  local input = open(pinput, false, { row = row + height + 2, height = ih, footer = " " .. (here ~= "" and (here .. " \u{00B7} ") or "")
+    .. KEYS.name("chat", "focus_input")
     .. " types \u{00B7} " .. KEYS.name("chat", "send") .. " sends \u{00B7} " .. KEYS.name("chat", "hide") .. " closes ",
     footer_pos = "right" })
   popup = { log = log, input = input, key = key, log_buf = plog, input_buf = pinput }
@@ -927,6 +945,24 @@ function M.capture_selection()
 end
 
 local group = vim.api.nvim_create_augroup("AzureCliChat", { clear = true })
+-- The input bar's label follows the cursor on the screen beside the panel
+-- (redrawn once it has rested 200ms).
+local label_pending = false
+vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter", "WinEnter" }, {
+  group = group,
+  callback = function()
+    if label_pending or is_chat_buf(vim.api.nvim_get_current_buf()) then return end
+    if vim.api.nvim_win_get_config(0).relative ~= "" then return end
+    if not panel_open_in(vim.api.nvim_get_current_tabpage()) then return end
+    label_pending = true
+    vim.defer_fn(function()
+      label_pending = false
+      pcall(M.set_winbars)
+    end, 200)
+  end,
+})
+-- The places you were (chat/view.lua's trail) start counting with the chat.
+require("azure-cli.chat.view")
 vim.api.nvim_create_autocmd("WinEnter", {
   group = group,
   callback = function()

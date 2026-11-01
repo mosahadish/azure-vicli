@@ -142,6 +142,7 @@ end
 -- message's heading in the conversation, the input bar's label, the trail
 -- of places you were. Nil when there's nothing to say. Pure.
 function M.label(snap)
+  if snap.error then return nil end
   local bits = {}
   if type(snap.pr) == "table" then bits[#bits + 1] = "PR !" .. tostring(snap.pr.id) end
   if type(snap.work_item) == "table" then bits[#bits + 1] = "#" .. tostring(snap.work_item.id) end

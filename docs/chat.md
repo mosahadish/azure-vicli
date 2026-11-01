@@ -74,9 +74,15 @@ error until you remove it, and you allow a skill from `/skills` instead
 
 Every message is sent together with a description of what you're looking at:
 the screen, plus the PR, work item, file, line, code and comment thread under
-the cursor in the window you were last in. Your message's heading in the
-conversation shows it, e.g. `on PR #101 · auth.py:12 · thread 5000`. Move the
-cursor, then ask; "this" always means what's under it now.
+the cursor in the window you were last in. Also the section you're in (the
+reviewer's Overview, a work item's Description or Discussion), the commit
+under the cursor, the lines on screen, and the last few places you were. In
+an ordinary code file, that's the path in its repository, the branch, the
+function around the cursor (with a treesitter parser) and your LSP's
+diagnostics on that line. The input bar shows what will be sent, e.g.
+`on PR !101 · auth.py:12 · thread 5000`, and so does your message's heading
+in the conversation. Move the cursor, then ask; "this" always means what's
+under it now.
 
 While the agent works, its answer appears as it's written (with Claude
 Code's `stream-json` output, see below; other agents show their output as it

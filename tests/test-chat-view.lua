@@ -196,7 +196,6 @@ do
   local text = {}
   for i = 1, 100 do text[i] = "line " .. i end
   local dir = workdir({ ["long.txt"] = table.concat(text, "\n") .. "\n", ["b.txt"] = "b\n", ["c.txt"] = "c\n" })
-  vim.o.lines = 60
   local win = open(dir .. "/long.txt", "text", 45)
   vim.api.nvim_win_set_height(win, 21)
   vim.fn.winrestview({ topline = 40, lnum = 45 })
@@ -237,6 +236,36 @@ do
   vim.cmd("silent split " .. vim.fn.fnameescape(dir .. "/b.txt"))
   check("trail: leaving a window remembers it", VIEW.recent()[1] == "on c.txt:1", vim.inspect(VIEW.recent()))
   vim.cmd("only")
+  vim.cmd("silent! %bwipeout!")
+end
+
+-- --- the input bar's label ------------------------------------------------------
+do
+  local CHAT = require("azure-cli.chat")
+  local dir = workdir({ ["m.txt"] = "one\ntwo\nthree\n" })
+  local win = open(dir .. "/m.txt", "text", 2)
+  CHAT.show(false)
+  local input
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_buf(w) ~= vim.api.nvim_win_get_buf(win) and vim.wo[w].winbar:find("sends", 1, true) then input = w end
+  end
+  check("label: the panel's input is open", input ~= nil)
+  check("label: what will be sent", CHAT.view_label() == "on m.txt:2", CHAT.view_label())
+  check("label: in the input bar", input and vim.wo[input].winbar:find("on m.txt:2", 1, true) ~= nil,
+    input and vim.wo[input].winbar)
+  vim.api.nvim_set_current_win(win)
+  vim.api.nvim_win_set_cursor(win, { 3, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", {})
+  local moved = vim.wait(1000, function() return vim.wo[input].winbar:find("on m.txt:3", 1, true) ~= nil end, 20)
+  check("label: follows the cursor", moved, vim.wo[input].winbar)
+
+  VIEW.register("test-broken", function() error("boom") end)
+  local ok = pcall(function() vim.bo.filetype = "test-broken" end)
+  local scratch = vim.api.nvim_create_buf(false, true)
+  vim.bo[scratch].filetype = "test-broken"
+  vim.api.nvim_win_set_buf(win, scratch)
+  check("label: a failing describer gives none", ok and CHAT.view_label() == "", CHAT.view_label())
+  CHAT.hide()
   vim.cmd("silent! %bwipeout!")
 end
 
