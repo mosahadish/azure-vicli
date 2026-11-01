@@ -537,6 +537,15 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-chat.lua (headless nvim)" "$out"
   fi
 
+  # What the chat is told about the screen you're on (chat/view.lua's
+  # describers): treesitter, diagnostics and git need a real nvim too.
+  out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-view.lua" 2>&1)"
+  if [ $? -eq 0 ] && [[ "$out" == *"all chat view tests passed"* ]]; then
+    pass "test-chat-view.lua (headless nvim)"
+  else
+    fail "test-chat-view.lua (headless nvim)" "$out"
+  fi
+
   # A chat turn's idle timeout and hard cap (chat/watchdog.lua), on a
   # clock the test turns by hand.
   out="$(nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/test-chat-watchdog.lua" 2>&1)"
@@ -727,7 +736,7 @@ if command -v nvim >/dev/null 2>&1; then
 
   # The same sentinel check as step 4's, under nvim: the probe, then the
   # chat tests that used to leave conversations behind when run by hand.
-  for t in test-sandbox.lua test-chat.lua test-chat-persistent.lua test-chat-acp.lua; do
+  for t in test-sandbox.lua test-chat.lua test-chat-view.lua test-chat-persistent.lua test-chat-acp.lua; do
     sentinel "$t (nvim -l, started directly)" nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -l "$REPO_ROOT/tests/$t" "$REAL"
   done
   # A script loaded into an already-running nvim can't start again in a

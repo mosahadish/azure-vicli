@@ -36,6 +36,94 @@ local function reviewer_pr(win)
   return nil
 end
 
+-- An ordinary file's window (a buffer with a name and no buftype): where it
+-- is in its repository, the line, the function the cursor is in (from
+-- treesitter, when there's a parser), the diagnostics your LSP put on it and
+-- whether it has unsaved changes. Nil for anything else.
+local git_cache = {}  -- root -> { branch, at }
+
+local function git_root(path)
+  local found = vim.fs.find(".git", { upward = true, path = vim.fs.dirname(path) })[1]
+  return found and vim.fs.dirname(found) or nil
+end
+
+-- The branch checked out in `root`, asked of git at most every 5 seconds.
+local function git_branch(root)
+  local now = (vim.uv or vim.loop).now()
+  local c = git_cache[root]
+  if c and now - c.at < 5000 then return c.branch end
+  -- symbolic-ref also knows a new repository's branch, before its first
+  -- commit; a detached HEAD is named by its commit.
+  local out = vim.fn.systemlist({ "git", "-C", root, "symbolic-ref", "--short", "-q", "HEAD" })
+  local branch = vim.v.shell_error == 0 and out[1] and out[1] ~= "" and out[1] or nil
+  if not branch then
+    out = vim.fn.systemlist({ "git", "-C", root, "rev-parse", "--short", "HEAD" })
+    branch = vim.v.shell_error == 0 and out[1] and out[1] ~= "" and ("detached at " .. out[1]) or nil
+  end
+  git_cache[root] = { branch = branch, at = now }
+  return branch
+end
+
+local SCOPES = { "function", "method", "class", "struct", "impl", "interface", "module" }
+
+-- The innermost function / class / ... around (row, col), as { kind, name }.
+local function symbol_at(buf, row, col)
+  local okp, parser = pcall(vim.treesitter.get_parser, buf)
+  if not (okp and parser) then return nil end
+  pcall(function() parser:parse() end)
+  local ok, node = pcall(vim.treesitter.get_node, { bufnr = buf, pos = { row, col } })
+  if not ok then return nil end
+  while node do
+    local kind = node:type()
+    for _, s in ipairs(SCOPES) do
+      if kind:find(s, 1, true) and not kind:find("call", 1, true) then
+        local name = node:field("name")[1]
+        if not name then
+          for child in node:iter_children() do
+            local t = child:type()
+            if t == "identifier" or t == "dot_index_expression" or t == "method_index_expression" then name = child break end
+          end
+        end
+        if name then
+          return { kind = kind, name = vim.treesitter.get_node_text(name, buf) }
+        end
+        break
+      end
+    end
+    node = node:parent()
+  end
+  return nil
+end
+
+function M.code(win, sel)
+  local buf = vim.api.nvim_win_get_buf(win)
+  local name = vim.api.nvim_buf_get_name(buf)
+  if vim.bo[buf].buftype ~= "" or name == "" then return nil end
+  local cur = vim.api.nvim_win_get_cursor(win)
+  local snap = { screen = "code", file = name, line = cur[1],
+    code_line = vim.api.nvim_buf_get_lines(buf, cur[1] - 1, cur[1], false)[1] }
+  local root = git_root(name)
+  if root then
+    root = (vim.loop.fs_realpath(root) or root)
+    local full = vim.loop.fs_realpath(name) or name
+    if full:sub(1, #root + 1) == root .. "/" then snap.file = full:sub(#root + 2) end
+    snap.repo, snap.branch = root, git_branch(root)
+  end
+  snap.symbol = symbol_at(buf, cur[1] - 1, cur[2])
+  local here, counts = {}, { errors = 0, warnings = 0 }
+  for _, d in ipairs(vim.diagnostic.get(buf)) do
+    if d.severity == vim.diagnostic.severity.ERROR then counts.errors = counts.errors + 1
+    elseif d.severity == vim.diagnostic.severity.WARN then counts.warnings = counts.warnings + 1 end
+    if d.lnum == cur[1] - 1 then
+      here[#here + 1] = { severity = vim.diagnostic.severity[d.severity], line = d.lnum + 1, message = d.message }
+    end
+  end
+  snap.diagnostics, snap.diagnostic_counts = here, counts
+  snap.modified = vim.bo[buf].modified
+  if sel and sel.buf == buf then snap.selection_lines = sel.from .. "-" .. sel.to end
+  return snap
+end
+
 -- The snapshot for `win` (default: the current window). `sel` ({ buf,
 -- from, to, text }, from <CR> in visual mode) is handed to the describer,
 -- which can say where it is (the reviewer maps it to file lines); the text
@@ -56,7 +144,14 @@ function M.snapshot(win, sel)
       fn = views()[key]
     end
   end
-  if not fn then return { screen = "other", filetype = ft, selection = sel and sel.text or nil } end
+  if not fn then
+    local snap = M.code(win, sel)
+    if snap then
+      if sel then snap.selection = sel.text end
+      return snap
+    end
+    return { screen = "other", filetype = ft, selection = sel and sel.text or nil }
+  end
   local ok, snap = pcall(fn, win, sel)
   if not ok or type(snap) ~= "table" then snap = { screen = key, error = ok and "nothing to describe" or tostring(snap) } end
   if sel and snap.selection == nil then snap.selection = sel.text end
@@ -86,9 +181,20 @@ function M.text(snap)
   local w = wi_line(snap.work_item)
   if w then out[#out + 1] = "Work item: " .. w end
   if snap.file then
-    out[#out + 1] = "File: " .. snap.file .. (snap.line and (" line " .. snap.line .. " (" .. (snap.side == "L" and "target" or "source") .. " side)") or "")
+    out[#out + 1] = "File: " .. snap.file .. (snap.line and (" line " .. snap.line
+      .. (snap.side and (" (" .. (snap.side == "L" and "target" or "source") .. " side)") or "")) or "")
   end
+  if snap.repo then out[#out + 1] = "Repository: " .. snap.repo .. (snap.branch and (" (branch " .. snap.branch .. ")") or "") end
   if snap.code_line then out[#out + 1] = "Code on that line: " .. snap.code_line end
+  if type(snap.symbol) == "table" then out[#out + 1] = "Inside: " .. snap.symbol.name .. " (" .. snap.symbol.kind .. ")" end
+  for _, d in ipairs(type(snap.diagnostics) == "table" and snap.diagnostics or {}) do
+    out[#out + 1] = "Diagnostic on this line (" .. tostring(d.severity) .. "): " .. tostring(d.message)
+  end
+  local dc = snap.diagnostic_counts
+  if type(dc) == "table" and ((dc.errors or 0) > 0 or (dc.warnings or 0) > 0) then
+    out[#out + 1] = "Diagnostics in the file: " .. (dc.errors or 0) .. " errors, " .. (dc.warnings or 0) .. " warnings"
+  end
+  if snap.modified then out[#out + 1] = "Unsaved changes in this buffer" end
   if snap.plan_line then
     out[#out + 1] = "Plan line " .. snap.plan_line .. (snap.plan_section and (" (section \"" .. snap.plan_section .. "\")") or "")
       .. ": " .. tostring(snap.plan_text or "")
