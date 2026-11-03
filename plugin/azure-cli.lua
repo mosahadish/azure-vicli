@@ -1,8 +1,8 @@
 -- plugin/azure-cli.lua: defines the :AzureCli user command. Loaded
 -- automatically by any plugin manager that puts this repo on 'rtp' (lazy.nvim,
--- packer, vim-plug, ...) - no side effects beyond defining the command, so
--- loading this file never itself starts a job, opens a buffer, or requires
--- setup() to have run first (every surface applies config.lua's defaults
+-- packer, vim-plug, ...) - no side effects beyond defining the command and a
+-- FileType autocmd for drawing markdown, so loading this file never itself
+-- starts a job, opens a buffer, or requires setup() to have run first (every surface applies config.lua's defaults
 -- until setup() says otherwise).
 if vim.g.loaded_azure_cli then
   return
@@ -82,6 +82,18 @@ local function dispatch(opts)
     vim.notify("azure-cli: unknown subcommand '" .. sub .. "' (see :AzureCli help)", vim.log.levels.ERROR)
   end
 end
+
+-- Markdown files: their tables and headings drawn (lua/azure-cli/mdrender.lua,
+-- ui.render_markdown). The plugin's own markdown buffers attach themselves.
+vim.api.nvim_create_autocmd("FileType", {
+  group = vim.api.nvim_create_augroup("azure_cli_mdrender", { clear = true }),
+  pattern = "markdown",
+  callback = function(ev)
+    if vim.bo[ev.buf].buftype == "" and vim.fn.has("nvim-0.11") == 1 then
+      pcall(function() require("azure-cli.mdrender").attach(ev.buf) end)
+    end
+  end,
+})
 
 vim.api.nvim_create_user_command("AzureCli", dispatch, {
   nargs = "*",

@@ -573,6 +573,7 @@ local function make_bufs(name)
   vim.api.nvim_set_hl(0, "AzureCliChatName", { default = true, bold = true })
   -- The agent answers in markdown: render it with Neovim's bundled parser.
   pcall(vim.treesitter.start, log_buf, "markdown")
+  require("azure-cli.mdrender").attach(log_buf)
 
   for _, b in ipairs({ log_buf, input_buf }) do
     KEYS.bind(b, "chat", "new_chat", function() new_chat() end, { desc = "start a new conversation" })

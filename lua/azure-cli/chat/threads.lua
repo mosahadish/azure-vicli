@@ -335,7 +335,10 @@ function M.show(th, keys)
   end
   local win, buf = require("azure-cli.ui").open_float(lines, { big = true, title = (th.agent or "Agent") .. " on line "
     .. tostring(th.line) })
-  if buf then vim.bo[buf].filetype = "markdown" end
+  if buf then
+    vim.bo[buf].filetype = "markdown"
+    require("azure-cli.mdrender").attach(buf)
+  end
   return win
 end
 
