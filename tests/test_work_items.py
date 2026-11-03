@@ -489,6 +489,9 @@ class WiListTests(unittest.TestCase):
         query = fetch.calls[0]["data"]["query"]
         self.assertIn("[Source].[System.Id] IN (1)", query)
         self.assertIn("MODE (Recursive)", query)
+        # WIQL has no escapes: a literal backslash is a 400 "Expecting end of string".
+        self.assertNotIn("\\", query)
+        self.assertIn("FROM WorkItemLinks\nWHERE", query)
         self.assertEqual(fetch.calls[1]["data"]["ids"], [5, 9])
 
     def test_tree_with_nothing_under_prints_nothing(self):
