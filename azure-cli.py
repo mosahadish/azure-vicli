@@ -4119,9 +4119,9 @@ class WorkItemActions:
             print("ERROR: 'tree' needs a comma-separated list of work item ids", file=sys.stderr)
             return 1
         wiql = {"query": (
-            "SELECT [System.Id] FROM WorkItemLinks\\n"
-            "WHERE ([Source].[System.Id] IN ({0}))\\n"
-            "  AND ([System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward')\\n"
+            "SELECT [System.Id] FROM WorkItemLinks\n"
+            "WHERE ([Source].[System.Id] IN ({0}))\n"
+            "  AND ([System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward')\n"
             "MODE (Recursive)"
         ).format(",".join(str(r) for r in roots))}
         try:
