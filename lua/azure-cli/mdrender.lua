@@ -3,9 +3,10 @@
 -- drawn in its place as a box whose cells wrap to the window's width;
 -- headings (# and underlined) lose their markers and are drawn bold, rules
 -- become a line, bullets and task boxes a symbol, quotes a bar, and bold,
--- italic, code, strikethrough and links lose theirs. The table under the cursor of the
--- window you're in shows its own text, as does the cursor's line, so it can
--- be read, yanked and edited as written.
+-- italic, code, strikethrough and links lose theirs. It stays drawn under the
+-- cursor ('concealcursor' nvc): the cursor still moves through a table's own
+-- (hidden) lines, so yanks take the markdown, and its row and cell are lit
+-- in the drawing. Only what you're typing in (Insert mode) shows its text.
 --
 -- Needs Neovim 0.11 (an extmark's conceal_lines); older ones show the text.
 -- ui.render_markdown = false turns it off.
@@ -224,6 +225,24 @@ function M.marks(lines, skip)
   return out
 end
 
+-- Table `t`'s row for buffer line `n` (rows[1] the header; the delimiter
+-- line is nil), and the column byte `col` (0-based) of that line is in.
+function M.cell_at(t, n, line, col)
+  local r = n == t.first and 1 or (n >= t.first + 2 and n - t.first or nil)
+  if not r then return nil end
+  local s = line:sub(1, col)
+  local pipes, code, i = 0, false, 1
+  while i <= #s do
+    local ch = s:sub(i, i)
+    if ch == "\\" then i = i + 1
+    elseif ch == "`" then code = not code
+    elseif ch == "|" and not code then pipes = pipes + 1 end
+    i = i + 1
+  end
+  local c = line:match("^%s*|") and pipes or pipes + 1
+  return r, math.max(1, math.min(#t.aligns, c))
+end
+
 -- A cell's text as { text, kind } pieces, kind nil / "code" / "bold" /
 -- "italic" / "link": the markers go, links keep their text.
 function M.inline(s)
@@ -345,12 +364,14 @@ M.HL = {
   bold = "AzureCliMdTableBold", italic = "AzureCliMdTableItalic", link = "AzureCliMdTableLink",
   heading = "AzureCliMdHeading", heading1 = "AzureCliMdHeading1", strike = "AzureCliMdStrike",
   rule = "AzureCliMdRule", quote = "AzureCliMdQuote", bullet = "AzureCliMdBullet", box = "AzureCliMdBox",
-  done = "AzureCliMdDone",
+  done = "AzureCliMdDone", row = "AzureCliMdTableRow", cell = "AzureCliMdTableCell",
 }
 
 -- Table `t` (find's) drawn within `width` cells: a list of virtual lines,
 -- each a list of { text, hl } chunks, or nil when it can't fit at all.
--- opts.dw is the display-width function (default: one cell a character).
+-- opts.dw is the display-width function (default: one cell a character);
+-- opts.rows ({ [row] = true }, rows[1] the header) are drawn highlighted,
+-- and opts.cell, a column, more so on them (where the cursor is).
 function M.layout(t, width, opts)
   opts = opts or {}
   local dw = opts.dw or utf8_len
@@ -398,19 +419,27 @@ function M.layout(t, width, opts)
     elseif r > 2 and multi then out[#out + 1] = rule("\u{251C}", "\u{253C}", "\u{2524}", "\u{254C}") end
     for k = 1, wrapped[r].h do
       local line = { { indent .. "\u{2502}", B } }
+      local on_row = opts.rows and opts.rows[r]
       for c = 1, n do
         local pieces = wrapped[r][c][k] or {}
+        local mark = on_row and ((opts.cell == c and M.HL.cell) or M.HL.row) or nil
+        local function with(hl)
+          if not mark then return hl end
+          if not hl then return mark end
+          if type(hl) == "table" then return { mark, hl[1], hl[2] } end
+          return { mark, hl }
+        end
         local used = 0
         for _, p in ipairs(pieces) do used = used + dw(p[1]) end
         local pad = w[c] - used
         local lpad = t.aligns[c] == "right" and pad or (t.aligns[c] == "center" and math.floor(pad / 2) or 0)
-        line[#line + 1] = { " " .. string.rep(" ", lpad) }
+        line[#line + 1] = { " " .. string.rep(" ", lpad), mark }
         for _, p in ipairs(pieces) do
           local hl = p[2] and M.HL[p[2]] or nil
           if r == 1 then hl = hl and { M.HL.head, hl } or M.HL.head end
-          line[#line + 1] = { p[1], hl }
+          line[#line + 1] = { p[1], with(hl) }
         end
-        line[#line + 1] = { string.rep(" ", pad - lpad) .. " " }
+        line[#line + 1] = { string.rep(" ", pad - lpad) .. " ", mark }
         line[#line + 1] = { "\u{2502}", B }
       end
       out[#out + 1] = line
@@ -453,6 +482,8 @@ local function define_hl()
   set(M.HL.bullet, { link = "Special" })
   set(M.HL.box, { link = "Special" })
   set(M.HL.done, { link = "DiagnosticOk" })
+  set(M.HL.row, { link = "CursorLine" })
+  set(M.HL.cell, { link = "Visual" })
 end
 
 -- The text width of the narrowest window showing `buf`, nil when none does.
@@ -495,11 +526,28 @@ function M.refresh(buf)
         hl_group = m.hl and M.HL[m.hl], priority = 220 })
     end
   end
+  local mode = vim.api.nvim_get_mode().mode
+  local inserting = mode:find("^[iR]") ~= nil
+  local visual = mode:find("^[vV\22]") and cursor and { math.min(vim.fn.line("v"), cursor), math.max(vim.fn.line("v"), cursor) }
   for _, t in ipairs(tables) do
-    if cursor and cursor >= t.first and cursor <= t.last then
+    local here = cursor and cursor >= t.first and cursor <= t.last
+    if here and inserting then
+      -- Typing in it: its text, to edit.
       if state then state.open = t.first end
     else
-      local virt = M.layout(t, width, { dw = dw })
+      -- The cursor (or a visual selection) in it: its row and cell lit.
+      local rows, cell
+      if visual and visual[1] <= t.last and visual[2] >= t.first then
+        rows = {}
+        for l = math.max(visual[1], t.first), math.min(visual[2], t.last) do
+          local rr = M.cell_at(t, l, lines[l], 0)
+          if rr then rows[rr] = true end
+        end
+      elseif here then
+        local rr, cc = M.cell_at(t, cursor, lines[cursor], vim.api.nvim_win_get_cursor(cur)[2])
+        if rr then rows, cell = { [rr] = true }, cc end
+      end
+      local virt = M.layout(t, width, { dw = dw, rows = rows, cell = cell })
       -- The drawing hangs above the line after the table, or below the one
       -- before it: lines it hides can't carry it.
       local row, above = t.last, true
@@ -518,12 +566,14 @@ end
 local function cursor_moved(buf)
   local state = attached[buf]
   if not state then return end
-  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local pos = vim.api.nvim_win_get_cursor(0)
   local inside
   for _, t in ipairs(state.tables or {}) do
-    if row >= t.first and row <= t.last then inside = t.first end
+    if pos[1] >= t.first and pos[1] <= t.last then inside = t.first end
   end
-  if inside ~= state.open then M.refresh(buf) end
+  -- In a table the lit row and cell follow the cursor; leaving one unlights it.
+  if inside or inside ~= state.was_in or vim.api.nvim_get_mode().mode:find("^[vV\22]") then M.refresh(buf) end
+  state.was_in = inside
 end
 
 local function schedule(buf)
@@ -540,9 +590,11 @@ local function schedule(buf)
   end)
 end
 
--- Windows showing an attached buffer hide what conceal_lines marks.
+-- Windows showing an attached buffer hide what conceal_lines marks, and
+-- keep it hidden on the cursor's line except while typing there.
 local function window_opts(win)
   if vim.wo[win].conceallevel == 0 then vim.wo[win][0].conceallevel = 2 end
+  if vim.wo[win].concealcursor ~= "nvc" then vim.wo[win][0].concealcursor = "nvc" end
 end
 
 function M.attach(buf)
@@ -568,6 +620,9 @@ function M.attach(buf)
   end })
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, { group = group, buffer = buf, callback = function()
     cursor_moved(buf)
+  end })
+  vim.api.nvim_create_autocmd("ModeChanged", { group = group, buffer = buf, callback = function()
+    if attached[buf] and attached[buf].was_in then M.refresh(buf) end
   end })
   vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, { group = group, callback = function()
     if not vim.api.nvim_buf_is_valid(buf) then

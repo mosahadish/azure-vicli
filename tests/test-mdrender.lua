@@ -136,12 +136,30 @@ vim.defer_fn(function()
     and row(7) == "after", { row(2), row(3), row(7) })
   vim.api.nvim_win_set_cursor(0, { 5, 0 })
   vim.cmd("redraw")
-  check("the cursor's heading shows its #s", row(7) == "## after", row(7))
-  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+  check("the cursor's heading stays drawn", row(7) == "after", row(7))
+  -- The cursor on the body row's second cell: still drawn, that cell lit.
+  vim.api.nvim_win_set_cursor(0, { 4, 5 })
   vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf })
   vim.defer_fn(function()
     vim.cmd("redraw")
-    check("cursor in it: the text is back", row(2) == "| Col | Other |" and row(5) == "after", { row(2), row(5) })
+    local lit = vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })
+    local cell_hl = false
+    for _, m in ipairs(lit) do
+      for _, vl in ipairs(m[4].virt_lines or {}) do
+        for _, ch in ipairs(vl) do
+          local hl = type(ch[2]) == "table" and ch[2][1] or ch[2]
+          if hl == M.HL.cell and vim.trim(ch[1]) == "y" then cell_hl = true end
+        end
+      end
+    end
+    check("cursor in it: still drawn", row(2):find("\u{250C}", 1, true) == 1, row(2))
+    check("cursor in it: its cell lit", cell_hl)
+    vim.api.nvim_feedkeys("i", "n", false)
+  vim.defer_fn(function()
+    vim.cmd("redraw")
+    check("typing in it: the text is back", row(2) == "| Col | Other |", row(2))
+    vim.api.nvim_feedkeys("\27", "n", false)
+  vim.defer_fn(function()
     vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "| a | b |", "|---|---|" })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf })
@@ -150,5 +168,7 @@ vim.defer_fn(function()
       check("an edit draws again", row(2):find("\u{250C}", 1, true) == 1, row(2))
       finish()
     end, 50)
+  end, 50)
+  end, 50)
   end, 50)
 end, 50)
