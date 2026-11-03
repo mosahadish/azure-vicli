@@ -250,7 +250,11 @@ local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
 -- "popup" (ui.lua's M.choose: buttons in the middle of the screen - every
 -- yes/no question, and menus of up to prompt.lua's POPUP_MAX entries) or
 -- "select" (vim.ui.select for all of them, for a picker plugin to draw).
-local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto", confirm = "popup" }
+-- `render_markdown` (mdrender.lua): markdown buffers drawn rendered - tables
+-- as boxes with wrapped cells, headings, rules, lists, quotes and inline
+-- markup without their markers (Neovim 0.11+).
+local DEFAULTS_UI = { border = "rounded", palette = "colorscheme", key_hints = "auto", confirm = "popup",
+  render_markdown = true }
 local BORDERS = { rounded = true, single = true, double = true, solid = true, shadow = true, none = true, bold = true }
 
 -- setup({dashboard_web=...}): the phone dashboard (lua/azure-cli/web.lua,
@@ -327,6 +331,8 @@ local function validate_ui(ui)
       if v ~= "auto" and v ~= true and v ~= false then
         error("azure-cli.setup: ui.key_hints must be \"auto\", true or false")
       end
+    elseif k == "render_markdown" then
+      if type(v) ~= "boolean" then error("azure-cli.setup: ui.render_markdown must be true or false") end
     elseif k ~= "border" then
       error("azure-cli.setup: unknown field `" .. tostring(k) .. "` in ui")
     elseif not ((type(v) == "string" and BORDERS[v]) or (type(v) == "table" and #v > 0)) then

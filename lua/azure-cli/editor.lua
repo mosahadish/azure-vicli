@@ -279,6 +279,7 @@ function M.open(opts)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].bufhidden = "wipe"
+  require("azure-cli.mdrender").attach(buf)
   local lines = vim.split(initial, "\n", { plain = true })
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 

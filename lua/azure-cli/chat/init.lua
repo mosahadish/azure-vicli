@@ -573,6 +573,7 @@ local function make_bufs(name)
   vim.api.nvim_set_hl(0, "AzureCliChatName", { default = true, bold = true })
   -- The agent answers in markdown: render it with Neovim's bundled parser.
   pcall(vim.treesitter.start, log_buf, "markdown")
+  require("azure-cli.mdrender").attach(log_buf)
 
   for _, b in ipairs({ log_buf, input_buf }) do
     KEYS.bind(b, "chat", "new_chat", function() new_chat() end, { desc = "start a new conversation" })
@@ -731,7 +732,7 @@ local function open_here(focus)
   -- are hidden except on the cursor line.
   UI.wo(log, "signcolumn", "yes:1")
   UI.wo(log, "conceallevel", 2)
-  UI.wo(log, "concealcursor", "")
+  UI.wo(log, "concealcursor", "nvc")
   UI.wo(input, "winfixheight", true)
   st.wins[tab] = { log = log, input = input }
   -- The splits above fired WinEnter while still showing the screen's
@@ -846,7 +847,7 @@ function M.popup(key)
     title_pos = "left" })
   UI.wo(log, "signcolumn", "yes:1")
   UI.wo(log, "conceallevel", 2)
-  UI.wo(log, "concealcursor", "")
+  UI.wo(log, "concealcursor", "nvc")
   local KEYS = require("azure-cli.keys")
   local input = open(pinput, false, { row = row + height + 2, height = ih, footer = " " .. KEYS.name("chat", "focus_input")
     .. " types \u{00B7} " .. KEYS.name("chat", "send") .. " sends \u{00B7} " .. KEYS.name("chat", "hide") .. " closes ",

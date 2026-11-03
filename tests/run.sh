@@ -667,6 +667,14 @@ if command -v nvim >/dev/null 2>&1; then
     fail "test-key-hints.lua (headless nvim, real input)" "$out"
   fi
 
+  # Markdown pipe tables drawn as boxes (mdrender.lua).
+  out="$(timeout 20 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-mdrender.lua" 2>&1)"
+  if [[ "$out" == *MDRENDER-OK* ]]; then
+    pass "test-mdrender.lua (headless nvim)"
+  else
+    fail "test-mdrender.lua (headless nvim)" "$out"
+  fi
+
   # Quitting while agents work, with more queued, exits right away.
   start=$(date +%s)
   out="$(timeout 30 nvim -u NONE --headless --cmd "set rtp+=$REPO_ROOT" -c "luafile $REPO_ROOT/tests/test-chat-exit.lua" 2>&1)"
