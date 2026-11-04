@@ -54,6 +54,20 @@ check("gutter: width follows the larger side", e3.w == 3 and P.gutter_text(e3, 1
 P.set_keep(1, { [5] = true })
 check("set_keep: recomputes levels", P.entry(1).levels[5] == 0)
 P.on_refresh(1, function() end)
+-- row_numbers = "relative": distances from the cursor, the cursor's line
+-- keeping the file's number.
+check("relative: other lines show their distance", P.gutter_text(entry, 1, 3) == " 3 " and P.gutter_text(entry, 6, 2) == " 2 ",
+  P.gutter_text(entry, 1, 3))
+check("relative: the cursor's line shows the file's number", P.gutter_text(entry, 2, 0) == P.gutter_text(entry, 2))
+check("relative: a distance isn't dimmed, a deleted line at the cursor is",
+  P.gutter_group(entry, 2, 4) == "LineNr" and P.gutter_group(entry, 2, 0) == "AzureCliGutterOld")
+local long = {}
+for i = 1, 120 do long[i] = ctx(i % 9 + 1) end
+local e4 = P.register(4, long)
+check("relative: wide enough for the buffer's length", e4.w == 1 and e4.rw == 3 and P.gutter_text(e4, 1, 110) == "110 ",
+  e4.rw)
+P.forget(4)
+
 P.forget(1)
 check("forget", P.entry(1) == nil)
 

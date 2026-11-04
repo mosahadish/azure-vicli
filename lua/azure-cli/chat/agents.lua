@@ -366,8 +366,9 @@ end
 M.TASK_ANSWER_MAX = 4000
 
 -- Conversation `st`'s turn `entry` ended: a task agent's answer (#143)
--- goes back to the main chat - a note there now, and in its next message
--- (chat/run.lua) - without starting a turn of its own.
+-- goes back to the main chat's agent with its next message (chat/run.lua),
+-- without starting a turn or showing in the main chat: it's read in the
+-- task's own chat (Agents screen).
 function M.task_answered(st, entry)
   if not (st and type(st.target) == "table" and st.target.task_id and entry) then return end
   if entry.status == "running" then return end
@@ -380,7 +381,6 @@ function M.task_answered(st, entry)
   local main = CHAT().main_conversation()
   main.task_results = main.task_results or {}
   table.insert(main.task_results, { label = label, title = st.title, text = text })
-  CHAT().note(label .. (st.title and st.title ~= "" and (" - " .. st.title) or "") .. ":\n\n" .. text, { main = true })
 end
 
 -- The main chat's /plan (chat/run.lua): an agent for each work item and PR

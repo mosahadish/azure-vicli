@@ -63,9 +63,15 @@ end
 
 -- The gutter text for line `lnum` of a registered entry: one number,
 -- right-aligned - the new file's for a context or added line, the old
--- file's for a removed one (M.statuscolumn dims that). Display only:
--- comments anchor through the map's side/lineno, never through this.
-function M.gutter_text(entry, lnum)
+-- file's for a removed one (M.statuscolumn dims that). With `relnum` (its
+-- distance from the cursor, row_numbers = "relative"), every line but the
+-- cursor's shows that distance instead, like 'relativenumber', so 5j/5k
+-- lands on the line marked 5. Display only: comments anchor through the
+-- map's side/lineno, never through this.
+function M.gutter_text(entry, lnum, relnum)
+  if relnum and relnum ~= 0 then
+    return string.format("%" .. (entry.rw or entry.w) .. "s ", tostring(relnum))
+  end
   local m = entry.map[lnum]
   if not m or not m.lineno then
     return string.rep(" ", entry.w + 1)
@@ -75,7 +81,8 @@ end
 
 -- The highlight group for line `lnum`'s number: a removed line's old
 -- number is dimmed.
-function M.gutter_group(entry, lnum)
+function M.gutter_group(entry, lnum, relnum)
+  if relnum and relnum ~= 0 then return "LineNr" end
   local m = entry.map[lnum]
   return (m and m.kind == "del") and "AzureCliGutterOld" or "LineNr"
 end
@@ -106,6 +113,8 @@ function M.register(buf, map)
   entry.map = map
   entry.keep = entry.keep or {}
   entry.w = digits(math.max(maxo, maxn))
+  -- Relative numbers can run up to the buffer's length.
+  entry.rw = math.max(entry.w, digits(#map))
   entry.levels = M.compute_levels(map, entry.keep)
   by_buf[buf] = entry
   return entry
@@ -137,6 +146,13 @@ end
 
 -- Option callbacks (evaluated with the window's buffer current). ---------
 
+-- row_numbers = "relative" (the default): the diff's numbers count from
+-- the cursor, like the dashboards' rows.
+function M.relative()
+  local ok, cfg = pcall(function() return require("azure-cli.config").get() end)
+  return not (ok and type(cfg) == "table" and cfg.row_numbers ~= "relative")
+end
+
 function M.statuscolumn()
   -- The window being drawn, not the current one: with a float focused (K)
   -- the current buffer is the float's, and the diff's numbers went blank.
@@ -145,10 +161,15 @@ function M.statuscolumn()
   local entry = by_buf[ok and buf or vim.api.nvim_get_current_buf()]
   local lnum = vim.v.lnum
   if not entry then return "%s%l " end
+  local rel = M.relative() and vim.v.relnum or nil
+  local w = rel and entry.rw or entry.w
   if vim.v.virtnum and vim.v.virtnum ~= 0 then
-    return "%s" .. string.rep(" ", entry.w + 1)
+    return "%s" .. string.rep(" ", w + 1)
   end
-  return "%s%#" .. M.gutter_group(entry, lnum) .. "#" .. M.gutter_text(entry, lnum) .. "%*"
+  local text = M.gutter_text(entry, lnum, rel)
+  -- The cursor's line keeps the file's number, as wide as the distances.
+  if rel then text = string.rep(" ", w + 1 - #text) .. text end
+  return "%s%#" .. M.gutter_group(entry, lnum, rel) .. "#" .. text .. "%*"
 end
 
 function M.foldexpr(lnum)
@@ -169,6 +190,8 @@ function M.apply(win)
   pcall(vim.api.nvim_set_hl, 0, "AzureCliGutterOld", { link = "Comment", default = true })
   local ok = pcall(UI.wo, win, "statuscolumn", "%!v:lua.require'azure-cli.review.pane'.statuscolumn()")
   UI.wo(win, "number", not ok)  -- Neovim < 0.9: fall back to plain numbers
+  -- Also what makes Neovim redraw the column as the cursor moves.
+  UI.wo(win, "relativenumber", M.relative())
   UI.wo(win, "signcolumn", "yes:1")
   pcall(UI.wo, win, "foldmethod", "expr")
   pcall(UI.wo, win, "foldexpr", "v:lua.require'azure-cli.review.pane'.foldexpr(v:lnum)")
