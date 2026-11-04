@@ -576,17 +576,34 @@ local function cursor_moved(buf)
   state.was_in = inside
 end
 
+local function draw_now(buf)
+  local state = attached[buf]
+  if not state then return end
+  state.dirty = false
+  if vim.api.nvim_buf_is_valid(buf) then
+    state.tables = M.find(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+  end
+  M.refresh(buf)
+end
+
+-- Drawn again before the screen is: a buffer whose text changed (the chat
+-- replaces all of it on every redraw) never shows a frame of raw tables.
+local provider
+local function on_start()
+  for buf, state in pairs(attached) do
+    if state.dirty then pcall(draw_now, buf) end
+  end
+end
+
 local function schedule(buf)
   local state = attached[buf]
-  if not state or state.pending then return end
+  if not state then return end
+  state.dirty = true
+  if state.pending then return end
   state.pending = true
   vim.schedule(function()
     state.pending = false
-    if not attached[buf] then return end
-    if vim.api.nvim_buf_is_valid(buf) then
-      state.tables = M.find(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-    end
-    M.refresh(buf)
+    if attached[buf] and attached[buf].dirty then draw_now(buf) end
   end)
 end
 
@@ -601,12 +618,16 @@ function M.attach(buf)
   buf = (buf == nil or buf == 0) and vim.api.nvim_get_current_buf() or buf
   if attached[buf] or not vim.api.nvim_buf_is_valid(buf) or not M.enabled() then return end
   ns = ns or vim.api.nvim_create_namespace("azure_cli_mdrender")
+  if not provider then
+    provider = vim.api.nvim_create_namespace("azure_cli_mdrender_provider")
+    vim.api.nvim_set_decoration_provider(provider, { on_start = on_start })
+  end
   define_hl()
   attached[buf] = {}
   vim.api.nvim_buf_attach(buf, false, {
     on_lines = function()
       if not attached[buf] then return true end
-      schedule(buf)
+      attached[buf].dirty = true
     end,
     on_reload = function() schedule(buf) end,
     on_detach = function() attached[buf] = nil end,
