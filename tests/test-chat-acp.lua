@@ -407,10 +407,9 @@ do
   local main = STATE.chat
   local note
   for _, e in ipairs(main.entries) do
-    if e.role == "note" and (e.text or ""):find("Task 1's agent - Find perms", 1, true) then note = e end
+    if (e.text or ""):find("read=yes", 1, true) then note = e end
   end
-  check("task: its answer goes back to the main chat", note and note.text:find("read=yes", 1, true) ~= nil,
-    vim.inspect(main.entries[#main.entries]))
+  check("task: its answer isn't shown in the main chat", note == nil, note and note.text)
   check("task: without starting a turn there", not main.running)
   check("task: kept for the main chat's next message", main.task_results and main.task_results[1]
     and main.task_results[1].label == "Task 1's agent" and main.task_results[1].text:find("read=yes", 1, true) ~= nil,

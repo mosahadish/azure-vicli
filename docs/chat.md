@@ -857,9 +857,9 @@ changes to agents rather than doing them itself:
   refused on every turn, and of azure-vicli's write tools it may only
   draft (`draft_reply`, `draft_comment`, queued for you as always) and
   plan; shell commands that do more than look still ask you. When it
-  answers, the answer is added to the main chat as a note and goes to the
-  main chat's agent with your next message - it doesn't start a turn
-  there. Tell it (in its own chat, or through the main chat's
+  answers, the answer goes to the main chat's agent with your next
+  message - it isn't shown in the main chat and doesn't start a turn
+  there; read it in the task's own chat (Agents screen). Tell it (in its own chat, or through the main chat's
   `message_agent` with `task_id`) to plan a change and it writes one with
   `submit_plan`: without `work_item_id`/`pr_id` the plan is its task's own
   (approved, it works in a `<repo>-task<n>` worktree on a branch linked to
