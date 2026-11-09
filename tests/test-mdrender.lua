@@ -166,6 +166,11 @@ vim.defer_fn(function()
     vim.defer_fn(function()
       vim.cmd("redraw")
       check("an edit draws again", row(2):find("\u{250C}", 1, true) == 1, row(2))
+      -- The chat replaces all its text on every redraw: the very next
+      -- screen already has the box, never a frame of the raw table.
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "TOP", "| Col | Other |", "|---|---|", "| x | y |", "end" })
+      vim.cmd("redraw")
+      check("replaced text: no raw frame", row(1) == "TOP" and row(2):find("\u{250C}", 1, true) == 1, { row(1), row(2) })
       finish()
     end, 50)
   end, 50)

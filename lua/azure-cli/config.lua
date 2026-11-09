@@ -236,7 +236,9 @@ local DEFAULT_COLLAPSED_SECTIONS = { "SignedOff", "Drafts" }
 -- dashboards draw just inside their box's left border (ui.lua's
 -- M.number_width/M.paint_numbers): "relative" numbers each row by its
 -- distance from the cursor, so 5j/5k jumps straight to it; "absolute"
--- plain line numbers; false none (and no column reserved).
+-- plain line numbers; false none (and no column reserved). "relative" also
+-- numbers the reviewer's diff pane from the cursor (review/pane.lua), the
+-- cursor's line keeping the file's number; otherwise it shows the file's.
 local DEFAULT_ROW_NUMBERS = "relative"
 
 local DEFAULTS_CHAT = { position = "right", size = 0.35, input_height = 3 }
